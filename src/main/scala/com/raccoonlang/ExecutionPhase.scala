@@ -63,8 +63,8 @@ object Execution {
    * and zero leaves it to the JVM's default); the caller waits for it. What `body` returns is returned, and what it
    * throws, a stack overflow included, is rethrown here: nothing is caught on the way.
    *
-   * Checking and evaluation recurse on the host stack, so this is how a caller chooses their depth: the CLI runs its
-   * whole pipeline on one, of `--stack` bytes (PROOF_BY_EVALUATION §2.5). When the thread ends, the checker's
+   * Checking, plan construction and semantic helpers recurse on the host stack; Core calls use explicit frames. The CLI
+   * runs its whole pipeline on one, of `--stack` bytes (PROOF_BY_EVALUATION §2.5). When the thread ends, the checker's
    * thread-local state goes with it, which is part of what `EvaluationTooDeep` leaves unsafe to check on.
    */
   def onStack[A](stackBytes: Long)(body: => A): A = {

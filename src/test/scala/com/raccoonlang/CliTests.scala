@@ -103,13 +103,14 @@ class CliTests extends munit.FunSuite {
     assert(text.contains("its proposition is Eq(String, \"no\", \"ok\"), "), text)
   }
 
-  test("--stack sets the stack checking and evaluation run on, and exhausting it is EvaluationTooDeep") {
-    val shallow = run(Vector("--json", "--stack", "1m"), CliTests.deepProgram)
+  test("--stack bounds host-recursive checking while explicit Core frames run deeply") {
+    val shallow = run(Vector("--json", "--stack", "1m"), CliTests.hostDeepProgram)
     assertEquals(shallow.exitCode, 1)
     assert(shallow.stdout.startsWith("[\n  {"), shallow.stdout)
-    // At the program's body, on line 7.
-    assert(shallow.stdout.contains("\"startLine\": 7, \"startColumn\": 3,"), shallow.stdout)
+    // At the declaration, on line 7.
+    assert(shallow.stdout.contains("\"startLine\": 7, \"startColumn\": 1,"), shallow.stdout)
     assert(shallow.stdout.contains("\"kind\": \"EvaluationTooDeep\""), shallow.stdout)
+    assertEquals(run(Vector("--raw", "--stack", "1m"), CliTests.deepProgram), Run(0, "20000\n"))
     assertEquals(run(Vector("--raw", "--stack", "256m"), CliTests.deepProgram), Run(0, "20000\n"))
     // 256MB is the default.
     assertEquals(run(Vector("--raw"), CliTests.deepProgram), Run(0, "20000\n"))
@@ -133,7 +134,7 @@ class CliTests extends munit.FunSuite {
 
 object CliTests {
 
-  /** A program whose checking recurses 20,000 levels deep on the host stack: too deep for 1MB, not for 256MB. */
+  /** A program whose Core non-tail calls now run in explicit frames. */
   private val deepProgram =
     """def count (n: Nat): Nat decreases structural(n) := {
       |  match n returning Nat with
@@ -142,6 +143,18 @@ object CliTests {
       |}
       |
       |{ count(20000) }
+      |""".stripMargin
+
+  /** A declaration whose Pi classification still recurses through the checker and semantic helpers. */
+  private val hostDeepProgram =
+    """def nest (n: Nat): Type decreases structural(n) := {
+      |  match n returning Type with
+      |  | Nat.zero => Nat
+      |  | Nat.succ k => (x: Nat) -> nest(k)
+      |}
+      |
+      |def deep : Type := nest(100000)
+      |{ 0 }
       |""".stripMargin
 
   private final case class Run(exitCode: Int, stdout: String)

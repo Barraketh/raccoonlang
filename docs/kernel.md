@@ -20,8 +20,9 @@ and publishes its evaluated value. Data-valued axioms publish symbolic heads;
 proof-valued declarations are canonicalized from their exact propositions
 before publication.
 
-Checking and evaluation recurse on the host stack, except where evaluation
-continues in tail position ([Evaluation depth](#evaluation-depth)). A stack
+Checking and semantic helpers can recurse on the host stack. Core expression
+evaluation uses reusable frames, including for non-tail calls
+([Evaluation depth](#evaluation-depth)). A stack
 overflow is caught only at the boundary of a declaration, prelude declarations
 included, or of the program's body, and becomes `EvaluationTooDeep` located
 there; no rule inside them observes one. The declaration that overflowed is not
@@ -1013,17 +1014,22 @@ supported for recursive definition blocks.
 
 ## Evaluation depth
 
-Evaluation is strict, and it takes no host stack for a term in tail position,
-whose value is the value of the term being evaluated: a block's result after
-its lets, a match's chosen branch, a scope's body, and a core lambda's body
-where the lambda is applied, after the application's arguments. The evaluator
-continues with that term in a loop instead of recursing into it. Native
+Evaluation is strict. A block's result after its lets, a match's chosen branch,
+a scope's body, and a core lambda's body after its arguments reuse the current
+frame in tail position. Non-tail Core calls and their pending arguments use
+explicit reusable frames and continuations. All Core terms use this same
+machine, including terms evaluated during checking. Immutable captures are
+made when a closure, dependent Pi, or neutral thunk escapes a frame. Native
 bodies, proof eta-lambdas, constructor heads and neutral heads produce their
-results directly. The loop changes no value, neutral or blocking set: it
-removes host frames only, so evaluation that exhausted the stack may now
-finish instead of reporting `EvaluationTooDeep`. Recursion outside tail
-position is bounded by the host stack, whose exhaustion is that diagnostic
+results through the same application path. This changes no value, neutral or
+blocking set. Host-recursive checking and semantic helpers can still exhaust
+the stack and report `EvaluationTooDeep` at the declaration or program body
 (see [Trust boundary](#trust-boundary)).
+
+Building an execution plan also traverses Core syntax on the host stack. An
+extremely deep hand-built term, including an unused argument or branch, can
+exhaust that stack during preparation before evaluation reaches an earlier
+runtime error. Ordinary evaluation order is unchanged after the plan is built.
 
 ## Axioms and quotients
 

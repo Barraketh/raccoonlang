@@ -4,7 +4,7 @@ import com.raccoonlang.Value.{NatCodec, VPacked}
 
 /**
  * Tail positions run in a loop (docs/kernel.md#evaluation-depth): a block's result, a match's chosen branch, a scope's
- * body and a core lambda's body at an application take no host stack, and evaluation is otherwise what it was.
+ * body and a core lambda's body at an application take no host stack. Non-tail Core calls now use explicit frames too.
  */
 class TailEvaluationTests extends munit.FunSuite with TestSupport {
 
@@ -68,7 +68,7 @@ class TailEvaluationTests extends munit.FunSuite with TestSupport {
     onSmallStack(expectTypeError[TypeMismatch](equation(size - 1)))
   }
 
-  test("non-tail recursion is still bounded by the host stack") {
+  test("non-tail recursion also runs through explicit frames on a small host stack") {
     val nonTail =
       """
         |def build (n: Nat)(acc: List(Nat)): List(Nat) decreases structural(n) := {
@@ -84,7 +84,7 @@ class TailEvaluationTests extends munit.FunSuite with TestSupport {
         |}
         |""".stripMargin
     assertEquals(payload(onSmallStack(runProgram(nonTail + "{ sum(build(500, List.nil(Nat))) }"))), sumBelow(500))
-    onSmallStack(expectOnly[EvaluationTooDeep.type](typecheckDecls(nonTail + "{ sum(build(100000, List.nil(Nat))) }")))
+    assertEquals(payload(onSmallStack(runProgram(nonTail + "{ sum(build(5000, List.nil(Nat))) }"))), sumBelow(5000))
   }
 
   test("a let body, a scope's body and a call into another definition are tail positions") {

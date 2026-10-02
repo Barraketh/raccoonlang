@@ -108,16 +108,16 @@ staged pipeline.
 
 Evaluation is strict: an application evaluates its function and arguments,
 all but its evidence arguments, which are deferred, before the function's body.
-A term in tail position, whose value is the value of the term around it, takes
-no host stack: a block's result, a match's chosen branch, a scope's body, and
-a function's body where the function is applied. A recursive function whose
-recursive call is in tail position, for example one carrying an accumulator,
-therefore runs at any depth. Branching on a `Bool` with `match` keeps a
+A term in tail position, whose value is the value of the term around it, reuses
+the current evaluation frame: a block's result, a match's chosen branch, a
+scope's body, and a function's body where the function is applied. Other Core
+calls use reusable frames too, so non-tail source recursion no longer consumes
+one host stack frame per call. Branching on a `Bool` with `match` keeps a
 recursive call in tail position; passing it to a function such as `Bool.and`
-does not, since the argument is evaluated first.
+does not, since the argument is evaluated first and its result must be retained.
 
-Otherwise, checking and evaluation recurse on the host stack, so a program may
-need more of it than a thread has. `Execution.onStack` runs a computation on a
+Checking, execution-plan construction and semantic helpers can still recurse on the host stack, so a program
+may need more of it than a thread has. `Execution.onStack` runs a computation on a
 thread of a chosen stack size; the CLI runs its whole pipeline on one of
 `--stack` bytes, 256MB by default. A stack overflow while a declaration is
 checked is the diagnostic `EvaluationTooDeep`, located at that declaration, and

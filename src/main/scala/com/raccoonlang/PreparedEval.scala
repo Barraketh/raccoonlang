@@ -2,8 +2,9 @@ package com.raccoonlang
 
 import com.raccoonlang.CoreAst.{Term => CTerm}
 import com.raccoonlang.Value._
+import com.raccoonlang.telescope.BinderOps
 
-/** An opt-in execution tier for a checked Core closure. Its plan holds syntax and addresses, never live values. */
+/** The Core evaluator. Plans hold syntax and addresses, never live values or environments. */
 private[raccoonlang] object PreparedEval {
   private sealed trait Node {
     def scope: Scope
@@ -33,8 +34,21 @@ private[raccoonlang] object PreparedEval {
       cases: Map[String, Branch],
       scope: Scope
   ) extends Node
-  private final case class Branch(body: Node, slots: Vector[Int])
-  private final case class Generic(term: CTerm, scope: Scope) extends Node
+  private final case class Branch(source: CoreAst.Case, body: Node, slots: Vector[Int])
+  private final case class PiValue(term: CTerm.Pi, scope: Scope) extends Node
+  private final case class LambdaValue(term: CTerm.Lam, scope: Scope) extends Node
+  private final case class Scoped(term: CTerm.Scope, body: Node, slot: Int, scope: Scope) extends Node
+  private final case class Proposition(scopeTerm: Node, scope: Scope) extends Node
+  private final case class SortValue(
+      level: Node,
+      kind: Node,
+      lifetime: Node,
+      levelSlot: Int,
+      kindSlot: Int,
+      scope: Scope
+  ) extends Node
+  private final case class FormValue(form: CoreAst.Form, args: Vector[Node], start: Int, scope: Scope) extends Node
+  private final case class UnresolvedSelect(field: String, scope: Scope) extends Node
 
   /** Chronological local order is kept separately from the address map for exact Env/ValueId materialization. */
   private final case class Scope(
@@ -52,22 +66,36 @@ private[raccoonlang] object PreparedEval {
     }
   }
 
-  private final case class FunctionPlan(term: CTerm.Lam, root: Node, slots: Int)
+  private final case class Plan(root: Node, slots: Int, boundRefs: Vector[CoreAst.LocalRef], duplicateBindings: Boolean)
+  private val emptyPlan = Plan(null, 0, Vector.empty, duplicateBindings = false)
 
-  private final class Compiler(term: CTerm.Lam) {
+  private final class Compiler {
     private var size = 0
+    private var allBindings = Set.empty[CoreAst.LocalRef]
+    private var duplicateBindings = false
     private def allocate(): Int = {
       val result = size
       size += 1
       result
     }
-    def compile(): FunctionPlan = {
-      val binders = term.ty.binders.map(_.localRef)
-      val peers = term.recursivePeers.map(_._1)
+    def compile(
+        term: CTerm,
+        binders: Vector[CoreAst.LocalRef] = Vector.empty,
+        peers: Vector[CoreAst.LocalRef] = Vector.empty
+    ): Plan = {
       val initial = Scope(Vector.empty, Vector.empty, Map.empty)
-      val (withBinders, _) = initial.bind(binders, () => allocate())
-      val (withPeers, _) = withBinders.bind(peers, () => allocate())
-      FunctionPlan(term, node(term.body, withPeers, tail = true), size)
+      def bind(scope: Scope, refs: Vector[CoreAst.LocalRef]): Scope = {
+        noteBindings(refs, scope)
+        scope.bind(refs, () => allocate())._1
+      }
+      val withBinders = bind(initial, binders)
+      val withPeers = bind(withBinders, peers)
+      Plan(node(term, withPeers, tail = true), size, allBindings.toVector, duplicateBindings)
+    }
+
+    private def noteBindings(refs: Vector[CoreAst.LocalRef], scope: Scope): Unit = {
+      if (refs.distinct.length != refs.length || refs.exists(scope.addresses.contains)) duplicateBindings = true
+      allBindings ++= refs
     }
 
     private def node(term: CTerm, scope: Scope, tail: Boolean): Node =
@@ -76,7 +104,7 @@ private[raccoonlang] object PreparedEval {
         case CTerm.GlobalRef(name, _) => Global(name, scope)
         case CTerm.NatLit(value, _)   => NatLiteral(value, scope)
         case CTerm.StrLit(scalars, _) => StringLiteral(scalars, scope)
-        case CTerm.App(fn, args, evidence, _) if evidence.isEmpty =>
+        case CTerm.App(fn, args, _, _) =>
           val fnSlot = allocate()
           val argStart = size
           args.foreach(_ => allocate())
@@ -97,45 +125,129 @@ private[raccoonlang] object PreparedEval {
                 case CoreAst.LetPattern.Local(ref)     => Vector(ref)
                 case fields: CoreAst.LetPattern.Fields => fields.vars.map(_.ref)
               }
+              noteBindings(refs, active)
               val (nextScope, slots) = active.bind(refs, () => allocate())
               Binding(node(let.value, active, tail = false), let.pattern, slots, chain(index + 1, nextScope), active)
             }
           chain(0, scope)
-        case m: CTerm.Match if m.wildcard.isEmpty && m.equation.isEmpty =>
-          val branches = m.cases.map { branch =>
-            val (branchScope, slots) = scope.bind(branch.argRefs, () => allocate())
-            branch.ctorName -> Branch(node(branch.body, branchScope, tail), slots)
-          }.toMap
+        case m: CTerm.Match =>
+          val branches = m.cases
+            .map { branch =>
+              val refs = branch.argRefs ++ m.equation.map(_.ref).toVector
+              noteBindings(refs, scope)
+              val (branchScope, slots) = scope.bind(refs, () => allocate())
+              branch.ctorName -> Branch(branch, node(branch.body, branchScope, tail), slots)
+            }
+            .reverse
+            .toMap
           Matching(m, node(m.scrut, scope, tail = false), branches, scope)
-        case other => Generic(other, scope)
+        case pi: CTerm.Pi   => PiValue(pi, scope)
+        case lam: CTerm.Lam => LambdaValue(lam, scope)
+        case s: CTerm.Scope =>
+          noteBindings(Vector(s.ref), scope)
+          val (inner, slots) = scope.bind(Vector(s.ref), () => allocate())
+          Scoped(s, node(s.body, inner, tail), slots.head, scope)
+        case CTerm.Prop(lifetime, _) => Proposition(node(lifetime, scope, tail = false), scope)
+        case CTerm.Sort(level, kind, lifetime, _) =>
+          val levelSlot = allocate()
+          val kindSlot = allocate()
+          SortValue(
+            node(level, scope, tail = false),
+            node(kind, scope, tail = false),
+            node(lifetime, scope, tail = false),
+            levelSlot,
+            kindSlot,
+            scope
+          )
+        case CTerm.FormOp(form, args, _) =>
+          val start = size
+          args.foreach(_ => allocate())
+          FormValue(form, args.map(node(_, scope, tail = false)), start, scope)
+        case CTerm.Select(_, field, _) => UnresolvedSelect(field, scope)
       }
   }
 
-  /** Explicit preparation is limited to a checked, data-valued Core lambda. */
+  /** Compatibility handle; ordinary and prepared entry points use the same machine. */
   final class Prepared private[PreparedEval] (val function: VLam) {
-    private val plans = new java.util.IdentityHashMap[CTerm.Lam, FunctionPlan]()
-    private val session = new EvalSession(this)
-    private var busy = false
+    def run(args: Vector[Value]): Value = evalApply(function, args)
+  }
 
-    private[PreparedEval] def plan(term: CTerm.Lam): FunctionPlan = {
-      val cached = plans.get(term)
+  private final class Runtime {
+    // Reentrant helper/native calls get isolated banks; only the usual shallow nesting is retained.
+    private val retainedSessions = 8
+    private val terms = new java.util.IdentityHashMap[CTerm, Plan]()
+    private val functions = new java.util.IdentityHashMap[CTerm.Lam, Plan]()
+    private val sessions = scala.collection.mutable.ArrayBuffer.empty[EvalSession]
+    private var active = 0
+
+    def plan(term: CTerm): Plan = {
+      val cached = terms.get(term)
       if (cached ne null) cached
       else {
-        val built = new Compiler(term).compile()
-        plans.put(term, built)
+        // This cache is thread-local, bounded, and stores syntax/layout only. In particular it does
+        // not hold a checking context, a closure, or a reusable slot array.
+        if (terms.size() >= 4096) terms.clear()
+        val built = new Compiler().compile(term)
+        terms.put(term, built)
         built
       }
     }
 
-    def run(args: Vector[Value]): Value = synchronized {
-      if (busy) new EvalSession(this).run(function, args)
+    def functionPlan(term: CTerm.Lam): Plan = {
+      val cached = functions.get(term)
+      if (cached ne null) cached
       else {
-        busy = true
-        try session.run(function, args)
-        finally busy = false
+        if (functions.size() >= 4096) functions.clear()
+        val built = new Compiler().compile(term.body, term.ty.binders.map(_.localRef), term.recursivePeers.map(_._1))
+        functions.put(term, built)
+        built
       }
     }
+
+    def withSession[A](f: EvalSession => A): A = {
+      if (active == sessions.length && active < retainedSessions) sessions += new EvalSession(this)
+      val session = if (active < retainedSessions) sessions(active) else new EvalSession(this)
+      active += 1
+      try f(session)
+      finally active -= 1
+    }
   }
+
+  private val runtime = new ThreadLocal[Runtime] {
+    override def initialValue(): Runtime = new Runtime
+  }
+
+  private def nullaryConstructor(value: Value): Value =
+    value match {
+      case head: ConstructorHead if head.totalArity == 0 => Packed.construct(head, Vector.empty, head.tpe)
+      case other                                         => other
+    }
+
+  // Root references have no active lexical slots. Use the same read rule as the machine's boxed
+  // reference handler without allocating a plan, frame, and nested session for each checker lookup.
+  def evalTerm(term: CTerm, env: Env): Value =
+    term match {
+      case CTerm.LocalRef(ref, _)   => nullaryConstructor(env(ref))
+      case CTerm.GlobalRef(name, _) => nullaryConstructor(env(name))
+      case CTerm.FormOp(form, args, _) if args.isEmpty =>
+        Interpreter.evalFormOp(form, Vector.empty)
+      case CTerm.Prop(CTerm.FormOp(form, args, _), _) if args.isEmpty =>
+        Sorts.prop(Interpreter.getLifetime(Interpreter.evalFormOp(form, Vector.empty)))
+      case CTerm.Sort(
+            CTerm.FormOp(levelForm, levelArgs, _),
+            CTerm.FormOp(kindForm, kindArgs, _),
+            CTerm.FormOp(lifetimeForm, lifetimeArgs, _),
+            _
+          ) if levelArgs.isEmpty && kindArgs.isEmpty && lifetimeArgs.isEmpty =>
+        val level = Interpreter.getLevel(Interpreter.evalFormOp(levelForm, Vector.empty))
+        val kind = Interpreter.getKind(Interpreter.evalFormOp(kindForm, Vector.empty))
+        val lifetime = Interpreter.getLifetime(Interpreter.evalFormOp(lifetimeForm, Vector.empty))
+        Sorts.sort(level, kind, lifetime)
+      case _ => runtime.get().withSession(_.runTerm(term, env))
+    }
+  def evalApply(fn: Value, args: Vector[Value]): Value = runtime.get().withSession(_.runApply(fn, args, null))
+  def evalValidatedStringAppend(layout: SourceStringLayout, chars: VPacked): Value =
+    runtime.get().withSession(_.runApply(layout.stringMk, Vector(chars), layout))
 
   def prepare(function: Value): Option[Prepared] =
     function match {
@@ -164,11 +276,12 @@ private[raccoonlang] object PreparedEval {
   private final class Frame {
     var base: Int = 0
     var env: Env = Env.empty
-    var plan: FunctionPlan = null
+    var plan: Plan = null
+    var boxed: Boolean = false
   }
 
   /** Reuses its banks across calls. Slots are never published; escaping values receive an immutable Env snapshot. */
-  private[raccoonlang] final class EvalSession(prepared: Prepared) {
+  private[raccoonlang] final class EvalSession(runtime: Runtime) {
     // A null natTypes entry reads values directly. Non-null entries carry a nonnegative Nat payload and
     // its exact validated type; a null bigs entry selects the Long payload, otherwise the BigInt payload.
     // values may cache one immutable VPacked for repeated generic reads. Native calls bridge a boxed Value or small Nat;
@@ -180,6 +293,9 @@ private[raccoonlang] object PreparedEval {
     private var natTypes = new Array[Value](256)
     private var frames = Array.fill(32)(new Frame)
     private var frameDepth = 0
+    // An activation's exact immutable closure determines slot eligibility. Keep this only for
+    // the current evaluation; neither values nor environments enter the syntax-plan cache.
+    private val fastClosures = new java.util.IdentityHashMap[VLam, Plan]()
     private var tailArguments = new Array[Value](8)
     private var tailLongs = new Array[Long](8)
     private var tailBigs = new Array[BigInt](8)
@@ -189,6 +305,7 @@ private[raccoonlang] object PreparedEval {
     private var kinds = new Array[Int](256)
     private var nodes = new Array[Node](256)
     private var indices = new Array[Int](256)
+    private var savedEnvs = new Array[Env](256)
     private var depth = 0
     private var appliedNode: Node = null
     private var resultValue: Value = null
@@ -200,6 +317,12 @@ private[raccoonlang] object PreparedEval {
     private val LetValue = 3
     private val MatchScrutinee = 4
     private val Return = 5
+    private val PropLifetime = 6
+    private val SortLevel = 7
+    private val SortKind = 8
+    private val SortLifetime = 9
+    private val FormArgument = 10
+    private val RestoreEnv = 11
 
     private def ensureSlots(required: Int): Unit =
       if (required > values.length) {
@@ -216,6 +339,7 @@ private[raccoonlang] object PreparedEval {
         kinds = java.util.Arrays.copyOf(kinds, capacity)
         nodes = java.util.Arrays.copyOf(nodes, capacity)
         indices = java.util.Arrays.copyOf(indices, capacity)
+        savedEnvs = java.util.Arrays.copyOf(savedEnvs, capacity)
       }
       kinds(depth) = kind
       nodes(depth) = node
@@ -347,6 +471,11 @@ private[raccoonlang] object PreparedEval {
       writeValue(slot, canonical)
     }
 
+    private def bindLetLocal(slot: Int, value: Value): Unit = {
+      Env.assertCanonicalProof(value)
+      writeValue(slot, value)
+    }
+
     private def clear(frame: Frame): Unit = {
       val until = frame.base + frame.plan.slots
       java.util.Arrays.fill(values.asInstanceOf[Array[AnyRef]], frame.base, until, null)
@@ -354,23 +483,60 @@ private[raccoonlang] object PreparedEval {
       java.util.Arrays.fill(natTypes.asInstanceOf[Array[AnyRef]], frame.base, until, null)
       frame.env = Env.empty
       frame.plan = null
+      frame.boxed = false
     }
 
     private def materialize(scope: Scope, frame: Frame): Env = {
-      if (scope.refs.isEmpty) frame.env
+      if (frame.boxed || scope.refs.isEmpty) frame.env
       else {
         val bound = Vector.tabulate(scope.slots.length)(i => readValue(frame.base + scope.slots(i)))
         frame.env.bindRuntimeLocals(scope.layout, bound)
       }
     }
 
-    private def enter(lam: VLam, args: Vector[Value], tail: Boolean): Node = {
-      val core = lam.body.asInstanceOf[LamBody.Core]
-      val plan = prepared.plan(core.term)
-      if (args.length != lam.tpe.binders.length)
-        fail(ArityMismatch(lam.tpe.binders.length, args.length, ArityMismatch.Arguments))
-      if (tail) clear(frames(frameDepth))
-      else {
+    private def peerValues(lam: VLam, core: LamBody.Core): Vector[Value] =
+      core.term.recursivePeers.map { case (_, name) =>
+        if (core.term.recursivePeers.length == 1 && core.term.name.contains(name)) lam
+        else
+          core.env.globals
+            .get(name)
+            .map(_.value(core.env))
+            .getOrElse(wtf(s"Checked recursive peer $name is absent from its group"))
+      }
+
+    private def overlaps(env: Env, refs: Vector[CoreAst.LocalRef]): Boolean = {
+      var i = 0
+      while (i < refs.length) {
+        if (env.containsLocal(refs(i))) return true
+        i += 1
+      }
+      false
+    }
+
+    private def fastCore(core: LamBody.Core, plan: Plan): Boolean =
+      !plan.duplicateBindings && !overlaps(core.env, plan.boundRefs)
+
+    private def fastPlan(lam: VLam, core: LamBody.Core): Plan = {
+      val cached = fastClosures.get(lam)
+      if (cached ne null) {
+        if (cached eq emptyPlan) null else cached
+      } else {
+        val plan = if (eligible(lam)) runtime.functionPlan(core.term) else null
+        val fast = (plan ne null) && fastCore(core, plan)
+        if (fastClosures.size() >= 1024) fastClosures.clear()
+        fastClosures.put(lam, if (fast) plan else emptyPlan)
+        if (fast) plan else null
+      }
+    }
+
+    private def activate(plan: Plan, env: Env, boxed: Boolean, tail: Boolean): Frame = {
+      if (tail) {
+        while (depth > 0 && kinds(depth - 1) == RestoreEnv) {
+          depth -= 1
+          savedEnvs(depth) = null
+        }
+        clear(frames(frameDepth))
+      } else {
         push(Return, null)
         frameDepth += 1
         if (frameDepth == frames.length) frames = java.util.Arrays.copyOf(frames, frames.length * 2)
@@ -378,57 +544,72 @@ private[raccoonlang] object PreparedEval {
       }
       val frame = frames(frameDepth)
       frame.base = if (frameDepth == 0) 0 else frames(frameDepth - 1).base + frames(frameDepth - 1).plan.slots
-      frame.env = core.env
+      frame.env = env
       frame.plan = plan
+      frame.boxed = boxed
       ensureSlots(frame.base + plan.slots)
-      var i = 0
-      while (i < args.length) {
-        bind(frame.base + i, args(i))
-        i += 1
-      }
-      while (i < args.length + core.term.recursivePeers.length) {
-        val (_, name) = core.term.recursivePeers(i - args.length)
-        val peer =
-          if (core.term.recursivePeers.length == 1 && core.term.name.contains(name)) lam
-          else
-            core.env.globals.get(name).map(_.value(core.env)).getOrElse(wtf(s"Checked recursive peer $name is absent"))
-        bind(frame.base + i, peer)
-        i += 1
+      frame
+    }
+
+    private def enter(lam: VLam, args: Vector[Value], tail: Boolean): Node = {
+      val core = lam.body.asInstanceOf[LamBody.Core]
+      val fast = fastPlan(lam, core)
+      val plan = if (fast ne null) fast else runtime.functionPlan(core.term)
+      if (args.length != lam.tpe.binders.length)
+        fail(ArityMismatch(lam.tpe.binders.length, args.length, ArityMismatch.Arguments))
+      if (fast ne null) {
+        val frame = activate(plan, core.env, boxed = false, tail)
+        var i = 0
+        while (i < args.length) { bind(frame.base + i, args(i)); i += 1 }
+        val peers = peerValues(lam, core)
+        while (i < args.length + peers.length) {
+          bind(frame.base + i, peers(i - args.length)); i += 1
+        }
+      } else {
+        val bound = BinderOps.instantiateFullRuntime(lam.tpe.binders, lam.tpe.runtimeSlotLayout, core.env, args)
+        val peers = peerValues(lam, core)
+        val env = if (peers.isEmpty) bound else bound.bindRuntimeLocals(core.term.recursivePeerSlotLayout, peers)
+        activate(plan, env, boxed = true, tail)
       }
       plan.root
     }
 
-    def run(lam: VLam, args: Vector[Value]): Value = {
-      frameDepth = 0
-      depth = 0
-      val core = lam.body.asInstanceOf[LamBody.Core]
-      val plan = prepared.plan(core.term)
+    def runTerm(term: CTerm, env: Env): Value = {
+      val plan = runtime.plan(term)
+      val boxed = plan.duplicateBindings || overlaps(env, plan.boundRefs)
+      ensureSlots(plan.slots)
       val frame = frames(0)
       frame.base = 0
-      frame.env = core.env
+      frame.env = env
       frame.plan = plan
-      ensureSlots(plan.slots)
+      frame.boxed = boxed
+      runLoop(plan.root)
+    }
+
+    def runApply(fn: Value, args: Vector[Value], delayedStringAppend: SourceStringLayout): Value = {
+      val frame = frames(0)
+      frame.base = 0
+      frame.env = Env.empty
+      frame.plan = emptyPlan
+      frame.boxed = false
+      frameDepth = 0
+      depth = 0
       try {
-        var i = 0
-        if (args.length != lam.tpe.binders.length)
-          fail(ArityMismatch(lam.tpe.binders.length, args.length, ArityMismatch.Arguments))
-        while (i < args.length) {
-          bind(i, args(i))
-          i += 1
-        }
-        while (i < args.length + core.term.recursivePeers.length) {
-          val (_, name) = core.term.recursivePeers(i - args.length)
-          val peer =
-            if (core.term.recursivePeers.length == 1 && core.term.name.contains(name)) lam
-            else
-              core.env.globals
-                .get(name)
-                .map(_.value(core.env))
-                .getOrElse(wtf(s"Checked recursive peer $name is absent"))
-          bind(i, peer)
-          i += 1
-        }
-        var pc: Node = plan.root
+        applyFunction(fn, args, tail = true, delayedStringAppend)
+        if (appliedNode eq null) resultValue else runLoop(appliedNode)
+      } finally {
+        if (frame.plan ne null) clear(frame)
+        appliedNode = null
+        clearResult()
+        fastClosures.clear()
+      }
+    }
+
+    private def runLoop(root: Node): Value = {
+      frameDepth = 0
+      depth = 0
+      try {
+        var pc: Node = root
         var result: Value = null
         var localNatType: Value = null
         var localLong = 0L
@@ -437,7 +618,7 @@ private[raccoonlang] object PreparedEval {
           var current = frames(frameDepth)
           pc match {
             case Ref(ref, slot, _) =>
-              if (slot < 0) {
+              if (current.boxed || slot < 0) {
                 result = nullaryConstructor(current.env(ref))
                 localNatType = null
                 localBig = null
@@ -461,7 +642,10 @@ private[raccoonlang] object PreparedEval {
               localNatType = current.env.nativeLiterals.natLayout
                 .getOrElse(fail(NatLiteralUnavailable("no validated Nat layout")))
                 .natTpe
-              if (value.signum < 0) wtf("Tagged Nat result must be nonnegative")
+              if (value.signum < 0) {
+                // Raw Core can reach this without the literal checker. Preserve VPacked's validation.
+                result = VPacked.nat(value, localNatType)
+              }
               if (value.isValidLong) {
                 localLong = value.longValue
                 localBig = null
@@ -478,21 +662,74 @@ private[raccoonlang] object PreparedEval {
               localNatType = null
               localBig = null
             case b: Binding =>
+              if (current.boxed) {
+                push(RestoreEnv, null)
+                savedEnvs(depth - 1) = current.env
+              }
               push(LetValue, b)
               pc = b.value
               result = null
               localNatType = null
               localBig = null
             case m: Matching =>
+              m.term.wildcard match {
+                case Some(w) => wtf(s"An unexpanded wildcard case at ${w.span} reached evaluation")
+                case None    =>
+              }
+              if (current.boxed) {
+                push(RestoreEnv, null)
+                savedEnvs(depth - 1) = current.env
+              }
               push(MatchScrutinee, m)
               pc = m.scrut
               result = null
               localNatType = null
               localBig = null
-            case Generic(term, scope) =>
-              result = Interpreter.evalTerm(term, materialize(scope, current))
+            case PiValue(term, scope) =>
+              result = Interpreter.evalPi(term, materialize(scope, current))
               localNatType = null
               localBig = null
+            case LambdaValue(term, scope) =>
+              val env = materialize(scope, current)
+              result = Interpreter.evalLam(term, Interpreter.evalPi(term.ty, env), env)
+              localNatType = null
+              localBig = null
+            case Scoped(term, body, slot, _) =>
+              if (current.boxed) {
+                push(RestoreEnv, null)
+                savedEnvs(depth - 1) = current.env
+                current.env = current.env.putLocal(term.ref, Atoms.of(term))
+              } else bind(current.base + slot, Atoms.of(term))
+              pc = body
+              result = null
+              localNatType = null
+              localBig = null
+            case p: Proposition =>
+              push(PropLifetime, p)
+              pc = p.scopeTerm
+              result = null
+              localNatType = null
+              localBig = null
+            case s: SortValue =>
+              push(SortLevel, s)
+              pc = s.level
+              result = null
+              localNatType = null
+              localBig = null
+            case f: FormValue =>
+              if (f.args.isEmpty) {
+                result = Interpreter.evalFormOp(f.form, Vector.empty)
+                localNatType = null
+                localBig = null
+              } else {
+                push(FormArgument, f)
+                pc = f.args.head
+                result = null
+                localNatType = null
+                localBig = null
+              }
+            case UnresolvedSelect(field, _) =>
+              wtf(s"Unresolved field selection .$field reached evaluation")
           }
           if ((result ne null) || (localNatType ne null)) {
             var continue = true
@@ -545,27 +782,37 @@ private[raccoonlang] object PreparedEval {
                   }
                 case LetValue =>
                   val binding = node.asInstanceOf[Binding]
-                  binding.pattern match {
-                    case CoreAst.LetPattern.Local(_) =>
-                      if (localNatType eq null) bind(current.base + binding.slots.head, result)
-                      else writeResult(current.base + binding.slots.head, result, localNatType, localLong, localBig)
-                    case f: CoreAst.LetPattern.Fields =>
-                      if ((localNatType ne null) && (result eq null))
-                        result = VPacked.nat(if (localBig eq null) BigInt(localLong) else localBig, localNatType)
-                      val fields = StructEta.destructuredFields(result) match {
-                        case Some(found) => found
-                        case None        => wtf(s"A checked destructuring's value $result has no fields")
-                      }
-                      if (fields.length != f.vars.length)
-                        wtf(s"A checked destructuring binds ${f.vars.length} fields of $result, got ${fields.length}")
-                      var j = 0
-                      while (j < fields.length) {
-                        bind(current.base + binding.slots(j), fields(j))
-                        j += 1
-                      }
+                  if (current.boxed) {
+                    if ((localNatType ne null) && (result eq null))
+                      result = VPacked.nat(if (localBig eq null) BigInt(localLong) else localBig, localNatType)
+                    current.env = Interpreter.bindRuntimeLet(binding.pattern, result, current.env)
+                    pc = binding.next
+                    continue = false
+                  } else {
+                    binding.pattern match {
+                      case CoreAst.LetPattern.Local(_) =>
+                        if (localNatType eq null) bindLetLocal(current.base + binding.slots.head, result)
+                        else writeResult(current.base + binding.slots.head, result, localNatType, localLong, localBig)
+                      case f: CoreAst.LetPattern.Fields =>
+                        if ((localNatType ne null) && (result eq null))
+                          result = VPacked.nat(if (localBig eq null) BigInt(localLong) else localBig, localNatType)
+                        val fields = StructEta.destructuredFields(result) match {
+                          case Some(found) => found
+                          case None        => wtf(s"A checked destructuring's value $result has no fields")
+                        }
+                        if (fields.length != f.vars.length)
+                          wtf(
+                            s"A checked destructuring binds ${f.vars.length} fields of $result, which has ${fields.length}"
+                          )
+                        var j = 0
+                        while (j < fields.length) {
+                          bind(current.base + binding.slots(j), fields(j))
+                          j += 1
+                        }
+                    }
+                    pc = binding.next
+                    continue = false
                   }
-                  pc = binding.next
-                  continue = false
                 case MatchScrutinee =>
                   val matching = node.asInstanceOf[Matching]
                   if ((localNatType ne null) && (result eq null))
@@ -579,25 +826,38 @@ private[raccoonlang] object PreparedEval {
                       selectedFields = fields
                     case _: VProof =>
                     case other =>
-                      StructEta.fields(other).foreach { fields =>
-                        selectedName = matching.term.cases match {
-                          case Vector(single) => single.ctorName
-                          case _ => wtf(s"Eta-eligible struct match has ${matching.term.cases.length} cases")
-                        }
-                        selectedFields = fields
+                      StructEta.fields(other) match {
+                        case Some(fields) =>
+                          selectedName = matching.term.cases match {
+                            case Vector(single) => single.ctorName
+                            case _ => wtf(s"Eta-eligible struct match has ${matching.term.cases.length} cases")
+                          }
+                          selectedFields = fields
+                        case None =>
                       }
                   }
                   if (selectedName ne null) {
-                    val branch =
-                      matching.cases.getOrElse(selectedName, wtf(s"Checked match has no branch for $selectedName"))
-                    if (selectedFields.length != branch.slots.length)
+                    val branch = matching.cases.getOrElse(selectedName, null)
+                    if (branch eq null) wtf(s"Checked match has no branch for constructor $selectedName")
+                    val expected = branch.slots.length - matching.term.equation.size
+                    if (selectedFields.length != expected)
                       wtf(
-                        s"Checked branch $selectedName binds ${branch.slots.length} fields, got ${selectedFields.length}"
+                        s"Checked branch for ${branch.source.ctorName} binds $expected fields, got ${selectedFields.length}"
                       )
-                    var j = 0
-                    while (j < selectedFields.length) {
-                      bind(current.base + branch.slots(j), selectedFields(j))
-                      j += 1
+                    if (current.boxed) {
+                      current.env =
+                        Interpreter.branchEnv(matching.term, branch.source, scrut, selectedFields, current.env)
+                    } else {
+                      var j = 0
+                      while (j < selectedFields.length) {
+                        bind(current.base + branch.slots(j), selectedFields(j))
+                        j += 1
+                      }
+                      if (matching.term.equation.nonEmpty)
+                        bind(
+                          current.base + branch.slots(j),
+                          Interpreter.matchEquationEvidence(selectedName, scrut, selectedFields, current.env)
+                        )
                     }
                     pc = branch.body
                     continue = false
@@ -623,6 +883,64 @@ private[raccoonlang] object PreparedEval {
                   clear(frames(frameDepth))
                   frameDepth -= 1
                   current = frames(frameDepth)
+                case RestoreEnv =>
+                  current.env = savedEnvs(depth)
+                  savedEnvs(depth) = null
+                case PropLifetime =>
+                  if ((localNatType ne null) && (result eq null))
+                    result = VPacked.nat(if (localBig eq null) BigInt(localLong) else localBig, localNatType)
+                  result = Sorts.prop(Interpreter.getLifetime(result))
+                  localNatType = null
+                  localBig = null
+                case SortLevel =>
+                  val sort = node.asInstanceOf[SortValue]
+                  if ((localNatType ne null) && (result eq null))
+                    result = VPacked.nat(if (localBig eq null) BigInt(localLong) else localBig, localNatType)
+                  Interpreter.getLevel(result)
+                  writeValue(current.base + sort.levelSlot, result)
+                  push(SortKind, sort)
+                  pc = sort.kind
+                  continue = false
+                case SortKind =>
+                  val sort = node.asInstanceOf[SortValue]
+                  if ((localNatType ne null) && (result eq null))
+                    result = VPacked.nat(if (localBig eq null) BigInt(localLong) else localBig, localNatType)
+                  Interpreter.getKind(result)
+                  writeValue(current.base + sort.kindSlot, result)
+                  push(SortLifetime, sort)
+                  pc = sort.lifetime
+                  continue = false
+                case SortLifetime =>
+                  val sort = node.asInstanceOf[SortValue]
+                  if ((localNatType ne null) && (result eq null))
+                    result = VPacked.nat(if (localBig eq null) BigInt(localLong) else localBig, localNatType)
+                  result = Sorts.sort(
+                    Interpreter.getLevel(readValue(current.base + sort.levelSlot)),
+                    Interpreter.getKind(readValue(current.base + sort.kindSlot)),
+                    Interpreter.getLifetime(result)
+                  )
+                  localNatType = null
+                  localBig = null
+                case FormArgument =>
+                  val form = node.asInstanceOf[FormValue]
+                  if ((localNatType ne null) && (result eq null))
+                    result = VPacked.nat(if (localBig eq null) BigInt(localLong) else localBig, localNatType)
+                  writeValue(current.base + form.start + index, result)
+                  if (index + 1 < form.args.length) {
+                    push(FormArgument, form, index + 1)
+                    pc = form.args(index + 1)
+                    continue = false
+                  } else {
+                    val args = Vector.newBuilder[Value]
+                    var i = 0
+                    while (i < form.args.length) {
+                      args += readValue(current.base + form.start + i)
+                      i += 1
+                    }
+                    result = Interpreter.evalFormOp(form.form, args.result())
+                    localNatType = null
+                    localBig = null
+                  }
                 case other => wtf(s"Unknown prepared continuation kind $other")
               }
             }
@@ -636,45 +954,97 @@ private[raccoonlang] object PreparedEval {
           i -= 1
         }
         java.util.Arrays.fill(nodes.asInstanceOf[Array[AnyRef]], 0, depth, null)
+        java.util.Arrays.fill(savedEnvs.asInstanceOf[Array[AnyRef]], 0, depth, null)
         java.util.Arrays.fill(tailArguments.asInstanceOf[Array[AnyRef]], null)
         java.util.Arrays.fill(tailBigs.asInstanceOf[Array[AnyRef]], null)
         java.util.Arrays.fill(tailNatTypes.asInstanceOf[Array[AnyRef]], null)
         depth = 0
         appliedNode = null
         clearResult()
+        fastClosures.clear()
       }
     }
 
-    private def applyFunction(fn: Value, args: Vector[Value], tail: Boolean): Unit =
-      fn match {
-        case lam: VLam if eligible(lam) =>
-          appliedNode = enter(lam, args, tail)
-          clearResult()
-        case other =>
-          appliedNode = null
-          setValueResult(Interpreter.evalApply(other, args))
+    private def applyFunction(
+        fn: Value,
+        args: Vector[Value],
+        tail: Boolean,
+        delayedStringAppend: SourceStringLayout = null
+    ): Unit = {
+      fn.tpe match {
+        case pi: VPi =>
+          if (args.length != pi.binders.length)
+            fail(ArityMismatch(pi.binders.length, args.length, ArityMismatch.Arguments))
+          fn match {
+            case lam: VLam =>
+              lam.body match {
+                case _: LamBody.Core =>
+                  appliedNode = enter(lam, args, tail)
+                  clearResult()
+                case LamBody.Native(run, nativeEnv, _, _) =>
+                  appliedNode = null
+                  setValueResult(run(args, nativeEnv))
+                case LamBody.ProofEta =>
+                  val env = BinderOps.instantiateFullRuntime(pi.binders, pi.runtimeSlotLayout, pi.env, args)
+                  appliedNode = null
+                  setValueResult(Value.canonicalizeProof(VProof(pi.codomain(env))))
+              }
+            case head: ConstructorHead =>
+              lazy val env = BinderOps.instantiateFullRuntime(pi.binders, pi.runtimeSlotLayout, pi.env, args)
+              val resultTy = pi.constructorResultType(args, env)
+              val storedArgs = Value.constructorStoredArgs(head, args)
+              appliedNode = null
+              if (delayedStringAppend eq null) setValueResult(Packed.construct(head, storedArgs, resultTy))
+              else {
+                if (!(head eq delayedStringAppend.stringMk))
+                  wtf("A delayed String.append key capability reached a different constructor")
+                setValueResult(VApp.deferredStringAppendResult(delayedStringAppend, storedArgs, resultTy))
+              }
+            case head @ (_: VConst | _: VApp | _: NeutralThunk | _: Var) =>
+              val env = BinderOps.instantiateFullRuntime(pi.binders, pi.runtimeSlotLayout, pi.env, args)
+              val blockedOn = Blocker.unapply(head).getOrElse(DepSet.empty)
+              appliedNode = null
+              setValueResult(Value.canonicalizeProof(VApp(head, args, pi.codomain(env), blockedOn)))
+            case _ => fail(CannotApplyNonFunction(fn))
+          }
+        case _ => fail(CannotApplyNonFunction(fn.tpe))
       }
+    }
 
-    private def applyApplication(fn: Value, app: Application, caller: Frame): Unit =
-      fn match {
-        case lam: VLam if eligible(lam) && lam.tpe.numExplicit == lam.tpe.binders.length =>
-          appliedNode = enterFromSlots(lam, app, caller)
-          clearResult()
-        case lam: VLam if tryScalarApplication(lam, app, caller) =>
-          appliedNode = null
-        case other =>
-          val args = Vector.tabulate(app.args.length)(i => readValue(caller.base + app.argStart + i))
-          applyFunction(other, Interpreter.residualArguments(other, args), app.tail)
+    private def applyApplication(fn: Value, app: Application, caller: Frame): Unit = {
+      val corePlan = fn match {
+        case lam: VLam if lam.tpe.numExplicit == lam.tpe.binders.length =>
+          lam.body match {
+            case core: LamBody.Core =>
+              if (app.args.length != lam.tpe.binders.length)
+                fail(ArityMismatch(lam.tpe.binders.length, app.args.length, ArityMismatch.Arguments))
+              fastPlan(lam, core)
+            case _ => null
+          }
+        case _ => null
       }
+      if (corePlan ne null) {
+        appliedNode = enterFromSlots(fn.asInstanceOf[VLam], app, caller, corePlan)
+        clearResult()
+      } else
+        fn match {
+          case lam: VLam if tryScalarApplication(lam, app, caller) =>
+            appliedNode = null
+          case other =>
+            val args = Vector.tabulate(app.args.length)(i => readValue(caller.base + app.argStart + i))
+            applyFunction(other, Interpreter.residualArguments(other, args), app.tail)
+        }
+    }
 
     /** All-explicit Core calls copy arguments straight from the caller's slots, without a binding Vector. */
-    private def enterFromSlots(lam: VLam, app: Application, caller: Frame): Node = {
+    private def enterFromSlots(lam: VLam, app: Application, caller: Frame, plan: Plan): Node = {
       val core = lam.body.asInstanceOf[LamBody.Core]
-      val plan = prepared.plan(core.term)
       val count = app.args.length
-      if (count != lam.tpe.binders.length)
-        fail(ArityMismatch(lam.tpe.binders.length, count, ArityMismatch.Arguments))
       if (app.tail) {
+        while (depth > 0 && kinds(depth - 1) == RestoreEnv) {
+          depth -= 1
+          savedEnvs(depth) = null
+        }
         if (count > tailArguments.length) {
           val capacity = math.max(count, tailArguments.length * 2)
           tailArguments = new Array[Value](capacity)
@@ -705,6 +1075,7 @@ private[raccoonlang] object PreparedEval {
       frame.base = if (frameDepth == 0) 0 else frames(frameDepth - 1).base + frames(frameDepth - 1).plan.slots
       frame.env = core.env
       frame.plan = plan
+      frame.boxed = false
       ensureSlots(frame.base + plan.slots)
       var i = 0
       while (i < count) {
@@ -730,17 +1101,15 @@ private[raccoonlang] object PreparedEval {
         val peer =
           if (core.term.recursivePeers.length == 1 && core.term.name.contains(name)) lam
           else
-            core.env.globals.get(name).map(_.value(core.env)).getOrElse(wtf(s"Checked recursive peer $name is absent"))
+            core.env.globals
+              .get(name)
+              .map(_.value(core.env))
+              .getOrElse(wtf(s"Checked recursive peer $name is absent from its group"))
         bind(frame.base + i, peer)
         i += 1
       }
       plan.root
     }
 
-    private def nullaryConstructor(value: Value): Value =
-      value match {
-        case head: ConstructorHead if head.totalArity == 0 => Packed.construct(head, Vector.empty, head.tpe)
-        case other                                         => other
-      }
   }
 }
