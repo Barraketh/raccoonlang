@@ -12,16 +12,64 @@ object Packed {
   /** Issued only after this object validates the complete native Nat family. */
   final class ValidatedNatLayout private[Packed] (val natTpe: Value)
 
+  /** Opaque operation identity issued only for a validated, published native Nat lambda. */
+  private[raccoonlang] sealed trait ScalarNatKind
+  private[raccoonlang] object ScalarNatKind {
+    case object Add extends ScalarNatKind
+    case object Sub extends ScalarNatKind
+    case object Mul extends ScalarNatKind
+    case object Div extends ScalarNatKind
+    case object Mod extends ScalarNatKind
+    case object Beq extends ScalarNatKind
+    case object Ble extends ScalarNatKind
+    case object Blt extends ScalarNatKind
+  }
+
+  final class ScalarNatCapability private[Packed] (
+      private[raccoonlang] val kind: ScalarNatKind,
+      private[raccoonlang] val natTpe: Value,
+      private[raccoonlang] val yes: Value,
+      private[raccoonlang] val no: Value,
+      private val owner: () => VLam
+  ) {
+    private[Packed] def belongsTo(lam: VLam): Boolean =
+      owner().asInstanceOf[AnyRef] eq lam.asInstanceOf[AnyRef]
+  }
+
+  /** Never identifies an operation by its printed name or an unvalidated lookalike lambda. */
+  private[raccoonlang] def scalarNatCapability(lam: VLam, env: Env): Option[ScalarNatCapability] =
+    lam.body match {
+      case native: LamBody.Native =>
+        native.scalarCapability match {
+          case present @ Some(capability) if opsEnabled.value && capability.belongsTo(lam) =>
+            env.nativeLiterals.natLayout match {
+              case Some(layout) if layout.natTpe.asInstanceOf[AnyRef] eq capability.natTpe.asInstanceOf[AnyRef] =>
+                present
+              case _ => None
+            }
+          case _ => None
+        }
+      case _ => None
+    }
+
   /** The kernel-owned identity, result kind, and equation of one native Nat operation. */
   sealed abstract class NativeNatOpSpec private[Packed] (val name: String) {
     private[raccoonlang] def returnsBool: Boolean
   }
 
-  private final class NatOpSpec(name: String, val run: (BigInt, BigInt) => BigInt) extends NativeNatOpSpec(name) {
+  private final class NatOpSpec(
+      name: String,
+      val run: (BigInt, BigInt) => BigInt,
+      val scalarKind: Option[ScalarNatKind]
+  ) extends NativeNatOpSpec(name) {
     override val returnsBool: Boolean = false
   }
 
-  private final class BoolOpSpec(name: String, val run: (BigInt, BigInt) => Boolean) extends NativeNatOpSpec(name) {
+  private final class BoolOpSpec(
+      name: String,
+      val run: (BigInt, BigInt) => Boolean,
+      val scalarKind: Option[ScalarNatKind]
+  ) extends NativeNatOpSpec(name) {
     override val returnsBool: Boolean = true
   }
 
@@ -36,24 +84,28 @@ object Packed {
    */
   private[raccoonlang] val MaxUnfoldedLiteral: BigInt = BigInt(1) << 8
 
-  private def natSpec(name: String)(run: (BigInt, BigInt) => BigInt): NativeNatOpSpec = new NatOpSpec(name, run)
+  private def natSpec(name: String, scalarKind: Option[ScalarNatKind] = None)(
+      run: (BigInt, BigInt) => BigInt
+  ): NativeNatOpSpec = new NatOpSpec(name, run, scalarKind)
 
-  private def boolSpec(name: String)(run: (BigInt, BigInt) => Boolean): NativeNatOpSpec = new BoolOpSpec(name, run)
+  private def boolSpec(name: String, scalarKind: Option[ScalarNatKind])(
+      run: (BigInt, BigInt) => Boolean
+  ): NativeNatOpSpec = new BoolOpSpec(name, run, scalarKind)
 
   /** The sole source of native Nat identities, equations, and result types. */
   private[raccoonlang] val nativeNatOpSpecs: Vector[NativeNatOpSpec] = Vector(
-    natSpec("Nat.add")(_ + _),
-    natSpec("Nat.sub")((a, b) => (a - b).max(0)),
-    natSpec("Nat.mul")(_ * _),
+    natSpec("Nat.add", Some(ScalarNatKind.Add))(_ + _),
+    natSpec("Nat.sub", Some(ScalarNatKind.Sub))((a, b) => (a - b).max(0)),
+    natSpec("Nat.mul", Some(ScalarNatKind.Mul))(_ * _),
     natSpec("Nat.pow") { (a, b) =>
       if (b > MaxPowExponent) fail(NativeOperationLimitExceeded("Nat.pow", b, MaxPowExponent))
       a.pow(b.toInt)
     },
-    boolSpec("Nat.beq")(_ == _),
-    boolSpec("Nat.ble")(_ <= _),
-    boolSpec("Nat.blt")(_ < _),
-    natSpec("Nat.div")((a, b) => if (b == 0) BigInt(0) else a / b),
-    natSpec("Nat.mod")((a, b) => if (b == 0) a else a % b),
+    boolSpec("Nat.beq", Some(ScalarNatKind.Beq))(_ == _),
+    boolSpec("Nat.ble", Some(ScalarNatKind.Ble))(_ <= _),
+    boolSpec("Nat.blt", Some(ScalarNatKind.Blt))(_ < _),
+    natSpec("Nat.div", Some(ScalarNatKind.Div))((a, b) => if (b == 0) BigInt(0) else a / b),
+    natSpec("Nat.mod", Some(ScalarNatKind.Mod))((a, b) => if (b == 0) a else a % b),
     natSpec("Nat.gcd")(_.gcd(_)),
     natSpec("Nat.land")(_ & _),
     natSpec("Nat.lor")(_ | _),
@@ -130,11 +182,21 @@ object Packed {
         case Some(h: ConstructorHead) if h.totalArity == 0 && h.noConfusion => VCtor(h, Vector.empty, h.tpe)
         case _ => reject(s"`$ctorName` is not a nullary constructor")
       }
+    var boolYes: Value = null
+    var boolNo: Value = null
     val (compute, resultTy): ((BigInt, BigInt) => Value, Value) = spec match {
       case natOp: NatOpSpec => ((a, b) => VPacked.nat(natOp.run(a, b), nat), nat)
       case boolOp: BoolOpSpec =>
         val (yes, no) = (boolCtor("Bool.true"), boolCtor("Bool.false"))
+        boolYes = yes
+        boolNo = no
         ((a, b) => if (boolOp.run(a, b)) yes else no, yes.tpe)
+    }
+    lazy val scalarCapability = spec match {
+      case natOp: NatOpSpec =>
+        natOp.scalarKind.map(kind => new ScalarNatCapability(kind, nat, null, null, () => self))
+      case boolOp: BoolOpSpec =>
+        boolOp.scalarKind.map(kind => new ScalarNatCapability(kind, nat, boolYes, boolNo, () => self))
     }
     lazy val self: VLam =
       VLam(
@@ -157,7 +219,8 @@ object Packed {
                 VApp(self, args, resultTy, blockedOn)
             },
           Env.empty,
-          isRawRecursive = false
+          isRawRecursive = false,
+          scalarCapability = scalarCapability
         )
       )
     self

@@ -131,9 +131,9 @@ object TypeChecker {
   private def assertNonRawRecursive(v: Value): Unit = {
     v match {
       // TerminationChecker.rawRecursiveStub always names its stubs `ValueId.Const(name)`.
-      case VLam(_, ValueId.Const(name), LamBody.Native(_, _, true)) => fail(InvalidRecursiveOccurrence(name))
-      case VLam(_, _, LamBody.Native(_, _, true))                   => wtf("raw-recursive stub without a constant name")
-      case _                                                        =>
+      case VLam(_, ValueId.Const(name), LamBody.Native(_, _, true, _)) => fail(InvalidRecursiveOccurrence(name))
+      case VLam(_, _, LamBody.Native(_, _, true, _)) => wtf("raw-recursive stub without a constant name")
+      case _                                         =>
     }
   }
 

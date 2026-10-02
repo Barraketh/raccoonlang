@@ -165,15 +165,25 @@ private[raccoonlang] object PreparedEval {
     var base: Int = 0
     var env: Env = Env.empty
     var plan: FunctionPlan = null
-    var lam: VLam = null
   }
 
   /** Reuses its banks across calls. Slots are never published; escaping values receive an immutable Env snapshot. */
   private[raccoonlang] final class EvalSession(prepared: Prepared) {
+    // A null natTypes entry reads values directly. Non-null entries carry a nonnegative Nat payload and
+    // its exact validated type; a null bigs entry selects the Long payload, otherwise the BigInt payload.
+    // values may cache one immutable VPacked for repeated generic reads. Native calls bridge a boxed Value or small Nat;
+    // BigInt literals and slots stay in the loop's local result fields.
+    // Validate at literal/native introduction, then transfer payloads unchanged; generic and escape paths box once.
     private var values = new Array[Value](256)
+    private var longs = new Array[Long](256)
+    private var bigs = new Array[BigInt](256)
+    private var natTypes = new Array[Value](256)
     private var frames = Array.fill(32)(new Frame)
     private var frameDepth = 0
     private var tailArguments = new Array[Value](8)
+    private var tailLongs = new Array[Long](8)
+    private var tailBigs = new Array[BigInt](8)
+    private var tailNatTypes = new Array[Value](8)
 
     // Kind and metadata are parallel arrays so the interpreter allocates no continuation objects per step.
     private var kinds = new Array[Int](256)
@@ -181,7 +191,9 @@ private[raccoonlang] object PreparedEval {
     private var indices = new Array[Int](256)
     private var depth = 0
     private var appliedNode: Node = null
-    private var appliedValue: Value = null
+    private var resultValue: Value = null
+    private var resultLong: Long = 0L
+    private var resultNatType: Value = null
 
     private val AppFunction = 1
     private val AppArgument = 2
@@ -193,6 +205,9 @@ private[raccoonlang] object PreparedEval {
       if (required > values.length) {
         val capacity = math.max(required, values.length * 2)
         values = java.util.Arrays.copyOf(values, capacity)
+        longs = java.util.Arrays.copyOf(longs, capacity)
+        bigs = java.util.Arrays.copyOf(bigs, capacity)
+        natTypes = java.util.Arrays.copyOf(natTypes, capacity)
       }
 
     private def push(kind: Int, node: Node, index: Int = 0): Unit = {
@@ -208,9 +223,123 @@ private[raccoonlang] object PreparedEval {
       depth += 1
     }
 
-    private def readValue(slot: Int): Value = values(slot)
+    private def readValue(slot: Int): Value =
+      if (natTypes(slot) eq null) values(slot)
+      else if (values(slot) ne null) values(slot)
+      else {
+        val ty = natTypes(slot)
+        val value = VPacked.nat(if (bigs(slot) eq null) BigInt(longs(slot)) else bigs(slot), ty)
+        values(slot) = value
+        value
+      }
 
-    private def writeValue(slot: Int, value: Value): Unit = values(slot) = value
+    private def writeValue(slot: Int, value: Value): Unit = {
+      if (natTypes(slot) ne null) {
+        bigs(slot) = null
+        natTypes(slot) = null
+      }
+      values(slot) = value
+    }
+
+    private def writeNat(slot: Int, value: BigInt, ty: Value, cached: Value): Unit = {
+      // `ty` comes from a validated Nat capability and `value` from a checked VPacked Nat.
+      if (value.signum < 0) wtf("Tagged Nat must be nonnegative")
+      val small = value.isValidLong
+      longs(slot) = if (small) value.longValue else 0L
+      bigs(slot) = if (small) null else value
+      natTypes(slot) = ty
+      values(slot) = cached
+    }
+
+    private def clearResult(): Unit = {
+      resultNatType = null
+      resultValue = null
+    }
+
+    private def setValueResult(value: Value): Unit = {
+      resultNatType = null
+      resultValue = value
+    }
+
+    private def setLongResult(value: Long, ty: Value): Unit = {
+      if (value < 0) wtf("Tagged Nat result must be nonnegative")
+      resultLong = value
+      resultNatType = ty
+      resultValue = null
+    }
+
+    private def writeResult(slot: Int, value: Value, ty: Value, small: Long, big: BigInt): Unit = {
+      if (ty eq null) writeValue(slot, value)
+      else {
+        values(slot) = value
+        longs(slot) = small
+        bigs(slot) = big
+        natTypes(slot) = ty
+      }
+    }
+
+    private def copySlot(source: Int, target: Int): Unit = {
+      if (natTypes(source) eq null) writeValue(target, values(source))
+      else {
+        values(target) = values(source)
+        longs(target) = longs(source)
+        bigs(target) = bigs(source)
+        natTypes(target) = natTypes(source)
+      }
+    }
+
+    /** A negative sentinel means the slot needs the ordinary boxed native path. */
+    private def natLongOrMiss(slot: Int, ty: Value): Long =
+      if (natTypes(slot) ne null) {
+        if ((natTypes(slot).asInstanceOf[AnyRef] eq ty.asInstanceOf[AnyRef]) && (bigs(slot) eq null)) longs(slot)
+        else -1L
+      } else {
+        values(slot) match {
+          case packed: VPacked
+              if (packed.codec eq NatCodec) &&
+                (packed.tpe.asInstanceOf[AnyRef] eq ty.asInstanceOf[AnyRef]) =>
+            val n = PackedPayload.natValue(packed.payload)
+            if (n.isValidLong) {
+              writeNat(slot, n, ty, packed)
+              n.longValue
+            } else -1L
+          case _ => -1L
+        }
+      }
+
+    private def tryScalarApplication(lam: VLam, app: Application, caller: Frame): Boolean = {
+      if (app.args.length != 2) return false
+      val capability = Packed.scalarNatCapability(lam, caller.env) match {
+        case Some(value) => value
+        case None        => return false
+      }
+      val ty = capability.natTpe
+      val left = natLongOrMiss(caller.base + app.argStart, ty)
+      val right = natLongOrMiss(caller.base + app.argStart + 1, ty)
+      if (left < 0 || right < 0) return false
+      val result = capability.kind match {
+        case Packed.ScalarNatKind.Add =>
+          if (left > Long.MaxValue - right) return false
+          left + right
+        case Packed.ScalarNatKind.Sub => if (left < right) 0L else left - right
+        case Packed.ScalarNatKind.Mul =>
+          if (right != 0 && left > Long.MaxValue / right) return false
+          left * right
+        case Packed.ScalarNatKind.Div => if (right == 0) 0L else left / right
+        case Packed.ScalarNatKind.Mod => if (right == 0) left else left % right
+        case Packed.ScalarNatKind.Beq =>
+          setValueResult(if (left == right) capability.yes else capability.no)
+          return true
+        case Packed.ScalarNatKind.Ble =>
+          setValueResult(if (left <= right) capability.yes else capability.no)
+          return true
+        case Packed.ScalarNatKind.Blt =>
+          setValueResult(if (left < right) capability.yes else capability.no)
+          return true
+      }
+      setLongResult(result, ty)
+      true
+    }
 
     private def bind(slot: Int, value: Value): Unit = {
       val canonical = Value.canonicalizeProof(value)
@@ -221,9 +350,10 @@ private[raccoonlang] object PreparedEval {
     private def clear(frame: Frame): Unit = {
       val until = frame.base + frame.plan.slots
       java.util.Arrays.fill(values.asInstanceOf[Array[AnyRef]], frame.base, until, null)
+      java.util.Arrays.fill(bigs.asInstanceOf[Array[AnyRef]], frame.base, until, null)
+      java.util.Arrays.fill(natTypes.asInstanceOf[Array[AnyRef]], frame.base, until, null)
       frame.env = Env.empty
       frame.plan = null
-      frame.lam = null
     }
 
     private def materialize(scope: Scope, frame: Frame): Env = {
@@ -250,7 +380,6 @@ private[raccoonlang] object PreparedEval {
       frame.base = if (frameDepth == 0) 0 else frames(frameDepth - 1).base + frames(frameDepth - 1).plan.slots
       frame.env = core.env
       frame.plan = plan
-      frame.lam = lam
       ensureSlots(frame.base + plan.slots)
       var i = 0
       while (i < args.length) {
@@ -278,7 +407,6 @@ private[raccoonlang] object PreparedEval {
       frame.base = 0
       frame.env = core.env
       frame.plan = plan
-      frame.lam = lam
       ensureSlots(plan.slots)
       try {
         var i = 0
@@ -302,34 +430,78 @@ private[raccoonlang] object PreparedEval {
         }
         var pc: Node = plan.root
         var result: Value = null
+        var localNatType: Value = null
+        var localLong = 0L
+        var localBig: BigInt = null
         while (true) {
           var current = frames(frameDepth)
           pc match {
             case Ref(ref, slot, _) =>
-              result = nullaryConstructor(
-                if (slot < 0) current.env(ref) else Value.forced(readValue(current.base + slot))
-              )
-            case Global(name, _)           => result = nullaryConstructor(current.env(name))
-            case NatLiteral(value, _)      => result = Packed.evalNatLit(value, current.env)
-            case StringLiteral(scalars, _) => result = Packed.evalStrLit(scalars, current.env)
+              if (slot < 0) {
+                result = nullaryConstructor(current.env(ref))
+                localNatType = null
+                localBig = null
+              } else {
+                val address = current.base + slot
+                localNatType = natTypes(address)
+                if (localNatType eq null) {
+                  result = nullaryConstructor(Value.forced(readValue(address)))
+                  localBig = null
+                } else {
+                  result = values(address)
+                  localLong = longs(address)
+                  localBig = bigs(address)
+                }
+              }
+            case Global(name, _) =>
+              result = nullaryConstructor(current.env(name))
+              localNatType = null
+              localBig = null
+            case NatLiteral(value, _) =>
+              localNatType = current.env.nativeLiterals.natLayout
+                .getOrElse(fail(NatLiteralUnavailable("no validated Nat layout")))
+                .natTpe
+              if (value.signum < 0) wtf("Tagged Nat result must be nonnegative")
+              if (value.isValidLong) {
+                localLong = value.longValue
+                localBig = null
+              } else localBig = value
+              result = null
+            case StringLiteral(scalars, _) =>
+              result = Packed.evalStrLit(scalars, current.env)
+              localNatType = null
+              localBig = null
             case a: Application =>
               push(AppFunction, a)
               pc = a.fn
               result = null
+              localNatType = null
+              localBig = null
             case b: Binding =>
               push(LetValue, b)
               pc = b.value
               result = null
+              localNatType = null
+              localBig = null
             case m: Matching =>
               push(MatchScrutinee, m)
               pc = m.scrut
               result = null
-            case Generic(term, scope) => result = Interpreter.evalTerm(term, materialize(scope, current))
+              localNatType = null
+              localBig = null
+            case Generic(term, scope) =>
+              result = Interpreter.evalTerm(term, materialize(scope, current))
+              localNatType = null
+              localBig = null
           }
-          if (result ne null) {
+          if ((result ne null) || (localNatType ne null)) {
             var continue = true
             while (continue) {
-              if (depth == 0) return result
+              if (depth == 0) {
+                if ((localNatType ne null) && (result eq null))
+                  result = VPacked.nat(if (localBig eq null) BigInt(localLong) else localBig, localNatType)
+                return result
+              }
               depth -= 1
               val kind = kinds(depth)
               val node = nodes(depth)
@@ -338,11 +510,16 @@ private[raccoonlang] object PreparedEval {
               kind match {
                 case AppFunction =>
                   val app = node.asInstanceOf[Application]
-                  writeValue(current.base + app.fnSlot, result)
+                  writeResult(current.base + app.fnSlot, result, localNatType, localLong, localBig)
                   if (app.args.isEmpty) {
+                    if ((localNatType ne null) && (result eq null))
+                      result = VPacked.nat(if (localBig eq null) BigInt(localLong) else localBig, localNatType)
                     applyApplication(result, app, current)
                     pc = appliedNode
-                    result = appliedValue
+                    result = resultValue
+                    localNatType = resultNatType
+                    localLong = resultLong
+                    localBig = null
                     continue = appliedNode eq null
                   } else {
                     push(AppArgument, app, 0)
@@ -351,7 +528,7 @@ private[raccoonlang] object PreparedEval {
                   }
                 case AppArgument =>
                   val app = node.asInstanceOf[Application]
-                  writeValue(current.base + app.argStart + index, result)
+                  writeResult(current.base + app.argStart + index, result, localNatType, localLong, localBig)
                   if (index + 1 < app.args.length) {
                     push(AppArgument, app, index + 1)
                     pc = app.args(index + 1)
@@ -360,17 +537,25 @@ private[raccoonlang] object PreparedEval {
                     val fn = readValue(current.base + app.fnSlot)
                     applyApplication(fn, app, current)
                     pc = appliedNode
-                    result = appliedValue
+                    result = resultValue
+                    localNatType = resultNatType
+                    localLong = resultLong
+                    localBig = null
                     continue = appliedNode eq null
                   }
                 case LetValue =>
                   val binding = node.asInstanceOf[Binding]
                   binding.pattern match {
-                    case CoreAst.LetPattern.Local(_) => bind(current.base + binding.slots.head, result)
+                    case CoreAst.LetPattern.Local(_) =>
+                      if (localNatType eq null) bind(current.base + binding.slots.head, result)
+                      else writeResult(current.base + binding.slots.head, result, localNatType, localLong, localBig)
                     case f: CoreAst.LetPattern.Fields =>
-                      val fields = StructEta
-                        .destructuredFields(result)
-                        .getOrElse(wtf(s"A checked destructuring's value $result has no fields"))
+                      if ((localNatType ne null) && (result eq null))
+                        result = VPacked.nat(if (localBig eq null) BigInt(localLong) else localBig, localNatType)
+                      val fields = StructEta.destructuredFields(result) match {
+                        case Some(found) => found
+                        case None        => wtf(s"A checked destructuring's value $result has no fields")
+                      }
                       if (fields.length != f.vars.length)
                         wtf(s"A checked destructuring binds ${f.vars.length} fields of $result, got ${fields.length}")
                       var j = 0
@@ -383,6 +568,8 @@ private[raccoonlang] object PreparedEval {
                   continue = false
                 case MatchScrutinee =>
                   val matching = node.asInstanceOf[Matching]
+                  if ((localNatType ne null) && (result eq null))
+                    result = VPacked.nat(if (localBig eq null) BigInt(localLong) else localBig, localNatType)
                   val scrut = result
                   var selectedName: String = null
                   var selectedFields: Vector[Value] = null
@@ -429,6 +616,8 @@ private[raccoonlang] object PreparedEval {
                           )
                         )
                     }
+                    localNatType = null
+                    localBig = null
                   }
                 case Return =>
                   clear(frames(frameDepth))
@@ -448,9 +637,11 @@ private[raccoonlang] object PreparedEval {
         }
         java.util.Arrays.fill(nodes.asInstanceOf[Array[AnyRef]], 0, depth, null)
         java.util.Arrays.fill(tailArguments.asInstanceOf[Array[AnyRef]], null)
+        java.util.Arrays.fill(tailBigs.asInstanceOf[Array[AnyRef]], null)
+        java.util.Arrays.fill(tailNatTypes.asInstanceOf[Array[AnyRef]], null)
         depth = 0
         appliedNode = null
-        appliedValue = null
+        clearResult()
       }
     }
 
@@ -458,17 +649,19 @@ private[raccoonlang] object PreparedEval {
       fn match {
         case lam: VLam if eligible(lam) =>
           appliedNode = enter(lam, args, tail)
-          appliedValue = null
+          clearResult()
         case other =>
           appliedNode = null
-          appliedValue = Interpreter.evalApply(other, args)
+          setValueResult(Interpreter.evalApply(other, args))
       }
 
     private def applyApplication(fn: Value, app: Application, caller: Frame): Unit =
       fn match {
         case lam: VLam if eligible(lam) && lam.tpe.numExplicit == lam.tpe.binders.length =>
           appliedNode = enterFromSlots(lam, app, caller)
-          appliedValue = null
+          clearResult()
+        case lam: VLam if tryScalarApplication(lam, app, caller) =>
+          appliedNode = null
         case other =>
           val args = Vector.tabulate(app.args.length)(i => readValue(caller.base + app.argStart + i))
           applyFunction(other, Interpreter.residualArguments(other, args), app.tail)
@@ -482,10 +675,23 @@ private[raccoonlang] object PreparedEval {
       if (count != lam.tpe.binders.length)
         fail(ArityMismatch(lam.tpe.binders.length, count, ArityMismatch.Arguments))
       if (app.tail) {
-        if (count > tailArguments.length) tailArguments = new Array[Value](math.max(count, tailArguments.length * 2))
+        if (count > tailArguments.length) {
+          val capacity = math.max(count, tailArguments.length * 2)
+          tailArguments = new Array[Value](capacity)
+          tailLongs = new Array[Long](capacity)
+          tailBigs = new Array[BigInt](capacity)
+          tailNatTypes = new Array[Value](capacity)
+        }
         var i = 0
         while (i < count) {
-          tailArguments(i) = readValue(caller.base + app.argStart + i)
+          val source = caller.base + app.argStart + i
+          tailArguments(i) = values(source)
+          val ty = natTypes(source)
+          tailNatTypes(i) = ty
+          if (ty ne null) {
+            tailLongs(i) = longs(source)
+            tailBigs(i) = bigs(source)
+          }
           i += 1
         }
         clear(caller)
@@ -499,12 +705,24 @@ private[raccoonlang] object PreparedEval {
       frame.base = if (frameDepth == 0) 0 else frames(frameDepth - 1).base + frames(frameDepth - 1).plan.slots
       frame.env = core.env
       frame.plan = plan
-      frame.lam = lam
       ensureSlots(frame.base + plan.slots)
       var i = 0
       while (i < count) {
-        bind(frame.base + i, if (app.tail) tailArguments(i) else readValue(caller.base + app.argStart + i))
-        if (app.tail) tailArguments(i) = null
+        val target = frame.base + i
+        if (app.tail) {
+          if (tailNatTypes(i) eq null) bind(target, tailArguments(i))
+          else {
+            values(target) = tailArguments(i)
+            longs(target) = tailLongs(i)
+            bigs(target) = tailBigs(i)
+            natTypes(target) = tailNatTypes(i)
+          }
+          tailArguments(i) = null
+          tailBigs(i) = null
+          tailNatTypes(i) = null
+        } else if (natTypes(caller.base + app.argStart + i) eq null)
+          bind(target, readValue(caller.base + app.argStart + i))
+        else copySlot(caller.base + app.argStart + i, target)
         i += 1
       }
       while (i < count + core.term.recursivePeers.length) {

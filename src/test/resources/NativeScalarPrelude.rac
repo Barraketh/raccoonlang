@@ -1,0 +1,616 @@
+def id {u: Level}{S: Lifetime}{A: Type { level = u, scope = S }} (x: A): A := x
+
+def const {u: Level}{v: Level}{S: Lifetime}{T: Lifetime}{A: Type { level = u, scope = S }}{B: Type { level = v, scope = T }} (x: A)(y: B): A := x
+
+inductive Eq {u: Level}{S: Lifetime}(A: Type { level = u, scope = S }) indices (x: A)(y: A) : Prop { scope = S }
+ | refl (x: A) : Eq(A, x, x)
+
+namespace Eq {
+  def symm {u: Level}{S: Lifetime}{A: Type { level = u, scope = S }}{x: A}{y: A} (p: Eq(A, x, y)): Eq(A, y, x) := {
+    match p returning Eq(A, y, x) with
+    | Eq.refl z => Eq.refl(z)
+  }
+
+  def trans {u: Level}{S: Lifetime}{A: Type { level = u, scope = S }}{x: A}{y: A}{z: A} (p: Eq(A, x, y))(q: Eq(A, y, z)): Eq(A, x, z) := {
+    match p returning Eq(A, x, z) with
+    | Eq.refl w => q
+  }
+
+  def subst {u: Level}{S: Lifetime}{Sm: Lifetime}{Sc: Lifetime}{A: Type { level = u, scope = S }}{x: A}{y: A} (p: Eq(A, x, y))(v: Level)(motive: { scope = Sc } A -> Type { level = v, scope = Sm })(h: motive(x)): motive(y) := {
+    match p returning motive(y) with
+    | Eq.refl z => h
+  }
+
+  def substP {u: Level}{S: Lifetime}{Sm: Lifetime}{Sc: Lifetime}{A: Type { level = u, scope = S }}{x: A}{y: A} (p: Eq(A, x, y))(motive: { scope = Sc } A -> Prop { scope = Sm })(h: motive(x)): motive(y) := {
+    match p returning motive(y) with
+    | Eq.refl z => h
+  }
+
+  def mp {S: Lifetime}{a: Prop { scope = S }}{b: Prop { scope = S }} (p: Eq(Prop { scope = S }, a, b))(h: a): b := {
+    match p returning b with
+    | Eq.refl z => h
+  }
+
+  def mpr {S: Lifetime}{a: Prop { scope = S }}{b: Prop { scope = S }} (p: Eq(Prop { scope = S }, a, b))(h: b): a := Eq.mp(Eq.symm(p), h)
+}
+
+def congrArg {u: Level}{v: Level}{S: Lifetime}{T: Lifetime}{Sf: Lifetime}{A: Type { level = u, scope = S }}{x: A}{y: A} (p: Eq(A, x, y))(B: Type { level = v, scope = T })(f: { scope = Sf } A -> B): Eq(B, f(x), f(y)) := {
+  match p returning Eq(B, f(x), f(y)) with
+  | Eq.refl z => Eq.refl(f(z))
+}
+
+def congrFun {u: Level}{v: Level}{S: Lifetime}{T: Lifetime}{Sf: Lifetime}(A: Type { level = u, scope = S })(B: Type { level = v, scope = T })(f: { scope = Sf } A -> B)(g: { scope = Sf } A -> B)(p: Eq({ scope = Sf } (x: A) -> B, f, g))(x: A): Eq(B, f(x), g(x)) := {
+  match p returning Eq(B, f(x), g(x)) with
+  | Eq.refl h => Eq.refl(h(x))
+}
+
+inductive False : Prop
+
+namespace False {
+  def elimP {S: Lifetime}(h: False)(C: Prop { scope = S }): C := {
+    match h returning C with
+  }
+
+  def elim {u: Level}{S: Lifetime}(h: False)(C: Type { level = u, scope = S }): C := {
+    match h returning C with
+  }
+}
+
+inductive True : Prop
+ | intro : True
+
+def Not {S: Lifetime}(a: Prop { scope = S }): Prop { scope = S } := { scope = S } (h: a) -> False
+
+def falseElim {u: Level}{S: Lifetime}(h: False)(C: Type { level = u, scope = S }): C := False.elim(h, C)
+
+def notFalse : Not(False) := fun (h: False): False => h
+
+def absurd {u: Level}{S: Lifetime}{Sa: Lifetime}{a: Prop { scope = Sa }} (h: a)(hn: Not(a))(C: Type { level = u, scope = S }): C := False.elim(hn(h), C)
+
+struct And {Sa: Lifetime}{Sb: Lifetime}(a: Prop { scope = Sa })(b: Prop { scope = Sb }) : Prop { scope = union(Sa, Sb) }
+ | intro (left: a)(right: b) : And(a, b)
+
+inductive Or {Sa: Lifetime}{Sb: Lifetime}(a: Prop { scope = Sa })(b: Prop { scope = Sb }) : Prop { scope = union(Sa, Sb) }
+ | inl (left: a) : Or(a, b)
+ | inr (right: b) : Or(a, b)
+
+namespace Or {
+  def elim {Sa: Lifetime}{Sb: Lifetime}{R: Lifetime}{Sl: Lifetime}{Sr: Lifetime}{a: Prop { scope = Sa }}{b: Prop { scope = Sb }} (h: Or(a, b))(C: Prop { scope = R })(left: { scope = Sl } a -> C)(right: { scope = Sr } b -> C): C := {
+    match h returning C with
+    | Or.inl ha => left(ha)
+    | Or.inr hb => right(hb)
+  }
+}
+
+struct Iff {Sa: Lifetime}{Sb: Lifetime}(a: Prop { scope = Sa })(b: Prop { scope = Sb }) : Prop { scope = union(Sa, Sb) }
+ | intro (mp: { scope = union(Sa, Sb) } a -> b)(mpr: { scope = union(Sa, Sb) } b -> a) : Iff(a, b)
+
+inductive Empty : Type
+
+namespace Empty {
+  def elim {u: Level}{S: Lifetime}(h: Empty)(C: Type { level = u, scope = S }): C := {
+    match h returning C with
+  }
+}
+
+def emptyElim {u: Level}{S: Lifetime}(h: Empty)(C: Type { level = u, scope = S }): C := Empty.elim(h, C)
+
+inductive Unit : Type
+ | unit : Unit
+
+inductive Bool : Type
+ | false : Bool
+ | true : Bool
+
+namespace Bool {
+  def cond {u: Level}{S: Lifetime}(c: Bool)(A: Type { level = u, scope = S })(t: A)(f: A): A := {
+    match c returning A with
+    | Bool.true => t
+    | Bool.false => f
+  }
+
+  def not (b: Bool): Bool := {
+    match b returning Bool with
+    | Bool.true => Bool.false
+    | Bool.false => Bool.true
+  }
+
+  def and (a: Bool)(b: Bool): Bool := {
+    match a returning Bool with
+    | Bool.true => b
+    | Bool.false => Bool.false
+  }
+
+  def or (a: Bool)(b: Bool): Bool := {
+    match a returning Bool with
+    | Bool.true => Bool.true
+    | Bool.false => b
+  }
+
+  def beq (a: Bool)(b: Bool): Bool := {
+    match a returning Bool with
+    | Bool.true => b
+    | Bool.false => Bool.not(b)
+  }
+
+  def xor (a: Bool)(b: Bool): Bool := {
+    match a returning Bool with
+    | Bool.true => Bool.not(b)
+    | Bool.false => b
+  }
+}
+
+inductive Decidable {S: Lifetime}(p: Prop { scope = S }) : Type { scope = S }
+ | isFalse (h: Not(p)) : Decidable(p)
+ | isTrue (h: p) : Decidable(p)
+
+namespace Decidable {
+  def toBool {S: Lifetime}{p: Prop { scope = S }} (d: Decidable(p)): Bool := {
+    match d returning Bool with
+    | Decidable.isFalse h => Bool.false
+    | Decidable.isTrue h => Bool.true
+  }
+
+  def ite {u: Level}{S: Lifetime}{Sp: Lifetime}{p: Prop { scope = Sp }} (d: Decidable(p))(A: Type { level = u, scope = S })(t: A)(f: A): A := {
+    match d returning A with
+    | Decidable.isFalse h => f
+    | Decidable.isTrue h => t
+  }
+
+  def casesOn {u: Level}{S: Lifetime}{Sp: Lifetime}{Sf: Lifetime}{St: Lifetime}{p: Prop { scope = Sp }} (d: Decidable(p))(A: Type { level = u, scope = S })(isFalse: { scope = Sf } Not(p) -> A)(isTrue: { scope = St } p -> A): A := {
+    match d returning A with
+    | Decidable.isFalse h => isFalse(h)
+    | Decidable.isTrue h => isTrue(h)
+  }
+
+  def not {S: Lifetime}{p: Prop { scope = S }} (d: Decidable(p)): Decidable(Not(p)) := {
+    match d returning Decidable(Not(p)) with
+    | Decidable.isFalse h => Decidable.isTrue(h)
+    | Decidable.isTrue h => Decidable.isFalse(fun (hn: Not(p)): False => hn(h))
+  }
+}
+
+def decide {S: Lifetime}{p: Prop { scope = S }} (d: Decidable(p)): Bool := Decidable.toBool(d)
+
+def ite {u: Level}{S: Lifetime}{Sp: Lifetime}{p: Prop { scope = Sp }} (d: Decidable(p))(A: Type { level = u, scope = S })(t: A)(f: A): A := Decidable.ite(d, A, t, f)
+
+def trueDecidable : Decidable(True) := Decidable.isTrue(True.intro)
+
+def falseDecidable : Decidable(False) := Decidable.isFalse(notFalse)
+
+inductive Nat : Type
+ | zero : Nat
+ | succ (_: Nat) : Nat
+
+namespace Nat {
+  def pred (n: Nat): Nat := {
+    match n returning Nat with
+    | Nat.zero => Nat.zero
+    | Nat.succ p => p
+  }
+
+  def isZero (n: Nat): Bool := {
+    match n returning Bool with
+    | Nat.zero => Bool.true
+    | Nat.succ p => Bool.false
+  }
+
+  def sub (a: Nat)(b: Nat): Nat decreases structural(b) := {
+    match b returning Nat with
+    | Nat.zero => a
+    | Nat.succ p => Nat.pred(Nat.sub(a, p))
+  }
+
+  def add (a: Nat)(b: Nat): Nat decreases structural(b) := {
+    match b returning Nat with
+    | Nat.zero => a
+    | Nat.succ p => Nat.add(Nat.succ(a), p)
+  }
+
+  def mul (a: Nat)(b: Nat): Nat decreases structural(b) := {
+    match b returning Nat with
+    | Nat.zero => Nat.zero
+    | Nat.succ p => Nat.add(a, Nat.mul(a, p))
+  }
+
+  def beq (a: Nat)(b: Nat): Bool decreases structural(a) := {
+    match a returning Bool with
+    | Nat.zero => Nat.isZero(b)
+    | Nat.succ aTail => {
+      match b returning Bool with
+      | Nat.zero => Bool.false
+      | Nat.succ bTail => Nat.beq(aTail, bTail)
+    }
+  }
+
+  def ble (a: Nat)(b: Nat): Bool decreases structural(a) := {
+    match a returning Bool with
+    | Nat.zero => Bool.true
+    | Nat.succ aTail => {
+      match b returning Bool with
+      | Nat.zero => Bool.false
+      | Nat.succ bTail => Nat.ble(aTail, bTail)
+    }
+  }
+
+  def pow (a: Nat)(b: Nat): Nat decreases structural(b) := {
+    match b returning Nat with
+    | Nat.zero => Nat.succ(Nat.zero)
+    | Nat.succ p => Nat.mul(Nat.pow(a, p), a)
+  }
+
+  def blt (a: Nat)(b: Nat): Bool := Nat.ble(Nat.succ(a), b)
+
+  def le (a: Nat)(b: Nat): Prop := Eq(Bool, Nat.ble(a, b), Bool.true)
+
+  def lt (a: Nat)(b: Nat): Prop := Nat.le(Nat.succ(a), b)
+}
+
+inductive Option {u: Level}{S: Lifetime}(A: Type { level = u, scope = S }) : Type { level = u, scope = S }
+ | none : Option(A)
+ | some (val: A) : Option(A)
+
+namespace Option {
+  def elim {u: Level}{v: Level}{S: Lifetime}{T: Lifetime}{Sf: Lifetime}{A: Type { level = u, scope = S }} (x: Option(A))(B: Type { level = v, scope = T })(none: B)(some: { scope = Sf } A -> B): B := {
+    match x returning B with
+    | Option.none => none
+    | Option.some val => some(val)
+  }
+
+  def getD {u: Level}{S: Lifetime}{A: Type { level = u, scope = S }} (x: Option(A))(fallback: A): A := {
+    match x returning A with
+    | Option.none => fallback
+    | Option.some val => val
+  }
+
+  def map {u: Level}{v: Level}{S: Lifetime}{T: Lifetime}{Sf: Lifetime}{A: Type { level = u, scope = S }} (x: Option(A))(B: Type { level = v, scope = T })(f: { scope = Sf } A -> B): Option(B) := {
+    match x returning Option(B) with
+    | Option.none => Option.none(B)
+    | Option.some val => Option.some(f(val))
+  }
+
+  def bind {u: Level}{v: Level}{S: Lifetime}{T: Lifetime}{Sf: Lifetime}{A: Type { level = u, scope = S }} (x: Option(A))(B: Type { level = v, scope = T })(f: { scope = Sf } A -> Option(B)): Option(B) := {
+    match x returning Option(B) with
+    | Option.none => Option.none(B)
+    | Option.some val => f(val)
+  }
+
+  def isSome {u: Level}{S: Lifetime}{A: Type { level = u, scope = S }} (x: Option(A)): Bool := {
+    match x returning Bool with
+    | Option.none => Bool.false
+    | Option.some val => Bool.true
+  }
+
+  def isNone {u: Level}{S: Lifetime}{A: Type { level = u, scope = S }} (x: Option(A)): Bool := Bool.not(Option.isSome(x))
+}
+
+inductive Sum {u: Level}{v: Level}{S: Lifetime}{T: Lifetime}(A: Type { level = u, scope = S })(B: Type { level = v, scope = T }) : Type { level = max(u, v), scope = union(S, T) }
+ | inl (val: A) : Sum(A, B)
+ | inr (val: B) : Sum(A, B)
+
+namespace Sum {
+  def elim {u: Level}{v: Level}{w: Level}{S: Lifetime}{T: Lifetime}{R: Lifetime}{Sl: Lifetime}{Sr: Lifetime}{A: Type { level = u, scope = S }}{B: Type { level = v, scope = T }} (x: Sum(A, B))(C: Type { level = w, scope = R })(left: { scope = Sl } A -> C)(right: { scope = Sr } B -> C): C := {
+    match x returning C with
+    | Sum.inl val => left(val)
+    | Sum.inr val => right(val)
+  }
+}
+
+inductive List {u: Level}{S: Lifetime}(A: Type { level = u, scope = S }) : Type { level = u, scope = S }
+ | nil : List(A)
+ | cons (head: A)(tail: List(A)) : List(A)
+
+namespace List {
+  def foldr {u: Level}{v: Level}{S: Lifetime}{T: Lifetime}{Sf: Lifetime}{A: Type { level = u, scope = S }} (xs: List(A))(B: Type { level = v, scope = T })(nil: B)(cons: { scope = Sf } A -> B -> B): B decreases structural(xs) := {
+    match xs returning B with
+    | List.nil => nil
+    | List.cons head tail => cons(head, List.foldr(tail, B, nil, cons))
+  }
+
+  def foldl {u: Level}{v: Level}{S: Lifetime}{T: Lifetime}{Sf: Lifetime}{A: Type { level = u, scope = S }} (xs: List(A))(B: Type { level = v, scope = T })(init: B)(f: { scope = Sf } B -> A -> B): B decreases structural(xs) := {
+    match xs returning B with
+    | List.nil => init
+    | List.cons head tail => List.foldl(tail, B, f(init, head), f)
+  }
+
+  def append {u: Level}{S: Lifetime}{A: Type { level = u, scope = S }} (xs: List(A))(ys: List(A)): List(A) decreases structural(xs) := {
+    match xs returning List(A) with
+    | List.nil => ys
+    | List.cons head tail => List.cons(head, List.append(tail, ys))
+  }
+
+  def map {u: Level}{v: Level}{S: Lifetime}{T: Lifetime}{Sf: Lifetime}{A: Type { level = u, scope = S }} (xs: List(A))(B: Type { level = v, scope = T })(f: { scope = Sf } A -> B): List(B) decreases structural(xs) := {
+    match xs returning List(B) with
+    | List.nil => List.nil(B)
+    | List.cons head tail => List.cons(f(head), List.map(tail, B, f))
+  }
+
+  def length {u: Level}{S: Lifetime}{A: Type { level = u, scope = S }} (xs: List(A)): Nat decreases structural(xs) := {
+    match xs returning Nat with
+    | List.nil => Nat.zero
+    | List.cons head tail => Nat.succ(List.length(tail))
+  }
+
+  def reverseOnto {u: Level}{S: Lifetime}{A: Type { level = u, scope = S }} (xs: List(A))(acc: List(A)): List(A) decreases structural(xs) := {
+    match xs returning List(A) with
+    | List.nil => acc
+    | List.cons head tail => List.reverseOnto(tail, List.cons(head, acc))
+  }
+
+  def reverse {u: Level}{S: Lifetime}{A: Type { level = u, scope = S }} (xs: List(A)): List(A) := List.reverseOnto(xs, List.nil(A))
+
+  def any {u: Level}{S: Lifetime}{Sp: Lifetime}{A: Type { level = u, scope = S }} (xs: List(A))(p: { scope = Sp } A -> Bool): Bool decreases structural(xs) := {
+    match xs returning Bool with
+    | List.nil => Bool.false
+    | List.cons head tail => Bool.or(p(head), List.any(tail, p))
+  }
+
+  def all {u: Level}{S: Lifetime}{Sp: Lifetime}{A: Type { level = u, scope = S }} (xs: List(A))(p: { scope = Sp } A -> Bool): Bool decreases structural(xs) := {
+    match xs returning Bool with
+    | List.nil => Bool.true
+    | List.cons head tail => Bool.and(p(head), List.all(tail, p))
+  }
+
+  def filter {u: Level}{S: Lifetime}{Sp: Lifetime}{A: Type { level = u, scope = S }} (xs: List(A))(p: { scope = Sp } A -> Bool): List(A) decreases structural(xs) := {
+    match xs returning List(A) with
+    | List.nil => List.nil(A)
+    | List.cons head tail => {
+      let rest := List.filter(tail, p)
+      Bool.cond(p(head), List(A), List.cons(head, rest), rest)
+    }
+  }
+}
+
+struct Prod {u: Level}{v: Level}{S: Lifetime}{T: Lifetime}(A: Type { level = u, scope = S })(B: Type { level = v, scope = T }) : Type { level = max(u, v), scope = union(S, T) }
+ | mk (fst: A)(snd: B) : Prod(A, B)
+
+inductive Pair {u: Level}{v: Level}{k1: Kind}{k2: Kind}{S: Lifetime}{T: Lifetime}
+    (A: Type { level = u, kind = k1, scope = S })(B: Type { level = v, kind = k2, scope = T })
+    : Type { level = max(u, v), kind = join(k1, k2), scope = union(S, T) }
+ | mk (fst: A)(snd: B) : Pair(A, B)
+
+struct Sigma {u: Level}{v: Level}{S: Lifetime}{T: Lifetime}{Sb: Lifetime}(A: Type { level = u, scope = S })(B: { scope = Sb } A -> Type { level = v, scope = T }) : Type { level = max(u, v), scope = union(S, union(T, Sb)) }
+ | mk (fst: A)(snd: B(fst)) : Sigma(A, B)
+
+struct Subtype {u: Level}{S: Lifetime}{Sp: Lifetime}{Sq: Lifetime}(A: Type { level = u, scope = S })(p: { scope = Sp } A -> Prop { scope = Sq }) : Type { level = u, scope = union(S, union(Sp, Sq)) }
+ | mk (val: A)(property: p(val)) : Subtype(A, p)
+
+inductive Exists {u: Level}{S: Lifetime}{Sp: Lifetime}{Sq: Lifetime}(A: Type { level = u, scope = S })(p: { scope = Sp } A -> Prop { scope = Sq }) : Prop { scope = union(S, union(Sp, Sq)) }
+ | intro (witness: A)(proof: p(witness)) : Exists(A, p)
+
+inductive Nonempty {u: Level}{S: Lifetime}(A: Type { level = u, scope = S }) : Prop { scope = S }
+ | intro (val: A) : Nonempty(A)
+
+struct Inhabited {u: Level}{S: Lifetime}(A: Type { level = u, scope = S }) : Type { level = u, scope = S }
+ | mk (default: A) : Inhabited(A)
+
+def unitInhabited : Inhabited(Unit) := Inhabited.mk(Unit.unit)
+
+def boolInhabited : Inhabited(Bool) := Inhabited.mk(Bool.false)
+
+def natInhabited : Inhabited(Nat) := Inhabited.mk(Nat.zero)
+
+struct BEq {u: Level}{S: Lifetime}(A: Type { level = u, scope = S }) : Type { level = u, scope = S }
+ | mk (beq: { scope = S } A -> A -> Bool) : BEq(A)
+
+def beq {u: Level}{S: Lifetime}{A: Type { level = u, scope = S }} (self: BEq(A))(a: A)(b: A): Bool := BEq.beq(self)(a, b)
+
+def unitBEq : BEq(Unit) := BEq.mk(fun (a: Unit)(b: Unit): Bool => Bool.true)
+
+def boolBEq : BEq(Bool) := BEq.mk(Bool.beq)
+
+def natBEq : BEq(Nat) := BEq.mk(Nat.beq)
+
+namespace Option {
+  def beq {u: Level}{S: Lifetime}{A: Type { level = u, scope = S }} (beqA: BEq(A))(x: Option(A))(y: Option(A)): Bool := {
+    match x returning Bool with
+    | Option.none => Option.isNone(y)
+    | Option.some xVal => {
+      match y returning Bool with
+      | Option.none => Bool.false
+      | Option.some yVal => BEq.beq(beqA)(xVal, yVal)
+    }
+  }
+}
+
+def optionBEq {u: Level}{S: Lifetime}{A: Type { level = u, scope = S }} (beqA: BEq(A)): BEq(Option(A)) :=
+  BEq.mk(
+    fun (x: Option(A))(y: Option(A)): Bool =>
+      Option.beq(beqA, x, y)
+  )
+
+namespace List {
+  def beq {u: Level}{S: Lifetime}{A: Type { level = u, scope = S }} (beqA: BEq(A))(xs: List(A))(ys: List(A)): Bool decreases structural(xs) := {
+    match xs returning Bool with
+    | List.nil => {
+      match ys returning Bool with
+      | List.nil => Bool.true
+      | List.cons head tail => Bool.false
+    }
+    | List.cons x xsTail => {
+      match ys returning Bool with
+      | List.nil => Bool.false
+      | List.cons y ysTail => Bool.and(BEq.beq(beqA)(x, y), List.beq(beqA, xsTail, ysTail))
+    }
+  }
+}
+
+def listBEq {u: Level}{S: Lifetime}{A: Type { level = u, scope = S }} (beqA: BEq(A)): BEq(List(A)) :=
+  BEq.mk(
+    fun (xs: List(A))(ys: List(A)): Bool =>
+      List.beq(beqA, xs, ys)
+  )
+
+namespace Prod {
+  def beq {u: Level}{v: Level}{S: Lifetime}{T: Lifetime}{A: Type { level = u, scope = S }}{B: Type { level = v, scope = T }} (beqA: BEq(A))(beqB: BEq(B))(x: Prod(A, B))(y: Prod(A, B)): Bool :=
+    Bool.and(
+      BEq.beq(beqA)(Prod.fst(x), Prod.fst(y)),
+      BEq.beq(beqB)(Prod.snd(x), Prod.snd(y))
+    )
+}
+
+def prodBEq {u: Level}{v: Level}{S: Lifetime}{T: Lifetime}{A: Type { level = u, scope = S }}{B: Type { level = v, scope = T }} (beqA: BEq(A))(beqB: BEq(B)): BEq(Prod(A, B)) :=
+  BEq.mk(
+    fun (x: Prod(A, B))(y: Prod(A, B)): Bool =>
+      Prod.beq(beqA, beqB, x, y)
+  )
+
+struct DecidableEq {u: Level}{S: Lifetime}(A: Type { level = u, scope = S }) : Type { level = u, scope = S }
+ | mk (decEq: { scope = S } (a: A) -> (b: A) -> Decidable(Eq(A, a, b))) : DecidableEq(A)
+
+namespace DecidableEq {
+  def toBEq {u: Level}{S: Lifetime}{A: Type { level = u, scope = S }} (self: DecidableEq(A)): BEq(A) := BEq.mk(fun (a: A)(b: A): Bool => Decidable.toBool(DecidableEq.decEq(self)(a, b)))
+}
+
+def decEq {u: Level}{S: Lifetime}{A: Type { level = u, scope = S }} (self: DecidableEq(A))(a: A)(b: A): Decidable(Eq(A, a, b)) := DecidableEq.decEq(self)(a, b)
+
+namespace Unit {
+  def decEq (a: Unit)(b: Unit): Decidable(Eq(Unit, a, b)) := {
+    match a returning Decidable(Eq(Unit, a, b)) with
+    | Unit.unit => {
+      match b returning Decidable(Eq(Unit, Unit.unit, b)) with
+      | Unit.unit => Decidable.isTrue(Eq.refl(Unit.unit))
+    }
+  }
+}
+
+def unitDecidableEq : DecidableEq(Unit) := DecidableEq.mk(Unit.decEq)
+
+namespace Bool {
+  def falseNeTrue (h: Eq(Bool, Bool.false, Bool.true)): False := {
+    match h returning False with
+  }
+
+  def trueNeFalse (h: Eq(Bool, Bool.true, Bool.false)): False := {
+    match h returning False with
+  }
+
+  def decEq (a: Bool)(b: Bool): Decidable(Eq(Bool, a, b)) := {
+    match a returning Decidable(Eq(Bool, a, b)) with
+    | Bool.false => {
+      match b returning Decidable(Eq(Bool, Bool.false, b)) with
+      | Bool.false => Decidable.isTrue(Eq.refl(Bool.false))
+      | Bool.true => Decidable.isFalse(Bool.falseNeTrue)
+    }
+    | Bool.true => {
+      match b returning Decidable(Eq(Bool, Bool.true, b)) with
+      | Bool.false => Decidable.isFalse(Bool.trueNeFalse)
+      | Bool.true => Decidable.isTrue(Eq.refl(Bool.true))
+    }
+  }
+}
+
+def boolDecidableEq : DecidableEq(Bool) := DecidableEq.mk(Bool.decEq)
+
+namespace Nat {
+  def zeroNeSucc (n: Nat)(h: Eq(Nat, Nat.zero, Nat.succ(n))): False := {
+    match h returning False with
+  }
+
+  def succNeZero (n: Nat)(h: Eq(Nat, Nat.succ(n), Nat.zero)): False := {
+    match h returning False with
+  }
+
+  def succInj {a: Nat}{b: Nat} (h: Eq(Nat, Nat.succ(a), Nat.succ(b))): Eq(Nat, a, b) := {
+    match h returning Eq(Nat, Nat.pred(Nat.succ(a)), Nat.pred(Nat.succ(b))) with
+    | Eq.refl z => Eq.refl(Nat.pred(z))
+  }
+
+  def decEq (a: Nat)(b: Nat): Decidable(Eq(Nat, a, b)) decreases structural(a) := {
+    match a returning Decidable(Eq(Nat, a, b)) with
+    | Nat.zero => {
+      match b returning Decidable(Eq(Nat, Nat.zero, b)) with
+      | Nat.zero => Decidable.isTrue(Eq.refl(Nat.zero))
+      | Nat.succ bTail => Decidable.isFalse(fun (h: Eq(Nat, Nat.zero, Nat.succ(bTail))): False => Nat.zeroNeSucc(bTail, h))
+    }
+    | Nat.succ aTail => {
+      match b returning Decidable(Eq(Nat, Nat.succ(aTail), b)) with
+      | Nat.zero => Decidable.isFalse(fun (h: Eq(Nat, Nat.succ(aTail), Nat.zero)): False => Nat.succNeZero(aTail, h))
+      | Nat.succ bTail => {
+        match Nat.decEq(aTail, bTail) returning Decidable(Eq(Nat, Nat.succ(aTail), Nat.succ(bTail))) with
+        | Decidable.isTrue h => Decidable.isTrue(congrArg(h, Nat, Nat.succ))
+        | Decidable.isFalse h => Decidable.isFalse(fun (p: Eq(Nat, Nat.succ(aTail), Nat.succ(bTail))): False => h(Nat.succInj(p)))
+      }
+    }
+  }
+}
+
+def natDecidableEq : DecidableEq(Nat) := DecidableEq.mk(Nat.decEq)
+
+struct LE {u: Level}{S: Lifetime}(A: Type { level = u, scope = S }) : Type { level = u, scope = S }
+ | mk (le: { scope = S } A -> A -> Prop { scope = S }) : LE(A)
+
+def le {u: Level}{S: Lifetime}{A: Type { level = u, scope = S }} (self: LE(A))(a: A)(b: A): Prop { scope = S } := LE.le(self)(a, b)
+
+struct LT {u: Level}{S: Lifetime}(A: Type { level = u, scope = S }) : Type { level = u, scope = S }
+ | mk (lt: { scope = S } A -> A -> Prop { scope = S }) : LT(A)
+
+def lt {u: Level}{S: Lifetime}{A: Type { level = u, scope = S }} (self: LT(A))(a: A)(b: A): Prop { scope = S } := LT.lt(self)(a, b)
+
+def natLE : LE(Nat) := LE.mk(Nat.le)
+
+def natLT : LT(Nat) := LT.mk(Nat.lt)
+
+struct Subsingleton {u: Level}{S: Lifetime}(A: Type { level = u, scope = S }) : Prop { scope = S }
+ | intro (elim: { scope = S } (a: A) -> (b: A) -> Eq(A, a, b)) : Subsingleton(A)
+
+axiom Quot {u: Level}{S: Lifetime}{Sr: Lifetime}{Sq: Lifetime}(A: Type { level = u, scope = S })(r: { scope = Sr } A -> A -> Prop { scope = Sq }): Type { level = u, scope = union(S, union(Sr, Sq)) }
+
+namespace Quot {
+  def mk {u: Level}{S: Lifetime}{Sr: Lifetime}{Sq: Lifetime}{A: Type { level = u, scope = S }}(r: { scope = Sr } A -> A -> Prop { scope = Sq })(a: A): Quot(A, r) := builtin
+
+  axiom sound {u: Level}{S: Lifetime}{Sr: Lifetime}{Sq: Lifetime}{A: Type { level = u, scope = S }} (a: A)(b: A)(r: { scope = Sr } A -> A -> Prop { scope = Sq })(h: r(a, b)): Eq(Quot(A, r), Quot.mk(r, a), Quot.mk(r, b))
+
+  def lift {u: Level}{v: Level}{S: Lifetime}{T: Lifetime}{Sr: Lifetime}{Sq: Lifetime}{Sf: Lifetime}{Ss: Lifetime}{A: Type { level = u, scope = S }}{r: { scope = Sr } A -> A -> Prop { scope = Sq }} (q: Quot(A, r))(B: Type { level = v, scope = T })(f: { scope = Sf } A -> B)(sound: { scope = Ss } (a: A) -> (b: A) -> (h: r(a, b)) -> Eq(B, f(a), f(b))): B := builtin
+
+  def liftOn {u: Level}{v: Level}{S: Lifetime}{T: Lifetime}{Sr: Lifetime}{Sq: Lifetime}{Sf: Lifetime}{Ss: Lifetime}{A: Type { level = u, scope = S }}{r: { scope = Sr } A -> A -> Prop { scope = Sq }} (q: Quot(A, r))(B: Type { level = v, scope = T })(f: { scope = Sf } A -> B)(sound: { scope = Ss } (a: A) -> (b: A) -> (h: r(a, b)) -> Eq(B, f(a), f(b))): B := Quot.lift(q, B, f, sound)
+
+  def ind {u: Level}{S: Lifetime}{Sr: Lifetime}{Sq: Lifetime}{Sm: Lifetime}{Sc: Lifetime}{Sk: Lifetime}{A: Type { level = u, scope = S }}{r: { scope = Sr } A -> A -> Prop { scope = Sq }} (q: Quot(A, r))(motive: { scope = Sc } (q: Quot(A, r)) -> Prop { scope = Sm })(mk: { scope = Sk } (a: A) -> motive(Quot.mk(r, a))): motive(q) := builtin
+
+  def inductionOn {u: Level}{S: Lifetime}{Sr: Lifetime}{Sq: Lifetime}{Sm: Lifetime}{Sc: Lifetime}{Sk: Lifetime}{A: Type { level = u, scope = S }}{r: { scope = Sr } A -> A -> Prop { scope = Sq }} (q: Quot(A, r))(motive: { scope = Sc } (q: Quot(A, r)) -> Prop { scope = Sm })(mk: { scope = Sk } (a: A) -> motive(Quot.mk(r, a))): motive(q) := Quot.ind(q, motive, mk)
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// GPU prelude additions: string literals and native division. Everything above this line is the bundled prelude
+// unchanged.
+
+namespace Nat {
+  def divFuel (fuel: Nat)(a: Nat)(b: Nat): Nat decreases structural(fuel) := {
+    match fuel returning Nat with
+    | Nat.zero => Nat.zero
+    | Nat.succ f => {
+      match Nat.blt(a, b) returning Nat with
+      | Bool.true => Nat.zero
+      | Bool.false => Nat.succ(Nat.divFuel(f, Nat.sub(a, b), b))
+    }
+  }
+
+  // Native: division by zero is zero.
+  def div (a: Nat)(b: Nat): Nat := {
+    match Nat.isZero(b) returning Nat with
+    | Bool.true => Nat.zero
+    | Bool.false => Nat.divFuel(a, a, b)
+  }
+
+  // Native: modulus by zero is the dividend.
+  def mod (a: Nat)(b: Nat): Nat := Nat.sub(a, Nat.mul(Nat.div(a, b), b))
+
+  def max (a: Nat)(b: Nat): Nat := Bool.cond(Nat.ble(a, b), Nat, b, a)
+
+  def min (a: Nat)(b: Nat): Nat := Bool.cond(Nat.ble(a, b), Nat, a, b)
+}
+
+struct Char : Type
+ | mk (value: Nat) : Char
+
+namespace Char {
+  def ofNat (value: Nat): Char := Char.mk(value)
+}
+
+struct String : Type
+ | mk (data: List(Char)) : String
+
+namespace String {
+  def append (a: String)(b: String): String := String.mk(List.append(a.data, b.data))
+
+}
