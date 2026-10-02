@@ -24,6 +24,7 @@ object MatchChecker {
 
   private def computeReachableCtors(
       scrut: Value,
+      scrutTerm: CA.Term,
       scrutTpe: Value,
       family: InductiveFamilyInstance,
       cases: Vector[CA.Case],
@@ -61,25 +62,33 @@ object MatchChecker {
       val valueRefinable = rootRefinable(scrut) ++ ctorRefinable
       val typeRefinable = refinableIn(scrutTpe, scrutTpe.synDeps) ++ ctorRefinable
 
-      // A constructor may only be pruned on a provably-apart unification failure. A merely stuck
-      // failure keeps the branch required but yields no refinement: checking it with fewer
-      // equations is conservative, whereas pruning on it would refute equations that may hold
-      // propositionally (e.g. via Quot.sound).
+      // Apartness and known constructor clashes only propose pruning. The refutation must check in
+      // this original context, without the candidate store. A failed certificate or stuck equation
+      // retains the branch without refinement, including equations that can hold via Quot.sound.
+      // All coverage consumers use the resulting certified reachability.
+      def excluded: Boolean =
+        RefinementCertificates.excludes(scrut, scrutTerm, family, h, fields, resultTy, env, scrutTerm.span)
+      val knownDifferent = scrut match {
+        case ConstructorForm(name, _) => name != ctorName
+        case _                        => false
+      }
       val branchEqStore =
-        unify(scrut, ctorValue, valueRefinable) match {
-          case Right(store)       => Some(store)
-          case Left(f) if f.apart => None
-          case Left(_) =>
-            ValueEquivalence.tryUnifyMatchTypes(
-              resultTy,
-              scrutTpe,
-              EqStore.empty.allowEta(typeRefinable.ids, typeRefinable.vars)
-            ) match {
-              case Right(store)       => Some(store)
-              case Left(f) if f.apart => None
-              case Left(_)            => Some(EqStore.empty)
-            }
-        }
+        if (knownDifferent || RefinementCertificates.Testing.proposes) { if (excluded) None else Some(EqStore.empty) }
+        else
+          unify(scrut, ctorValue, valueRefinable) match {
+            case Right(store)       => Some(store)
+            case Left(f) if f.apart => if (excluded) None else Some(EqStore.empty)
+            case Left(_) =>
+              ValueEquivalence.tryUnifyMatchTypes(
+                resultTy,
+                scrutTpe,
+                EqStore.empty.allowEta(typeRefinable.ids, typeRefinable.vars)
+              ) match {
+                case Right(store)       => Some(store)
+                case Left(f) if f.apart => if (excluded) None else Some(EqStore.empty)
+                case Left(_)            => Some(EqStore.empty)
+              }
+          }
 
       branchEqStore.map { branchStore =>
         val refinedResultTy = ValueOps.materialize(scrutTpe, branchStore)
@@ -219,47 +228,38 @@ object MatchChecker {
       else Frame.InBranch(c.ctorName, c.argRefs.map(_.name))
 
     lazy val reachableByType: Vector[ReachableCtor] =
-      computeReachableCtors(scrut, scrutTpe, inductiveFamily, written, env)
+      computeReachableCtors(scrut, t.scrut, scrutTpe, inductiveFamily, written, env)
 
     val checkedMotive = checkTypeTerm(t.motive, env)
     val motiveTy = checkedMotive.value
 
     checkPropElimination(inductiveName, scrutTpe, motiveTy, reachableByType)
 
-    val checkedByCtor: Map[String, CA.Case] = scrut match {
-      case ConstructorForm(ctorName, storedArgs) =>
-        val cases = withWildcard(_ == ctorName)
-        cases.find(_.ctorName != ctorName).foreach { c =>
-          at(c.span) { fail(UnreachableCase(c.ctorName)) }
-        }
-
-        val br = cases.find(_.ctorName == ctorName).getOrElse(fail(MissingCase(ctorName)))
-        val equation = equationIn(ctorName, scrut, storedArgs)
-        Map(ctorName -> checkBranch(br, frameOf(br), storedArgs, equation, env, motiveTy))
-
-      case _ =>
-        val reachableMap = reachableByType.map(info => info.name -> info).toMap
-        val cases = withWildcard(reachableMap.contains)
-
-        inductiveCtorNames.flatMap { ctorName =>
-          reachableMap.get(ctorName) match {
-            case None =>
-              cases.find(_.ctorName == ctorName).foreach { c =>
-                at(c.span) { fail(UnreachableCase(ctorName)) }
-              }
-              None
-
-            case Some(info) =>
-              val br = cases.find(_.ctorName == ctorName).getOrElse(fail(MissingCase(ctorName)))
+    val reachableMap = reachableByType.map(info => info.name -> info).toMap
+    val cases = withWildcard(reachableMap.contains)
+    val checkedByCtor: Map[String, CA.Case] = inductiveCtorNames.flatMap { ctorName =>
+      reachableMap.get(ctorName) match {
+        case None =>
+          cases.find(_.ctorName == ctorName).foreach { c =>
+            at(c.span) { fail(UnreachableCase(ctorName)) }
+          }
+          None
+        case Some(info) =>
+          val br = cases.find(_.ctorName == ctorName).getOrElse(fail(MissingCase(ctorName)))
+          val checked = scrut match {
+            case ConstructorForm(name, storedArgs) if name == ctorName =>
+              checkBranch(br, frameOf(br), storedArgs, equationIn(ctorName, scrut, storedArgs), env, motiveTy)
+            case _ =>
               val branchStore = info.branchEqStore
               val branchEnv = ValueOps.materializeEnv(env, branchStore)
               val branchArgs = info.fieldArgs.map(arg => ValueOps.materialize(arg, branchStore))
               val branchMotiveTy = ValueOps.materialize(motiveTy, branchStore)
               val equation = equationIn(ctorName, ValueOps.materialize(scrut, branchStore), branchArgs)
-              Some(ctorName -> checkBranch(br, frameOf(br), branchArgs, equation, branchEnv, branchMotiveTy))
+              checkBranch(br, frameOf(br), branchArgs, equation, branchEnv, branchMotiveTy)
           }
-        }.toMap
-    }
+          Some(ctorName -> checked)
+      }
+    }.toMap
 
     // The residual rebuilds the written cases in their order. With a wildcard it is the expansion, which has no written
     // order: it lists every case in declaration order, as a match written out in full usually is, so it converts with

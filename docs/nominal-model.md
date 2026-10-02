@@ -447,9 +447,12 @@ Its proof premises are the explicit typed positivity/declaration rules; absence 
 is not evidence for them. A future mechanical fundamental lemma would have to formalize these derivations and the match
 equations. The construction does not establish operational canonicity, resource preservation, lifetime confinement, all
 trusted-prelude obligations or every implementation shortcut. The two-Long ValueKey equal-hash shortcut is a
-pre-existing implementation gap outside the repair; no collision-free hashing axiom is added. Existing unifier-based
-coverage/refinement remains a separate implementation obligation until independently checked local refutation
-certificates enforce the stated match rules.
+pre-existing implementation gap outside the repair; no collision-free hashing axiom is added. Constructor exclusions
+now require local refutations checked by the ordinary typechecker, using a conservative constructor-hypothesis
+schema and private checked proof helpers. The N1–N3 premise factory instantiates the principles justified here; its
+eligibility checks and signatures, the hypothesis schema, conversion and unchanged branch substitutions remain
+implementation obligations. This model does not verify those components or constitute an independent kernel proof.
+See [checked constructor exclusion](kernel.md#checked-constructor-exclusion).
 
 ## Primary references
 
