@@ -149,7 +149,7 @@ class StringPrintingTests extends munit.FunSuite with TestSupport {
     val mismatchDetail =
       "\n  expected: Eq(List(String), List.cons(\"ab\", List.nil), List.nil)" +
         "\n  actual:   Eq(List(String), List.nil, List.nil)" +
-        "\n  differ at: List.cons(\"ab\", List.nil)  vs  List.nil   (provably different)"
+        "\n  differ at: List.cons(\"ab\", List.nil)  vs  List.nil   (not reducible: stuck)"
     assert(mismatchText.contains("error: type mismatch\n"), mismatchText)
     assert(mismatchText.contains(s"$mismatchDetail\n"), mismatchText)
     assert(mismatchJson.contains(s"\"message\": \"${escaped("type mismatch" + mismatchDetail)}\""), mismatchJson)

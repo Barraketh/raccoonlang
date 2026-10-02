@@ -420,6 +420,22 @@ object InductiveChecks {
         NodeId.fresh()
       )
 
+  /** The code stores one argument value; Pi domains still store a whole function graph. */
+  private def familyArgumentLevel(tpe: Value): Level = tpe match {
+    case _: ParameterTpe => Level.zero
+    case sort: VSort     => if (sort.isProp) Level.zero else sort.level
+    case pi: VPi if !pi.isPropValued =>
+      val fresh = BinderOps.freshen(pi.binders, pi.env)
+      val domains = pi.binders.map { binder =>
+        fresh(binder.localRef).tpe match {
+          case _: ParameterTpe => Level.zero
+          case domain          => TypeChecker.getUniverse(domain).level
+        }
+      }
+      Level.max(domains :+ familyArgumentLevel(pi.codomain(fresh)))
+    case other => TypeChecker.getUniverse(other).level
+  }
+
   private def checkFamilySignatures(block: Decl.InductiveBlock, env: Env): Vector[FamilySignature] = {
     // A family's parameters and indices are explicit or implicit: the parser refuses an evidence binder among them.
     block.families.foreach { decl =>
@@ -484,6 +500,12 @@ object InductiveChecks {
         case sort: VSort => sort
         case other       => at(decl.header.resultTy.span) { fail(InductiveTypeNotASort(other)) }
       }
+      if (!declaredSort.isProp)
+        decl.header.binders.zip(familyArgs).foreach { case (binder, argument) =>
+          val required = familyArgumentLevel(argument.tpe)
+          if (!Level.leq(required, declaredSort.level))
+            at(binder.span) { fail(FamilyArgumentTooLarge(decl.header.name, binder.name, required)) }
+        }
       // spec §5.1: the declared scope may mention only the family's parameters, and it names each lifetime parameter,
       // so it is exactly their union.
       Sorts.requireNamesLifetimeParameters(

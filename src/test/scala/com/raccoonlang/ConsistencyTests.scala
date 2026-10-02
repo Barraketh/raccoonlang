@@ -217,13 +217,8 @@ class ConsistencyTests extends munit.FunSuite with TestSupport {
   }
 
   // A constructor clash is apart only between values of one type up to its indices (docs/kernel.md#apartness).
-  test("constructor clashes between values of different types are not refutations") {
-    // `Tag`'s index `a` has the type its index `A` says, so where the `A`s disagree the `a`s are of different types.
-    // That `A` equation is stuck, not apart: no family is provably distinct from another. Pruning on `Bool.true`
-    // against `Two.one` would decide that `Bool` is not `Two`, against the literal `0` that `Bool` is not `Nat`, and on
-    // `List.nil` against `List.cons` at `List(Bool)` and `List(Two)`, in the position typed `a: A`, that those two are
-    // distinct; no eliminator decides any of them. Within one type the clash still prunes. The `Box` index is a structure, so its key never decides
-    // the family's equation, and the `x` index leaves something refinable.
+  test("nominal family clashes exclude heterogeneous constructor indices") {
+    // Nominal type apartness now excludes these heterogeneous indices before any value clash is needed.
     val families =
       """
         |inductive Two : Type
@@ -254,8 +249,8 @@ class ConsistencyTests extends munit.FunSuite with TestSupport {
       "Tag(Nat, 0, Box.mk(x))",
       "Tagged(List(Two), List.cons(Two.one, List.nil(Two)), x)"
     ).foreach { tpe =>
-      typecheckDecls(matching(tpe, reached))
-      expectOnly[MissingCase](typecheckDecls(matching(tpe, "")))
+      typecheckDecls(matching(tpe, ""))
+      expectOnly[UnreachableCase](typecheckDecls(matching(tpe, reached)))
     }
     Vector("Tag(Bool, Bool.false, Box.mk(0))", "Tag(Bool, Bool.false, Box.mk(x))").foreach { tpe =>
       typecheckDecls(matching(tpe, ""))
@@ -341,22 +336,17 @@ class ConsistencyTests extends munit.FunSuite with TestSupport {
     }
   }
 
-  // NOT a rejection yet: current refinement rules admit type-former injectivity; this is
-  // intentionally retained as a consistency probe until those rules change.
-  test("currently allowed: inductive family head injectivity via match refinement") {
+  test("nominal family injectivity requires a sufficiently large family") {
+    expectTypeError[FamilyArgumentTooLarge]("inductive I (P: Type -> Type) : Type\n | mk : I(P)")
     runProgram(
       """
-        |inductive I (P: Type -> Type) : Type
+        |inductive I (P: Type -> Type) : Type { level = one }
         | | mk : I(P)
-        |
-        |def injI (P: Type -> Type)(Q: Type -> Type)(h: Eq(Type, I(P), I(Q))): Eq((T: Type) -> Type, P, Q) := {
+        |def injI (P: Type -> Type)(Q: Type -> Type)(h: Eq(Type { level = one }, I(P), I(Q))): Eq((T: Type) -> Type, P, Q) := {
         |  match h returning Eq((T: Type) -> Type, P, Q) with
         |  | Eq.refl z => Eq.refl(P)
         |}
-        |
-        |{
-        |  Bool.true
-        |}
+        |{ Bool.true }
         |""".stripMargin
     )
   }

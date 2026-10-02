@@ -218,6 +218,8 @@ final case class InductiveUniverseTooSmall(
     inductiveUniverse: Value.Level
 ) extends TypeError
 
+final case class FamilyArgumentTooLarge(family: String, argument: String, level: Value.Level) extends TypeError
+
 final case class InductiveTypeNotASort(tpe: Value) extends TypeError
 
 /** A declared kind that does not contain the kind of `part` (spec §2.6), such as a family's constructor field. */

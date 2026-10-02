@@ -8,11 +8,11 @@ import scala.util.control.NonFatal
 object ValueEquivalence {
 
   /**
-   * A failed unification. `apart` means the two values are provably unequal: the failure is rooted in a data
-   * constructor clash whose no-confusion principle is derivable (a Type-valued inductive), so callers may treat the
-   * equation as refutable. When `apart` is false the equation is merely unsolvable by this algorithm and must NOT be
-   * used as evidence of disequality: the sides may still be propositionally equal (e.g. via Quot.sound, proof
-   * irrelevance, or — once added — propext/funext). See docs/kernel.md#apartness.
+   * A failed unification. `apart` means the two values are provably unequal: the failure follows nominal Type-family
+   * principles or data constructor no-confusion (a Type-valued inductive), so callers may treat the equation as
+   * refutable. When `apart` is false the equation is merely unsolvable by this algorithm and must NOT be used as
+   * evidence of disequality: the sides may still be propositionally equal (e.g. via Quot.sound, proof irrelevance, or —
+   * once added — propext/funext). See docs/kernel.md#apartness.
    */
   final case class UnifyFailure(v1: Value, v2: Value, apart: Boolean) {
     def asStuck: UnifyFailure = if (apart) copy(apart = false) else this
@@ -25,7 +25,7 @@ object ValueEquivalence {
    * `Unify.tryUnify`.
    */
   def defEq(v1: Value, v2: Value): Boolean =
-    Unify.tryUnify(v1, v2, EqStore.empty, Unify.Ctx()).isRight
+    Unify.tryUnify(v1, v2, EqStore.empty, Unify.Ctx(invertibleFrame = true, scrutineeTypeRoot = false)).isRight
 
   /**
    * Proof irrelevance reduces every equation between proof values to the equation between their propositions
@@ -53,7 +53,11 @@ object ValueEquivalence {
       v2: Value,
       meta: EqStore
   ): Either[UnifyFailure, EqStore] =
-    Unify.tryUnify(v1, v2, meta, Unify.Ctx())
+    Unify.tryUnify(v1, v2, meta, Unify.Ctx(invertibleFrame = true, scrutineeTypeRoot = false))
+
+  /** Only this constructor-result/scrutinee-type equation may invert a Prop family head. */
+  def tryUnifyMatchTypes(v1: Value, v2: Value, meta: EqStore): Either[UnifyFailure, EqStore] =
+    Unify.tryUnify(v1, v2, meta, Unify.Ctx(invertibleFrame = true, scrutineeTypeRoot = true))
 
   /**
    * Key-coherence assertions (docs/kernel.md#value-identity): wherever the fast path decides an equation by key alone,
@@ -91,16 +95,18 @@ object ValueEquivalence {
     }
 
     /**
-     * Unification context: whether every frame descended through so far is invertible.
+     * Unification context: whether every frame descended through so far is invertible, and whether this is the match's
+     * root type equation. Structural descent clears the latter before calling any helper.
      *
      * A link records exactly the equation presented at the point of linking (or its unique forced solution) — the store
      * never invents values. Since links are consumed as consequences of the root equation, linking is legal only while
      * every enclosing frame is invertible: descending through a non-invertible frame produces sub-equations that are
      * sufficient but not necessary, so links beneath one are refused.
      */
-    final case class Ctx(invertibleFrame: Boolean = true) {
+    final case class Ctx(invertibleFrame: Boolean, scrutineeTypeRoot: Boolean) {
       def canLinkForced: Boolean = invertibleFrame
       def enterNonInvertibleFrame: Ctx = if (invertibleFrame) copy(invertibleFrame = false) else this
+      def nested: Ctx = if (scrutineeTypeRoot) copy(scrutineeTypeRoot = false) else this
     }
 
     private def sameValueObject(v1: Value, v2: Value): Boolean =
@@ -134,42 +140,65 @@ object ValueEquivalence {
 
     /**
      * Whether a mismatch between `a` and `b` is decided at their heads by a rule below that can also refute it: a clash
-     * of constructors, or unequal payloads of one packed codec. A key tells only that two values differ, never that
-     * they are apart, so such a pair goes to its rule even when its keys are conclusive, at the cost of one comparison.
+     * of constructors or nominal forms, or unequal payloads of one packed codec. A key tells only that two values
+     * differ, never that they are apart, so such a pair goes to its rule even when its keys are conclusive, at the cost
+     * of one comparison.
      */
     private def mismatchRefutableAtHead(a: Value, b: Value): Boolean =
-      (a, b) match {
+      nominalClash(a, b) || ((a, b) match {
         case (ConstructorApp(h1), ConstructorApp(h2)) => h1.name != h2.name
         case (p1: VPacked, p2: VPacked)               => p1.codec == p2.codec
         case _                                        => false
-      }
+      })
 
     // Unsolvable, but not refutable: safe for elaboration to give up on, unsound to prune a match case on.
     private def stuck(v1: Value, v2: Value): Result = Left(UnifyFailure(v1, v2, apart = false))
-    // Provably unequal: rooted in no-confusion evidence, safe to prune a match case on.
+    // Provably unequal by nominal principles or no-confusion, safe to prune a match case on.
     private def apart(v1: Value, v2: Value): Result = Left(UnifyFailure(v1, v2, apart = true))
 
-    /**
-     * Heads whose applications may be decomposed invertibly: the equation `H as ~ H bs` forces the argument equations
-     * definitionally. True for constructors of genuine inductives (no-confusion) and for inductive family heads
-     * (definitional injectivity of type formers). Everything else — axioms, quotient constructors, blocked heads — is
-     * an arbitrary function: decomposition is only a solving heuristic, and its failures prove nothing.
-     *
-     * Note this is about invertibility (links and failure pass-through), not apartness: head *clashes* are refutations
-     * only for data constructors (see the VCtor case). Family-head clashes prove nothing propositionally — under
-     * propositional extensionality distinct Prop-valued families can be equal (And T T = Or T T), and type-former
-     * generativity is not derivable even for Type-valued families.
-     *
-     * TODO(propext): once propositional extensionality is added, invertible decomposition of Prop-sorted family
-     * instances appearing in *index* positions (e.g. the sides of an `Eq Prop` scrutinee) is itself no longer a
-     * consequence; the root instantiation probe in MatchChecker remains eliminator-justified. Distinguishing the two
-     * needs a root-vs-index marker on Ctx.
-     */
-    private def definitionallyInjectiveHead(head: Value): Boolean =
-      head match {
-        case h: ConstructorHead         => h.noConfusion
-        case VConst(_, Inductive(_), _) => true
-        case _                          => false
+    /** Nominal apartness applies only to these fully evaluated Type forms (N2–N3). */
+    private def nominalClash(a: Value, b: Value): Boolean = {
+      def family(value: Value): Option[String] = value match {
+        case InductiveFamilyValue(instance) if !Sorts.isProposition(value) => Some(instance.head.name)
+        case _                                                             => None
+      }
+      def dataPi(value: Value): Boolean = value match {
+        case pi: VPi => !pi.isPropValued && pi.tpe.isInstanceOf[VSort]
+        case _       => false
+      }
+      def universe(value: Value): Boolean = value match {
+        case sort: VSort => !sort.isProp
+        case _           => false
+      }
+      (family(a), family(b)) match {
+        case (Some(f), Some(g)) => f != g
+        case (Some(_), None)    => dataPi(b) || universe(b)
+        case (None, Some(_))    => dataPi(a) || universe(a)
+        case _                  => (dataPi(a) && universe(b)) || (universe(a) && dataPi(b))
+      }
+    }
+
+    /** Called only for fully applied family instances. */
+    private def familyArgumentsInvertible(value: Value, ctx: Ctx): Boolean =
+      !Sorts.isProposition(value) || ctx.scrutineeTypeRoot
+
+    /** Unequal closed family keys can hide a nominal clash inside their invertible arguments. */
+    private def familyEquationMayRefute(a: Value, b: Value, ctx: Ctx): Boolean =
+      (a, b) match {
+        case (InductiveFamilyValue(f1), InductiveFamilyValue(f2)) if f1.head.name == f2.head.name =>
+          familyArgumentsInvertible(a, ctx) && familyArgumentsInvertible(b, ctx)
+        case _ => false
+      }
+
+    /** Prop head inversion belongs only to the match's root type equation; Type families obey N1 everywhere. */
+    private def invertibleApplication(value: VApp, ctx: Ctx): Boolean =
+      value match {
+        case InductiveFamilyValue(_) => familyArgumentsInvertible(value, ctx)
+        case _ =>
+          value.head match {
+            case h: ConstructorHead => h.noConfusion
+            case _                  => false
+          }
       }
 
     // Rejects solutions that let scope-local fresh vars escape. This also catches transitive
@@ -512,13 +541,17 @@ object ValueEquivalence {
       // once one links to the other, and no key mismatch survives that. Such a mismatch is `stuck`,
       // a failure to derive `≡`, except where a rule below can refute it at the two heads, a
       // constructor clash or unequal literals: only the rules produce `apart`, so those pairs go to
-      // them whatever the keys.
+      // them whatever the keys. An invertible family equation also descends: a closed key mismatch
+      // may conceal a nominal refutation in its arguments, including at a match's root Prop family.
       if (sameValueObject(a, b)) return Right(meta)
       if (a.key == b.key) {
         if (keyAssertionsEnabled && !keyIsIdentity(a, b)) assertKeyVerdict(a, b, meta, ctx, keysEqual = true)
         return Right(meta)
       }
-      if (meta.refinable.isEmpty && !keysAreInconclusive(a, b) && !mismatchRefutableAtHead(a, b)) {
+      if (
+        meta.refinable.isEmpty && !keysAreInconclusive(a, b) && !mismatchRefutableAtHead(a, b) &&
+        !familyEquationMayRefute(a, b, ctx)
+      ) {
         if (keyAssertionsEnabled) assertKeyVerdict(a, b, meta, ctx, keysEqual = false)
         return stuck(a, b)
       }
@@ -585,12 +618,15 @@ object ValueEquivalence {
     }
 
     /** The rules below the key fast path: decomposition, whose leaves are decided by the fast path again. */
-    private def structurally(a: Value, b: Value, meta: EqStore, ctx: Ctx): Result = {
+    private def structurally(a: Value, b: Value, meta: EqStore, rootCtx: Ctx): Result = {
+      val ctx = rootCtx.nested
       (a, b) match {
         // Proof structure supplies neither links nor apartness. Reduce to the proposition equation
         // before lambda extensionality, constructor no-confusion, application decomposition, or
         // Var linking can inspect the chosen representatives.
         case ProofEquation(t1, t2) => tryUnify(t1, t2, meta, ctx)
+
+        case _ if nominalClash(a, b) => apart(a, b)
 
         // Grouping is part of the type's identity, so `tryUnifyPis` relates only Pis with the same
         // binder count: a curried `(a:A) -> (b:B) -> C` is not the uncurried `(a:A)(b:B) -> C`.
@@ -639,19 +675,15 @@ object ValueEquivalence {
         case (other @ ConstructorApp(head), p: VPacked) =>
           unifyPeeled(p, head, other, meta, ctx, packedOnLeft = false)
 
-        // Deliberately NOT a refutation: different inductive family heads (bare or applied) are only
-        // definitionally distinct. Propositional generativity is not assumed — propext can equate
-        // Prop-valued families (And T T = Or T T), so head clashes fall through to stuck.
-
         // Evidence arguments are not compared: each is a proof of a proposition its head and earlier
         // arguments determine, so heads and determining arguments that unify make them equal too.
         case (v1: VApp, v2: VApp) if v1.determiningArgs.length == v2.determiningArgs.length =>
-          // Decomposition is invertible only for no-confusion heads. Proof-typed applications were
+          // Decomposition is invertible for constructors, Type families and the root Prop family. Proof applications were
           // handled by ProofEquation, so no proof exclusion is needed here. For any other head it is
           // a solving heuristic: `f a ~ f b` failing on `a ~ b` proves nothing about the applications,
           // and links made below are choices, not consequences (Invert mode refuses them via argCtx).
           val invertible =
-            definitionallyInjectiveHead(v1.head) && definitionallyInjectiveHead(v2.head)
+            invertibleApplication(v1, rootCtx) && invertibleApplication(v2, rootCtx)
           val argCtx = if (invertible) ctx else ctx.enterNonInvertibleFrame
           def frame(failed: UnifyFailure): UnifyFailure = if (invertible) failed else failed.asStuck
           val headsUnified = (v1.head, v2.head) match {
@@ -732,11 +764,11 @@ object ValueEquivalence {
 
         // Two sorts are equal when their levels, kinds and scopes are (spec §2.5).
         case (s1: VSort, s2: VSort) if Sorts.isProp(s1) == Sorts.isProp(s2) =>
-          for {
+          (for {
             afterLevel <- tryUnify(s1.level, s2.level, meta, ctx)
             afterKind <- tryUnify(s1.kind, s2.kind, afterLevel, ctx)
             afterScope <- tryUnify(s1.scope, s2.scope, afterKind, ctx)
-          } yield afterScope
+          } yield afterScope).left.map(_.asStuck)
 
         // Unify FreshVars through ctx. Basic idea: FreshVars can point at things through context
         // unify creates a ctx of pointers. We only create pointers from the top of the chain

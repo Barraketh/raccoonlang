@@ -729,7 +729,7 @@ class InductiveCheckTest extends munit.FunSuite with DiagnosticAssertions {
         |inductive Peano : Type
         | | zero : Peano
         |
-        |inductive Higher (F: Type -> Type) : Type
+        |inductive Higher (F: Type -> Type) : Type { level = one }
         | | mk (x: F(Peano)) : Higher(F)
         |
         |""".stripMargin
