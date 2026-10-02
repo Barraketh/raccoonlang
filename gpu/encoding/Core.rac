@@ -774,16 +774,19 @@ namespace Core {
 
   def start (k: Key)(l: Lifetime)(g: Group)(group: CtaGroup): Ctx(l, g) := Ctx.mk(l, g, Gen.mk(List.nil(Stmt), 0, 0, 1, List.nil(String), group, 0))
 
-  // A kernel the typed core built: the only thing `render` prints. A program can neither build one nor take one apart,
-  // so it cannot change a kernel's code, shared memory, launcher or bounds. It is compiled for a CTA of `threads`
+  // A kernel the typed core built: the only thing `render` prints. A program cannot build or change one. `checkedKernel`
+  // exposes its immutable AST for read-only inspection only with `WellFormed` evidence. It is compiled for a CTA of `threads`
   // threads and `residency` CTAs per SM (`__launch_bounds__(threads, residency)`), so `ptxas` gives a thread at most
   // `Registers.budget(threads, residency)` registers, and the kernel never fails to launch for lack of them.
   sealed struct Program : Type
    | mk (kernel: Kernel)(threads: Nat)(residency: Nat) : Program
 
-  // That `p`'s kernel is well formed (`Check.WellFormed`): what `render` requires, which a client's own function over
-  // programs states to forward a proof, since it cannot read the kernel itself.
+  // That `p`'s kernel is well formed (`Check.WellFormed`): what `render` requires and what `checkedKernel` requires
+  // before exposing the immutable AST for inspection.
   def WellFormed (p: Program): Prop := Check.WellFormed(p.kernel)
+
+  // Read-only access for checked host tooling: the proof is still required, and Program stays sealed.
+  def checkedKernel (p: Program)[ok: Core.WellFormed(p)]: Cuda.Kernel := p.kernel
 
   // The kernel as CUDA C++. It must be well formed (`Check.WellFormed`), which the checker discharges by evaluating
   // `Check`'s checkers on the concrete kernel where a program renders it: one with a generation error, or that breaks

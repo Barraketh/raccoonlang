@@ -1,0 +1,68 @@
+// Source-level checks for the evaluator's exact ring and persistent memory foundation. The depth-14 allocation is
+// the 16,384-cell tile extent used by the first evaluator spike; selected writes exercise both sides of a tree split.
+
+import evaluator.Memory
+import evaluator.Ring
+
+namespace EvaluatorChecks {
+  def tile : Evaluator.Memory(Nat) := Evaluator.Memory.allocPow2(14, Evaluator.Ring.zero)
+  def first : Evaluator.Memory(Nat) := Option.getD(Evaluator.Memory.set(tile, 0, 11), tile)
+  def leftEdge : Evaluator.Memory(Nat) := Option.getD(Evaluator.Memory.set(first, 8191, 29), first)
+  def rightEdge : Evaluator.Memory(Nat) := Option.getD(Evaluator.Memory.set(leftEdge, 8192, 47), leftEdge)
+  def last : Evaluator.Memory(Nat) := Option.getD(Evaluator.Memory.set(rightEdge, 16383, 83), rightEdge)
+  def latestFirst : Evaluator.Memory(Nat) := Option.getD(Evaluator.Memory.set(last, 0, 101), last)
+
+  def singleCell : Evaluator.Memory(Nat) := Evaluator.Memory.allocPow2(0, 5)
+  def singleUpdated : Evaluator.Memory(Nat) := Option.getD(Evaluator.Memory.set(singleCell, 0, 7), singleCell)
+
+  def boolMemory : Evaluator.Memory(Bool) := Evaluator.Memory.allocPow2(2, Bool.false)
+  def boolUpdated : Evaluator.Memory(Bool) := Option.getD(Evaluator.Memory.set(boolMemory, 2, Bool.true), boolMemory)
+
+  def reads (memory: Evaluator.Memory(Nat))(index: Nat)(expected: Nat): Bool := {
+    match Evaluator.Memory.get(memory, index) returning Bool with
+    | Option.none => Bool.false
+    | Option.some value => Nat.beq(value, expected)
+  }
+
+  def boundaryReads : Bool := Bool.and(
+    Bool.and(Nat.beq(Evaluator.Memory.capacity(tile), 16384), EvaluatorChecks.reads(latestFirst, 0, 101)),
+    Bool.and(Bool.and(EvaluatorChecks.reads(latestFirst, 8191, 29), EvaluatorChecks.reads(latestFirst, 8192, 47)),
+      Bool.and(EvaluatorChecks.reads(latestFirst, 16383, 83),
+        Bool.and(Bool.and(EvaluatorChecks.reads(latestFirst, 1, 0), EvaluatorChecks.reads(latestFirst, 8190, 0)),
+          Bool.and(EvaluatorChecks.reads(latestFirst, 8193, 0), EvaluatorChecks.reads(latestFirst, 16382, 0))))))
+
+  def persistentReads : Bool := Bool.and(
+    Bool.and(EvaluatorChecks.reads(tile, 0, 0), EvaluatorChecks.reads(first, 0, 11)),
+    Bool.and(EvaluatorChecks.reads(rightEdge, 0, 11), EvaluatorChecks.reads(last, 0, 11)))
+
+  def outOfBounds : Bool := Bool.and(
+    Bool.and(Option.isNone(Evaluator.Memory.get(tile, 16384)), Option.isNone(Evaluator.Memory.get(tile, 20000))),
+    Bool.and(Option.isNone(Evaluator.Memory.set(tile, 16384, 1)), Option.isNone(Evaluator.Memory.set(tile, 20000, 1))))
+
+  def singleCellChecks : Bool := Bool.and(
+    Bool.and(Nat.beq(Evaluator.Memory.capacity(singleCell), 1), EvaluatorChecks.reads(singleUpdated, 0, 7)),
+    Bool.and(EvaluatorChecks.reads(singleCell, 0, 5),
+      Bool.and(Option.isNone(Evaluator.Memory.get(singleCell, 1)), Option.isNone(Evaluator.Memory.set(singleCell, 1, 9)))))
+
+  def boolReads (memory: Evaluator.Memory(Bool))(index: Nat)(expected: Bool): Bool := {
+    match Evaluator.Memory.get(memory, index) returning Bool with
+    | Option.none => Bool.false
+    | Option.some value => Bool.beq(value, expected)
+  }
+
+  def genericValueChecks : Bool := Bool.and(
+    Bool.and(EvaluatorChecks.boolReads(boolUpdated, 2, Bool.true), EvaluatorChecks.boolReads(boolMemory, 2, Bool.false)),
+    EvaluatorChecks.boolReads(boolUpdated, 1, Bool.false))
+
+  def ringArithmetic : Bool := Bool.and(
+    Bool.and(Nat.beq(Evaluator.Ring.ofNat(514), 0), Nat.beq(Evaluator.Ring.add(250, 10), 3)),
+    Nat.beq(Evaluator.Ring.mul(20, 20), 143))
+
+  def exactChecks : Bool := Bool.and(EvaluatorChecks.boundaryReads,
+    Bool.and(EvaluatorChecks.persistentReads,
+      Bool.and(EvaluatorChecks.outOfBounds,
+        Bool.and(EvaluatorChecks.singleCellChecks,
+          Bool.and(EvaluatorChecks.genericValueChecks, EvaluatorChecks.ringArithmetic)))))
+
+  def exactChecksHold : Eq(Bool, EvaluatorChecks.exactChecks, Bool.true) := Eq.refl(Bool.true)
+}

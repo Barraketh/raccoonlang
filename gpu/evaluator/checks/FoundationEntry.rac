@@ -1,0 +1,5 @@
+// Entry used by the Scala test suite to import and check foundation.rac as a normal source module.
+
+import evaluator.checks.foundation
+
+{ EvaluatorChecks.exactChecksHold }

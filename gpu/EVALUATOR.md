@@ -259,6 +259,64 @@ argument.
 8. **Only if speed stalls:** a fast twin in Scala or C++, differentially tested against the Raccoon evaluator on small
    cases. The Raccoon evaluator stays the reference.
 
+### Checkpoint: source-level buffer workload (2026-10-02)
+
+This checkpoint measures foundation buffer-operation throughput; it is not a TinyGEMM evaluator. The TinyGEMM
+definitions now live in the body-free `gpu/encoding/TinyGemm.rac`; the existing `gpu/encoding/examples/tinygemm.rac`
+remains a render wrapper.
+`Core.checkedKernel` exposes the immutable kernel AST only with the existing `WellFormed` proof. A Scala setup driver
+loads and checks `gpu/evaluator/TinyKernel.rac` once, then separately loads and checks the source workload closure.
+
+`gpu/evaluator/Ring.rac` provides exact arithmetic in Z/257, and `gpu/evaluator/Memory.rac` provides persistent,
+power-of-two random-access memory. The bounded workload allocates 16,384 Nat cells and performs two writes and one read
+at nonuniform indices per iteration, advancing its iteration index and updating a checksum. This counts buffer
+operations, not warp steps.
+The host times only `Interpreter.evalApply` inside `Execution.onStack`; loading, checking, Tiny AST construction, and the
+independent result check are outside the timed interval. The source fixture is run by normal `sbt validate` through
+`GpuEvaluatorSpikeTests`.
+
+The saved render outputs from the archived parent source and the extracted-module wrapper matched byte for byte:
+21,728 bytes, SHA-256 `7dc6a52123c1a5b8bc1145fcc7083c61a792a3a13b1a2e441d28a31e2bccefa0`. The Scala test pins this
+digest and checks that the accessor returns a five-field `Cuda.Kernel.mk` value at family `Cuda.Kernel`.
+
+A small opt-in native driver can be built and run from the repository root:
+
+```sh
+MAIN_CLASS=com.raccoonlang.EvaluatorSpikeBenchmark OUTPUT_DIR=target/performance/evaluator-spike \
+  OUTPUT_NAME=raccoon-evaluator-spike \
+  scripts/build-graal-native.sh --parallelism=4 -J-Xmx3g
+target/performance/evaluator-spike/raccoon-evaluator-spike --iterations 128 --warmups 1 --samples 3
+target/performance/evaluator-spike/raccoon-evaluator-spike --iterations 1024 --warmups 1 --samples 3
+target/performance/evaluator-spike/raccoon-evaluator-spike --iterations 16384 --warmups 1 --samples 3
+```
+
+The custom binary was built with GraalVM 21.0.12 for arm64, O2, Serial GC, `--parallelism=4 -J-Xmx3g`, with default
+assertion settings. Its SHA-256 is `6b1611a64a35ce02c9147d219595197c33de0779454a4e193c3c35ec26f6729d`. The measured source
+snapshot is parent commit `899c15d4edb4ad5ff69a7c5d44f90d3e891ded70` plus the uncommitted code/test files identified by
+fingerprint `e6a9bccd6a97f64d9c7441a0582ee080077ca475fc8c21a6616545b11ac2f74a`. The parent binary used for the exact
+Tiny comparison has SHA-256 `b103ede6429e5f8d481c88111dd800d7ab420db72e3eec42601d342d466de39e`.
+
+Each run used one warmup and three timed samples. The timer covers only `Interpreter.evalApply`; the displayed setup
+times are outside it. Per invocation, each loop iteration performs exactly three memory API operations: two `set`s and
+one `get`. Results are buffer operations per second, not evaluator steps or warp steps.
+
+| Iterations | Buffer ops | Timed samples (ms) | Median (ms) | Buffer ops/s | Checksum |
+|---:|---:|---|---:|---:|---:|
+| 128 | 384 | 23.400, 23.239, 22.322 | 23.239 | 16,523.68 | 1 |
+| 1,024 | 3,072 | 191.225, 189.491, 187.025 | 189.491 | 16,211.86 | 213 |
+| 16,384 | 49,152 | 3,018.209, 3,013.243, 3,021.153 | 3,018.209 | 16,285.15 | 241 |
+
+Across fresh driver processes, Tiny AST entry load/check (including the first prelude forcing) took 581.600, 577.517,
+and 572.669 ms; the benchmark entry load/check then took 4.389, 4.338, and 4.355 ms. Their respective medians were
+577.517 ms and 4.355 ms. All result checks matched an independent, untimed host checksum oracle.
+
+The workload and driver do not model generated CUDA instructions, warps, synchronization, asynchronous events, or
+floating-point operations. There is no 10⁷-warp-step result and no completed TinyGEMM claim. The full instruction/event
+evaluator and the final step-2 decision remain pending. `sbt validate` passed 955 tests, including the source foundation
+fixture; the focused spike suite passed all 3 tests, and independent source/test review was clean. Native build logs,
+sample logs, comparison bytes and provenance are preserved under `target/performance/evaluator-spike/` and adjacent
+`target/performance/evaluator-spike-*` files (ignored by Git).
+
 ## 9. Decisions
 
 1. **Build it, staged as §8**, rather than more hand-written mocks. *Proposed; for the user.*

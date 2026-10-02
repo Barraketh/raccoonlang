@@ -1,0 +1,6 @@
+// A checked, read-only entry to the TinyGEMM kernel AST for host tooling; this is not an execution semantics.
+
+import encoding.Core
+import encoding.TinyGemm
+
+{ Core.checkedKernel(Tiny.kernel) }
