@@ -28,6 +28,44 @@ class ValueOpsTests extends munit.FunSuite with DiagnosticAssertions {
     assert(!materialized(ref).synDeps.contains(x.id))
   }
 
+  test("materialize reuses one canonical result for a shared value in a single DAG") {
+    val x = FreshVar.freshVar("x", valueType)
+    val solution = symbolicValue("Solved")
+    var root: Value = VConst("Shared", Symbol, x)
+    var depth = 0
+    while (depth < 25) {
+      root = VApp(symbolicValue(s"Node$depth"), Vector(root, root), valueType)
+      depth += 1
+    }
+
+    val materialized = ValueOps.materialize(root, solve(x, solution)).asInstanceOf[VApp]
+
+    var node: Value = materialized
+    depth = 0
+    while (depth < 25) {
+      val app = node.asInstanceOf[VApp]
+      assert(app.storedArgs(0) eq app.storedArgs(1))
+      node = app.storedArgs(0)
+      depth += 1
+    }
+    assert(node.asInstanceOf[VConst].tpe eq solution)
+  }
+
+  test("materialization memo is scoped to its EqStore") {
+    val x = FreshVar.freshVar("x", valueType)
+    val shared = VConst("Shared", Symbol, x)
+    val root = VApp(symbolicValue("Root"), Vector(shared, shared), valueType)
+    val leftSolution = symbolicValue("LeftSolution")
+    val rightSolution = symbolicValue("RightSolution")
+
+    val left = ValueOps.materialize(root, solve(x, leftSolution)).asInstanceOf[VApp]
+    val right = ValueOps.materialize(root, solve(x, rightSolution)).asInstanceOf[VApp]
+
+    assertEquals(left.storedArgs(0).asInstanceOf[VConst].tpe, leftSolution)
+    assertEquals(right.storedArgs(0).asInstanceOf[VConst].tpe, rightSolution)
+    assert(left.storedArgs(0) ne right.storedArgs(0))
+  }
+
   test("materializeEnv leaves globals closed") {
     val ref = CoreAst.LocalRef(0, "x")
     val x = FreshVar.freshVar("x", valueType)
@@ -79,7 +117,7 @@ class ValueOpsTests extends munit.FunSuite with DiagnosticAssertions {
     interceptError[NotFound](materialized(uncapturedRef))
   }
 
-  test("materialize rewrites VLam core environment used by execution") {
+  test("materialize rewrites shared VLam environments and Pi types used by execution") {
     val capturedRef = CoreAst.LocalRef(0, "captured")
     val argRef = CoreAst.LocalRef(1, "arg")
     val captured = FreshVar.freshVar("captured", valueType)
@@ -115,14 +153,26 @@ class ValueOpsTests extends munit.FunSuite with DiagnosticAssertions {
       recursion = None
     )
     val lam = VLam(pi, ValueId.LocalId(NodeId.fresh(), Vector(captured)), LamBody.Core(lamTerm, runtimeEnv))
+    val siblingLam =
+      VLam(pi, ValueId.LocalId(NodeId.fresh(), Vector(captured)), LamBody.Core(lamTerm, runtimeEnv))
 
-    val materialized = ValueOps.materialize(lam, solve(captured, solution)).asInstanceOf[VLam]
+    val materializedPair = ValueOps
+      .materialize(VApp(symbolicValue("Pair"), Vector(lam, siblingLam, pi), valueType), solve(captured, solution))
+      .asInstanceOf[VApp]
+    val materialized = materializedPair.storedArgs(0).asInstanceOf[VLam]
+    val materializedSibling = materializedPair.storedArgs(1).asInstanceOf[VLam]
+    val materializedPiArgument = materializedPair.storedArgs(2).asInstanceOf[VPi]
 
+    assert(materialized.tpe eq materializedSibling.tpe)
+    assert(materialized.tpe eq materializedPiArgument)
     assertEquals(materialized.tpe.env(capturedRef), solution)
-    materialized.body match {
-      case LamBody.Core(_, materializedEnv) => assertEquals(materializedEnv(capturedRef), solution)
-      case other                            => fail(s"Expected materialized core lambda body, got $other")
+    val materializedBodyEnv = materialized.body match {
+      case LamBody.Core(_, materializedEnv) =>
+        assertEquals(materializedEnv(capturedRef), solution)
+        materializedEnv
+      case other => fail(s"Expected materialized core lambda body, got $other")
     }
+    assert(materialized.tpe.env eq materializedBodyEnv)
     assert(!materialized.synDeps.contains(captured.id))
     assertEquals(Interpreter.evalApply(materialized, Vector(symbolicValue("Arg"))), solution)
   }
@@ -151,6 +201,42 @@ class ValueOpsTests extends munit.FunSuite with DiagnosticAssertions {
     assertEquals[Value, Value](materialized.mentionedScope, solution)
     assertEquals(materialized.key, pi(solution).key)
     assertNotEquals(pi(mentioned).key, pi(solution).key)
+  }
+
+  test("materialized Pi classifier stays lazy and resolves in a fresh session when forced") {
+    val (levelId, levelValue) = FreshVar.freshValue("u", LevelTpe)
+    val dependentSort = Sorts.sort(levelValue.asInstanceOf[Level], Kind.unr, Lifetime.empty)
+    val binder = CoreAst.Binder(
+      CoreAst.LocalRef(0, "x"),
+      typeRef,
+      span,
+      CoreAst.BinderSite.Function,
+      BinderMode.Explicit
+    )
+    var classifierForces = 0
+    val pi = VPi(
+      Env.empty.putGlobal("Type", valueType),
+      Vector(binder),
+      _ => valueType,
+      Kind.unr,
+      Lifetime.empty,
+      Lifetime.empty,
+      dependentSort.synDeps,
+      ValueId.LocalId(NodeId.fresh(), Vector.empty),
+      () => {
+        classifierForces += 1
+        dependentSort
+      },
+      isPropValued = false
+    )
+    val store = EqStore.empty.allow(DepSet(levelId)).addLink(levelId, Level.const(4))
+
+    val materialized = ValueOps.materialize(pi, store).asInstanceOf[VPi]
+
+    assertEquals(classifierForces, 0)
+    val classifier = materialized.tpe.asInstanceOf[VSort]
+    assertEquals(classifier.level, Level.const(4))
+    assertEquals(classifierForces, 1)
   }
 
   test("under-captured core lambda fails on uncaptured local access") {

@@ -178,19 +178,25 @@ object Value {
    * recovers the variables themselves, which callers need when they have to look at a variable's type (the refinability
    * boundary in `EqStore.allowEta` asks whether each one stands at an eta-eligible struct type).
    *
-   * The walk is pruned by `synDeps`: a subvalue that mentions none of `ids` is skipped whole. Each id is reported once
-   * — a `Var` is determined by its id, so the first occurrence is as good as any — and an application's evidence
-   * arguments are skipped as its `synDeps` skips them: any variable one holds, its head or other arguments hold.
+   * The walk is pruned by `synDeps`: a subvalue that mentions none of `ids` is skipped whole. Values and environments
+   * are visited once per invocation by object identity, so shared closure/type/environment DAGs are traversed once
+   * without relying on structural equality. Each id is reported once — a `Var` is determined by its id, so the first
+   * occurrence is as good as any — and an application's evidence arguments are skipped as its `synDeps` skips them: any
+   * variable one holds, its head or other arguments hold.
    */
   private[raccoonlang] def varsIn(value: Value, ids: DepSet): Vector[Var] = {
     if (ids.isEmpty || !value.synDeps.intersects(ids)) return Vector.empty
     val found = Vector.newBuilder[Var]
+    val walkedValues = new java.util.IdentityHashMap[Value, java.lang.Boolean]()
+    val walkedEnvs = new java.util.IdentityHashMap[Env, java.lang.Boolean]()
     var seen = DepSet.empty
 
-    def walkEnv(env: Env): Unit = env.localValuesIterator.foreach(walk)
+    def walkEnv(env: Env): Unit =
+      if (walkedEnvs.put(env, java.lang.Boolean.TRUE) == null)
+        env.localValuesIterator.foreach(walk)
 
     def walk(v: Value): Unit = {
-      if (!v.synDeps.intersects(ids)) return
+      if (walkedValues.put(v, java.lang.Boolean.TRUE) != null || !v.synDeps.intersects(ids)) return
       v match {
         case x: Var =>
           if (ids.contains(x.id) && !seen.contains(x.id)) {
