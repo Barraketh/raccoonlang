@@ -1,5 +1,5 @@
 
-<root>/main.rac:1:33: error: A sort of kind k needs a level that is never zero, but its level u may be zero; proofs are unrestricted
-def keep {u: Level}{k: Kind}(A: Sort { level = u, kind = k })(x: A): A := x
-                                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+<root>/main.rac:1:14: error: Proposition-valued function is declared at kind Kind.unr, which does not contain the kind Kind.lin of field codomain : True
+def keep (g: { kind = lin } Nat -> True): Nat := Nat.zero
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^
 note: in definition keep

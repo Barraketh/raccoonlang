@@ -152,6 +152,10 @@ object MatchChecker {
     // A named equation (docs/implemented/MATCH_EQUATION.md) states `Eq(T, e, C(p̄, x̄))`: a proposition, which holds no token, so `T`
     // is unrestricted, and well typed in every case without refinement only for a family without indices.
     val equality = t.equation.map { equation =>
+      if (Sorts.isProposition(scrutTpe))
+        at(equation.span)(
+          fail(MatchEquationUnavailable("equality ranges over data types, but the scrutinee is a proof"))
+        )
       if (Linearity.isLinear(scrutTpe)) tokenInTypeOrProof(scrutChecked)
       if (inductiveMeta.familyArity != inductiveMeta.block.key.numParams)
         at(equation.span)(fail(MatchEquationIndexed(inductiveName)))

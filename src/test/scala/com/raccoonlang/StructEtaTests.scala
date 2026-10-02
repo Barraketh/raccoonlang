@@ -205,17 +205,12 @@ class StructEtaTests extends munit.FunSuite with TestSupport {
     assert(err.isInstanceOf[TypeError], s"expected a type error, got $err")
   }
 
-  test("Prop instantiation of a sort-polymorphic struct collapses instead of expanding") {
-    // The dichotomy boundary: at u1 = u2 = 0 the instance is a proposition, so values are
-    // VProofs and equality is proof irrelevance — expansion must never fire there.
-    typecheckDecls(
-      """
-        |struct CoupleU {u1: Level}{u2: Level}(A: Sort { level = u1 })(B: Sort { level = u2 }) : Sort { level = max(u1, u2) }
-        | | mk (fst: A)(snd: B) : CoupleU(A, B)
-        |
-        |def irr (p: Prop)(q: Prop)(h1: CoupleU(p, q))(h2: CoupleU(p, q)): Eq(CoupleU(p, q), h1, h2) :=
-        |  Eq.refl(h1)
-        |""".stripMargin
+  test("a data-polymorphic struct refuses proposition instances") {
+    val definitions =
+      "struct CoupleU {u: Level}{v: Level}(A: Type { level = u })(B: Type { level = v }) : Type { level = max(u, v) }\n | mk (fst: A)(snd: B) : CoupleU(A, B)\n"
+    typecheckDecls(definitions)
+    expectOnly[ImplicitReconstructionFailed](
+      typecheckDecls(definitions + "def bad (P: Prop)(Q: Prop)(h: CoupleU(P, Q)): Prop := P\n")
     )
   }
 

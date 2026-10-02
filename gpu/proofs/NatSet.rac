@@ -24,7 +24,7 @@ namespace NatSets {
   def keptAt (s: NatSet)(p: List(Bool))(k: Nat)(q: List(Bool))(key: Nat)(h: Eq(Bool, Check.NatSet.memberAt(s, q, key), Bool.true))
       : Eq(Bool, Check.NatSet.memberAt(Check.NatSet.insertAt(s, p, k), q, key), Bool.true) decreases structural(p) := {
     match s returning Eq(Bool, Check.NatSet.memberAt(Check.NatSet.insertAt(s, p, k), q, key), Bool.true) with
-    | NatSet.empty => False.elim(Bool.falseNeTrue(h), Eq(Bool, Check.NatSet.memberAt(Check.NatSet.insertAt(NatSet.empty, p, k), q, key), Bool.true))
+    | NatSet.empty => False.elimP(Bool.falseNeTrue(h), Eq(Bool, Check.NatSet.memberAt(Check.NatSet.insertAt(NatSet.empty, p, k), q, key), Bool.true))
     | NatSet.node keys even odd => {
       let node := NatSet.node(keys, even, odd)
       match p returning Eq(Bool, Check.NatSet.memberAt(Check.NatSet.insertAt(node, p, k), q, key), Bool.true) with

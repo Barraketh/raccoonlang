@@ -96,7 +96,7 @@ class DestructuringTests extends munit.FunSuite with TestSupport {
         |inductive Tree : Type
         | | node (x: Nat)(kids: Nat -> Tree) : Tree
         |
-        |struct Loose {u: Level}{v: Level}(A: Sort { level = u })(B: Sort { level = v }) : Sort { level = max(u, v) }
+        |struct Loose {u: Level}{v: Level}(A: Type { level = u})(B: Type { level = v}) : Type { level = max(u, v) }
         | | mk (a: A)(b: B) : Loose(A, B)
         |
         |def NatPair : Type := Prod(Nat, Nat)
@@ -114,37 +114,21 @@ class DestructuringTests extends munit.FunSuite with TestSupport {
     assertEquals(notDestructurable(families, "", "Nat -> Nat"), "Nat -> Nat")
     assertEquals(notDestructurable(families, "(F: Nat -> Type)", "F(0)"), "F(0)")
     // An instance at a level that may be zero is outside Prop where it is checked.
-    typecheckDecls(families + program("{u: Level}{A: Sort { level = u }}", "Loose(A, A)"))
-    assertEquals(notDestructurable(families, "", "Loose(True, True)"), "Loose(True, True)")
+    typecheckDecls(families + program("{u: Level}{A: Type { level = u}}", "Loose(A, A)"))
+    expectOnly[ImplicitReconstructionFailed](typecheckDecls(families + program("", "Loose(True, True)")))
     // Reported where the value's type comes from: the annotation when one is written.
     assert(reportedAt(families + program("", "Sum(Nat, Nat)")).startsWith("v\n"))
     val annotated = "def x : Nat := {\n  let (a, b) : Option(Nat) := Option.none(Nat)\n  0\n}\n"
     assert(reportedAt(annotated).startsWith("Option(Nat) := "))
   }
 
-  test("a level-polymorphic destructuring evaluates where its levels put the instance in Prop") {
+  test("a level-polymorphic destructuring rejects proposition components") {
     val defs =
-      """
-        |def swap {u: Level}{v: Level}{S: Lifetime}{T: Lifetime}{A: Sort { level = u, scope = S }}
-        |    {B: Sort { level = v, scope = T }}(p: Prod(A, B)): Prod(B, A) := {
-        |  let (a, b) := p
-        |  Prod.mk(b, a)
-        |}
-        |
-        |def count {u: Level}{v: Level}{A: Sort { level = u }}{B: Sort { level = v }}(p: Prod(A, B)): Nat := {
-        |  let (a, b) := p
-        |  2
-        |}
-        |
-        |def both : And(True, True) := And.intro(True.intro, True.intro)
-        |
-        |def atProp : Eq(Prod(True, And(True, True)), swap(Prod.mk(both, True.intro)), Prod.mk(True.intro, both)) :=
-        |  Eq.refl(Prod.mk(True.intro, both))
-        |
-        |// An equation between variables has no reconstructed proof, so this proof has no constructor form.
-        |def stuckProof (x: Nat)(y: Nat)(h: Prod(Eq(Nat, x, y), True)): Eq(Nat, count(h), 2) := Eq.refl(2)
-        |""".stripMargin
-    evaluatesTo(defs + "{ Nat.add(count(Prod.mk(True.intro, True.intro)), count(Prod.mk(1, True.intro))) }\n", "4")
+      "def count {u: Level}{v: Level}{A: Type { level = u }}{B: Type { level = v }}(p: Prod(A, B)): Nat := { let (a, b) := p\n 2 }\n"
+    evaluatesTo(defs + "{ count(Prod.mk(1, Bool.true)) }\n", "2")
+    expectOnly[ImplicitReconstructionFailed](
+      typecheckDecls(defs + "def bad : Nat := count(Prod.mk(True.intro, True.intro))\n")
+    )
   }
 
   test("the scrutinee is a use, and each destructured field is tracked by its own kind") {

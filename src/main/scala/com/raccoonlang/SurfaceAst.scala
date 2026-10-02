@@ -62,15 +62,15 @@ object SurfaceAst {
     final case class Pair(fst: Term, snd: Term, span: Span) extends Term
 
     /**
-     * A sort former: `Sort { level = e, ... }`, or `Type` /`Prop`, which fix the level. `kind` and `scope` are the
-     * fields written, if any.
+     * A sort former: `Type` with optional level, kind and scope, or `Prop` with only a scope. The fields are the fields
+     * written, if any.
      */
     final case class Sort(level: SortLevel, kind: Option[Term], scope: Option[Term], span: Span) extends Term
 
     sealed trait SortLevel
     object SortLevel {
       case object Zero extends SortLevel
-      case object One extends SortLevel
+      case object Prop extends SortLevel
       final case class Written(level: Term) extends SortLevel
     }
 

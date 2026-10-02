@@ -22,8 +22,8 @@ The declaration forms are:
 ```text
 def name (parameters): Result := term
 axiom name (parameters): Result
-[sealed] inductive Family (parameters) indices (indices): Sort
-[sealed] struct Family (parameters) indices (indices): Sort
+[sealed] inductive Family (parameters) indices (indices): Type-or-Prop
+[sealed] struct Family (parameters) indices (indices): Type-or-Prop
 mutual { declarations }
 namespace Path { declarations }
 open Path
@@ -145,31 +145,24 @@ its header or with each other.
 
 ## Universes
 
-Types are terms. `Sort`, `Type` and `Prop` are the sort formers, and they are
-keywords:
+Types are terms. `Type` and `Prop` are the sort formers and are keywords:
 
 ```text
-Sort { level = e, kind = k, scope = S }   // the sort at level e, kind k, scope S
-Type { kind = k, scope = S }              // level is Level.one
-Prop { kind = k, scope = S }              // level is Level.zero
+Type { level = e, kind = k, scope = S }   // data at level e
+Prop { scope = S }                       // propositions
 ```
 
-A sort has three parameters, supplied by name in any order: its `level`, its
-`kind`, which says how the values of its types may be used, and its `scope`, a
-lifetime: the set of atoms and lifetime variables its types' values may depend
-on (see [Scopes](#scopes)).
-`Sort` is not a function: it always takes a field list, which must give its
-`level`. An omitted `kind` is `Kind.unr` and an omitted `scope` is
-`Lifetime.empty`; that is what the shorter spelling means. So `Type` is
-`Sort { level = Level.one, kind = Kind.unr, scope = Lifetime.empty }`. A field
-list is nonempty, and an unknown or repeated field is a parse error. `Type` and
-`Prop` fix the level, so a `level` field on either is a parse error too.
+Every field is optional. `Type` defaults to level `Level.zero`, kind
+`Kind.unr` and scope `Lifetime.empty`; `Prop` defaults to the empty scope.
+Propositions have no level or kind, and their proofs are unrestricted.
+A field list must be nonempty and may name each permitted field only once.
+`Sort` syntax and `Level.imax` have been removed.
 
 `Level`, `Kind` and `Lifetime` are the sort parameters. An expression of one is
 a variable or one of its forms:
 
 ```text
-Level.zero  Level.one  Level.succ(e)  Level.max(e, e)  Level.imax(e, e)
+Level.zero  Level.one  Level.succ(e)  Level.max(e, e)
 Kind.unr  Kind.lin  Kind.join(e, e)
 Lifetime.empty  Lifetime.union(e, e)
 ```
@@ -184,9 +177,9 @@ unqualified, and only then as usual. So `level = succ(u)` means
 `Lifetime.union(a, b)`:
 
 ```raccoon
-def id {u: Level}{A: Sort { level = u }}(x: A): A := x
+def id {u: Level}{A: Type { level = u}}(x: A): A := x
 
-inductive Box (u: Level)(A: Sort { level = u }) : Sort { level = u }
+inductive Box (u: Level)(A: Type { level = u}) : Type { level = u}
  | mk (value: A) : Box(u, A)
 
 def keep {k: Kind}{S: Lifetime}{A: Type { kind = k, scope = S }}(x: A): A := x
@@ -218,14 +211,14 @@ binder's type must be a type:
 
 A header is the binders written before a declaration's `:`. A function type
 written after the `:` is an ordinary function type, so
-`def f : {u: Level} -> Sort { level = u } -> Nat := …` is `NotAType` and is
-written `def f {u: Level}(A: Sort { level = u }): Nat := …`.
+`def f : {u: Level} -> Type { level = u} -> Nat := …` is `NotAType` and is
+written `def f {u: Level}(A: Type { level = u}): Nat := …`.
 
 An expression of a sort parameter stands only at a parameter position: a
 sort's field, or the argument at a binder of that parameter, as in
-`Box(Level.one, Nat)`. Anywhere else, such as a `match` scrutinee, a block's
+`Box(Level.zero, Nat)`. Anywhere else, such as a `match` scrutinee, a block's
 result or an argument at an ordinary binder, it is `NotAType`. A term of
-another type at a parameter position, such as `Sort { level = Nat.zero }` or
+another type at a parameter position, such as `Type { level = Nat.zero}` or
 `Type { scope = Kind.lin }`, is `TypeMismatch`.
 
 A function type that binds a level is *large*: no sort contains it, so a large
@@ -240,7 +233,7 @@ level-polymorphic lemma such as `Eq.symm` is a proof like any other. A kind or
 lifetime binder does not make a type large.
 
 A sort's type is the sort one level up at the same scope and at `Kind.unr`:
-`Sort { level = u, kind = k, scope = S } : Sort { level = succ(u), scope = S }`.
+`Type { level = u, kind = k, scope = S } : Type { level = succ(u), scope = S }`.
 A function type's sort is at its closure kind (see
 [Closures](#closures)). Its level is computed as below, and its scope unites
 its closure scope and its binder types' scopes with its result's, less the
@@ -249,14 +242,11 @@ for a family `Lease (l: Lifetime) : Type { scope = l }`, `Lease(m) -> Nat` is at
 `Type { scope = m }`, and `(l: Lifetime) -> Lease(l) -> Nat` is at `Type`. A
 kind or lifetime binder contributes neither a level nor a scope.
 
-A sort whose kind is not `Kind.unr` must have a level that is never zero, else
-`LinearProp`, since proofs are unrestricted. So `Prop { kind = lin }`,
-`Sort { level = u, kind = k }` and a `{ kind = lin }` function type into a
-proposition are rejected, and a kind-polymorphic sort is written
-`Type { kind = k }` or `Sort { level = succ(u), kind = k }`.
+Data sorts permit linear and polymorphic kinds at every data level.
+A function type into a proposition must have closure kind `Kind.unr`.
 
 Universes are not cumulative, and neither are kinds and scopes. A value in
-`Sort { level = u }` does not automatically fit a position expecting a larger
+`Type { level = u}` does not automatically fit a position expecting a larger
 sort, and a type at `Type { scope = S }` does not fit a position expecting
 `Type`. Sorts must be definitionally equal, level, kind and scope alike, where
 types are compared.
@@ -618,9 +608,8 @@ written. Its type must be an instance of a structure-eta eligible family (see
 indices, no recursive constructor field, and outside `Prop`. A type a
 transparent definition computes to such an instance is one; a type variable, a
 function type, and a blocked type are not. Otherwise the
-destructuring is `NotDestructurable`, naming the type. An instance of a
-sort-polymorphic family, such as `Prod(A, B)` at levels `u` and `v`, is outside
-`Prop` where it is checked, so it is destructured there.
+destructuring is `NotDestructurable`, naming the type. An instance of a data family, such as `Prod(A, B)` at levels `u` and `v`,
+remains outside `Prop` under every level instantiation.
 
 The components match the constructor's stored fields in order, and erased
 family parameters are not fields. A pattern with another number of components
@@ -739,8 +728,8 @@ inductive Nat : Type
  | zero : Nat
  | succ (pred: Nat) : Nat
 
-inductive Vec {u: Level}(A: Sort { level = u }) indices (n: Nat)
-    : Sort { level = max(one, u) }
+inductive Vec {u: Level}(A: Type { level = u}) indices (n: Nat)
+    : Type { level = u}
  | nil : Vec(A, Nat.zero)
  | cons (n: Nat)(tail: Vec(A, n))(head: A) : Vec(A, Nat.succ(n))
 ```
@@ -1055,10 +1044,10 @@ passed directly as constructor fields. The same measure expression is
 evaluated for the current call and for each recursive call:
 
 ```raccoon
-struct Cursor {u: Level}(A: Sort { level = u }) : Sort { level = u }
+struct Cursor {u: Level}(A: Type { level = u}) : Type { level = u}
  | mk (remaining: List(A)) : Cursor(A)
 
-def countRemaining {u: Level}{A: Sort { level = u }}(cursor: Cursor(A)): Nat decreases measure(cursor.remaining) := {
+def countRemaining {u: Level}{A: Type { level = u}}(cursor: Cursor(A)): Nat decreases measure(cursor.remaining) := {
   match cursor.remaining returning Nat with
   | List.nil => 0
   | List.cons _ tail =>
@@ -1280,17 +1269,17 @@ parameter's closure scope. All of them are forced implicits, so no call site
 writes them:
 
 ```text
-inductive List {u: Level}{S: Lifetime}(A: Sort { level = u, scope = S })
-    : Sort { level = u, scope = S }
+inductive List {u: Level}{S: Lifetime}(A: Type { level = u, scope = S })
+    : Type { level = u, scope = S }
 
 def List.map {u: Level}{v: Level}{S: Lifetime}{T: Lifetime}{Sf: Lifetime}
-    {A: Sort { level = u, scope = S }}
-    (xs: List(A))(B: Sort { level = v, scope = T })(f: { scope = Sf } A -> B)
+    {A: Type { level = u, scope = S }}
+    (xs: List(A))(B: Type { level = v, scope = T })(f: { scope = Sf } A -> B)
     : List(B)
 
 def Eq.subst {u: Level}{S: Lifetime}{Sm: Lifetime}{Sc: Lifetime}
-    {A: Sort { level = u, scope = S }}{x: A}{y: A}
-    (p: Eq(A, x, y))(v: Level)(motive: { scope = Sc } A -> Sort { level = v, scope = Sm })
+    {A: Type { level = u, scope = S }}{x: A}{y: A}
+    (p: Eq(A, x, y))(v: Level)(motive: { scope = Sc } A -> Type { level = v, scope = Sm })
     (h: motive(x)): motive(y)
 ```
 
@@ -1304,16 +1293,15 @@ variable, or a union of them.
 A family's function-typed field cannot have a closure-scope variable of its
 own, since nothing in an instance's type would force it. It takes the family's
 own scope as its closure scope instead, as in
-`BEq {u: Level}{S: Lifetime}(A: Sort { level = u, scope = S })` with
+`BEq {u: Level}{S: Lifetime}(A: Type { level = u, scope = S })` with
 `mk (beq: { scope = S } A -> A -> Bool)`: the closure may hold what the
 family's values may already depend on, and adds nothing to the family's scope.
 `Iff`, `DecidableEq`, `LE`, `LT` and `Subsingleton` do the same, and `LE.le` and
 `LT.lt` return propositions at that scope too. `Not(a)` is a function type at
 `a`'s scope, `{ scope = S } (h: a) -> False`. So `listBEq` can build a `BEq`
-from a lambda that captures a `BEq(A)`, while a lambda that captures nothing
-passed at a scoped instance writes its closure, as
-`fun { scope = S } (a: P)(b: P): Eq(P, a, b) => Eq.refl(a)` does in
-`propSubsingleton`.
+from a lambda that captures a `BEq(A)`. Proposition-target eliminators use
+suffix `P`: `False.elimP` and `Eq.substP`; their data-target counterparts
+range over `Type { level = u }`.
 
 The prelude source is authoritative for its exact API:
 `src/main/resources/Init/Prelude.rac`.

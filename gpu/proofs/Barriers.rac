@@ -63,7 +63,7 @@ namespace Barriers {
 
   def atFound (st: Scan)(args: Option(Prod(Nat, Nat)))(h: Fold.Empty(Check.barrierAt(st, args).found)): Fold.Empty(st.found) := {
     match args returning Fold.Empty(st.found) with
-    | Option.none => False.elim(Fold.consNotEmpty("bar.sync without a literal id and thread count", st.found, h), Fold.Empty(st.found))
+    | Option.none => False.elimP(Fold.consNotEmpty("bar.sync without a literal id and thread count", st.found, h), Fold.Empty(st.found))
     | Option.some idThreads => Barriers.barrierFound(st, idThreads.fst, idThreads.snd, h)
   }
 
@@ -196,10 +196,10 @@ namespace Barriers {
       (P: Prop)(found: (id: Nat) -> (n: Nat) -> Eq(Option(Nat), first, Option.some(id)) -> Eq(Option(Nat), second, Option.some(n)) -> P): P := {
     let message := "bar.sync without a literal id and thread count"
     match first returning P with
-    | Option.none => False.elim(Fold.consNotEmpty(message, st.found, h), P)
+    | Option.none => False.elimP(Fold.consNotEmpty(message, st.found, h), P)
     | Option.some id => {
       match second returning P with
-      | Option.none => False.elim(Fold.consNotEmpty(message, st.found, h), P)
+      | Option.none => False.elimP(Fold.consNotEmpty(message, st.found, h), P)
       | Option.some n => found(id, n, Eq.refl(Option.some(id)), Eq.refl(Option.some(n)))
     }
   }
@@ -232,7 +232,7 @@ namespace Barriers {
     let start := Scan.mk(NatSet.empty, List.nil(String))
     let walk := Check.blockFold(Scan, k.body, start, Check.barrierStep)
     let flat := Spec.statements(k.body)
-    let flatWalk := Eq.subst(Fold.blockFusion(Scan, k.body, start, Check.barrierStep), Level.zero, fun (sc: Scan): Prop => Fold.Empty(sc.found),
+    let flatWalk := Eq.substP(Fold.blockFusion(Scan, k.body, start, Check.barrierStep), fun (sc: Scan): Prop => Fold.Empty(sc.found),
       Fold.inOrder(walk.found, h))
     let literal := fun (a: Expr)(b: Expr)(occ: Spec.InBlock(Stmt.instr(Instr.barSync(a, b)), k.body)): Spec.LiteralPair(a, b) =>
       Barriers.literalAt(a, b, flat, Fold.blockMem(Stmt.instr(Instr.barSync(a, b)), k.body, occ), start, flatWalk)

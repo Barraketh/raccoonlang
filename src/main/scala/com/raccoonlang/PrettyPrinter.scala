@@ -196,7 +196,7 @@ object PrettyPrinter {
       // A bound local stands for its value, which may itself print as loose syntax.
       case CoreAst.Term.LocalRef(ref, _) if bound(ref).exists(isLoose) => parens(term(t))
       case _: CoreAst.Term.NatLit | _: CoreAst.Term.StrLit | _: CoreAst.Term.Ref | _: CoreAst.Term.App |
-          _: CoreAst.Term.Select | _: CoreAst.Term.Sort | _: CoreAst.Term.FormOp =>
+          _: CoreAst.Term.Select | _: CoreAst.Term.Sort | _: CoreAst.Term.Prop | _: CoreAst.Term.FormOp =>
         Vector(term(t))
       case _: CoreAst.Term.Lam | _: CoreAst.Term.Scope | _: CoreAst.Term.Match | _: CoreAst.Term.Body |
           _: CoreAst.Term.Pi =>
@@ -234,16 +234,16 @@ object PrettyPrinter {
         val bindersPieces = separated(binders.map(b => Later(() => printPiBinder(b))), " -> ")
         printCoreClosure(closure) ++ bindersPieces ++ (Text(" -> ") +: printCodomain(out))
       case CoreAst.Term.Sort(level, kind, scope, _) =>
-        val (former, levelField) =
-          if (isForm(level, CoreAst.Form.LevelZero)) ("Prop", None)
-          else if (isForm(level, CoreAst.Form.LevelOne)) ("Type", None)
-          else ("Sort", Some(term(level)))
+        val former = "Type"
+        val levelField = Option.unless(isForm(level, CoreAst.Form.LevelZero))(term(level))
         printSort(
           former,
           levelField,
           Option.unless(isForm(kind, CoreAst.Form.KindUnr))(term(kind)),
           Option.unless(isForm(scope, CoreAst.Form.LifetimeEmpty))(term(scope))
         )
+      case CoreAst.Term.Prop(scope, _) =>
+        printSort("Prop", None, None, Option.unless(isForm(scope, CoreAst.Form.LifetimeEmpty))(term(scope)))
       case CoreAst.Term.FormOp(form, args, _) =>
         Text(form.qualifiedName) +: (if (args.isEmpty) Vector.empty else argList(args.map(term)))
     }
@@ -288,14 +288,7 @@ object PrettyPrinter {
     def succs(base: Piece, offset: Int): Piece =
       if (offset == 0) base else Later(() => Vector(Text("Level.succ(" * offset), base, Text(")" * offset)))
 
-    def atom(a: Value.Level.Atom): Piece =
-      a match {
-        case Value.Level.ParamAtom(id) => Text(printParameterVar(id, "u"))
-        case Value.Level.IMaxAtom(lhs, rhs) =>
-          Later(() => (Text("Level.imax(") +: printLevel(lhs)) ++ (Text(", ") +: printLevel(rhs)) :+ Text(")"))
-      }
-
-    val terms = level.terms.toVector.map { case (a, offset) => succs(atom(a), offset) }
+    val terms = level.terms.toVector.map { case (a, offset) => succs(Text(printParameterVar(a, "u")), offset) }
     val constant = if (level.c == 0) Text("Level.zero") else succs(Text("Level.one"), level.c - 1)
     val parts = if (level.c > 0 || terms.isEmpty) terms :+ constant else terms
     parts match {
@@ -483,8 +476,8 @@ object PrettyPrinter {
       case sort: Value.VSort =>
         val (former, levelField) =
           if (Sorts.isProp(sort)) ("Prop", None)
-          else if (sort.level == Value.Level.one) ("Type", None)
-          else ("Sort", Some(Later(() => printLevel(sort.level))))
+          else if (sort.level == Value.Level.zero) ("Type", None)
+          else ("Type", Some(Later(() => printLevel(sort.level))))
         printSort(
           former,
           levelField,

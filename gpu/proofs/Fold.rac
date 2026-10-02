@@ -24,14 +24,14 @@ namespace Fold {
   def revOntoAcc (found: List(String))(acc: List(String))(h: Fold.Empty(Check.revOnto(found, acc))): Fold.Empty(acc) decreases structural(found) := {
     match found returning Fold.Empty(acc) with
     | List.nil => h
-    | List.cons m more => False.elim(Fold.consNotEmpty(m, acc, Fold.revOntoAcc(more, List.cons(m, acc), h)), Fold.Empty(acc))
+    | List.cons m more => False.elimP(Fold.consNotEmpty(m, acc, Fold.revOntoAcc(more, List.cons(m, acc), h)), Fold.Empty(acc))
   }
 
   // Reporting in program order loses no message.
   def inOrder (found: List(String))(h: Fold.Empty(Check.inOrder(found))): Fold.Empty(found) := {
     match found returning Fold.Empty(found) with
     | List.nil => Eq.refl(List.nil(String))
-    | List.cons m more => False.elim(Fold.consNotEmpty(m, List.nil(String), Fold.revOntoAcc(more, List.cons(m, List.nil(String)), h)),
+    | List.cons m more => False.elimP(Fold.consNotEmpty(m, List.nil(String), Fold.revOntoAcc(more, List.cons(m, List.nil(String)), h)),
       Fold.Empty(List.cons(m, more)))
   }
 
@@ -40,14 +40,14 @@ namespace Fold {
       : Eq(Bool, ok, Bool.true) := {
     match ok returning Eq(Bool, ok, Bool.true) with
     | Bool.true => Eq.refl(Bool.true)
-    | Bool.false => False.elim(Fold.consNotEmpty(message(Unit.unit), found, h), Eq(Bool, Bool.false, Bool.true))
+    | Bool.false => False.elimP(Fold.consNotEmpty(message(Unit.unit), found, h), Eq(Bool, Bool.false, Bool.true))
   }
 
   def unlessFound (found: List(String))(ok: Bool)(message: Unit -> String)(h: Fold.Empty(Check.unless(found, ok, message)))
       : Fold.Empty(found) := {
     match ok returning Fold.Empty(found) with
     | Bool.true => h
-    | Bool.false => False.elim(Fold.consNotEmpty(message(Unit.unit), found, h), Fold.Empty(found))
+    | Bool.false => False.elimP(Fold.consNotEmpty(message(Unit.unit), found, h), Fold.Empty(found))
   }
 
   // ---- Lists --------------------------------------------------------------------------------------------------------

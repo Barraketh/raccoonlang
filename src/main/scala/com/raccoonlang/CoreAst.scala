@@ -76,7 +76,7 @@ object CoreAst {
     //
     // No classifier field: a Pi's universe is env-dependent (level-polymorphic binder types), so it is derived at
     // evaluation time (Interpreter.piClassifier), never baked in. `knownPropValued` is only a checker-filled cache of
-    // the classifications that cannot change under level instantiation. The closure is evaluated where the Pi stands,
+    // the classification decided when checked. The closure is evaluated where the Pi stands,
     // outside its own binders.
     final case class Pi(
         binders: Vector[Binder],
@@ -106,10 +106,12 @@ object CoreAst {
     final case class Body(lets: Vector[Let], res: Term, span: Span) extends Term
 
     /**
-     * The sort at `level`, `kind` and `scope`. `Type` and `Prop` elaborate to it at `Level.one` and `Level.zero`, and
-     * an omitted `kind` or `scope` to `Kind.unr` or `Lifetime.empty`.
+     * A data sort at `level`, `kind` and `scope`. `Type` defaults to `Level.zero`, and an omitted `kind` or `scope` to
+     * `Kind.unr` or `Lifetime.empty`.
      */
     final case class Sort(level: Term, kind: Term, scope: Term, span: Span) extends Term
+
+    final case class Prop(scope: Term, span: Span) extends Term
 
     /** A sort parameter's form applied to all of its arguments, as `Level.succ(u)`; a nullary form has none. */
     final case class FormOp(form: Form, args: Vector[Term], span: Span) extends Term {
@@ -238,7 +240,6 @@ object CoreAst {
     case object LevelOne extends Form(Parameter.Level, "one", 0)
     case object LevelSucc extends Form(Parameter.Level, "succ", 1)
     case object LevelMax extends Form(Parameter.Level, "max", 2)
-    case object LevelIMax extends Form(Parameter.Level, "imax", 2)
     case object KindUnr extends Form(Parameter.Kind, "unr", 0)
     case object KindLin extends Form(Parameter.Kind, "lin", 0)
     case object KindJoin extends Form(Parameter.Kind, "join", 2)
@@ -251,7 +252,6 @@ object CoreAst {
         LevelOne,
         LevelSucc,
         LevelMax,
-        LevelIMax,
         KindUnr,
         KindLin,
         KindJoin,
@@ -273,6 +273,7 @@ object CoreAst {
         Vector.empty
       case Term.Select(base, _, _)                 => Vector(base)
       case Term.Sort(level, kind, scope, _)        => Vector(level, kind, scope)
+      case Term.Prop(scope, _)                     => Vector(scope)
       case Term.FormOp(_, args, _)                 => args
       case Term.App(fn, args, evidence, _)         => (fn +: args) ++ evidence
       case Term.Pi(binders, out, closure, _, _, _) => closure.terms ++ binders.map(_.ty) :+ out
@@ -357,6 +358,7 @@ object CoreAst {
         case Term.LocalRef(ref, span)                            => Term.LocalRef(local(ref), span)
         case Term.Select(base, name, span)                       => Term.Select(copy(base), name, span)
         case Term.Sort(level, kind, scope, span) => Term.Sort(copy(level), copy(kind), copy(scope), span)
+        case Term.Prop(scope, span)              => Term.Prop(copy(scope), span)
         case Term.FormOp(form, args, span)       => Term.FormOp(form, args.map(copy), span)
         case Term.App(fn, args, evidence, span)  => Term.App(copy(fn), args.map(copy), evidence.map(copy), span)
         case written: Term.Pi                    => pi(written)

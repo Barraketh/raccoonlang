@@ -293,39 +293,20 @@ object Value {
     override val key: ValueKey.Key = ValueKey.large
   }
 
-  // Represents max(atom1 + k1, atom2 + k2... , c), where an atom is either a level variable or an unresolved imax.
-  // Invariant: all offsets are non-negative, c is non-negative, and c is either 0 or c > k1...kn. IMax atoms are
-  // created only by the smart constructor below, so every level is normalized at birth.
-  final class Level private (val terms: Map[Level.Atom, Int], val c: Int) extends Value {
+  // Represents max(u1 + k1, u2 + k2... , c). All offsets and the constant are non-negative,
+  // and c is either zero or greater than all offsets; levels are normalized at birth.
+  final class Level private (val terms: Map[VarId, Int], val c: Int) extends Value {
     override val tpe: Value = LevelTpe
 
-    // Levels are immutable and IMax atoms recursively contain Levels. Cache the Scala collection
-    // hash eagerly so using a nested atom as a Map key is O(1) in the nesting depth and does not
-    // recursively re-hash the entire level tree.
+    // Cache the immutable normal form hash used by level maps.
     private val cachedHashCode: Int = 31 * terms.hashCode() + c
-
-    private lazy val neverZero: Boolean =
-      c > 0 || terms.exists {
-        case (_, offset) if offset > 0   => true
-        case (Level.IMaxAtom(_, rhs), _) => rhs.neverZero
-        case (_: Level.ParamAtom, _)     => false
-      }
-
-    private lazy val hasIMax: Boolean =
-      terms.keysIterator.exists {
-        case _: Level.IMaxAtom => true
-        case _                 => false
-      }
 
     override val synDeps: DepSet =
       if (terms.isEmpty) DepSet.empty
       else {
         val deps = DepSet.newBuilder
-        terms.keys.foreach {
-          case Level.ParamAtom(id) => deps.add(id)
-          case Level.IMaxAtom(lhs, rhs) =>
-            deps.unionInPlace(lhs.synDeps)
-            deps.unionInPlace(rhs.synDeps)
+        terms.keys.foreach { id =>
+          deps.add(id)
         }
         deps.result()
       }
@@ -342,11 +323,7 @@ object Value {
     override def hashCode(): Int = cachedHashCode
   }
   object Level {
-    sealed trait Atom
-    final case class ParamAtom(id: VarId) extends Atom
-    final case class IMaxAtom(lhs: Level, rhs: Level) extends Atom
-
-    private def ofTerms(terms: Map[Atom, Int], c: Int): Level = {
+    private def ofTerms(terms: Map[VarId, Int], c: Int): Level = {
       require(c >= 0, s"Level constant must be non-negative: $c")
       require(terms.values.forall(_ >= 0), s"Level atom offsets must be non-negative: $terms")
 
@@ -357,7 +334,7 @@ object Value {
     }
 
     def of(atoms: Map[VarId, Int], c: Int): Level = {
-      ofTerms(atoms.map { case (id, offset) => ParamAtom(id) -> offset }, c)
+      ofTerms(atoms, c)
     }
 
     def const(c: Int): Level = ofTerms(Map.empty, c)
@@ -382,7 +359,7 @@ object Value {
     def max(xs: Vector[Level]): Level = {
       require(xs.nonEmpty, "Level.max requires at least one level")
 
-      val nextTerms = scala.collection.mutable.HashMap.empty[Atom, Int]
+      val nextTerms = scala.collection.mutable.HashMap.empty[VarId, Int]
       var cMax = 0
       xs.foreach { level =>
         cMax = math.max(cMax, level.c)
@@ -397,78 +374,18 @@ object Value {
       ofTerms(nextTerms.toMap, cMax)
     }
 
-    /** True when the level is positive under every assignment of its variables. */
-    def isNeverZero(l: Level): Boolean = l.neverZero
-
-    /** Lean's impredicative maximum: zero when rhs is zero, max(lhs, rhs) otherwise. */
-    def imax(lhs: Level, rhs: Level): Level = {
-      if (rhs == zero) zero
-      else if (isNeverZero(rhs)) max(Vector(lhs, rhs))
-      else if (lhs == zero || lhs == one || lhs == rhs) rhs
-      else ofTerms(Map(IMaxAtom(lhs, rhs) -> 0), 0)
-    }
-
-    def containsIMax(l: Level): Boolean = l.hasIMax
-
     /** The exact invertible shape accepted by level unification and forced-implicit projection. */
     def singleVariableOffset(l: Level): Option[(VarId, Int)] =
       if (l.c != 0 || l.terms.size != 1) None
       else
-        l.terms.head match {
-          case (ParamAtom(id), offset) => Some((id, offset))
-          case _                       => None
-        }
+        Some(l.terms.head)
 
-    private def regularLeq(l1: Level, l2: Level): Boolean =
+    /** Pointwise size bound on normalized max-levels, not universe subtyping. */
+    def leq(l1: Level, l2: Level): Boolean =
       (l1.c <= l2.c || l2.terms.values.exists(_ >= l1.c)) &&
         l1.terms.forall { case (atom, k) => k <= l2.terms.getOrElse(atom, -1) }
 
-    /**
-     * A sound, intentionally incomplete pointwise level bound. Pure max-levels retain the old exact fast path; imax
-     * follows Lean's conservative rules: rhs <= imax(lhs, rhs), while proving imax(lhs, rhs) <= out may require both
-     * operands to fit out. This is a size check for inductives, never universe subtyping.
-     */
-    def leq(l1: Level, l2: Level): Boolean = {
-      if (!containsIMax(l1) && !containsIMax(l2)) return regularLeq(l1, l2)
-
-      val memo = scala.collection.mutable.Map.empty[(Level, Level), Boolean]
-      def constantCovered(c: Int, out: Level): Boolean =
-        c <= out.c || out.terms.values.exists(_ >= c)
-
-      def termAsLevel(atom: Atom, offset: Int): Level = ofTerms(Map(atom -> offset), 0)
-
-      def termLeq(atom: Atom, offset: Int, out: Level): Boolean = {
-        val exactOrRhs = out.terms.exists {
-          case (`atom`, outOffset) => offset <= outOffset
-          case (IMaxAtom(_, rhs), outOffset) =>
-            loop(termAsLevel(atom, offset), addOffset(rhs, outOffset))
-          case _ => false
-        }
-        exactOrRhs || (atom match {
-          case IMaxAtom(lhs, rhs) =>
-            constantCovered(offset, out) &&
-            loop(addOffset(lhs, offset), out) &&
-            loop(addOffset(rhs, offset), out)
-          case _: ParamAtom => false
-        })
-      }
-
-      def loop(lhs: Level, rhs: Level): Boolean =
-        if (lhs == rhs) true
-        else
-          memo.getOrElseUpdate(
-            (lhs, rhs),
-            if (!containsIMax(lhs) && !containsIMax(rhs)) regularLeq(lhs, rhs)
-            else
-              constantCovered(lhs.c, rhs) && lhs.terms.forall { case (atom, offset) =>
-                termLeq(atom, offset, rhs)
-              }
-          )
-
-      loop(l1, l2)
-    }
-
-    def mk(varId: VarId): Level = ofTerms(Map(ParamAtom(varId) -> 0), 0)
+    def mk(varId: VarId): Level = ofTerms(Map(varId -> 0), 0)
 
     val zero = const(0)
     val one = const(1)
@@ -589,11 +506,12 @@ object Value {
    * no structural equality: two sorts are compared only by conversion, so `==` on a sort is a kernel bug and throws
    * rather than silently answering false.
    */
-  final class VSort private[raccoonlang] (val level: Level, val kind: Kind, val scope: Lifetime) extends Classifier {
-    override lazy val tpe: Value = Sorts.sort(Level.succ(level), Kind.unr, scope)
+  final class VSort private[raccoonlang] (val isProp: Boolean, val level: Level, val kind: Kind, val scope: Lifetime)
+    extends Classifier {
+    override lazy val tpe: Value = Sorts.sort(if (isProp) Level.zero else Level.succ(level), Kind.unr, scope)
 
     override val synDeps: DepSet = DepSet.unionAll(Iterator(level.synDeps, kind.synDeps, scope.synDeps))
-    override val key: ValueKey.Key = ValueKey.sort(level, kind, scope)
+    override val key: ValueKey.Key = ValueKey.sort(isProp, level, kind, scope)
     override val needsStructuralDefEq: Boolean = Value.needsStructuralDefEq(this)
 
     override def equals(obj: Any): Boolean = wtf(s"Sort $this compared structurally; compare sorts by conversion")
@@ -619,7 +537,8 @@ object Value {
       synDeps: DepSet,
       id: ValueId,
       classifier0: () => Classifier,
-      knownPropValued: Option[Boolean] = None
+      // Fixed at formation, including for a Large Pi into a proposition.
+      isPropValued: Boolean
   ) extends Value {
     require(binders.nonEmpty, "VPi requires at least one binder")
 
@@ -629,19 +548,6 @@ object Value {
 
     override def equals(obj: Any): Boolean = wtf(s"Function type $this compared structurally; compare by conversion")
     override def hashCode(): Int = wtf(s"Function type $this hashed structurally; it is never a collection key")
-
-    /**
-     * Whether this Pi's values are proofs — exactly when its codomain is Prop-valued. For a small Pi that is also
-     * exactly when the classifier is Prop (impredicativity); a large Pi into a proposition is proof-valued as well
-     * (spec §2.4). Kept separate from `tpe` so the proof canonicalization checks that run on every lambda creation and
-     * env binding need only a codomain evaluation, not the per-binder universe walk of the full classifier.
-     */
-    lazy val isPropValued: Boolean = {
-      knownPropValued.getOrElse {
-        val freshEnv = telescope.BinderOps.freshen(binders, env)
-        Sorts.isProposition(codomain(freshEnv))
-      }
-    }
 
     /** How many explicit arguments this Pi's own binder group takes. */
     lazy val numExplicit: Int = binders.count(_.mode == BinderMode.Explicit)

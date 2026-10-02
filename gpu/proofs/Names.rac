@@ -53,7 +53,7 @@ namespace Names {
 
   def isIdentSound (name: String)(h: Eq(Bool, Check.isIdent(name), Bool.true)): Spec.CIdent(name) := {
     match name.data returning Spec.CIdent(name) with
-    | List.nil => False.elim(Bool.falseNeTrue(h), Spec.CIdent(name))
+    | List.nil => False.elimP(Bool.falseNeTrue(h), Spec.CIdent(name))
     | List.cons c more => {
       let continued := fun (d: Char)(m: Spec.Mem(Char, d, more)): Or(Spec.IdentStart(d), Spec.Digit(d)) =>
         Names.identRestSound(d, Lib.allMem(Char, more, Check.identRest, Lib.andRight(Check.identStart(c), List.all(more, Check.identRest), h), d, m))

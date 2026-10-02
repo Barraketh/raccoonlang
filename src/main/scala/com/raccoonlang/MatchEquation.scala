@@ -19,7 +19,7 @@ object MatchEquation {
 
   /**
    * The prelude's `Eq` if it is exactly the equality family the bundled prelude declares,
-   * `{u: Level}{S: Lifetime}(A: Sort { level = u, scope = S }) indices (x: A)(y: A) : Prop { scope = S }`, unsealed,
+   * `{u: Level}{S: Lifetime}(A: Type { level = u, scope = S }) indices (x: A)(y: A) : Prop { scope = S }`, unsealed,
    * whose one constructor is `Eq.refl (x: A) : Eq(A, x, x)`, and otherwise why a named equation is unavailable.
    */
   private[raccoonlang] def validate(env: Env): Either[String, ValidatedEquality] = {
@@ -49,14 +49,14 @@ object MatchEquation {
       (level, scope, a) = sortParams
       _ <- require(
         ValueEquivalence.defEq(a.tpe, Sorts.sort(level, Kind.unr, scope)),
-        "the prelude's `Eq` does not range over `A: Sort { level = u, scope = S }`"
+        "the prelude's `Eq` does not range over `A: Type { level = u, scope = S }`"
       )
       _ <- require(
         indices.forall(index => ValueEquivalence.defEq(index.tpe, a)),
         "the prelude's `Eq` is not over `(x: A)(y: A)`"
       )
       _ <- require(
-        ValueEquivalence.defEq(pi.codomain(fresh), Sorts.sort(Level.zero, Kind.unr, scope)),
+        ValueEquivalence.defEq(pi.codomain(fresh), Sorts.prop(scope)),
         "the prelude's `Eq` is not a `Prop { scope = S }`"
       )
       refl <- global(reflName) match {

@@ -534,10 +534,8 @@ object InductiveChecks {
       signature.familyArgs.take(sourcePrefixCount).map(_.tpe)
     )
     var hasRecursiveField = false
-    // A family whose declared universe is positive under every level assignment can never have a
-    // Prop instance, so proof representation metadata would be dead weight. Retain it only
-    // for Prop and universe-polymorphic families whose result level may reduce to zero.
-    val mayBeProp = !Level.isNeverZero(signature.declaredSort.level)
+    // Proof recovery is needed only for families declared in Prop.
+    val isPropFamily = Sorts.isProp(signature.declaredSort)
     val constructorSources = Vector.newBuilder[Option[Vector[ProofFieldSource]]]
     var proofFieldPlan = Option.empty[(Vector[ProofFieldSource], Boolean)]
 
@@ -590,9 +588,9 @@ object InductiveChecks {
         }
 
       // Compile where each field occurs among the result's arguments, for proof reconstruction and evidence discharge.
-      // Whether a field is a proof is classified later at the actual family instance, so universe-polymorphic fields
-      // that become proofs at u := 0 need no declaration-time special case.
-      val sources = Option.when(mayBeProp) {
+      // Whether a field is a proof is classified later at the actual family instance, including fields whose type
+      // is supplied by a proposition parameter.
+      val sources = Option.when(isPropFamily) {
         ownBinderVars.map { field =>
           val resultIndex = outputArgs.indexWhere(arg => ValueEquivalence.defEq(arg, field))
           if (resultIndex >= 0) ProofFieldSource.ResultArgument(resultIndex)
@@ -627,7 +625,10 @@ object InductiveChecks {
         def fieldName = s"${ctor.canonicalName}.${binder.name}"
         val fieldSort = TypeChecker.getUniverse(field.tpe)
         // 2) Universe bound: skip for Prop families; enforce for Sort families
-        if (!Sorts.isProp(constructorUniverse) && !Level.leq(fieldSort.level, constructorUniverse.level))
+        if (
+          !Sorts.isProp(constructorUniverse) && !Sorts
+            .isProp(fieldSort) && !Level.leq(fieldSort.level, constructorUniverse.level)
+        )
           at(binder.span) {
             fail(InductiveUniverseTooSmall(name, fieldName, field.tpe, fieldSort.level, constructorUniverse.level))
           }
@@ -709,8 +710,7 @@ object InductiveChecks {
     val header = decl.header
 
     // A one-constructor family gets positional projection metadata regardless of indices or recursion. Structure eta
-    // is the narrower Lean gate: zero true source indices and no recursive occurrence. Prop instances are filtered
-    // dynamically by StructEta.eligibleInstance and follow their declaration-compiled recovery plan.
+    // is the narrower gate: Type family, zero true source indices and no recursive occurrence.
     //
     // The constructor head is a promise completed after installation: constructor types are checked against the
     // installed family head, so the head cannot exist before installConstructors runs.
@@ -722,7 +722,8 @@ object InductiveChecks {
           new ProjectionInfo(
             ctor.canonicalName,
             constructorFieldDependencies(ctor),
-            etaEligible = header.indices.isEmpty && !blockHasRecursiveField,
+            etaEligible =
+              !Sorts.isProp(check.signature.declaredSort) && header.indices.isEmpty && !blockHasRecursiveField,
             () => installedCtorHead
           )
         )

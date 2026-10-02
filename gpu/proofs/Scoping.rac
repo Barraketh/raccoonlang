@@ -15,7 +15,7 @@ namespace Scoping {
 
   def withinEmpty : Scoping.Within(NatSet.empty, List.nil(Nat)) :=
     fun (id: Nat)(h: Eq(Bool, Check.NatSet.member(NatSet.empty, id), Bool.true)): Spec.Mem(Nat, id, List.nil(Nat)) =>
-      False.elim(Bool.falseNeTrue(h), Spec.Mem(Nat, id, List.nil(Nat)))
+      False.elimP(Bool.falseNeTrue(h), Spec.Mem(Nat, id, List.nil(Nat)))
 
   def withinInsert (v: NatSet)(vars: List(Nat))(id: Nat)(w: Scoping.Within(v, vars)): Scoping.Within(Check.NatSet.insert(v, id), List.cons(id, vars)) :=
     fun (n: Nat)(h: Eq(Bool, Check.NatSet.member(Check.NatSet.insert(v, id), n), Bool.true)): Spec.Mem(Nat, n, List.cons(id, vars)) => {
@@ -70,14 +70,14 @@ namespace Scoping {
 
   def declaredAcc (seen: NatSet)(found: List(String))(id: Nat)(isSeen: Bool)(h: Fold.Empty(Check.declaration(seen, found, id, isSeen).found)): Fold.Empty(found) := {
     match isSeen returning Fold.Empty(found) with
-    | Bool.true => False.elim(Fold.consNotEmpty(Text.cat(Cuda.name(id), " declared twice"), found, h), Fold.Empty(found))
+    | Bool.true => False.elimP(Fold.consNotEmpty(Text.cat(Cuda.name(id), " declared twice"), found, h), Fold.Empty(found))
     | Bool.false => h
   }
 
   def declaredFresh (seen: NatSet)(found: List(String))(id: Nat)(isSeen: Bool)(h: Fold.Empty(Check.declaration(seen, found, id, isSeen).found))
       : Eq(Bool, isSeen, Bool.false) := {
     match isSeen returning Eq(Bool, isSeen, Bool.false) with
-    | Bool.true => False.elim(Fold.consNotEmpty(Text.cat(Cuda.name(id), " declared twice"), found, h), Eq(Bool, Bool.true, Bool.false))
+    | Bool.true => False.elimP(Fold.consNotEmpty(Text.cat(Cuda.name(id), " declared twice"), found, h), Eq(Bool, Bool.true, Bool.false))
     | Bool.false => Eq.refl(Bool.false)
   }
 
@@ -472,20 +472,20 @@ namespace Scoping {
 
   def hostKeeps (found: List(String))(x: Expr)(h: Fold.Empty(Check.hostUse(found, x))): Fold.Empty(found) := {
     match x returning Fold.Empty(found) with
-    | Expr.var id => False.elim(Fold.consNotEmpty(Text.cat3("launcher: ", Cuda.name(id), " is not a host variable"), found, h), Fold.Empty(found))
+    | Expr.var id => False.elimP(Fold.consNotEmpty(Text.cat3("launcher: ", Cuda.name(id), " is not a host variable"), found, h), Fold.Empty(found))
     | Expr.lit value => h
     | Expr.lit64 value => h
     | Expr.zero t => h
     | Expr.param n => h
-    | Expr.special b => False.elim(Fold.consNotEmpty("launcher: a thread, block or grid index is not a host value", found, h), Fold.Empty(found))
+    | Expr.special b => False.elimP(Fold.consNotEmpty("launcher: a thread, block or grid index is not a host value", found, h), Fold.Empty(found))
     | Expr.bin op a b => h
     | Expr.max a b => h
     | Expr.fma a b c => h
     | Expr.select c t f => h
-    | Expr.index base i => False.elim(Fold.consNotEmpty("launcher: an array element is device memory, not a host value", found, h), Fold.Empty(found))
+    | Expr.index base i => False.elimP(Fold.consNotEmpty("launcher: an array element is device memory, not a host value", found, h), Fold.Empty(found))
     | Expr.cast t a => h
-    | Expr.sharedAddr offset => False.elim(Fold.consNotEmpty("launcher: dynamic shared memory is not host memory", found, h), Fold.Empty(found))
-    | Expr.sharedPtr t offset => False.elim(Fold.consNotEmpty("launcher: dynamic shared memory is not host memory", found, h), Fold.Empty(found))
+    | Expr.sharedAddr offset => False.elimP(Fold.consNotEmpty("launcher: dynamic shared memory is not host memory", found, h), Fold.Empty(found))
+    | Expr.sharedPtr t offset => False.elimP(Fold.consNotEmpty("launcher: dynamic shared memory is not host memory", found, h), Fold.Empty(found))
     | Expr.paramAddr n => h
   }
 

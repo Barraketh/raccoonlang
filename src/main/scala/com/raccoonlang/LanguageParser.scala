@@ -221,12 +221,9 @@ object LanguageParser {
       )
     }
 
-  /**
-   * The sort formers (spec §1), each with the level it fixes. `Sort` fixes none, so it requires a `level` field; `Type`
-   * and `Prop` fix theirs, so a `level` field after either is misplaced.
-   */
+  /** Type permits an optional level; Prop is a distinct former with scope alone. */
   private val sortFormers: Map[String, Option[SortLevel]] =
-    Map("Sort" -> None, "Type" -> Some(SortLevel.One), "Prop" -> Some(SortLevel.Zero))
+    Map("Type" -> None, "Prop" -> Some(SortLevel.Prop))
 
   /**
    * A sort former, as a whole word so that `Types` stays an identifier, and its field list if it has one. Its name
@@ -242,7 +239,9 @@ object LanguageParser {
         }
         val level = fixed
           .orElse(fields.get("level").map(SortLevel.Written))
-          .getOrElse(throw ParseError(span.start, span.start, s"$former requires a level field"))
+          .getOrElse(SortLevel.Zero)
+        if (former == "Prop" && fields.contains("kind"))
+          throw ParseError(span.start, span.start, "Prop has no kind field")
         Sort(level, fields.get("kind"), fields.get("scope"), span)
     }
 

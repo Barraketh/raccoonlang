@@ -54,18 +54,18 @@ namespace Launch {
     }
   }
 
-  def mismatch (a: Param)(b: Param)(h: Eq(Bool, Bool.false, Bool.true)): Eq(Param, a, b) := False.elim(Bool.falseNeTrue(h), Eq(Param, a, b))
+  def mismatch (a: Param)(b: Param)(h: Eq(Bool, Bool.false, Bool.true)): Eq(Param, a, b) := False.elimP(Bool.falseNeTrue(h), Eq(Param, a, b))
 
   def sameUseSound (a: MapUse)(b: MapUse)(h: Eq(Bool, Check.sameUse(a, b), Bool.true)): Eq(MapUse, a, b) := {
     match a returning Eq(MapUse, a, b) with
     | MapUse.load => {
       match b returning Eq(MapUse, MapUse.load, b) with
       | MapUse.load => Eq.refl(MapUse.load)
-      | MapUse.store => False.elim(Bool.falseNeTrue(h), Eq(MapUse, MapUse.load, MapUse.store))
+      | MapUse.store => False.elimP(Bool.falseNeTrue(h), Eq(MapUse, MapUse.load, MapUse.store))
     }
     | MapUse.store => {
       match b returning Eq(MapUse, MapUse.store, b) with
-      | MapUse.load => False.elim(Bool.falseNeTrue(h), Eq(MapUse, MapUse.store, MapUse.load))
+      | MapUse.load => False.elimP(Bool.falseNeTrue(h), Eq(MapUse, MapUse.store, MapUse.load))
       | MapUse.store => Eq.refl(MapUse.store)
     }
   }
@@ -121,23 +121,23 @@ namespace Launch {
     | Param.input t n => {
       let isLoad := Launch.sameUseSound(use, MapUse.load, Lib.andLeft(Check.sameUse(use, MapUse.load), Check.sameType(t, DType.bf16), h))
       let isBf16 := Launch.sameTypeSound(t, DType.bf16, Lib.andRight(Check.sameUse(use, MapUse.load), Check.sameType(t, DType.bf16), h))
-      Eq.subst(Eq.symm(isLoad), Level.zero, fun (v: MapUse): Prop => Spec.MapSource(v, Param.input(t, n)),
-        Eq.subst(Eq.symm(isBf16), Level.zero, fun (u: DType): Prop => Spec.MapSource(MapUse.load, Param.input(u, n)), Spec.MapSource.load(n)))
+      Eq.substP(Eq.symm(isLoad), fun (v: MapUse): Prop => Spec.MapSource(v, Param.input(t, n)),
+        Eq.substP(Eq.symm(isBf16), fun (u: DType): Prop => Spec.MapSource(MapUse.load, Param.input(u, n)), Spec.MapSource.load(n)))
     }
     | Param.output t n => {
       let isStore := Launch.sameUseSound(use, MapUse.store, Lib.andLeft(Check.sameUse(use, MapUse.store), Check.sameType(t, DType.f32), h))
       let isF32 := Launch.sameTypeSound(t, DType.f32, Lib.andRight(Check.sameUse(use, MapUse.store), Check.sameType(t, DType.f32), h))
-      Eq.subst(Eq.symm(isStore), Level.zero, fun (v: MapUse): Prop => Spec.MapSource(v, Param.output(t, n)),
-        Eq.subst(Eq.symm(isF32), Level.zero, fun (u: DType): Prop => Spec.MapSource(MapUse.store, Param.output(u, n)), Spec.MapSource.store(n)))
+      Eq.substP(Eq.symm(isStore), fun (v: MapUse): Prop => Spec.MapSource(v, Param.output(t, n)),
+        Eq.substP(Eq.symm(isF32), fun (u: DType): Prop => Spec.MapSource(MapUse.store, Param.output(u, n)), Spec.MapSource.store(n)))
     }
-    | Param.scalar t n => False.elim(Bool.falseNeTrue(h), Spec.MapSource(use, Param.scalar(t, n)))
-    | Param.tensorMap u n => False.elim(Bool.falseNeTrue(h), Spec.MapSource(use, Param.tensorMap(u, n)))
+    | Param.scalar t n => False.elimP(Bool.falseNeTrue(h), Spec.MapSource(use, Param.scalar(t, n)))
+    | Param.tensorMap u n => False.elimP(Bool.falseNeTrue(h), Spec.MapSource(use, Param.tensorMap(u, n)))
   }
 
   // `Check.declares` decides membership.
   def declaresSound (ps: List(Param))(p: Param)(h: Eq(Bool, Check.declares(ps, p), Bool.true)): Spec.Mem(Param, p, ps) decreases structural(ps) := {
     match ps returning Spec.Mem(Param, p, ps) with
-    | List.nil => False.elim(Bool.falseNeTrue(h), Spec.Mem(Param, p, List.nil(Param)))
+    | List.nil => False.elimP(Bool.falseNeTrue(h), Spec.Mem(Param, p, List.nil(Param)))
     | List.cons q rest => {
       match Lib.orCases(Check.sameParam(q, p), Check.declares(rest, p), h) returning Spec.Mem(Param, p, List.cons(q, rest)) with
       | Or.inl same => {
@@ -155,7 +155,7 @@ namespace Launch {
     | Nat.zero => Eq.refl(Bool.true)
     | Nat.succ j => {
       match c returning Eq(Bool, Nat.ble(Nat.succ(j), Nat.succ(c)), Bool.true) with
-      | Nat.zero => False.elim(Bool.falseNeTrue(h), Eq(Bool, Nat.ble(Nat.succ(j), 1), Bool.true))
+      | Nat.zero => False.elimP(Bool.falseNeTrue(h), Eq(Bool, Nat.ble(Nat.succ(j), 1), Bool.true))
       | Nat.succ d => Launch.bleSucc(j, d, h)
     }
   }
@@ -215,7 +215,7 @@ namespace Launch {
   def encodedMem (maps: List(MapEncoding))(name: String)(h: Eq(Bool, Nat.ble(1, Check.count(maps, name)), Bool.true))
       : Spec.Mem(String, name, Spec.mapNames(maps)) decreases structural(maps) := {
     match maps returning Spec.Mem(String, name, Spec.mapNames(maps)) with
-    | List.nil => False.elim(Bool.falseNeTrue(h), Spec.Mem(String, name, List.nil(String)))
+    | List.nil => False.elimP(Bool.falseNeTrue(h), Spec.Mem(String, name, List.nil(String)))
     | List.cons m more => {
       let goal := Spec.Mem(String, name, Spec.mapNames(List.cons(m, more)))
       Launch.countCases(Check.same(m.param, name), 0, Check.count(more, name), h, goal,
@@ -314,19 +314,19 @@ namespace Launch {
         Fold.unlessOk(List.nil(String), Check.declares(l.params, Param.output(t, n)), Launch.declareMessage(Param.output(t, n)), here))
       | Param.scalar t n => Launch.declaresSound(l.params, Param.scalar(t, n),
         Fold.unlessOk(List.nil(String), Check.declares(l.params, Param.scalar(t, n)), Launch.declareMessage(Param.scalar(t, n)), here))
-      | Param.tensorMap u n => False.elim(notMap(u, n)(Eq.refl(Param.tensorMap(u, n))), Spec.Mem(Param, Param.tensorMap(u, n), l.params))
+      | Param.tensorMap u n => False.elimP(notMap(u, n)(Eq.refl(Param.tensorMap(u, n))), Spec.Mem(Param, Param.tensorMap(u, n), l.params))
     }
     // The number of encodings of a tensor map of the kernel is 1.
     let one := fun (use: MapUse)(name: String)(mem: Spec.Mem(Param, Param.tensorMap(use, name), k.params)): Eq(Nat, Check.count(l.maps, name), 1) =>
       Lib.beqSound(Check.count(l.maps, name), 1,
         Fold.unlessOk(List.nil(String), Nat.beq(Check.count(l.maps, name), 1), Launch.countMessage(l, name), passedAt(Param.tensorMap(use, name), mem)))
     let encoded := fun (use: MapUse)(name: String)(mem: Spec.Mem(Param, Param.tensorMap(use, name), k.params)): Spec.Mem(String, name, Spec.mapNames(l.maps)) => {
-      let atLeastOne := Eq.subst(Eq.symm(one(use, name, mem)), Level.zero, fun (c: Nat): Prop => Eq(Bool, Nat.ble(1, c), Bool.true), Eq.refl(Bool.true))
+      let atLeastOne := Eq.substP(Eq.symm(one(use, name, mem)), fun (c: Nat): Prop => Eq(Bool, Nat.ble(1, c), Bool.true), Eq.refl(Bool.true))
       Launch.encodedMem(l.maps, name, atLeastOne)
     }
     let once := fun (use: MapUse)(name: String)(mem: Spec.Mem(Param, Param.tensorMap(use, name), k.params)): Not(Spec.Twice(String, name, Spec.mapNames(l.maps))) =>
       fun (twice: Spec.Twice(String, name, Spec.mapNames(l.maps))): False =>
-        Bool.falseNeTrue(Eq.subst(one(use, name, mem), Level.zero, fun (c: Nat): Prop => Eq(Bool, Nat.ble(2, c), Bool.true),
+        Bool.falseNeTrue(Eq.substP(one(use, name, mem), fun (c: Nat): Prop => Eq(Bool, Nat.ble(2, c), Bool.true),
           Launch.countAtLeastTwo(l.maps, name, twice)))
     let ok := fun (m: MapEncoding)(mem: Spec.Mem(MapEncoding, m, l.maps)): Launch.EncodingOk(l, kernelParams, m) =>
       Launch.encoding(l, kernelParams, List.nil(String), m,

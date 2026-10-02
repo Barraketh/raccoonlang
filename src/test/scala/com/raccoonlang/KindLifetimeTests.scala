@@ -29,7 +29,7 @@ class KindLifetimeTests extends munit.FunSuite with TestSupport {
   test("a declaration's header and a family parameter may bind a kind or a lifetime") {
     typecheckDecls("def f {k: Kind}{S: Lifetime}(A: Type { kind = k, scope = S })(x: A): A := x\n")
     typecheckDecls(
-      "def f (k: Kind)(S: Lifetime): Sort { level = succ(one), scope = S } := Type { kind = k, scope = S }\n"
+      "def f (k: Kind)(S: Lifetime): Type { level = one, scope = S } := Type { kind = k, scope = S }\n"
     )
     typecheckDecls(
       "inductive Box {k: Kind}{S: Lifetime}(A: Type { kind = k, scope = S }) : Type { scope = S }\n | mk : Box(A)\n"
@@ -99,7 +99,7 @@ class KindLifetimeTests extends munit.FunSuite with TestSupport {
     expectOnly[TypeMismatch](typecheckDecls(program("Type { scope = Nat.zero }")))
     expectOnly[TypeMismatch](typecheckDecls(program("Type { scope = Kind.lin }")))
     expectOnly[TypeMismatch](typecheckDecls(program("Type { kind = Lifetime.empty }")))
-    expectOnly[TypeMismatch](typecheckDecls(program("Sort { level = Kind.unr }")))
+    expectOnly[TypeMismatch](typecheckDecls(program("Type { level = Kind.unr}")))
     expectOnly[TypeMismatch](typecheckDecls(withFamilies("def w : Type := V(Kind.lin)\n")))
   }
 
@@ -159,9 +159,9 @@ class KindLifetimeTests extends munit.FunSuite with TestSupport {
     def program(result: String): String =
       s"def s (k: Kind)(S: Lifetime) : $result := Type { kind = k, scope = S }\n"
 
-    typecheckDecls(program("Sort { level = succ(one), scope = S }"))
-    expectOnly[TypeMismatch](typecheckDecls(program("Sort { level = succ(one) }")))
-    expectOnly[TypeMismatch](typecheckDecls(program("Sort { level = succ(one), kind = k, scope = S }")))
+    typecheckDecls(program("Type { level = one, scope = S }"))
+    expectOnly[TypeMismatch](typecheckDecls(program("Type { level = one}")))
+    expectOnly[TypeMismatch](typecheckDecls(program("Type { level = one, kind = k, scope = S }")))
   }
 
   // spec §2.4: a function type's scope unites its domains' and codomain's, less the group's own lifetime variables.
@@ -177,9 +177,9 @@ class KindLifetimeTests extends munit.FunSuite with TestSupport {
   test("a function type's scope counts its domains' and codomain's scopes") {
     def program(result: String, ty: String): String = withFamilies(s"def T (m: Lifetime) : $result := $ty\n")
 
-    typecheckDecls(program("Sort { level = succ(one), scope = m }", "(A: Type { scope = m }) -> Nat"))
+    typecheckDecls(program("Type { level = one, scope = m }", "(A: Type { scope = m }) -> Nat"))
     typecheckDecls(program("Type { scope = m }", "(n: Nat) -> V(m)"))
-    expectOnly[TypeMismatch](typecheckDecls(program("Sort { level = succ(one) }", "(A: Type { scope = m }) -> Nat")))
+    expectOnly[TypeMismatch](typecheckDecls(program("Type { level = one}", "(A: Type { scope = m }) -> Nat")))
     expectOnly[TypeMismatch](typecheckDecls(program("Type", "(n: Nat) -> V(m)")))
   }
 
@@ -191,7 +191,7 @@ class KindLifetimeTests extends munit.FunSuite with TestSupport {
 
     typecheckDecls(program("k: Kind", "Type { kind = k }"))
     typecheckDecls(program("S: Lifetime", "Type { scope = S }"))
-    expectOnly[NotAType](typecheckDecls(program("u: Level", "Sort { level = u }")))
+    expectOnly[NotAType](typecheckDecls(program("u: Level", "Type { level = u}")))
   }
 
   test("a kind or lifetime variable is forced only through a field that is exactly that variable") {
@@ -230,18 +230,11 @@ class KindLifetimeTests extends munit.FunSuite with TestSupport {
     expectOnly[TypeMismatch](typecheckDecls(program("b")))
   }
 
-  test("a sort other than Kind.unr needs a level that is never zero") {
+  test("data sorts admit every kind at every data level") {
     def program(sort: String): String = s"def keep (u: Level)(k: Kind)(A: $sort)(x: A): A := x\n"
-
-    typecheckDecls(program("Type { kind = k }"))
-    typecheckDecls(program("Type { kind = lin }"))
-    typecheckDecls(program("Sort { level = succ(u), kind = k }"))
-    typecheckDecls(program("Sort { level = max(u, one), kind = k }"))
-    val zero = expectOnly[LinearProp](typecheckDecls(program("Prop { kind = lin }")))
-    assert(ErrorRendering.render(zero, None).contains("its level is zero"), ErrorRendering.render(zero, None))
-    val variable = expectOnly[LinearProp](typecheckDecls(program("Sort { level = u, kind = k }")))
-    assert(ErrorRendering.render(variable, None).contains("may be zero"), ErrorRendering.render(variable, None))
-    expectOnly[LinearProp](typecheckDecls(program("Sort { level = u, kind = lin }")))
+    Vector("Type { kind = k }", "Type { kind = lin }", "Type { level = u, kind = k }", "Type { level = u, kind = lin }")
+      .foreach(sort => typecheckDecls(program(sort)))
+    assert(LanguageParser.parseProgram("def bad (P: Prop { kind = lin }): Prop := P\n").isInstanceOf[Failure])
   }
 
   // spec §6.2: a variable alone on one side links, the later-bound to the earlier-bound when both are variables. A
@@ -320,7 +313,7 @@ class KindLifetimeTests extends munit.FunSuite with TestSupport {
          |""".stripMargin
 
     typecheckDecls(program("Type { scope = l }"))
-    val level = expectOnly[InductiveUniverseTooSmall](typecheckDecls(program("Sort { level = succ(one), scope = l }")))
+    val level = expectOnly[InductiveUniverseTooSmall](typecheckDecls(program("Type { level = one, scope = l }")))
     assertEquals(level.where, "First.mk.second")
     val kind = expectOnly[KindExceeded](typecheckDecls(program("Type { kind = lin, scope = l }")))
     assert(PartialFunction.cond(kind.part) { case ContainedPart.Field("First.mk.second", _) => true }, kind.part)

@@ -24,7 +24,7 @@ object StructEta {
 
   /** The eta-eligible family instance behind `tpe`, excluding proposition-valued instances. */
   def eligibleInstance(tpe: Value): Option[(InductiveFamilyInstance, ProjectionInfo)] =
-    anyInstance(tpe).filter(_ => !Sorts.isProposition(tpe))
+    anyInstance(tpe)
 
   /**
    * The eta view of a value at an eta-eligible structure type: the constructor's stored fields when it is already in
@@ -60,14 +60,7 @@ object StructEta {
         }
     }
 
-  /**
-   * The fields a destructuring binds (PAIRS_AND_PRELUDE §3.5, §3.8): the view above, read at any instance of an
-   * eligible family. The checker admits a destructuring only outside `Prop`, and there this is the eta view. But a
-   * level instantiation may put a sort-polymorphic instance in `Prop` where the destructuring is evaluated, and there a
-   * field's projection is a proof, canonical for its exact type, as a one-branch match's field would be, so a
-   * destructuring never blocks. A constructor's fields are bound as stored, as a match binds them, so a destructuring
-   * forces no evidence field.
-   */
+  /** The stored or virtual fields of an eta-eligible Type family, with evidence left unforced. */
   def destructuredFields(value: Value): Option[Vector[Value]] =
     anyInstance(value.tpe).map { case (inst, info) => view(value, inst, info) }
 
@@ -108,7 +101,7 @@ object StructEta {
           .putGlobal(info.ctorHead.name, info.ctorHead)
           .putLocalUnchecked(program.self, base)
           .putLocal(program.motive, motive)
-        val blockedOn = Blocker.unapply(base).getOrElse(DepSet.empty) ++ Interpreter.typeCollapseDeps(base.tpe)
+        val blockedOn = Blocker.unapply(base).getOrElse(DepSet.empty)
         // The thunk a stuck evaluation of the same term would build, so re-sticking it keeps its identity.
         Value.canonicalizeProof(Interpreter.stuckMatchThunk(program.term, env, motive, blockedOn))
     }

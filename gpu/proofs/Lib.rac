@@ -18,7 +18,7 @@ namespace Lib {
   def andRight (a: Bool)(b: Bool)(h: Eq(Bool, Bool.and(a, b), Bool.true)): Eq(Bool, b, Bool.true) := {
     match a returning Eq(Bool, b, Bool.true) with
     | Bool.true => h
-    | Bool.false => False.elim(Bool.falseNeTrue(h), Eq(Bool, b, Bool.true))
+    | Bool.false => False.elimP(Bool.falseNeTrue(h), Eq(Bool, b, Bool.true))
   }
 
   def andIntro (a: Bool)(b: Bool)(ha: Eq(Bool, a, Bool.true))(hb: Eq(Bool, b, Bool.true)): Eq(Bool, Bool.and(a, b), Bool.true) := {
@@ -56,11 +56,11 @@ namespace Lib {
     | Nat.zero => {
       match b returning Eq(Nat, Nat.zero, b) with
       | Nat.zero => Eq.refl(Nat.zero)
-      | Nat.succ q => False.elim(Bool.falseNeTrue(h), Eq(Nat, Nat.zero, Nat.succ(q)))
+      | Nat.succ q => False.elimP(Bool.falseNeTrue(h), Eq(Nat, Nat.zero, Nat.succ(q)))
     }
     | Nat.succ p => {
       match b returning Eq(Nat, Nat.succ(p), b) with
-      | Nat.zero => False.elim(Bool.falseNeTrue(h), Eq(Nat, Nat.succ(p), Nat.zero))
+      | Nat.zero => False.elimP(Bool.falseNeTrue(h), Eq(Nat, Nat.succ(p), Nat.zero))
       | Nat.succ q => congrArg(Lib.beqSound(p, q, h), Nat, Nat.succ)
     }
   }
@@ -68,7 +68,7 @@ namespace Lib {
   def isZeroSound (n: Nat)(h: Eq(Bool, Nat.isZero(n), Bool.true)): Eq(Nat, n, 0) := {
     match n returning Eq(Nat, n, 0) with
     | Nat.zero => Eq.refl(0)
-    | Nat.succ m => False.elim(Bool.falseNeTrue(h), Eq(Nat, Nat.succ(m), 0))
+    | Nat.succ m => False.elimP(Bool.falseNeTrue(h), Eq(Nat, Nat.succ(m), 0))
   }
 
   // `Nat.blt` is `Nat.lt`'s test. On two variables its definition unfolds; applied to a literal above the unfolding
@@ -80,7 +80,7 @@ namespace Lib {
 
   def memberOfSound (xs: List(Nat))(n: Nat)(h: Eq(Bool, Check.memberOf(xs, n), Bool.true)): Spec.Mem(Nat, n, xs) decreases structural(xs) := {
     match xs returning Spec.Mem(Nat, n, xs) with
-    | List.nil => False.elim(Bool.falseNeTrue(h), Spec.Mem(Nat, n, List.nil(Nat)))
+    | List.nil => False.elimP(Bool.falseNeTrue(h), Spec.Mem(Nat, n, List.nil(Nat)))
     | List.cons x more => {
       match Lib.orCases(Nat.beq(x, n), Check.memberOf(more, n), h) returning Spec.Mem(Nat, n, List.cons(x, more)) with
       | Or.inl same => {
@@ -137,14 +137,14 @@ namespace Lib {
   def sameHeads (heads: Bool)(rest: List(Char))(more: List(Char))(h: Eq(Bool, Lib.sameRest(heads, rest, more), Bool.true)): Eq(Bool, heads, Bool.true) := {
     match heads returning Eq(Bool, heads, Bool.true) with
     | Bool.true => Eq.refl(Bool.true)
-    | Bool.false => False.elim(Bool.falseNeTrue(h), Eq(Bool, Bool.false, Bool.true))
+    | Bool.false => False.elimP(Bool.falseNeTrue(h), Eq(Bool, Bool.false, Bool.true))
   }
 
   def sameTails (heads: Bool)(rest: List(Char))(more: List(Char))(h: Eq(Bool, Lib.sameRest(heads, rest, more), Bool.true))
       : Eq(Bool, Check.sameChars(rest, more), Bool.true) := {
     match heads returning Eq(Bool, Check.sameChars(rest, more), Bool.true) with
     | Bool.true => h
-    | Bool.false => False.elim(Bool.falseNeTrue(h), Eq(Bool, Check.sameChars(rest, more), Bool.true))
+    | Bool.false => False.elimP(Bool.falseNeTrue(h), Eq(Bool, Check.sameChars(rest, more), Bool.true))
   }
 
   def sameCharsSound (a: List(Char))(b: List(Char))(h: Eq(Bool, Check.sameChars(a, b), Bool.true)): Eq(List(Char), a, b) decreases structural(a) := {
@@ -152,11 +152,11 @@ namespace Lib {
     | List.nil => {
       match b returning Eq(List(Char), List.nil(Char), b) with
       | List.nil => Eq.refl(List.nil(Char))
-      | List.cons d more => False.elim(Bool.falseNeTrue(h), Eq(List(Char), List.nil(Char), List.cons(d, more)))
+      | List.cons d more => False.elimP(Bool.falseNeTrue(h), Eq(List(Char), List.nil(Char), List.cons(d, more)))
     }
     | List.cons c rest => {
       match b returning Eq(List(Char), List.cons(c, rest), b) with
-      | List.nil => False.elim(Bool.falseNeTrue(h), Eq(List(Char), List.cons(c, rest), List.nil(Char)))
+      | List.nil => False.elimP(Bool.falseNeTrue(h), Eq(List(Char), List.cons(c, rest), List.nil(Char)))
       | List.cons d more => {
         let heads := Nat.beq(c.value, d.value)
         let char := congrArg(Lib.beqSound(c.value, d.value, Lib.sameHeads(heads, rest, more, h)), Char, Char.mk)
@@ -194,7 +194,7 @@ namespace Lib {
   def mentionsSound (names: List(String))(name: String)(h: Eq(Bool, Check.mentions(names, name), Bool.true))
       : Spec.Mem(String, name, names) decreases structural(names) := {
     match names returning Spec.Mem(String, name, names) with
-    | List.nil => False.elim(Bool.falseNeTrue(h), Spec.Mem(String, name, List.nil(String)))
+    | List.nil => False.elimP(Bool.falseNeTrue(h), Spec.Mem(String, name, List.nil(String)))
     | List.cons n rest => {
       match Lib.orCases(Check.same(n, name), Check.mentions(rest, name), h) returning Spec.Mem(String, name, List.cons(n, rest)) with
       | Or.inl same => {

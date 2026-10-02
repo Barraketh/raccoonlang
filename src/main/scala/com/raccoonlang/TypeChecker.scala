@@ -318,7 +318,7 @@ object TypeChecker {
         closure,
         source.span,
         source.id,
-        knownPropValued = Interpreter.stablePiPropClassification(telescope.outTy)
+        knownPropValued = Some(Sorts.isProposition(telescope.outTy))
       )
     val evaluated = evalPi(residual, env)
     // Force the classifier at declaration. Reuse the already checked fresh telescope instead of eta-expanding every
@@ -807,12 +807,15 @@ object TypeChecker {
       case scope: CA.Term.Scope =>
         val checkedBody = checkTerm(scope.body, env.openScope(scope.ref, Atoms.of(scope)))
         CheckedTerm(checkedBody.value, CA.Term.Scope(scope.ref, checkedBody.residual, scope.span, scope.id))
+      case CA.Term.Prop(scope, span) =>
+        val checkedScope = checkTerm(scope, LifetimeTpe, env)
+        CheckedTerm(Sorts.prop(Interpreter.getLifetime(checkedScope.value)), CA.Term.Prop(checkedScope.residual, span))
       case CA.Term.Sort(level, kind, scope, span) =>
         val checkedLevel = checkTerm(level, LevelTpe, env)
         val checkedKind = checkTerm(kind, KindTpe, env)
         val checkedScope = checkTerm(scope, LifetimeTpe, env)
         CheckedTerm(
-          Sorts.checkedSort(
+          Sorts.sort(
             Interpreter.getLevel(checkedLevel.value),
             Interpreter.getKind(checkedKind.value),
             Interpreter.getLifetime(checkedScope.value)

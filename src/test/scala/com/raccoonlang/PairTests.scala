@@ -30,8 +30,8 @@ class PairTests extends munit.FunSuite with TestSupport {
     typecheckDecls(program("Type { kind = lin, scope = l }", "Pair(Nat, Tok(l))"))
     typecheckDecls(program("Type { scope = l }", "Pair(Lease(l), Nat)"))
     typecheckDecls(program("Type", "Pair(Nat, Bool)"))
-    typecheckDecls(program("Sort { level = succ(one) }", "Pair(Type, Type)"))
-    typecheckDecls(program("Sort { level = succ(one) }", "Pair(Nat, Type)"))
+    typecheckDecls(program("Type { level = one}", "Pair(Type, Type)"))
+    typecheckDecls(program("Type { level = one}", "Pair(Nat, Type)"))
     expectOnly[TypeMismatch](typecheckDecls(program("Type { scope = l }", "Pair(Tok(l), Nat)")))
     expectOnly[TypeMismatch](typecheckDecls(program("Type { kind = lin, scope = l }", "Pair(Lease(l), Nat)")))
     expectOnly[TypeMismatch](typecheckDecls(program("Type", "Pair(Lease(l), Nat)")))
@@ -66,7 +66,9 @@ class PairTests extends munit.FunSuite with TestSupport {
       expectOnly[ImplicitReconstructionFailed](typecheckDecls("def at : Type := Pair(Nat, True)\n")).param,
       "v"
     )
-    typecheckDecls("def at : Nat := Prod.snd(Prod.mk(True.intro, 0))\n")
+    typecheckDecls(
+      "struct WithProof : Type\n | mk (proof: True)(value: Nat) : WithProof\ndef at : Nat := WithProof.value(WithProof.mk(True.intro, 0))\n"
+    )
     assertEquals(
       expectOnly[ImplicitReconstructionFailed](
         typecheckDecls("def at : Nat := match Pair.mk(True.intro, 0) returning Nat with\n | Pair.mk _ n => n\n")

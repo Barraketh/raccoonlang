@@ -84,8 +84,8 @@ class ScopeTests extends munit.FunSuite with TestSupport {
     assertEquals(escaped.lifetime, "l")
     assertEquals(escaped.tpe.toString, "V(l)")
     // The type's sort counts too.
-    typecheckDecls("def s : Sort { level = succ(one) } := scope l => Type\n")
-    expectOnly[LifetimeEscapes](typecheckDecls("def s : Sort { level = succ(one) } := scope l => Type { scope = l }\n"))
+    typecheckDecls("def s : Type { level = one} := scope l => Type\n")
+    expectOnly[LifetimeEscapes](typecheckDecls("def s : Type { level = one} := scope l => Type { scope = l }\n"))
   }
 
   /**
@@ -215,12 +215,12 @@ class ScopeTests extends munit.FunSuite with TestSupport {
       "a later binder" -> "axiom F (n: Nat)(l: Lifetime): Type\n",
       "an implicit forced by a family" ->
         "inductive PV (l: Lifetime) : Type { scope = l }\n | mk : PV(l)\naxiom F {l: Lifetime}(v: PV(l)): Type\n",
-      "after a level binder" -> "axiom F (u: Level)(l: Lifetime): Sort { level = u }\n",
+      "after a level binder" -> "axiom F (u: Level)(l: Lifetime): Type { level = u}\n",
       "a curried codomain" -> "axiom F (l: Lifetime): (n: Nat) -> Type\n",
       "a closure on the codomain" -> "axiom F (l: Lifetime): { scope = l } (n: Nat) -> Type\n",
-      "a sort through a definition" -> "def MyT : Sort { level = succ(one) } := Type\naxiom F (l: Lifetime): MyT\n",
+      "a sort through a definition" -> "def MyT : Type { level = one} := Type\naxiom F (l: Lifetime): MyT\n",
       "the whole type through a definition" ->
-        "def TF : Sort { level = succ(one) } := (l: Lifetime) -> Type\naxiom F : TF\n"
+        "def TF : Type { level = one} := (l: Lifetime) -> Type\naxiom F : TF\n"
     ).foreach { case (what, axiom) =>
       assertEquals(
         interceptError[ScopeExceeded](assuming(axiom).checkedEnv).part,
@@ -245,7 +245,7 @@ class ScopeTests extends munit.FunSuite with TestSupport {
     // `Quot` is a type former, whose arguments are projected.
     val quot =
       "def rel (a: Nat)(b: Nat): Prop := Eq(Nat, a, b)\n" +
-        "def g {u: Level}{S: Lifetime}{Sr: Lifetime}{Sq: Lifetime}{A: Sort { level = u, scope = S }}" +
+        "def g {u: Level}{S: Lifetime}{Sr: Lifetime}{Sq: Lifetime}{A: Type { level = u, scope = S }}" +
         "{r: { scope = Sr } A -> A -> Prop { scope = Sq }}(q: Quot(A, r)): Nat := 3\n\n{ g(Quot.mk(rel, 4)) }\n"
     assert(ValueEquivalence.defEq(runProgram(quot), runProgram("{ 3 }")))
   }
@@ -276,7 +276,7 @@ class ScopeTests extends munit.FunSuite with TestSupport {
     def mentions(written: String, sort: String): String =
       s"def f (u: Level)(k: Kind)(m: Lifetime): Unit -> Nat := fun $written(x: Unit): Nat => " +
         s"List.length(List.nil($sort))\n"
-    typecheckDecls(mentions("", "Sort { level = succ(u), kind = k }"))
+    typecheckDecls(mentions("", "Type { level = succ(u), kind = k }"))
     expectOnly[TypeMismatch](typecheckDecls(mentions("", "Type { scope = m }")))
     val exceeded =
       expectOnly[ScopeExceeded](typecheckDecls(mentions("{ scope = Lifetime.empty } ", "Type { scope = m }")))

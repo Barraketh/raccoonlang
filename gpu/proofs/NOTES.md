@@ -130,7 +130,7 @@ of `l.params` (the same constructor, element type and name); every `tensorMap(na
 encodings' names and not `Twice` there; and every encoding names a `tensorMap(use, name)` of the kernel with the use it
 states, and reads a source array that is a `MapSource` for that use (`input(bf16, n)` to load, `output(f32, n)` to
 store) and a `Mem` of the launcher's parameters, and `scalar(u32, rows)` and `scalar(u32, cols)` of the launcher.
-`MapSource` from `Check.mapSource` is two `Eq.subst`s per arm, over the soundness of `Check.sameUse` and
+`MapSource` from `Check.mapSource` is two `Eq.substP`s per arm, over the soundness of `Check.sameUse` and
 `Check.sameType`; that the named map is the kernel's is `Check.declares` again, now that `sameParam` compares a map's
 use. Its size is in Bool reflection:
 `Check.sameParam` sound (a 4 × 4 case split, 12 arms impossible), `Check.sameType` sound (through an inverse of
@@ -149,7 +149,7 @@ because of F9.
 a Bool. Its soundness (a member was inserted) then rests on distinct numbers having distinct paths, which is
 arithmetic about the prelude's `Nat.div` (a `divFuel` recursion) and `Nat.mod` (`a - (a / b) * b`) that no library
 provides, and a proof by recursion must case-split on two computed parities at once (the member's and the inserted
-number's), which F2 makes painful: each would need a mirror definition and an `Eq.subst` along the parity's
+number's), which F2 makes painful: each would need a mirror definition and an `Eq.substP` along the parity's
 equation. (This was judged from the code; that version was not attempted.) It became a trie that follows a
 precomputed path (`NatSet.path(n)`, a `List(Bool)`) and whose node lists the numbers inserted at it. Membership
 compares numbers at the end of the path, so no fact about paths is needed, and every case split is on a path's
@@ -183,7 +183,7 @@ Written here because Raccoon's prelude has none of them:
 - **Nat order facts**: `Bool.not(Nat.blt(0, n)) = true` gives `n = 0` (`SharedMemory.notPositive`); `Nat.ble` is
   monotone in its second argument (`Launch.bleSucc`).
 - **`Eq` transport**: never needed as a lemma, since matching an equation proof rewrites the goal and every
-  hypothesis (P1); `Eq.subst` with an explicit motive where one side is not a variable (`Barriers.sound`,
+  hypothesis (P1); `Eq.substP` with an explicit motive where one side is not a variable (`Barriers.sound`,
   `Launch.launched`).
 
 ## Findings
@@ -206,7 +206,7 @@ def unlessOk (found: List(String))(ok: Bool)(message: Unit -> String)
     (h: Eq(List(String), Check.unless(found, ok, message), List.nil(String))): Eq(Bool, ok, Bool.true) := {
   match ok returning Eq(Bool, ok, Bool.true) with
   | Bool.true => Eq.refl(Bool.true)
-  | Bool.false => False.elim(Fold.consNotEmpty(message(Unit.unit), found, h), Eq(Bool, Bool.false, Bool.true))
+  | Bool.false => False.elimP(Fold.consNotEmpty(message(Unit.unit), found, h), Eq(Bool, Bool.false, Bool.true))
 }
 ```
 
@@ -304,7 +304,7 @@ abstracts `e` in the goal and in the hypotheses and hands the branch the equatio
 
 *Now (2026-10-01):* `match h : e` exists (docs/implemented/MATCH_EQUATION.md). It hands each case the equation, without abstracting
 `e`. With `match z : Nat.isZero(n)`, `t`'s `Bool.true` case is `z`, and in its `Bool.false` case
-`Eq.subst(z, Level.zero, fun (b: Bool): Prop => Eq(Nat, gOf(b), 0), h)` turns `h` into `Eq(Nat, 1, 0)`, `gOf` being
+`Eq.substP(z, fun (b: Bool): Prop => Eq(Nat, gOf(b), 0), h)` turns `h` into `Eq(Nat, 1, 0)`, `gOf` being
 `g`'s match restated over a variable. The proofs here were not rewritten with it.
 
 ### F3. Proofs cannot name what a checker leaves anonymous
@@ -357,7 +357,7 @@ match s returning Fold.Empty(found) with
 | Stmt.decl t id init => h
 | Stmt.declMut t id init => h
 … 11 more …
-| Stmt.error message => False.elim(Fold.consNotEmpty(message, found, h), Fold.Empty(found))
+| Stmt.error message => False.elimP(Fold.consNotEmpty(message, found, h), Fold.Empty(found))
 ```
 
 Arms (trivial ones) per such match: `Errors.keeps` 14 (13), `Literals.keeps` 15 (13), `SharedMemory.staticKeeps` 14
@@ -411,7 +411,7 @@ hide it.
   `Spec.Mem.here(x, rest)` takes `x` and `Spec.Mem.there(y, rest, h)` does not (likewise `Spec.Before.here(x, rest,
   later)`, and `Spec.LauncherNames.mk(l, …)` without its `kernel`); the arity error (`expected 2 params, got 3`)
   names neither binder.
-- `False.elim(h, T)` must be given the goal `T` again (no expected type is consulted), and `Or.inl` and `Or.inr`
+- `False.elim(h, T)` and `False.elimP(h, P)` must be given the goal again (no expected type is consulted), and `Or.inl` and `Or.inr`
   must be given the other disjunct: `Or.inl(Eq(Bool, b, Bool.true), p)`, since nothing forces it.
 - A lambda cannot appear in a type at all, a constructor field's or a binder's (a parse error at the `fun`), so
   `Spec.mapNames` and `Barriers.pairWith` are definitions. Nor can a match (`(h: Eq(Bool, { match … }, …))` is a

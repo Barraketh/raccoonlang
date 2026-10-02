@@ -112,7 +112,7 @@ class DiagnosticSnapshotTests extends munit.FunSuite with Goldens {
     val section = spec.substring(spec.indexOf("## 9. Diagnostics"))
     val block = section.substring(section.indexOf("```text") + "```text".length)
     val listed = block.substring(0, block.indexOf("```")).split("[,\\s]+").filter(_.nonEmpty).toVector
-    assert(listed.length >= 10, listed)
+    assert(listed.length >= 9, listed)
     val tests =
       Files
         .walk(Paths.get("src", "test", "scala"))

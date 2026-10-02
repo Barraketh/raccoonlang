@@ -44,24 +44,19 @@ class ParseErrorTests extends munit.FunSuite {
     typePositions.foreach(program => expectParseError(program(fragment), message))
 
   test("each position parses a well-formed sort and function type") {
-    Vector("Type", "Sort { level = Level.one, kind = Kind.unr }", "{ kind = Kind.unr } Nat -> Nat").foreach { t =>
+    Vector("Type", "Type { level = Level.zero, kind = Kind.unr }", "{ kind = Kind.unr } Nat -> Nat").foreach { t =>
       typePositions.foreach(program => expectParses(program(t)))
     }
   }
 
   test("a sort's field list is nonempty and names each known field once") {
-    everywhere("Sort @{}", "Empty field list")
     everywhere("Type @{}", "Empty field list")
-    everywhere("Sort { level = Level.one, @size = 1 }", "Unknown field size")
+    everywhere("Type { level = Level.zero, @size = 1 }", "Unknown field size")
     everywhere("Type { kind = Kind.unr, @kind = Kind.unr }", "Repeated field kind")
   }
 
-  test("Sort requires its level, bare or applied, and Type and Prop fix theirs") {
-    everywhere("@Sort", "Sort requires a level field")
-    everywhere("@Sort(Level.one)", "Sort requires a level field")
-    everywhere("@Sort { kind = Kind.unr }", "Sort requires a level field")
-    everywhere("Type { @level = Level.one }", "Misplaced field level: Type fixes the level")
-    everywhere("Prop { kind = Kind.unr, @level = Level.zero }", "Misplaced field level: Prop fixes the level")
+  test("Prop has no level or kind fields") {
+    everywhere("Prop { @level = Level.zero }", "Misplaced field level: Prop fixes the level")
   }
 
   test("a function type's closure is a field list without a level, before the group's first domain") {

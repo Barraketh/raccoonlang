@@ -55,18 +55,18 @@ namespace SharedMemory {
   def notPositive (n: Nat)(h: Eq(Bool, Bool.not(Nat.blt(0, n)), Bool.true)): Eq(Nat, n, 0) := {
     match n returning Eq(Nat, n, 0) with
     | Nat.zero => Eq.refl(0)
-    | Nat.succ m => False.elim(Bool.falseNeTrue(h), Eq(Nat, Nat.succ(m), 0))
+    | Nat.succ m => False.elimP(Bool.falseNeTrue(h), Eq(Nat, Nat.succ(m), 0))
   }
 
   def orNot (a: Bool)(b: Bool)(h: Eq(Bool, Bool.or(Bool.not(a), b), Bool.true))(ha: Eq(Bool, a, Bool.true)): Eq(Bool, b, Bool.true) := {
     match a returning Eq(Bool, b, Bool.true) with
     | Bool.true => h
-    | Bool.false => False.elim(Bool.falseNeTrue(ha), Eq(Bool, b, Bool.true))
+    | Bool.false => False.elimP(Bool.falseNeTrue(ha), Eq(Bool, b, Bool.true))
   }
 
   def someNotNone (o: Option(Launcher))(h: Eq(Bool, Option.isSome(o), Bool.true)): Not(Eq(Option(Launcher), o, Option.none(Launcher))) := {
     match o returning Not(Eq(Option(Launcher), o, Option.none(Launcher))) with
-    | Option.none => False.elim(Bool.falseNeTrue(h), Not(Eq(Option(Launcher), Option.none(Launcher), Option.none(Launcher))))
+    | Option.none => False.elimP(Bool.falseNeTrue(h), Not(Eq(Option(Launcher), Option.none(Launcher), Option.none(Launcher))))
     | Option.some l => fun (e: Eq(Option(Launcher), Option.some(l), Option.none(Launcher))): False => {
       match e returning False with
     }

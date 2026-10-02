@@ -731,7 +731,7 @@ object ValueEquivalence {
           else unifyParameters(l1, Lifetime.singleVariable(l1), l2, Lifetime.singleVariable(l2), meta, ctx)
 
         // Two sorts are equal when their levels, kinds and scopes are (spec §2.5).
-        case (s1: VSort, s2: VSort) =>
+        case (s1: VSort, s2: VSort) if Sorts.isProp(s1) == Sorts.isProp(s2) =>
           for {
             afterLevel <- tryUnify(s1.level, s2.level, meta, ctx)
             afterKind <- tryUnify(s1.kind, s2.kind, afterLevel, ctx)

@@ -264,7 +264,7 @@ class TailEvaluationTests extends munit.FunSuite with TestSupport {
       """
         |def lemma (n: Nat): Eq(Nat, n, n) := Eq.refl(n)
         |
-        |def via {u: Level}(A: Type)(B: Sort { level = u })(f: A -> B)(x: A): B := f(x)
+        |def via (A: Type)(B: Prop)(f: A -> B)(x: A): B := f(x)
         |
         |{ via(Nat, Eq(Nat, 3, 3), fun (n: Nat): Eq(Nat, 3, 3) => lemma(3), 0) }
         |""".stripMargin

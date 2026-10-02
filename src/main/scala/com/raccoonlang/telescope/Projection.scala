@@ -237,8 +237,8 @@ object Projection {
             case None =>
               v match {
                 case sort: VSort =>
-                  queue.append((root, steps :+ Step.SortLevel, sort.level))
-                  queue.append((root, steps :+ Step.SortKind, sort.kind))
+                  if (!Sorts.isProp(sort)) queue.append((root, steps :+ Step.SortLevel, sort.level))
+                  if (!Sorts.isProp(sort)) queue.append((root, steps :+ Step.SortKind, sort.kind))
                   queue.append((root, steps :+ Step.SortScope, sort.scope))
 
                 case VCtor(head, stored, tpe) =>
@@ -292,7 +292,7 @@ object Projection {
     drain()
 
     // Demoting a family param turns it into a root, which can force further implicits (demoting A
-    // in `Option {u}(A)` forces u through `A : Sort { level = u }`), so demote minimally: rightmost unforced
+    // in `Option {u}(A)` forces u through `A : Type { level = u }`), so demote minimally: rightmost unforced
     // param first. Binder types only mention earlier binders, so forcing flows right-to-left and
     // this order never demotes a param a later demotion would have forced. Demotion only adds a
     // root — existing solutions stay valid — so saturation resumes with just the new root.
@@ -438,14 +438,14 @@ object Projection {
 
           case Step.SortLevel =>
             v match {
-              case sort: VSort => Right(sort.level)
-              case other       => Left(Failure.NotASort(other))
+              case sort: VSort if !Sorts.isProp(sort) => Right(sort.level)
+              case other                              => Left(Failure.NotASort(other))
             }
 
           case Step.SortKind =>
             v match {
-              case sort: VSort => Right(sort.kind)
-              case other       => Left(Failure.NotASort(other))
+              case sort: VSort if !Sorts.isProp(sort) => Right(sort.kind)
+              case other                              => Left(Failure.NotASort(other))
             }
 
           case Step.SortScope =>

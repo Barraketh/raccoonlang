@@ -78,7 +78,7 @@ class MutualSiblingSortTests extends munit.FunSuite with TestSupport {
     assertEquals(kinds.declaration, "Family B")
     assert(isFieldAOfBMk(kinds.part), kinds.part)
     val levels = expectOnly[InductiveUniverseTooSmall](
-      typecheckDecls(block("Type", "B", "Sort { level = succ(one) }", "A"))
+      typecheckDecls(block("Type", "B", "Type { level = one}", "A"))
     )
     assertEquals((levels.inductive, levels.where), ("A", "A.mk.b"))
     // A proposition holds no linear field, a linear sibling's included.
@@ -119,8 +119,7 @@ class MutualSiblingSortTests extends munit.FunSuite with TestSupport {
     typecheckDecls(
       trees +
         """
-          |def proofs (s: Tree)(t: Tree): Eq(Balanced, Balanced.intro(s), Balanced.intro(t)) :=
-          |  Eq.refl(Balanced.intro(s))
+          |def proofs (Q: Balanced -> Prop)(s: Tree)(t: Tree)(q: Q(Balanced.intro(s))): Q(Balanced.intro(t)) := q
           |
           |def nodes (l: Tree)(r: Tree)(p: Balanced)(q: Balanced): Eq(Tree, Tree.node(l, r, p), Tree.node(l, r, q)) :=
           |  Eq.refl(Tree.node(l, r, p))
@@ -149,19 +148,19 @@ class MutualSiblingSortTests extends munit.FunSuite with TestSupport {
         | | Sound.intro b => 7
         |
         |mutual {
-        |  inductive Opt {u: Level}(A: Sort { level = u }) : Sort { level = u }
+        |  inductive Opt {u: Level}(A: Type { level = u}) : Type { level = u}
         |   | none : Opt(A)
         |
-        |  inductive Box {u: Level}(A: Sort { level = u }) : Sort { level = max(one, u) }
+        |  inductive Box {u: Level}(A: Type { level = u}) : Type { level = u}
         |   | mk (o: Opt(A)) (a: A) : Box(A)
         |}
         |
-        |def fromOpt (o: Opt(True)): Nat := match o returning Nat with
+        |def fromOpt (o: Opt(Nat)): Nat := match o returning Nat with
         | | Opt.none => 3
         |
-        |def boxed : Box(True) := Box.mk(Opt.none(True), True.intro)
+        |def boxed : Box(Nat) := Box.mk(Opt.none(Nat), 0)
         |
-        |{ Nat.add(fromSound(Sound.intro(Balanced.intro(Tree.leaf))), fromOpt(Opt.none(True))) }
+        |{ Nat.add(fromSound(Sound.intro(Balanced.intro(Tree.leaf))), fromOpt(Opt.none(Nat))) }
         |""".stripMargin
     )
     assert(ValueEquivalence.defEq(result, runProgram("{ 10 }")))

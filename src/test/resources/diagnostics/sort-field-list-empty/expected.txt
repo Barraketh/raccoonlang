@@ -1,4 +1,4 @@
 
 <root>/main.rac:1:16: error: Failed to parse module <root>/main.rac: Empty field list
-def f (A: Sort {})(x: A): A := x
+def f (A: Type {})(x: A): A := x
                ^
