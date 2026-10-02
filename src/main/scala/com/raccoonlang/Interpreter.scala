@@ -98,7 +98,7 @@ object Interpreter {
    * env the values are later bound into.
    */
   private def getEnvWithArgs(fnTpe: VPi, baseEnv: Env, args: Vector[Value]): Env =
-    BinderOps.instantiateFull(fnTpe.binders, baseEnv, args)
+    BinderOps.instantiateFullRuntime(fnTpe.binders, fnTpe.runtimeSlotLayout, baseEnv, args)
 
   /**
    * A Pi into Prop is impredicative and unrestricted; a data Pi takes the maximum of its domain and codomain levels.
@@ -197,10 +197,14 @@ object Interpreter {
     synDeps.unionInPlace(closureScope.synDeps)
     synDeps.unionInPlace(mentionedScope.synDeps)
 
+    val codomain = new CheckedPiCodomain(pi.binders, pi.codomainIndependent) {
+      override def apply(env: Env): Value = evalTerm(pi.out, env)
+    }
+
     VPi(
       closedEnv,
       pi.binders,
-      codomain = env => evalTerm(pi.out, env),
+      codomain,
       closureKind,
       closureScope,
       mentionedScope,
@@ -224,7 +228,9 @@ object Interpreter {
    * environment holds it: a destructured evidence field may be bound unforced.
    */
   private[raccoonlang] def lambdaCaptures(l: CTerm.Lam, env: Env): Vector[Capture] =
-    l.bodyRefs.toVector.sortBy(_.id).flatMap(ref => env.locals.get(ref).map(value => Capture(ref, Value.forced(value))))
+    l.bodyRefs.toVector
+      .sortBy(_.id)
+      .flatMap(ref => env.localValueOption(ref).map(value => Capture(ref, Value.forced(value))))
 
   /**
    * A lambda's derived closure field (spec §4.3): the join of what its captures contribute to it, read in `env`, where
@@ -234,7 +240,7 @@ object Interpreter {
   private def derivedField[P <: Value](field: Sorts.Field[P], captures: Vector[CoreAst.LocalRef], env: Env): P =
     field.join(captures.map { ref =>
       field.ofCapture(
-        Value.forced(env.locals.getOrElse(ref, wtf(s"The derived closure's capture ${ref.name} is unbound")))
+        Value.forced(env.localValueOption(ref).getOrElse(wtf(s"The derived closure's capture ${ref.name} is unbound")))
       )
     })
 
@@ -256,7 +262,20 @@ object Interpreter {
    */
   private[raccoonlang] def evalApply(fn: Value, vArgs: Vector[Value]): Value = evalSteps(applyStep(fn, vArgs))
 
-  private def applyStep(fn: Value, vArgs: Vector[Value]): Step = {
+  /**
+   * Apply a validated native String.append result through the same checked constructor application path as source. The
+   * closed layout is the capability for the one narrow delayed-key result case.
+   */
+  private[raccoonlang] def evalValidatedStringAppend(layout: SourceStringLayout, chars: VPacked): Value = {
+    require(chars.codec eq layout.charListCodec, "Validated String.append result has a different CharList codec")
+    evalSteps(applyStep(layout.stringMk, Vector(chars), layout))
+  }
+
+  private def applyStep(
+      fn: Value,
+      vArgs: Vector[Value],
+      delayedStringAppend: SourceStringLayout = null
+  ): Step = {
     fn.tpe match {
       case pi: VPi =>
         // Grouping is part of a function type's identity, so an application supplies exactly this
@@ -270,9 +289,14 @@ object Interpreter {
           case lam: VLam =>
             lamStep(lam, vArgs)
           case h: ConstructorHead =>
-            val resultTy = pi.codomain(envWithArgs)
+            val resultTy = pi.constructorResultType(envWithArgs)
             val storedArgs = Value.constructorStoredArgs(h, vArgs)
-            Step.Done(Packed.construct(h, storedArgs, resultTy))
+            if (delayedStringAppend eq null) Step.Done(Packed.construct(h, storedArgs, resultTy))
+            else {
+              if (!(h eq delayedStringAppend.stringMk))
+                wtf("A delayed String.append key capability reached a different constructor")
+              Step.Done(VApp.deferredStringAppendResult(delayedStringAppend, storedArgs, resultTy))
+            }
           // Every non-reducing head builds one new application layer over itself. An existing
           // neutral stays the head rather than being flattened into the new spine: flattening
           // would destroy positional-projection arity. A blocked head propagates its blockers,
@@ -316,8 +340,11 @@ object Interpreter {
         // checker was working on.
         if (vArgs.length != pi.numExplicit) fail(ArityMismatch(pi.numExplicit, vArgs.length, ArityMismatch.Arguments))
         var provided = 0
-        pi.binders.foldLeft(Vector.empty[Value]) { (earlier, binder) =>
-          earlier :+ (binder.mode match {
+        var index = 0
+        val earlier = Vector.newBuilder[Value]
+        while (index < pi.binders.length) {
+          val binder = pi.binders(index)
+          earlier += (binder.mode match {
             case BinderMode.Explicit =>
               val arg = vArgs(provided)
               provided += 1
@@ -332,9 +359,11 @@ object Interpreter {
                 case Right(value) => value
                 case Left(reason) => fail(ImplicitReconstructionFailed(binder.name, valueName(fn), reason))
               }
-            case BinderMode.Evidence => deferredEvidence(pi, earlier)
+            case BinderMode.Evidence => deferredEvidence(pi, earlier.result())
           })
+          index += 1
         }
+        earlier.result()
       case _ => vArgs
     }
 
@@ -342,7 +371,10 @@ object Interpreter {
   private def deferredEvidence(pi: VPi, earlier: Vector[Value]): DeferredEvidence = {
     val before = pi.binders.take(earlier.length)
     new DeferredEvidence(() =>
-      evalTerm(pi.binders(earlier.length).ty, BinderOps.instantiateFull(before, pi.env, earlier))
+      evalTerm(
+        pi.binders(earlier.length).ty,
+        BinderOps.instantiateFullRuntime(before, pi.runtimeSlotPrefixLayouts(earlier.length), pi.env, earlier)
+      )
     )
   }
 
@@ -354,9 +386,14 @@ object Interpreter {
       case pi: VPi if pi.numEvidence > 0 =>
         if (pi.binders.length != args.length)
           wtf(s"An application of ${pi.binders.length} binders stores ${args.length} arguments")
-        pi.binders.zip(args).foldLeft(Vector.empty[Value]) { case (earlier, (binder, arg)) =>
-          earlier :+ (if (binder.mode == BinderMode.Evidence) deferredEvidence(pi, earlier) else arg)
+        val earlier = Vector.newBuilder[Value]
+        var index = 0
+        while (index < pi.binders.length) {
+          earlier +=
+            (if (pi.binders(index).mode == BinderMode.Evidence) deferredEvidence(pi, earlier.result()) else args(index))
+          index += 1
         }
+        earlier.result()
       case _ => args
     }
 
@@ -382,7 +419,8 @@ object Interpreter {
   private def lamStep(lam: VLam, args: Vector[Value]): Step = {
     // Arguments are bound as supplied. A lambda's Pi is the one it was created with, so its binders
     // are exactly the ones its body expects.
-    lazy val piEnv = BinderOps.instantiateFull(lam.tpe.binders, lam.tpe.env, args)
+    lazy val piEnv =
+      BinderOps.instantiateFullRuntime(lam.tpe.binders, lam.tpe.runtimeSlotLayout, lam.tpe.env, args)
 
     lam.body match {
       // A native body reads only the arguments it names, none of them evidence: a native operation's binders are
@@ -391,9 +429,13 @@ object Interpreter {
       case LamBody.Native(run, nativeEnv, _) => Step.Done(run(args, nativeEnv))
       case LamBody.ProofEta                  => Step.Done(Value.canonicalizeProof(VProof(lam.tpe.codomain(piEnv))))
       case LamBody.Core(term, coreEnv) =>
-        val bodyEnv = BinderOps.instantiateFull(lam.tpe.binders, coreEnv, args)
+        val bodyEnv = BinderOps.instantiateFullRuntime(lam.tpe.binders, lam.tpe.runtimeSlotLayout, coreEnv, args)
 
-        val recurEnv = term.recursivePeers.foldLeft(bodyEnv) { case (current, (ref, name)) =>
+        var recurEnv = bodyEnv
+        val peerValues = Vector.newBuilder[Value]
+        var index = 0
+        while (index < term.recursivePeers.length) {
+          val (ref, name) = term.recursivePeers(index)
           // A singleton's self reference is this very lambda (possibly a materialized copy), never a
           // same-named global; group peers resolve through the group's lazy bindings.
           val peer =
@@ -403,8 +445,11 @@ object Interpreter {
                 .get(name)
                 .map(_.value(coreEnv))
                 .getOrElse(wtf(s"Checked recursive peer $name is absent from its group"))
-          current.putLocal(ref, peer)
+          peerValues += peer
+          index += 1
         }
+        if (term.recursivePeers.nonEmpty)
+          recurEnv = recurEnv.bindRuntimeLocals(term.recursivePeerSlotLayout, peerValues.result())
         Step.Tail(term.body, recurEnv)
     }
   }
@@ -492,7 +537,14 @@ object Interpreter {
       case l: CTerm.Lam              => Step.Done(evalLam(l, env))
       case m: CTerm.Match            => matchStep(m, env)
       case b: CTerm.Body =>
-        Step.Tail(b.res, b.lets.foldLeft(env)((curEnv, l) => bindLet(l.pattern, evalTerm(l.value, curEnv), curEnv)))
+        var bodyEnv = env
+        var index = 0
+        while (index < b.lets.length) {
+          val binding = b.lets(index)
+          bodyEnv = bindRuntimeLet(binding.pattern, evalTerm(binding.value, bodyEnv), bodyEnv)
+          index += 1
+        }
+        Step.Tail(b.res, bodyEnv)
       // The interpreter binds a scope's variable to its atom and makes none of its checks (spec §8).
       case scope: CTerm.Scope   => Step.Tail(scope.body, env.putLocal(scope.ref, Atoms.of(scope)))
       case CTerm.Prop(scope, _) => Step.Done(Sorts.prop(getLifetime(evalTerm(scope, env))))
@@ -569,9 +621,10 @@ object Interpreter {
   private def branchEnv(m: CTerm.Match, branch: CoreAst.Case, scrut: Value, args: Vector[Value], env: Env): Env = {
     // Every caller supplies a scrutinee's stored fields to a branch MatchChecker already matched
     // against that constructor's arity.
-    if (args.length != branch.argRefs.length)
-      wtf(s"Checked branch for ${branch.ctorName} binds ${branch.argRefs.length} fields, got ${args.length}")
-    val fieldsEnv = bindFields(branch.argRefs, args, env)
+    val layout = branch.runtimeSlotLayout
+    if (args.length != layout.size)
+      wtf(s"Checked branch for ${branch.ctorName} binds ${layout.size} fields, got ${args.length}")
+    val fieldsEnv = bindRuntimeFields(args, env, layout)
     m.equation.fold(fieldsEnv) { equation =>
       val equality =
         env.equality.fold(reason => wtf(s"A checked match equation reached an env where $reason"), identity)
@@ -585,10 +638,14 @@ object Interpreter {
   }
 
   /** A pattern's locals bound to a constructor's fields, each in the canonical form for its exact type. */
-  private def bindFields(refs: Vector[CoreAst.LocalRef], fields: Vector[Value], env: Env): Env =
-    refs.zip(fields).foldLeft(env) { case (curEnv, (ref, field)) =>
-      curEnv.putLocal(ref, Value.canonicalizeProof(field))
-    }
+  private def bindRuntimeFields(
+      fields: Vector[Value],
+      env: Env,
+      layout: RuntimeSlotLayout
+  ): Env = {
+    if (layout.size != fields.length) wtf("Pattern slot layout has inconsistent arity")
+    env.bindRuntimeLocals(layout, fields)
+  }
 
   /**
    * A `let` 's locals bound to its value, transparently: the one local to the value, or a destructuring's locals to the
@@ -603,7 +660,25 @@ object Interpreter {
           StructEta.destructuredFields(value).getOrElse(wtf(s"A checked destructuring's value $value has no fields"))
         if (fields.length != vars.length)
           wtf(s"A checked destructuring binds ${vars.length} fields of $value, which has ${fields.length}")
-        bindFields(vars.map(_.ref), fields, env)
+        env.bindLocals(vars, fields)(_.ref)
+    }
+
+  /** Runtime-only counterpart: checker environments continue to bind lets into their persistent local map. */
+  private def bindRuntimeLet(pattern: CoreAst.LetPattern, value: Value, env: Env): Env =
+    pattern match {
+      case CoreAst.LetPattern.Local(ref) => env.putLocal(ref, value)
+      case fieldsPattern: CoreAst.LetPattern.Fields =>
+        val fields =
+          StructEta.destructuredFields(value).getOrElse(wtf(s"A checked destructuring's value $value has no fields"))
+        if (fields.length != fieldsPattern.vars.length)
+          wtf(
+            s"A checked destructuring binds ${fieldsPattern.vars.length} fields of $value, which has ${fields.length}"
+          )
+        bindRuntimeFields(
+          fields,
+          env,
+          fieldsPattern.runtimeSlotLayout
+        )
     }
 
   /**
@@ -737,7 +812,8 @@ object Interpreter {
       if (withNat.nativeLiterals.stringLayout.isEmpty && withNat.globals.contains("String"))
         withNat.installStringLayout(Packed.validateStringLayout(withNat))
       else withNat
-    withString.installEquality(MatchEquation.validate(withString))
+    val withStringAppend = Packed.attachStringAppend(withString)
+    withStringAppend.installEquality(MatchEquation.validate(withStringAppend))
   }
 
   private[raccoonlang] def buildPreludeEnv(core: Program): Env =

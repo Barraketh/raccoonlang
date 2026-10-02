@@ -16,7 +16,12 @@ package com.raccoonlang
 // residual, keeps the identity of the node it rebuilds (docs/kernel.md#value-identity).
 
 object CoreAst {
-  final case class LocalRef(id: Int, name: String)
+  final case class LocalRef(id: Int, name: String) {
+    // Resolved references already have an integer identity. Hashing the display name at every
+    // local lookup and bind adds no useful discrimination; equality still checks both fields.
+    override def hashCode(): Int = id
+
+  }
 
   sealed trait Ast {
     def span: Span
@@ -88,9 +93,22 @@ object CoreAst {
     ) extends Term {
       require(binders.nonEmpty, "Pi requires at least one binder")
 
+      /** The code references and exact binder-independence fact are computed together, once per immutable Pi node. */
+      private lazy val refSummary: (Set[CoreAst.LocalRef], Boolean) = {
+        val outRefs = mentionedRefs(out)
+        val binderTypesRefs = binders
+          .map(_.ty)
+          .foldLeft(Set.empty[CoreAst.LocalRef])((acc, term) => acc | mentionedRefs(term))
+        val allRefs = binderTypesRefs | outRefs
+        val independentCodomain = !binders.exists(binder => outRefs.contains(binder.localRef))
+        (allRefs, independentCodomain)
+      }
+
       /** What its binder types and codomain mention: a local bound outside the Pi among these is one it captures. */
-      lazy val codeRefs: Set[CoreAst.LocalRef] =
-        (binders.map(_.ty) :+ out).foldLeft(Set.empty[CoreAst.LocalRef])((acc, term) => acc | mentionedRefs(term))
+      lazy val codeRefs: Set[CoreAst.LocalRef] = refSummary._1
+
+      /** Whether the codomain avoids every binder introduced by this Pi, including references nested in its code. */
+      lazy val codomainIndependent: Boolean = refSummary._2
 
       lazy val refs: Set[CoreAst.LocalRef] = childRefs(this)
     }
@@ -132,6 +150,9 @@ object CoreAst {
         recursion: Option[Recursion],
         recursivePeers: Vector[(CoreAst.LocalRef, String)] = Vector.empty
     ) extends Term {
+
+      private[raccoonlang] lazy val recursivePeerSlotLayout: RuntimeSlotLayout =
+        RuntimeSlotLayout(recursivePeers.map(_._1))
 
       /** What the body mentions: a local bound outside the lambda among these is one of its captures (spec §4.3). */
       lazy val bodyRefs: Set[CoreAst.LocalRef] = mentionedRefs(body)
@@ -415,7 +436,10 @@ object CoreAst {
     final case class Local(ref: LocalRef) extends LetPattern
 
     /** `(x1, …, xn)`, each field's local where its component is written, and the pattern where it is. */
-    final case class Fields(vars: Vector[PatternVar], span: Span) extends LetPattern
+    final case class Fields(vars: Vector[PatternVar], span: Span) extends LetPattern {
+      private[raccoonlang] lazy val runtimeSlotLayout: RuntimeSlotLayout =
+        RuntimeSlotLayout(vars.map(_.ref))
+    }
   }
 
   /**
@@ -478,6 +502,8 @@ object CoreAst {
       span: Span
   ) {
     def argRefs: Vector[LocalRef] = patternVars.map(_.ref)
+
+    private[raccoonlang] lazy val runtimeSlotLayout: RuntimeSlotLayout = RuntimeSlotLayout(argRefs)
   }
 
   /**

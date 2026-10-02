@@ -2,7 +2,7 @@ package com.raccoonlang
 
 import com.raccoonlang.Value._
 
-import scala.collection.immutable.VectorMap
+import scala.collection.immutable.SeqMap
 import scala.reflect.ClassTag
 
 object ValueOps {
@@ -19,9 +19,17 @@ object ValueOps {
      * Each local materialized as an argument is: one bound to unforced evidence, as a destructuring binds it, stays so.
      */
     def materializeEnv(env: Env)(implicit eqStore: EqStore): Env =
-      env.copy(locals = VectorMap.from(env.locals.iterator.map { case (ref, value) =>
-        ref -> materializeArgument(value)
-      }))
+      env
+        .copy(
+          baseLocals = SeqMap.from(env.baseLocals.iterator.map { case (ref, value) =>
+            ref -> materializeArgument(value)
+          }),
+          runtimeLocals = SeqMap.from(env.runtimeLocals.iterator.map { case (ref, value) =>
+            ref -> materializeArgument(value)
+          }),
+          runtimeFrames = env.runtimeFrames.map(_.mapValues(materializeArgument))
+        )
+        .rebuildRuntimeLookupIndex
 
     def materialize(value: Value)(implicit eqStore: EqStore): Value = {
       if (!mayNeedMaterialization(value)) return value

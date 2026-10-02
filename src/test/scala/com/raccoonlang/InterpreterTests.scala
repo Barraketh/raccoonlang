@@ -73,6 +73,31 @@ class InterpreterTests extends munit.FunSuite {
     }
   }
 
+  test("escaped function frames keep nested closure captures across repeated calls") {
+    val p =
+      """
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (_: Peano) : Peano
+        |
+        |def add (a: Peano)(b: Peano): Peano decreases structural(b) := {
+        |  match b returning Peano with
+        |  | Peano.zero => a
+        |  | Peano.succ rest => add(Peano.succ(a), rest)
+        |}
+        |
+        |def capture (x: Peano): Peano -> Peano := fun (ignored: Peano): Peano => x
+        |
+        |{
+        |  let first := capture(Peano.zero)
+        |  let second := capture(Peano.succ(Peano.zero))
+        |  add(first(Peano.zero), add(second(Peano.zero), first(Peano.succ(Peano.zero))))
+        |}
+        |""".stripMargin
+
+    assertEquals(toShape(getValue(p)), succS(zeroS))
+  }
+
   test("nullary constructor with erased family binder evaluates to constructor view after application") {
     val p =
       """

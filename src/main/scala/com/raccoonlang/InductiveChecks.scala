@@ -110,7 +110,8 @@ object InductiveChecks {
       !doesNotOccur(target, lambda.tpe) || captured.exists(value => !doesNotOccur(target, value)) ||
       (lambda.body match {
         case LamBody.Core(term, bodyEnv) =>
-          bodyEnv.locals.values.exists(value => !doesNotOccur(target, value)) || CoreAst.mentionsGlobal(term, names)
+          bodyEnv.localValuesIterator
+            .exists(value => !doesNotOccur(target, value)) || CoreAst.mentionsGlobal(term, names)
         case _: LamBody.Native => true
         case LamBody.ProofEta  => false
       })
@@ -121,7 +122,7 @@ object InductiveChecks {
     scanClosure(thunk) {
       val target = PositivityTarget.InductiveHeads(names)
       !doesNotOccur(target, thunk.tpe) || thunk.id.captures.exists(value => !doesNotOccur(target, value)) ||
-      thunk.env.locals.values.exists(value => !doesNotOccur(target, value)) ||
+      thunk.env.localValuesIterator.exists(value => !doesNotOccur(target, value)) ||
       CoreAst.mentionsGlobal(thunk.term, names)
     }
   }

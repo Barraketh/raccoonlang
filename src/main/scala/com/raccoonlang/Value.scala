@@ -171,7 +171,7 @@ object Value {
     final case class LocalId(nodeId: NodeId, captures: Vector[Value]) extends ValueId
   }
 
-  private[raccoonlang] def envDeps(env: Env): DepSet = DepSet.unionAll(env.locals.valuesIterator.map(_.synDeps))
+  private[raccoonlang] def envDeps(env: Env): DepSet = DepSet.unionAll(env.localValuesIterator.map(_.synDeps))
 
   /**
    * The `Var` objects occurring in `value` whose ids lie in `ids`. `synDeps` already answers *which* ids occur; this
@@ -187,7 +187,7 @@ object Value {
     val found = Vector.newBuilder[Var]
     var seen = DepSet.empty
 
-    def walkEnv(env: Env): Unit = env.locals.values.foreach(walk)
+    def walkEnv(env: Env): Unit = env.localValuesIterator.foreach(walk)
 
     def walk(v: Value): Unit = {
       if (!v.synDeps.intersects(ids)) return
@@ -527,6 +527,12 @@ object Value {
   // identity, so its key mixes them in and conversion compares them exactly. `mentionedScope` is what its captures
   // hold, read as a lambda's derived closure reads them, which its sort counts; it is part of its identity too.
   // Structural `==` is meaningless on a value holding functions, so it throws, as on a sort.
+  /** Evaluator-created codomain closure with syntax-checked binder-independence metadata. */
+  private[raccoonlang] abstract class CheckedPiCodomain(
+      val ownerBinders: Vector[CoreAst.Binder],
+      val independent: Boolean
+  ) extends (Env => Value)
+
   case class VPi(
       env: Env,
       binders: Vector[CoreAst.Binder],
@@ -542,6 +548,12 @@ object Value {
   ) extends Value {
     require(binders.nonEmpty, "VPi requires at least one binder")
 
+    private[raccoonlang] lazy val runtimeSlotLayout: RuntimeSlotLayout =
+      RuntimeSlotLayout(binders.map(_.localRef))
+
+    private[raccoonlang] lazy val runtimeSlotPrefixLayouts: RuntimeSlotPrefixCache =
+      new RuntimeSlotPrefixCache(runtimeSlotLayout)
+
     override lazy val tpe: Classifier = classifier0()
     override val key: ValueKey.Key = ValueKey.pi(id, binders, closureKind, closureScope, mentionedScope)
     override val needsStructuralDefEq: Boolean = Value.needsStructuralDefEq(this)
@@ -554,6 +566,36 @@ object Value {
 
     /** How many evidence binders this Pi's own binder group has, which a bracket group supplies all of. */
     lazy val numEvidence: Int = binders.count(_.mode == BinderMode.Evidence)
+
+    /** Argument positions whose values determine the Pi application's identity and dependencies. */
+    private[raccoonlang] lazy val determiningArgIndices: Vector[Int] =
+      if (numEvidence == 0) Vector.empty
+      else {
+        val indices = Vector.newBuilder[Int]
+        var index = 0
+        while (index < binders.length) {
+          if (binders(index).mode != BinderMode.Evidence) indices += index
+          index += 1
+        }
+        indices.result()
+      }
+
+    /**
+     * The independent result belongs to this immutable closure instance and is computed once, safely across threads.
+     */
+    private[this] lazy val independentCodomain: Value = codomain(env)
+
+    /** Constructor-only eligibility is derived on first constructor application, without allocating a plan object. */
+    private[this] lazy val hasIndependentConstructorCodomain: Boolean =
+      codomain match {
+        case checked: CheckedPiCodomain =>
+          checked.independent && (checked.ownerBinders.asInstanceOf[AnyRef] eq binders.asInstanceOf[AnyRef])
+        case _ => false
+      }
+
+    /** Constructor applications cache a checked independent result on this Pi instance; all others instantiate args. */
+    private[raccoonlang] def constructorResultType(instantiatedEnv: => Env): Value =
+      if (hasIndependentConstructorCodomain) independentCodomain else codomain(instantiatedEnv)
 
     /**
      * Implicit telescope indices grouped by the *explicit* argument position their projection spec roots at. Specs
@@ -587,9 +629,12 @@ object Value {
    * Its evidence arguments, those at its head's evidence binders or its constructor's evidence fields, are determined
    * by the rest: each is a proof of its binder's proposition, evaluated from the head's type and the arguments before
    * it, and proofs are irrelevant. So its dependencies, key and conversion read only `determiningArgs`, the others, and
-   * only a use of the arguments themselves forces evidence (docs/kernel.md#evidence-arguments).
+   * only a use of the arguments themselves forces evidence (docs/kernel.md#evidence-arguments). Ordinary applications
+   * compute their key when built. The sole delayed-key exception is an exact packed `String.mk` result created through
+   * a validated native String.append layout; its one child is a closed packed payload, and the same application key is
+   * memoized if a consumer requests it.
    */
-  final class VApp private (val head: Value, stored: Vector[Value], val tpe: Value, val blockedOn: DepSet)
+  sealed abstract class VApp private (val head: Value, stored: Vector[Value], val tpe: Value, val blockedOn: DepSet)
     extends Value {
     require(stored.nonEmpty || blockedOn.isEmpty, "Blocked application requires at least one argument")
     head match {
@@ -604,11 +649,10 @@ object Value {
     }
 
     /** The stored arguments less the evidence ones, which they and the head determine. None of them is deferred. */
-    private[raccoonlang] val determiningArgs: Vector[Value] = VApp.withoutEvidence(head, stored)
+    private[raccoonlang] val determiningArgs: Vector[Value] = VApp.determiningArgs(head, stored)
 
     override val synDeps: DepSet =
       DepSet.unionAll(Iterator(head.synDeps) ++ determiningArgs.iterator.map(_.synDeps) ++ Iterator(tpe.synDeps))
-    override val key: ValueKey.Key = ValueKey.application(head, determiningArgs, tpe)
     override val needsStructuralDefEq: Boolean = Value.needsStructuralDefEq(this)
 
     // Memoized without a lock: computing it again yields the same arguments, since each deferred proof forces once.
@@ -651,28 +695,101 @@ object Value {
   }
 
   object VApp {
-    def apply(head: Value, args: Vector[Value], tpe: Value, blockedOn: DepSet = DepSet.empty): VApp =
-      new VApp(head, args, tpe, blockedOn)
+    private final class EagerVApp(head: Value, stored: Vector[Value], tpe: Value, blockedOn: DepSet)
+      extends VApp(head, stored, tpe, blockedOn) {
+      override val key: ValueKey.Key = ValueKey.application(head, this.determiningArgs, tpe)
+    }
 
     /**
-     * `stored` less the arguments at evidence binders: its constructor's evidence fields, or the evidence binders of
-     * its head's function type, whose group it saturates. Evidence is told by binder mode, so a supplied, a discharged
-     * and a deferred proof are skipped alike.
+     * Native append creates a flat packed String.mk application whose key is often never needed before the next append
+     * or printing. Cache the unchanged application key on first demand so those intermediate suffixes are not rehashed.
      */
-    private def withoutEvidence(head: Value, stored: Vector[Value]): Vector[Value] = {
-      val binders = head match {
-        case h: ConstructorHead => if (h.hasEvidenceFields) h.fieldBinders else Vector.empty
+    private final class DeferredStringAppendVApp(
+        stored: Vector[Value],
+        tpe: Value,
+        layout: SourceStringLayout
+    ) extends VApp(layout.stringMk, stored, tpe, DepSet.empty) {
+      @volatile private[this] var cachedApplicationKey: ValueKey.Key = null
+
+      override def key: ValueKey.Key = {
+        var result = cachedApplicationKey
+        if (result eq null)
+          synchronized {
+            result = cachedApplicationKey
+            if (result eq null) {
+              result = ValueKey.application(head, this.determiningArgs, tpe)
+              cachedApplicationKey = result
+            }
+          }
+        result
+      }
+
+      def keyIsMaterialized: Boolean = cachedApplicationKey ne null
+    }
+
+    def apply(head: Value, args: Vector[Value], tpe: Value, blockedOn: DepSet = DepSet.empty): VApp =
+      new EagerVApp(head, args, tpe, blockedOn)
+
+    /** Create only the packed sole field of a validated, closed String.mk result; there is no general delay switch. */
+    private[raccoonlang] def deferredStringAppendResult(
+        layout: SourceStringLayout,
+        storedArgs: Vector[Value],
+        tpe: Value
+    ): VApp = {
+      require(layout.charConstructor.nonEmpty, "Deferred String.append key requires a reversible Char.ofNat layout")
+      require(layout.stringMk.totalArity == 1 && layout.stringMk.numErasedFamilyArgs == 0)
+      require(
+        storedArgs match {
+          case Vector(packed: VPacked) =>
+            (packed.codec eq layout.charListCodec) && ValueEquivalence
+              .defEq(packed.tpe, layout.charListCodec.listCharTpe)
+          case _ => false
+        },
+        "Deferred String.append key requires the validated packed CharList field"
+      )
+      require(tpe.synDeps.isEmpty && !Sorts.isProposition(tpe), "Deferred String.append result must be closed data")
+      require(ValueEquivalence.defEq(tpe, layout.stringTpe), "Deferred String.append result has the wrong String type")
+      Value.canonicalizeProof(new DeferredStringAppendVApp(storedArgs, tpe, layout)) match {
+        case app: VApp => app
+        case _         => wtf("A validated String.append result was canonicalized to a non-application")
+      }
+    }
+
+    /** Internal test observability for proving that append does not force intermediate application keys. */
+    private[raccoonlang] def deferredStringAppendKeyMaterialized(app: VApp): Option[Boolean] = app match {
+      case delayed: DeferredStringAppendVApp => Some(delayed.keyIsMaterialized)
+      case _                                 => None
+    }
+
+    private[Value] def determiningArgs(head: Value, stored: Vector[Value]): Vector[Value] =
+      head match {
+        case constructor: ConstructorHead if constructor.hasEvidenceFields =>
+          if (constructor.fieldBinders.length != stored.length)
+            wtf(s"An application stores ${stored.length} arguments for ${constructor.fieldBinders.length} binders")
+          select(stored, constructor.determiningStoredArgIndices)
+        case _: ConstructorHead => stored
         case other =>
           other.tpe match {
-            case pi: VPi if pi.numEvidence > 0 => pi.binders
-            case _                             => Vector.empty
+            case pi: VPi if pi.numEvidence > 0 =>
+              if (pi.binders.length != stored.length)
+                wtf(s"An application stores ${stored.length} arguments for ${pi.binders.length} binders")
+              select(stored, pi.determiningArgIndices)
+            case _ => stored
           }
       }
-      if (binders.isEmpty) stored
-      else if (binders.length != stored.length)
-        wtf(s"An application stores ${stored.length} arguments for ${binders.length} binders")
-      else stored.zip(binders).collect { case (arg, binder) if binder.mode != BinderMode.Evidence => arg }
-    }
+
+    private def select(stored: Vector[Value], indices: Vector[Int]): Vector[Value] =
+      if (indices.length == stored.length) stored
+      else {
+        val selected = Vector.newBuilder[Value]
+        selected.sizeHint(indices.length)
+        var index = 0
+        while (index < indices.length) {
+          selected += stored(indices(index))
+          index += 1
+        }
+        selected.result()
+      }
 
     def unapply(app: VApp): Some[(Value, Vector[Value], Value, DepSet)] =
       Some((app.head, app.args, app.tpe, app.blockedOn))
@@ -811,7 +928,19 @@ object Value {
 
   final class NatPayload private[Value] (val value: BigInt) extends PackedPayload
 
-  final class CharListPayload private[Value] (private val scalars0: Vector[Int]) extends PackedPayload {
+  private[raccoonlang] final case class CharListAppendDisplay(
+      prefixLength: Int,
+      hasPackedSuffix: Boolean,
+      charConstructorName: String
+  ) {
+    require(prefixLength >= 0, "Packed String display prefix must be non-negative")
+    require(!hasPackedSuffix || prefixLength > 0, "Packed String suffix metadata needs a constructor prefix")
+  }
+
+  final class CharListPayload private[Value] (
+      private val scalars0: Vector[Int],
+      private[raccoonlang] val appendDisplay: Option[CharListAppendDisplay]
+  ) extends PackedPayload {
     private[raccoonlang] def scalars: Vector[Int] = scalars0
   }
 
@@ -895,8 +1024,7 @@ object Value {
     override private[raccoonlang] def mixPayloadKey(key: ValueKey.Key, payload: PackedPayload): ValueKey.Key = {
       val scalars = PackedPayload.charScalars(payload)
       var cur = ValueKey.mixKey(key, listCharTpe.key)
-      cur = ValueKey.mixLong(cur, scalars.length.toLong)
-      scalars.foreach(scalar => cur = ValueKey.mixLong(cur, scalar.toLong & 0xffffffffL))
+      cur = ValueKey.mixCharScalars(cur, scalars)
       cur
     }
   }
@@ -921,6 +1049,10 @@ object Value {
   ) extends ValidatedStringLayout {
     override private[raccoonlang] def eval(scalars: Vector[Int]): Value =
       Interpreter.evalApply(stringMk, Vector(VPacked.charList(charListCodec, scalars)))
+
+    /** Create a native append result through the checked constructor application path, with its key left pending. */
+    private[raccoonlang] def evalAppended(chars: VPacked): Value =
+      Interpreter.evalValidatedStringAppend(this, chars)
   }
 
   /** A closed packed literal. Construction is restricted to the validated factories below. */
@@ -951,6 +1083,17 @@ object Value {
       case NatCodec         => None
       case _: CharListCodec => Some(PackedPayload.charScalars(payload))
     }
+
+    /** Source-like printing metadata for a String.append result; excluded from semantic equality and its key. */
+    private[raccoonlang] def charListAppendDisplay: Option[CharListAppendDisplay] =
+      codec match {
+        case NatCodec => None
+        case _: CharListCodec =>
+          payload match {
+            case chars: CharListPayload => chars.appendDisplay
+            case _: NatPayload          => wtf("CharList codec received a Nat payload")
+          }
+      }
   }
 
   object VPacked {
@@ -960,17 +1103,54 @@ object Value {
       new VPacked(NatCodec, new NatPayload(value), tpe)
     }
 
-    private[raccoonlang] def charList(codec: CharListCodec, scalars: Vector[Int]): VPacked = {
+    private[raccoonlang] def charList(
+        codec: CharListCodec,
+        scalars: Vector[Int],
+        appendDisplay: Option[CharListAppendDisplay] = None
+    ): VPacked = {
       require(scalars.forall(UnicodeScalarString.isScalar), "Packed string contains a non-Unicode scalar")
-      new VPacked(codec, new CharListPayload(scalars), codec.listCharTpe)
+      charListKnown(codec, scalars, appendDisplay)
+    }
+
+    /** Used only with Packed's unforgeable capability, minted while every input scalar is checked or already packed. */
+    private[raccoonlang] def charList(
+        codec: CharListCodec,
+        scalars: Packed.ValidatedCharScalars,
+        appendDisplay: Option[CharListAppendDisplay]
+    ): VPacked = {
+      require(scalars.codec eq codec, "Validated CharList belongs to a different codec")
+      charListKnown(codec, scalars.values, appendDisplay)
+    }
+
+    private def charListKnown(
+        codec: CharListCodec,
+        scalars: Vector[Int],
+        appendDisplay: Option[CharListAppendDisplay]
+    ): VPacked = {
+      appendDisplay.foreach { display =>
+        require(display.prefixLength <= scalars.length, "Packed String display prefix exceeds its payload")
+        require(
+          display.hasPackedSuffix || display.prefixLength == scalars.length,
+          "Packed String without a packed suffix must be entirely constructor-prefixed"
+        )
+      }
+      new VPacked(codec, new CharListPayload(scalars, appendDisplay), codec.listCharTpe)
     }
 
     private[raccoonlang] def charListTail(parent: VPacked): VPacked =
       parent.codec match {
         case codec: CharListCodec =>
           val scalars = PackedPayload.charScalars(parent.payload)
-          if (scalars.nonEmpty) new VPacked(codec, new CharListPayload(scalars.tail), codec.listCharTpe)
-          else wtf("Cannot decode the tail of an empty packed CharList")
+          if (scalars.nonEmpty) {
+            val nextDisplay = parent.charListAppendDisplay.flatMap { display =>
+              require(display.prefixLength > 0, "Packed String display metadata outlived its constructor prefix")
+              val prefixLength = display.prefixLength - 1
+              // Once the constructor prefix is exhausted, a packed suffix is again an ordinary packed literal.
+              if (prefixLength == 0 && display.hasPackedSuffix) None
+              else Some(display.copy(prefixLength = prefixLength))
+            }
+            new VPacked(codec, new CharListPayload(scalars.tail, nextDisplay), codec.listCharTpe)
+          } else wtf("Cannot decode the tail of an empty packed CharList")
         case NatCodec => wtf("CharList tail requested from a packed Nat")
       }
 
@@ -1024,6 +1204,19 @@ object Value {
 
     /** Whether any field is an evidence field, which its applications' dependencies, keys and conversion skip. */
     lazy val hasEvidenceFields: Boolean = fieldBinders.exists(_.mode == BinderMode.Evidence)
+
+    /** Stored argument positions that determine a constructor application's identity and dependencies. */
+    private[raccoonlang] lazy val determiningStoredArgIndices: Vector[Int] =
+      if (!hasEvidenceFields) Vector.empty
+      else {
+        val indices = Vector.newBuilder[Int]
+        var index = 0
+        while (index < fieldBinders.length) {
+          if (fieldBinders(index).mode != BinderMode.Evidence) indices += index
+          index += 1
+        }
+        indices.result()
+      }
 
     /**
      * The env in which this constructor's field binder types are evaluable: the Pi's own closure extended with the

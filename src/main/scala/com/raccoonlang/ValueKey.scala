@@ -115,6 +115,27 @@ object ValueKey {
     cur
   }
 
+  /** The CharList payload mix, with the same scalar sequence as repeated `mixLong` but one allocated key. */
+  private[raccoonlang] def mixCharScalars(key: Key, scalars: Vector[Int]): Key = {
+    var hi = key.hi
+    var lo = key.lo
+    var value = scalars.length.toLong
+    var nextHi = avalanche(hi ^ (value + SeedHi))
+    var nextLo = avalanche(lo + java.lang.Long.rotateLeft(value ^ SeedLo, 31))
+    hi = nextHi
+    lo = nextLo
+    var index = 0
+    while (index < scalars.length) {
+      value = scalars(index).toLong & 0xffffffffL
+      nextHi = avalanche(hi ^ (value + SeedHi))
+      nextLo = avalanche(lo + java.lang.Long.rotateLeft(value ^ SeedLo, 31))
+      hi = nextHi
+      lo = nextLo
+      index += 1
+    }
+    Key(hi, lo)
+  }
+
   private[raccoonlang] def mixKey(key: Key, value: Key): Key =
     Key(
       avalanche(key.hi ^ value.hi),
@@ -193,11 +214,23 @@ object ValueKey {
    * (`VApp.determiningArgs`); a constructor's mixes its type too. A nullary constructor's bare head keys as its
    * application to no arguments.
    */
-  def application(head: Value, args: Vector[Value], tpe: Value): Key =
-    head match {
-      case h: Value.ConstructorHead => mixKey(mixValues(mixKey(tag(Tag.App), h.nameKey), args), tpe.key)
-      case other                    => mixValues(mixKey(tag(Tag.App), other.key), args)
+  def application(head: Value, args: Vector[Value], tpe: Value): Key = {
+    val initial = head match {
+      case h: Value.ConstructorHead => mixKey(tag(Tag.App), h.nameKey)
+      case other                    => mixKey(tag(Tag.App), other.key)
     }
+    var cur = initial
+    var index = 0
+    while (index < args.length) {
+      cur = mixKey(cur, args(index).key)
+      index += 1
+    }
+    cur = mixLong(cur, args.length.toLong)
+    head match {
+      case _: Value.ConstructorHead => mixKey(cur, tpe.key)
+      case _                        => cur
+    }
+  }
 
   def lambda(id: Value.ValueId): Key = valueIdKey(tag(Tag.Lam), id)
 

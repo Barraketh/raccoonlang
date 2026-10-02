@@ -438,6 +438,7 @@ object PrettyPrinter {
           @annotation.tailrec
           def loop(rest: Value): Option[Vector[Int]] =
             rest match {
+              case packed: Value.VPacked if strings.isEmpty && packed.charListAppendDisplay.nonEmpty => None
               case packed: Value.VPacked => packed.charScalars.map(tail => (known ++= tail).result())
               case Value.VCtor(cons, Vector(char, tail), _) if cons.name == "List.cons" =>
                 scalar(char) match {
@@ -491,10 +492,12 @@ object PrettyPrinter {
       case Value.VConst(name, _, _)                => Vector(Text(name))
       case Value.ConstructorHead(name, _, _, _, _) => Vector(Text(name))
       case WrittenFields(head, fields) =>
-        reader.scalars(value) match {
-          case Some(scalars)          => Vector(Text(printString(scalars)))
-          case None if fields.isEmpty => Vector(Text(head.name))
-          case None                   => Text(head.name) +: argList(fields.map(Val))
+        appendDisplaySource(value).map(text => Vector(Text(text))).getOrElse {
+          reader.scalars(value) match {
+            case Some(scalars)          => Vector(Text(printString(scalars)))
+            case None if fields.isEmpty => Vector(Text(head.name))
+            case None                   => Text(head.name) +: argList(fields.map(Val))
+          }
         }
       case v: Value.VApp => printApp(v)
       case v: Value.VLam => printLam(v)
@@ -516,6 +519,38 @@ object PrettyPrinter {
       case Value.SortParameter => Vector(Text("SortParameter"))
       case Value.Large         => Vector(Text("Large"))
     }
+
+    /** Prints the source List shape retained by a native append without interpreting any character value. */
+    private def appendDisplaySource(value: Value): Option[String] =
+      value match {
+        case WrittenFields(head, Vector(chars: Value.VPacked)) if strings.isEmpty && head.name == "String.mk" =>
+          for {
+            scalars <- chars.charScalars
+            display <- chars.charListAppendDisplay
+          } yield {
+            val out = new StringBuilder("String.mk(")
+            var index = 0
+            while (index < display.prefixLength) {
+              out
+                .append("List.cons(")
+                .append(display.charConstructorName)
+                .append('(')
+                .append(scalars(index))
+                .append("), ")
+              index += 1
+            }
+            if (display.hasPackedSuffix)
+              out.append(s"proj[String,0](${printString(scalars.drop(display.prefixLength))})")
+            else out.append("List.nil")
+            index = 0
+            while (index < display.prefixLength) {
+              out.append(')')
+              index += 1
+            }
+            out.append(')').result()
+          }
+        case _ => None
+      }
   }
 
   /** A value as source, knowing only the characters a `String` value itself shows: those of a packed literal. */

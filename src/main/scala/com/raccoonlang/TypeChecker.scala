@@ -553,7 +553,7 @@ object TypeChecker {
 
     val peers = definitions.map(definition => definition.peerRef -> definition.name)
     val peerRefs = definitions.iterator.map(_.peerRef).toSet
-    val ambientPeerRefs = peerRefs.intersect(env.locals.keySet)
+    val ambientPeerRefs = peerRefs.intersect(env.localRefs)
     if (ambientPeerRefs.nonEmpty)
       fail(InvalidRecursiveGroup(s"peer refs collide with the incoming environment: ${ambientPeerRefs.mkString(", ")}"))
     val headers = definitions.map { definition =>

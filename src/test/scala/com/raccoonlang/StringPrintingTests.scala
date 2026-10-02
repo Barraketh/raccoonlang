@@ -97,6 +97,62 @@ class StringPrintingTests extends munit.FunSuite with TestSupport {
     assertEquals(PrettyPrinter.rawString(runProgram(s"{ ${computed("hi")} }"), None), None)
   }
 
+  test("native String.append preserves its source constructor and packed-suffix boundaries") {
+    val cases = Vector(
+      "{ String.append(\"a\", String.append(\"b\", \"c\")) }" ->
+        "String.mk(List.cons(Char.mk(97), List.cons(Char.mk(98), proj[String,0](\"c\"))))",
+      "{ String.append(String.append(\"a\", \"b\"), \"c\") }" ->
+        "String.mk(List.cons(Char.mk(97), List.cons(Char.mk(98), proj[String,0](\"c\"))))",
+      "{ String.append(\"x\", String.mk(List.cons(Char.ofNat(66), (\"😀\").data))) }" ->
+        "String.mk(List.cons(Char.mk(120), List.cons(Char.mk(66), proj[String,0](\"😀\"))))",
+      "{ String.append(String.mk(List.cons(Char.ofNat(65), (\"😀\").data)), \"z\") }" ->
+        "String.mk(List.cons(Char.mk(65), List.cons(Char.mk(128512), proj[String,0](\"z\"))))",
+      "{ String.append(\"\", \"cd\") }" -> "\"cd\"",
+      "{ String.append(\"a\", \"\") }" ->
+        "String.mk(List.cons(Char.mk(97), proj[String,0](\"\")))",
+      "{ String.append(\"a\", String.mk(List.nil(Char))) }" ->
+        "String.mk(List.cons(Char.mk(97), List.nil))"
+    )
+    cases.foreach { case (source, printed) =>
+      val enabled = runProgram(source)
+      val disabled = Packed.withOpsDisabled(runProgram(source))
+      assert(ValueEquivalence.defEq(enabled, disabled), source)
+      assertEquals(PrettyPrinter.print(enabled, None), printed, source)
+      assertEquals(PrettyPrinter.print(enabled, None), PrettyPrinter.print(disabled, None), source)
+    }
+  }
+
+  test("decoded tails of an appended packed list print like source evaluation without a layout") {
+    val env = suitePrelude.checkedEnv
+    val stringMk = env("String.mk").asInstanceOf[Value.ConstructorHead]
+    val source = "{ String.append(\"ab\", \"cd\") }"
+    var enabledData = runProgram(source) match {
+      case Value.VCtor(head, Vector(data), _) if head eq stringMk => data
+      case other                                                  => fail(s"Expected String.mk, got $other")
+    }
+    var disabledData = Packed.withOpsDisabled(runProgram(source)) match {
+      case Value.VCtor(head, Vector(data), _) if head eq stringMk => data
+      case other                                                  => fail(s"Expected String.mk, got $other")
+    }
+
+    def tail(data: Value): Value =
+      data match {
+        case packed: Value.VPacked                                             => Value.VPacked.charListTail(packed)
+        case Value.VCtor(head, Vector(_, rest), _) if head.name == "List.cons" => rest
+        case other => fail(s"Expected nonempty List Char, got $other")
+      }
+
+    (0 to 4).foreach { depth =>
+      val enabled = Interpreter.evalApply(stringMk, Vector(enabledData))
+      val disabled = Interpreter.evalApply(stringMk, Vector(disabledData))
+      assertEquals(PrettyPrinter.print(enabled, None), PrettyPrinter.print(disabled, None), s"tail depth $depth")
+      if (depth < 4) {
+        enabledData = tail(enabledData)
+        disabledData = tail(disabledData)
+      }
+    }
+  }
+
   test("a character is known only as `Char.ofNat` makes it") {
     // Here `Char.ofNat(s)` is `Char.mk(s + 1)`, so `Char.mk(98)` is the character of scalar 97, and reading it as 98
     // would print a literal that reads back as another String.

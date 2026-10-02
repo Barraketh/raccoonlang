@@ -26,7 +26,7 @@ object CapturedRefs {
    * its enclosing function. Any other node still walks, since nothing caches it.
    */
   def getCapturedRefs(term: CoreAst.Term, env: Env): Set[CoreAst.LocalRef] =
-    if (env.locals.isEmpty) Set.empty
+    if (env.localRefs.isEmpty) Set.empty
     else
       term match {
         case pi: Term.Pi   => pi.refs intersect env.localRefs
