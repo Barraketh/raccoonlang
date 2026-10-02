@@ -80,7 +80,10 @@ The match checker runs the same unifier with a controlled set of refinable
 variables. A link may be recorded only when the presented equation forces that
 solution. In particular:
 
-- genuine inductive family and data-constructor frames are invertible;
+- Type-valued inductive family and data-constructor frames are invertible;
+- a Prop family frame is invertible only at the root constructor-result-type /
+  scrutinee-type equation. This permission does not pass to arguments, type
+  congruence, or an equation between the propositions of two proof values;
 - arbitrary applications, Pi components (closures included), blocked
   computations, and closure captures are not invertible frames;
 - an occurs failure or an equation that has several possible solutions remains
@@ -105,29 +108,90 @@ is produced only by evidence that supports propositional no-confusion:
 - a clash between distinct constructors of a non-Prop inductive, when both
   constructor heads carry checked no-confusion evidence and the two values are
   of one family at convertible parameters, one type up to its indices;
+- distinct Type-family declarations and clashes among fully applied Type-family,
+  Type-valued Pi, and Type-universe forms (the nominal principles below);
 - unequal packed Nat payloads, which decode to `zero` against `succ` at
   finite depth, and a packed literal whose decoded head clashes with a
   constructor under the same condition. Packed character lists compare as
   their decodings do (see [Strings](#strings)), so they are apart only through
   such a clash there.
 
-No-confusion relates values of one type. A clash between values of different
-families, or of one family at parameters not known equal, is reached only once
-the equation between their types failed stuck, and it is not a refutation: for
-`Tag(A: Type)(a: A)` with only `mk : Tag(Bool, Bool.true)`, a match on a
-`Tag(Two, Two.one)` keeps its `mk` case, since pruning it would decide that
-`Two` is not `Bool`, an equation between types no eliminator decides. The rule
-reads only the two values' types, so it keeps such a clash stuck even where the
-declared type of its position, say `List(A)` for a bound `A`, would refute it.
+Constructor no-confusion relates values of one type. A clash between values of
+families or parameters not known equal remains stuck. Independently, a nominal
+clash between their types can exclude a constructor: for a family indexed by
+`A: Type` with only a constructor at `A = Bool`, an instance at `A = Nat` has
+no reachable constructor by N2. Arbitrary opaque types provide no such clash.
 
 A key mismatch decides only that two values are not definitionally equal, so a
 mismatch that one of these rules refutes at the two values' heads is decided
-by the rule, whatever the keys.
+by the rule, whatever the keys. Same-head fully applied Type-family equations,
+and the root-permitted Prop-family equation, also descend despite unequal
+closed keys: their invertible arguments may contain a nested nominal clash.
+Other conclusive key mismatches retain the stuck fast result.
 
-Proof constructors, quotient constructors, family heads, axiom applications,
+Proof constructors, quotient constructors, Prop family heads, axiom applications,
 level, kind and lifetime failures, and ordinary unification failures do not
 produce apartness. No two kinds and no two lifetimes are apart, so refinement
 never prunes a branch on one.
+
+## Nominal Type families
+
+Type-valued inductive families obey three principles. N1 makes a fully applied
+family instance injective in its complete dependent argument tuple. N2 makes
+instances of different declarations unequal. N3 separates family instances,
+Type-valued Pi types and Type universes. These principles apply at arbitrary
+depth, including nested Type-family arguments, and to sealed declarations.
+They do not identify structurally identical declarations. Proof arguments are
+compared modulo proof irrelevance; level, kind and lifetime annotations retain
+their existing semantic equality rules.
+
+Prop families have neither injectivity nor generativity: they may be equal
+under propositional extensionality. Their decomposition during a match is
+restricted to its root constructor-result-type / scrutinee-type equation.
+It reflects the constructor witness at that exact fiber, rather than an
+injectivity principle for a proposition's truth value. Nested Prop equations
+are congruence checks: they cannot force links or propagate apartness.
+
+Axioms, blocked applications and Quot type heads provide no nominal evidence.
+Prop-versus-Type-sort comparisons and every sort-field failure remain stuck.
+N3 applies to a Type-valued Pi, never a proposition-valued Pi. Two universes
+convert only at equal level, kind and scope, but failure to compare those
+fields is not a refutation.
+
+For a Type family at level `n`, each ordinary parameter and index must satisfy
+this sufficient elementwise bound:
+
+| Argument type | Required level |
+|---|---|
+| `Type { level = m, … }` | `m` |
+| `Prop`, or a proposition | zero |
+| a Type-valued Pi telescope ending in `B` | maximum of each domain's ordinary classifier level and the recursive bound of `B` |
+| any other ordinary type | its classifier level |
+
+Annotation parameters (Level, Kind, Lifetime) are exempt. Dependent Pi domains
+and results are checked under the fresh typed telescope. A universe domain
+`Type_m` costs `succ(m)`, whereas a universe argument or codomain costs `m`.
+Thus `List(A: Type): Type` and `Sigma(A: Type)(B: A -> Type): Type` remain
+small, while a family taking `Type -> Type` or `Type -> Prop` must live at
+level one or above. The check uses universally valid symbolic level inequalities
+and each mutual family's own declared grade. `FamilyArgumentTooLarge` names
+the argument and the required minimum grade. Ordinary stored constructor fields
+still obey the stricter classifier bound. The rule is conservative: rejection
+does not assert that every rejected declaration is individually inconsistent.
+
+The [full informal model construction](nominal-model.md) interprets types as
+extension/label pairs. Elementwise smallness bounds the nominal argument label;
+a separate construction bounds extensions using small erased majorants and
+monotone membership guards, including independent erased Prop witnesses.
+Joint guarded least fixed points handle indexed, nested and mixed Prop–Type
+mutual families. External typing prevents recursive payloads from containing
+their complete type annotations. The construction also covers dependent
+recovery-based large elimination, quotients, proposed propositional
+extensionality, proof irrelevance, structure eta, annotations and polymorphism.
+It is relative to the stated calculus and a consistent trusted prelude. It does
+not prove collision freedom of the existing finite ValueKey hashes, or verify
+every coverage/refinement implementation path. Local checked refutation
+certificates remain a separate implementation obligation.
 
 ## Universes and function types
 
@@ -444,7 +508,8 @@ type's kind is a kind that was built, and every linearity rule returns at once.
 An inductive declaration is installed only after checking:
 
 - that the family result is a sort;
-- universe bounds for every constructor field;
+- universe bounds for every constructor field, and elementwise argument bounds
+  for every ordinary parameter and index of each Type family;
 - kind and scope bounds: the family's declared kind, which is never derived,
   contains every constructor field's kind, `Prop` families included; and every
   family, whatever its kind, names each of its lifetime parameters in its

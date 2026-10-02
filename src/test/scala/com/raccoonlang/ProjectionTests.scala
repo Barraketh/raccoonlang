@@ -355,10 +355,10 @@ class ProjectionTests extends munit.FunSuite with TestSupport {
         |inductive Pack : Type { level = one}
         | | mk {A: Type} (x: A) : Pack
         |
-        |inductive Wrap (p: Pack) : Type
+        |inductive Wrap (p: Pack) : Type { level = one }
         | | intro : Wrap(p)
         |
-        |struct S : Type
+        |struct S : Type { level = one }
         | | mk (x: Wrap(Pack.mk(Peano.zero))) : S
         |
         |def get (s: S): Wrap(Pack.mk(Peano.zero)) := s.x
@@ -414,7 +414,7 @@ class ProjectionTests extends munit.FunSuite with TestSupport {
         |struct CoupleU {u1: Level}{u2: Level}(A: Type { level = u1})(B: Type { level = u2}) : Type { level = max(u1, u2) }
         | | mk (fst: A)(snd: B) : CoupleU(A, B)
         |
-        |struct UsesF (F: CoupleU(Type, Type)) : Type
+        |struct UsesF (F: CoupleU(Type, Type)) : Type { level = one }
         | | mk (x: F.fst) : UsesF(F)
         |
         |def getX (F: CoupleU(Type, Type))(u: UsesF(F)): F.fst := u.x

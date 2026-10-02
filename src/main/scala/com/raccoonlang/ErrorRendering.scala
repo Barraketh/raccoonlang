@@ -97,6 +97,8 @@ object ErrorRendering {
       case InductiveUniverseTooSmall(inductive, where, fieldTy, fieldUniverse, inductiveUniverse) =>
         s"Inductive $inductive lives in Type { level = ${show(inductiveUniverse)} }, " +
           s"but $where has type ${show(fieldTy)} : Type { level = ${show(fieldUniverse)} }"
+      case FamilyArgumentTooLarge(family, argument, level) =>
+        s"Family $family argument $argument is too large: declare the family at Type { level = ${show(level)} } or higher"
       case InductiveTypeNotASort(tpe) => s"Inductive type must be a sort, got ${show(tpe)} instead"
       case KindExceeded(declaration, declared, part, partKind) =>
         s"$declaration is declared at kind ${show(declared)}, which does not contain the kind ${show(partKind)} " +

@@ -30,7 +30,7 @@ class PackedConversionTests extends munit.FunSuite with TestSupport {
   }
 
   // A computed list against a literal decodes the literal one layer per shared character, and the failure at the end
-  // passes through every layer, an application whose tail is the argument that failed.
+  // passes through each data layer. The outer Eq proposition is only a congruence frame, so the diagnostic is stuck.
   test("a failing conversion of a computed String against a literal is prompt however much text they share") {
     lengths.foreach { length =>
       val text = "a" * length
@@ -38,7 +38,7 @@ class PackedConversionTests extends munit.FunSuite with TestSupport {
         s"""def wrong : Eq(String, String.append("$text", "0"), "${text}1") := Eq.refl("${text}1")"""
       )
       assert(literalMillis < 10000, s"$length shared characters took $literalMillis ms")
-      assertEquals(differAt(literal), ("proj[String,0](\"0\")", "proj[String,0](\"1\")", true))
+      assertEquals(differAt(literal), ("proj[String,0](\"0\")", "proj[String,0](\"1\")", false))
 
       val (neutral, neutralMillis) = timedMismatch(
         s"""def wrong (s: String) : Eq(String, String.append("$text", s), "${text}1") := Eq.refl("${text}1")"""

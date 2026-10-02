@@ -70,7 +70,11 @@ object MatchChecker {
           case Right(store)       => Some(store)
           case Left(f) if f.apart => None
           case Left(_) =>
-            unify(resultTy, scrutTpe, typeRefinable) match {
+            ValueEquivalence.tryUnifyMatchTypes(
+              resultTy,
+              scrutTpe,
+              EqStore.empty.allowEta(typeRefinable.ids, typeRefinable.vars)
+            ) match {
               case Right(store)       => Some(store)
               case Left(f) if f.apart => None
               case Left(_)            => Some(EqStore.empty)
