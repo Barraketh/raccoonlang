@@ -93,22 +93,25 @@ object CoreAst {
     ) extends Term {
       require(binders.nonEmpty, "Pi requires at least one binder")
 
-      /** The code references and exact binder-independence fact are computed together, once per immutable Pi node. */
-      private lazy val refSummary: (Set[CoreAst.LocalRef], Boolean) = {
+      /** The code references and exact codomain dependencies are computed together, once per immutable Pi node. */
+      private lazy val refSummary: (Set[CoreAst.LocalRef], Vector[Int]) = {
         val outRefs = mentionedRefs(out)
         val binderTypesRefs = binders
           .map(_.ty)
           .foldLeft(Set.empty[CoreAst.LocalRef])((acc, term) => acc | mentionedRefs(term))
         val allRefs = binderTypesRefs | outRefs
-        val independentCodomain = !binders.exists(binder => outRefs.contains(binder.localRef))
-        (allRefs, independentCodomain)
+        val dependentBinders = binders.indices.filter(index => outRefs.contains(binders(index).localRef)).toVector
+        (allRefs, dependentBinders)
       }
 
       /** What its binder types and codomain mention: a local bound outside the Pi among these is one it captures. */
       lazy val codeRefs: Set[CoreAst.LocalRef] = refSummary._1
 
       /** Whether the codomain avoids every binder introduced by this Pi, including references nested in its code. */
-      lazy val codomainIndependent: Boolean = refSummary._2
+      lazy val codomainIndependent: Boolean = refSummary._2.isEmpty
+
+      /** Own binders mentioned anywhere in the codomain, including nested closures and their annotations. */
+      lazy val codomainBinderIndices: Vector[Int] = refSummary._2
 
       lazy val refs: Set[CoreAst.LocalRef] = childRefs(this)
     }

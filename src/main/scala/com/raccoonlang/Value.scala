@@ -536,7 +536,9 @@ object Value {
   /** Evaluator-created codomain closure with syntax-checked binder-independence metadata. */
   private[raccoonlang] abstract class CheckedPiCodomain(
       val ownerBinders: Vector[CoreAst.Binder],
-      val independent: Boolean
+      val independent: Boolean,
+      val dependencyIndices: Option[Vector[Int]] = None,
+      val ownerEnv: Env = null
   ) extends (Env => Value)
 
   case class VPi(
@@ -599,9 +601,84 @@ object Value {
         case _ => false
       }
 
+    /** A checked syntax closure may evaluate its codomain with just the binders that its code mentions. */
+    private[this] lazy val constructorDependencies: Option[Vector[Int]] =
+      codomain match {
+        case checked: CheckedPiCodomain
+            if (checked.ownerBinders.asInstanceOf[AnyRef] eq binders.asInstanceOf[AnyRef]) &&
+              (checked.ownerEnv.asInstanceOf[AnyRef] eq env.asInstanceOf[AnyRef]) =>
+          checked.dependencyIndices.filter(indices =>
+            indices.nonEmpty &&
+              indices.forall(index =>
+                index >= 0 && index < binders.length && binders(index).mode != BinderMode.Evidence
+              )
+          )
+        case _ => None
+      }
+
+    private[this] lazy val constructorDependencyLayout: RuntimeSlotLayout =
+      RuntimeSlotLayout(constructorDependencies.get.map(index => binders(index).localRef))
+
+    private final class ConstructorResultEntry(val arguments: Vector[Value], val result: Value)
+    @volatile private[this] var constructorResults = Vector.empty[ConstructorResultEntry]
+
+    /** Reference identity preserves the exact argument values and all their type annotations in a cached result. */
+    private def sameConstructorArguments(
+        entry: ConstructorResultEntry,
+        indices: Vector[Int],
+        args: Vector[Value]
+    ): Boolean = {
+      var position = 0
+      while (position < indices.length) {
+        if (!(entry.arguments(position).asInstanceOf[AnyRef] eq args(indices(position)).asInstanceOf[AnyRef]))
+          return false
+        position += 1
+      }
+      true
+    }
+
+    private def checkedConstructorArguments(args: Vector[Value]): Unit = {
+      var index = 0
+      while (index < args.length) {
+        Env.assertCanonicalProof(Value.canonicalizeProof(args(index)))
+        index += 1
+      }
+    }
+
+    private def dependentConstructorResult(indices: Vector[Int], args: Vector[Value]): Value = {
+      checkedConstructorArguments(args)
+      val cached = constructorResults
+      var index = 0
+      while (index < cached.length) {
+        val entry = cached(index)
+        if (sameConstructorArguments(entry, indices, args)) return entry.result
+        index += 1
+      }
+
+      val relevantArgs = indices.map(args)
+      val result = codomain(env.bindRuntimeLocals(constructorDependencyLayout, relevantArgs))
+      if (
+        result.synDeps.isEmpty && Blocker.unapply(result).isEmpty &&
+        relevantArgs.forall(arg => arg.synDeps.isEmpty && Blocker.unapply(arg).isEmpty)
+      ) synchronized {
+        val current = constructorResults
+        if (!current.exists(sameConstructorArguments(_, indices, args)))
+          constructorResults = (new ConstructorResultEntry(relevantArgs, result) +: current).take(4)
+      }
+      result
+    }
+
     /** Constructor applications cache a checked independent result on this Pi instance; all others instantiate args. */
     private[raccoonlang] def constructorResultType(instantiatedEnv: => Env): Value =
       if (hasIndependentConstructorCodomain) independentCodomain else codomain(instantiatedEnv)
+
+    private[raccoonlang] def constructorResultType(args: Vector[Value], instantiatedEnv: => Env): Value =
+      if (hasIndependentConstructorCodomain) independentCodomain
+      else
+        constructorDependencies match {
+          case Some(indices) => dependentConstructorResult(indices, args)
+          case None          => codomain(instantiatedEnv)
+        }
 
     /**
      * Implicit telescope indices grouped by the *explicit* argument position their projection spec roots at. Specs

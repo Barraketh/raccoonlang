@@ -66,10 +66,12 @@ class ConstructorMetadataTests extends munit.FunSuite with TestSupport {
 
     val dependent = syntaxPi(Vector(xBinder), CoreAst.Term.LocalRef(x, span))
     assert(!dependent.codomainIndependent)
+    assertEquals(dependent.codomainBinderIndices, Vector(0))
     assertEquals(dependent.codeRefs, Set(x))
 
     val changedOut = dependent.copy(out = CoreAst.Term.GlobalRef("Nat", span))
     assert(changedOut.codomainIndependent)
+    assertEquals(changedOut.codomainBinderIndices, Vector.empty[Int])
     assertEquals(changedOut.codeRefs, Set.empty[CoreAst.LocalRef])
 
     val changedBinders = dependent.copy(binders = Vector(binder("replacement", 72002, BinderMode.Explicit)))
@@ -94,6 +96,7 @@ class ConstructorMetadataTests extends munit.FunSuite with TestSupport {
     val nestedCapture = syntaxPi(Vector(xBinder), nestedWithClosureRef(x))
     assert(!nestedCapture.codomainIndependent)
     assert(nestedCapture.codeRefs.contains(x))
+    assertEquals(nestedCapture.codomainBinderIndices, Vector(0))
 
     val outerCapture = CoreAst.LocalRef(72004, "outer")
     val nestedOuterCapture = syntaxPi(Vector(xBinder), nestedWithClosureRef(outerCapture))
@@ -103,6 +106,76 @@ class ConstructorMetadataTests extends munit.FunSuite with TestSupport {
     val expectedNestedRefs = (nestedOuterCapture.binders.map(_.ty) :+ nestedOuterCapture.out)
       .foldLeft(Set.empty[CoreAst.LocalRef])((acc, term) => acc | CoreAst.mentionedRefs(term))
     assertEquals(nestedOuterCapture.codeRefs, expectedNestedRefs)
+  }
+
+  test("checked constructor codomains bind only referenced arguments and cache exact closed values") {
+    val binders = Vector(binder("index", 72101, BinderMode.Explicit), binder("unused", 72102, BinderMode.Explicit))
+    val evaluations = new AtomicInteger
+    val sliced = new AtomicInteger
+    val codomain = new CheckedPiCodomain(binders, false, Some(Vector(0)), env) {
+      override def apply(bound: Env): Value = {
+        evaluations.incrementAndGet()
+        if (!bound.containsLocal(binders(1).localRef)) sliced.incrementAndGet()
+        bound(binders(0).localRef)
+      }
+    }
+    val pi = manualPi(binders, codomain)
+    val one = VPacked.nat(1, nat)
+    val two = VPacked.nat(2, nat)
+    val unused = VPacked.nat(8, nat)
+    assert(pi.constructorResultType(Vector(one, unused), fail("full binding used")) eq one)
+    assert(pi.constructorResultType(Vector(one, two), fail("full binding used")) eq one)
+    assertEquals(evaluations.get(), 1)
+    assert(pi.constructorResultType(Vector(two, unused), fail("full binding used")) eq two)
+    assertEquals(evaluations.get(), 2)
+    assertEquals(sliced.get(), 2)
+
+    val copiedEnv = pi.copy(env = Env.empty)
+    val fullEnv = telescope.BinderOps.instantiateFull(binders, env, Vector(one, unused))
+    copiedEnv.constructorResultType(Vector(one, unused), fullEnv)
+    assertEquals(evaluations.get(), 3)
+    val changedCode = pi.copy(codomain = _ => nat)
+    assert(changedCode.constructorResultType(Vector(one, unused), fullEnv) eq nat)
+    val changedBinders = pi.copy(binders = binders.map(_.copy(span = Span(1, 1))))
+    changedBinders.constructorResultType(Vector(one, unused), fullEnv)
+    assertEquals(evaluations.get(), 4)
+  }
+
+  test("indexed results distinguish changing values and do not cache unresolved indices") {
+    val pi = evaluatedPi("{ (n: Nat) -> Eq(Nat, n, n) }")
+    val zero = VPacked.nat(0, nat)
+    val one = VPacked.nat(1, nat)
+    val zeroResult = pi.constructorResultType(Vector(zero), fail("full binding used"))
+    assert(pi.constructorResultType(Vector(zero), fail("full binding used")) eq zeroResult)
+    val oneResult = pi.constructorResultType(Vector(one), fail("full binding used"))
+    assertNotEquals(zeroResult.key, oneResult.key)
+
+    val unresolved = FreshVar.freshVar("index", nat)
+    val unresolvedFirst = pi.constructorResultType(Vector(unresolved), fail("full binding used"))
+    val unresolvedSecond = pi.constructorResultType(Vector(unresolved), fail("full binding used"))
+    assert(!(unresolvedFirst eq unresolvedSecond))
+    assertEquals(unresolvedFirst.key, unresolvedSecond.key)
+  }
+
+  test("checked constructors reuse uniform family results without mixing indices or nominal owners") {
+    val cons = env("List.cons").asInstanceOf[ConstructorHead]
+    val familyArgs = Vector[Value](Value.Level.zero, Value.Lifetime.empty, nat)
+    val nil = Interpreter.evalApply(env("List.nil"), familyArgs)
+    val first = Interpreter.evalApply(cons, familyArgs ++ Vector(VPacked.nat(1, nat), nil))
+    val second = Interpreter.evalApply(cons, familyArgs ++ Vector(VPacked.nat(2, nat), nil))
+    assert(first.tpe eq second.tpe)
+    assert(ValueEquivalence.defEq(first.tpe, Interpreter.evalApply(env("List"), familyArgs)))
+
+    val source = """
+                   |inductive Indexed indices (n: Nat) : Type
+                   | | mk (n: Nat) : Indexed(n)
+                   |{ Indexed.mk(1) }
+                   |""".stripMargin
+    val ownerOne = runProgram(source)
+    val ownerTwo = runProgram(source)
+    assert(!(ownerOne.tpe eq ownerTwo.tpe))
+    val otherIndex = runProgram(source.replace("Indexed.mk(1)", "Indexed.mk(2)"))
+    assert(!ValueEquivalence.defEq(ownerOne.tpe, otherIndex.tpe))
   }
 
   test("only a codomain with no own or nested binder references gets the constructor cache") {
