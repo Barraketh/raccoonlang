@@ -15,6 +15,9 @@ namespace Buffer {
   sealed struct Program : Type
    | mk (words: List(Nat)) : Program
 
+  // Programs are immutable, so exposing their serialized words is safe for generic preparation and inspection.
+  def programWords (program: Program): List(Nat) := program.words
+
   sealed struct InputHandle (r: Lifetime)(b: Lifetime) : Type { scope = union(r, b) }
    | mk (id: Nat)(bytes: Nat) : InputHandle(r, b)
 
