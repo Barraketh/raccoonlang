@@ -33,3 +33,94 @@ compiler and proof-tooling attention. They do not yet show that a new typing
 judgment would shorten the actual physical-protocol argument. The successful
 ordinary proofs must still be evaluated against multi-stage, tensor, output,
 register and pair extensions before deciding that question.
+
+## Positivity performance diagnosis after rebase (October 3)
+
+These measurements use `7c27c01`, based on `codex/native-buffer-program` at
+`eed468e`. No compiler source or on-disk compiled compiler class changed during the
+investigation, and the earlier cache prototype remains held aside. Each timing
+starts a fresh Oracle GraalVM 21.0.12 JVM with `-Xmx2g -ea`; environment assertions
+remain enabled and the CLI uses its default 256 MiB checking-thread stack.
+Formal timing runs are sequential, without concurrent builds, tests or profiles.
+
+The original record has five obligations; the current library conjunction has
+eight. The timing control therefore uses a matched five-obligation conjunction,
+with the existing `RingLibrary.CheckSound(p)` definition expressing its terminal
+implication. Both are checked with the same imports and abstract parameters.
+
+| Case | Whole-CLI wall time | Runs |
+|---|---:|---:|
+| Import library only | 2.620 s | 1 |
+| Empty record with the same parameters | 2.467 s | 1 |
+| Matched five-obligation conjunction | 2.552 s median (2.666, 2.552, 2.521) | 3 |
+| Full five-field record | All exceed 60 s | 3 |
+| Single-field records: backend, primitives, memory or participation | 2.546–2.615 s | 1 each |
+| Single-field record: checker-soundness implication | Exceeds 20 s | 1 |
+
+The record slowdown is at least 23.5 times the conjunction's whole-CLI median;
+the slow runs are censored, so their actual completion times are unknown. Median
+peak RSS is approximately 850 MB for the record and 845 MB for the conjunction.
+The expensive field is `Check.WellFormed(Ring.kernel(p)) ->
+Spec.WellFormed(Ring.kernel(p))`, before any proof of it is constructed.
+
+A separate JFR recording without the observation agent isolates positivity checking: after
+excluding its first 5.5 seconds, 1394 of 1397 checker execution samples include
+`InductiveChecks` (99.8%). `CoreAst.mentionsGlobal` appears in 741 samples (53.0%);
+these inclusive regions overlap. GC pauses sum to 0.356 seconds in the 24.807-second
+window (1.4%). Weighted allocation samples estimate about 95.6 GB of allocation
+in that window, largely iterators, arrays and vectors. This is allocation churn
+from repeated work, despite a stable peak live process footprint.
+
+Observation-only bytecode counters in a separate run report 13,450,602 closure
+scans over 165 distinct closure objects across 34 root scans. Of those calls,
+13,450,257 revisit a value after a completed scan in the same root. No active
+cycles occur, and every completed scan reports absence of the target.
+The still-running final root has only 35 distinct closure objects. Its most
+frequently visited lambda is scanned 6,718,372 times. Global-name syntax scanning
+is called 334,152,342 times over only 1005 distinct syntax nodes. Counter-run
+elapsed times are not used for performance comparisons.
+
+The cause is now reproduced without GPU imports. The minimal fixture defines
+`pop` as a match on an abstract natural-number value, builds a chain of nested
+`pop` calls, and puts `Truth(chain(n)) -> Truth(n)` in a record field. Eager
+evaluation produces a linear chain of neutral closures. In each closure, the
+identity-capture vector and captured environment contain the same predecessor.
+`thunkMayContain` traverses both. `scanClosure` remembers only active visits and
+removes them on return, so the second edge traverses the predecessor again.
+The resulting scan count is `2^depth - 1`: depths 8, 12 and 16 produce exactly
+255, 4095 and 65,535 scans over 8, 12 and 16 distinct closures respectively, with
+zero active-cycle visits. This establishes exponential revisiting of a shared
+value graph rather than merely localizing a hot method.
+
+| Closure depth | Implication alias, median s | Record, median s |
+|---|---:|---:|
+| 16 | 0.433 | 0.606 |
+| 20 | 0.444 | 0.877 |
+| 22 | 0.431 | 1.271 |
+| 24 | 0.442 | 2.923 |
+| 26 | 0.443 | 10.055 |
+
+Each entry uses three fresh-JVM measurements, with depth order and alias/record
+order alternating. All these synthetic checks complete successfully. The
+initial exploratory scaling runs overlapped profile export and are excluded
+from this table.
+
+The recommended first fix, not applied here, is to retain completed negative
+occurrence answers by closure identity for the same target within one query.
+Keep the existing conservative active-cycle handling and discard the completed
+table when the query finishes. This should remove repeated paths through shared
+closures while preserving the current occurrence judgment. Its soundness needs
+checks covering hidden captured occurrences, native closures, cycles, mutual
+families and changed targets; its benefit must be measured on this base. No
+speedup for that proposed change is established by the present measurements.
+This issue can be addressed in the existing checker while retaining eager
+evaluation; it supplies no reason to change the library's typing discipline.
+
+Raw [baseline results](../../target/performance/ring-record-diagnosis-20261003/baseline-results.json),
+[synthetic results](../../target/performance/ring-record-diagnosis-20261003/scaling-repeated-results.json),
+[summary](../../target/performance/ring-record-diagnosis-20261003/summary.json) and
+[provenance](../../target/performance/ring-record-diagnosis-20261003/manifest.json)
+are retained locally under ignored `target/performance`. That directory also
+contains the fixtures, measurement driver, JFR recording, compact profile
+summary, stack sample and observation-only agent source. The initial invalid
+conjunction fixture is preserved separately and excluded from all results.
