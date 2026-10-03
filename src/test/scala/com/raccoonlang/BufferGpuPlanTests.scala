@@ -16,8 +16,10 @@ class BufferGpuPlanTests extends munit.FunSuite {
       )
     }
     val encoded = EvaluatorSpikeBenchmark.natOf(prepared.value)
-    assert(encoded >= BigInt(1000000000000L) && encoded < BigInt(2000000000000L),
-      s"checked AST expansion rejected with diagnostic code $encoded")
+    assert(
+      encoded >= BigInt(1000000000000L) && encoded < BigInt(2000000000000L),
+      s"checked AST expansion rejected with diagnostic code $encoded"
+    )
     val snapshots = (encoded - BigInt(1000000000000L)) / BigInt(1000000000L)
     assertEquals(snapshots, BigInt(64), s"encoded expansion summary $encoded")
   }

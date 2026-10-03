@@ -11,10 +11,10 @@ class BufferKernelsTests extends munit.FunSuite {
   private lazy val prelude = Prelude.fromPath(gpuRoot.resolve("Prelude.rac"))
 
   private def nat(value: Value): BigInt = value match {
-    case packed: Value.VPacked if packed.codec eq Value.NatCodec => packed.natValue.get
-    case Value.VCtor(head, Vector(), _) if head.name == "Nat.zero" => BigInt(0)
+    case packed: Value.VPacked if packed.codec eq Value.NatCodec           => packed.natValue.get
+    case Value.VCtor(head, Vector(), _) if head.name == "Nat.zero"         => BigInt(0)
     case Value.VCtor(head, Vector(previous), _) if head.name == "Nat.succ" => BigInt(1) + nat(previous)
-    case other => fail(s"Expected a Nat, got $other")
+    case other                                                             => fail(s"Expected a Nat, got $other")
   }
 
   private def list(value: Value): Vector[Value] = {
@@ -57,8 +57,9 @@ class BufferKernelsTests extends munit.FunSuite {
     }
     Execution.onStack(512L << 20) {
       val loaded = ModuleLoader.load(probePath, ModuleLoader.LoadConfig(Vector(gpuRoot, root), prelude))
-      val checked = try Execution.check(Execution.elaborate(loaded.program, prelude))
-      catch { case failure: Execution.CheckFailure => fail(failure.getMessage) }
+      val checked =
+        try Execution.check(Execution.elaborate(loaded.program, prelude))
+        catch { case failure: Execution.CheckFailure => fail(failure.getMessage) }
       Interpreter.run(checked).getOrElse(fail("BufferKernelsProbe has no result"))
     }
   }
@@ -79,7 +80,11 @@ class BufferKernelsTests extends munit.FunSuite {
   test("buffer fragments execute swizzled K16 MMA, retain completion snapshots, and copy a nonzero output tile") {
     val result = runProbe() match {
       case Value.VCtor(head, Vector(bufferResult, accepted), _) if head.name == "Pair.mk" =>
-        assertEquals(nat(accepted), BigInt(17), "all supported fragments should emit and all five invalid requests reject")
+        assertEquals(
+          nat(accepted),
+          BigInt(17),
+          "all supported fragments should emit and all five invalid requests reject"
+        )
         outputBytes(bufferResult)
       case other => fail(s"Expected BufferKernelsProbe's result pair, got $other")
     }

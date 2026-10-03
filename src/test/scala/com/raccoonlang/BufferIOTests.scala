@@ -8,10 +8,10 @@ class BufferIOTests extends munit.FunSuite {
   private lazy val prelude = Prelude.fromPath(gpuRoot.resolve("Prelude.rac"))
 
   private def nat(value: Value): BigInt = value match {
-    case packed: Value.VPacked if packed.codec eq Value.NatCodec => packed.natValue.get
-    case Value.VCtor(head, Vector(), _) if head.name == "Nat.zero" => BigInt(0)
+    case packed: Value.VPacked if packed.codec eq Value.NatCodec           => packed.natValue.get
+    case Value.VCtor(head, Vector(), _) if head.name == "Nat.zero"         => BigInt(0)
     case Value.VCtor(head, Vector(previous), _) if head.name == "Nat.succ" => BigInt(1) + nat(previous)
-    case other => fail(s"Expected a Nat, got $other")
+    case other                                                             => fail(s"Expected a Nat, got $other")
   }
 
   private def list(value: Value): Vector[Value] = {
@@ -32,7 +32,7 @@ class BufferIOTests extends munit.FunSuite {
 
   private def optionList(value: Value): Option[Vector[BigInt]] = value match {
     case Value.VCtor(head, Vector(items), _) if head.name == "Option.some" => Some(list(items).map(nat))
-    case Value.VCtor(head, Vector(), _) if head.name == "Option.none" => None
+    case Value.VCtor(head, Vector(), _) if head.name == "Option.none"      => None
     case other => fail(s"Expected an Option(List(Nat)), got $other")
   }
 
@@ -41,12 +41,14 @@ class BufferIOTests extends munit.FunSuite {
     val probeSource = Files.readString(probePath)
     LanguageParser.parseProgram(probeSource) match {
       case Success(_, _, _) => ()
-      case Failure(_, at, message) => fail(s"BufferIOProbe did not parse at $at: $message near ${probeSource.substring(at)}")
+      case Failure(_, at, message) =>
+        fail(s"BufferIOProbe did not parse at $at: $message near ${probeSource.substring(at)}")
     }
     val moduleSource = Files.readString(gpuRoot.resolve("evaluator/BufferIO.rac"))
     LanguageParser.parseProgram(moduleSource) match {
       case Success(_, _, _) => ()
-      case Failure(_, at, message) => fail(s"BufferIO.rac did not parse at $at: $message near ${moduleSource.substring(at)}")
+      case Failure(_, at, message) =>
+        fail(s"BufferIO.rac did not parse at $at: $message near ${moduleSource.substring(at)}")
     }
     val value = Execution.onStack(256L << 20) {
       val loaded = ModuleLoader.load(probePath, ModuleLoader.LoadConfig(Vector(gpuRoot, root), prelude))
@@ -55,8 +57,10 @@ class BufferIOTests extends munit.FunSuite {
     }
     val results = list(value).map(optionList)
     assertEquals(results.length, 13)
-    assertEquals(results(0), Some(Vector(BigInt(0), BigInt(0), BigInt(1), BigInt(0),
-      BigInt(255), BigInt(0), BigInt(0), BigInt(1))))
+    assertEquals(
+      results(0),
+      Some(Vector(BigInt(0), BigInt(0), BigInt(1), BigInt(0), BigInt(255), BigInt(0), BigInt(0), BigInt(1)))
+    )
     assertEquals(results(4), Some(Vector.empty))
     assertEquals(results(6), Some(Vector(BigInt(0), BigInt(1), BigInt(255), BigInt(256))))
     assertEquals(results(11), Some(Vector.empty))
