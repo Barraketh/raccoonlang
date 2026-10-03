@@ -1,0 +1,111 @@
+// TinyGEMM on sm_100a: C (f32) = A · Bᵀ with A (M×K) and B (N×K) in bf16, one 128×128 block of C per CTA.
+//
+// Four roles share a CTA of eight warps (`Layout`). Warp 0 elects a thread that streams 64-wide K slices of A and B
+// into a four-stage ring with TMA. Warp 1 elects a thread that waits for each stage, issues four tcgen05.mma into a
+// 128-column tensor-memory accumulator, and releases the stage by tcgen05.commit; after the last stage it hands the
+// accumulator to the epilogue. Warps 2 and 3 idle. Warps 4 to 7, an aligned warpgroup, wait for the handoff and store
+// the block 32 columns at a time: each warp reads its quadrant of the accumulator's lanes, writes it into a staging
+// buffer in shared memory, and its lane 0 stores the buffer to C with TMA.
+//
+// Run: gpu/gen.sh gpu/encoding/examples/tinygemm.rac
+
+import encoding.Core
+import encoding.Layout
+
+namespace CoreTiny {
+  open Core
+  open Cuda
+  open Layout
+
+  def boxA : TmaSpec := TmaSpec.mk(64, 128)
+  def boxB : TmaSpec := TmaSpec.mk(64, 128)
+  def ringCfg : RingCfg := RingCfg.mk(4, boxA, boxB)
+
+  def Launch (l: Lifetime) : Type { scope = l } := TmaLaunch(l, boxA, boxB)
+
+  // The producer: fill one stage per K slice, then wait for every stage to be released.
+  def producer {l: Lifetime}{r: Lifetime}(k: Launch(l))(ring: Ring(r, ringCfg))(steps: Val(l, Grain.uniform, DType.u32))
+      (p: Producer(r))(m: Lifetime)(e: Ctx(m, Load)): Pair(Ctx(m, Load), Unit) :=
+    elect(e, Unit, fun (j: Lifetime)(w: Elected(j))(e: Ctx(j, One)): Pair(Ctx(j, One), Unit) => {
+      let step := fun (n: Lifetime)(i: Val(n, Grain.uniform, DType.u32))(e: Ctx(n, One))(p: ProducerAt(r, j)): Pair(Ctx(n, One), ProducerAt(r, j)) => {
+        let (e, s) := acquire(e, ring, p)
+        fill(e, ring, s, k.a, mulC(i, 64), tileRow0(k.tile), k.b, mulC(i, 64), tileCol0(k.tile))
+      }
+      let (e, p) := takeProducer(e, w, ring, p)
+      let (e, p) := loopPeeled(e, steps, fixedProducerAt(r, j), p, step, step)
+      (finishProducer(e, ring, p), Unit.unit)
+    })
+
+  // The MMA issuer: accumulate every stage into tensor memory, releasing each when its MMAs complete, then hand the
+  // accumulator to the epilogue.
+  def issuer {l: Lifetime}{r: Lifetime}{a: Lifetime}{h: Lifetime}(ring: Ring(r, ringCfg))(t: Tmem(a, 128))(hd: AccHandoff(h))
+      (steps: Val(l, Grain.uniform, DType.u32))(c: Consumer(r))(acc: Acc(a, AccState.empty))(send: AccSend(h, a))
+      (m: Lifetime)(e: Ctx(m, Issue)): Pair(Ctx(m, Issue), Unit) :=
+    elect(e, Unit, fun (j: Lifetime)(w: Elected(j))(e: Ctx(j, One)): Pair(Ctx(j, One), Unit) => {
+      let first := fun (n: Lifetime)(i: Val(n, Grain.uniform, DType.u32))(e: Ctx(n, One))(st: Pair(ConsumerAt(r, j), Acc(a, AccState.empty)))
+          : Pair(Ctx(n, One), Pair(ConsumerAt(r, j), AccPending(a, j))) => {
+        let (c, acc) := st
+        let (e, rd) := await(e, ring, c)
+        let (e, (used, acc)) := mmaFirst(e, w, ring, rd, t, acc)
+        let (e, c) := releaseByMma(e, w, ring, used)
+        (e, (c, acc))
+      }
+      let rest := fun (n: Lifetime)(i: Val(n, Grain.uniform, DType.u32))(e: Ctx(n, One))(st: Pair(ConsumerAt(r, j), AccPending(a, j)))
+          : Pair(Ctx(n, One), Pair(ConsumerAt(r, j), AccPending(a, j))) => {
+        let (c, acc) := st
+        let (e, rd) := await(e, ring, c)
+        let (e, (used, acc)) := mmaNext(e, w, ring, rd, t, acc)
+        let (e, c) := releaseByMma(e, w, ring, used)
+        (e, (c, acc))
+      }
+      let (e, c) := takeConsumer(e, w, ring, c)
+      let (e, (c, acc)) := loopPeeled(e, steps, fixedPair(fixedConsumerAt(r, j), fixedAccPending(a, j)), (c, acc), first, rest)
+      let e := sendAcc(e, w, hd, send, acc)
+      (finishConsumer(e, c), Unit.unit)
+    })
+
+  // The epilogue: wait for the accumulator and store this CTA's block of C, a chunk of 32 columns at a time, each
+  // through a staging buffer; then wait for the stores, and hand back the accumulator, still ready.
+  def epilogue {l: Lifetime}{a: Lifetime}{h: Lifetime}{s: Lifetime}(k: Launch(l))(t: Tmem(a, 128))(hd: AccHandoff(h))
+      (recv: AccRecv(h, a))(own: TileOwn(l, 128))(stg: Staging(s))(side: StoreSide(s))(m: Lifetime)(e: Ctx(m, Wg))
+      : Pair(Ctx(m, Wg), Acc(a, AccState.ready)) := {
+    let chunk := fun (p: Lifetime)(ch: ChunkAt(p, 128))(co: ChunkOwn(p, 128))(e: Ctx(p, Wg))(st: Pair(Acc(a, AccState.ready), StoreAt(s, m, groupWarp)))
+        : Pair(Ctx(p, Wg), Pair(Acc(a, AccState.ready), StoreAt(s, m, groupWarp))) => {
+      let (acc, sa) := st
+      let (e, (acc, regs)) := loadAccChunk(e, t, acc, ch)
+      let (e, free) := acquireStage(e, stg, sa)
+      let (e, written) := writeStage(e, stg, free, regs)
+      let (e, fenced) := fenceStage(e, written)
+      let (e, sa) := storeStage(e, stg, fenced, k.c, ch, co)
+      (e, (acc, sa))
+    }
+    let (e, acc) := recvAcc(e, hd, recv)
+    let (e, sa) := takeStore(e, stg, side)
+    let (e, (acc, sa)) := forChunks(e, k.tile, own, fixedPair(fixedAcc(a, AccState.ready), fixedStoreAt(s, m, groupWarp)), (acc, sa), chunk)
+    (finishStores(e, stg, sa), acc)
+  }
+
+  def kernel : Program :=
+    tmaGemmKernel("tinygemm", boxA, boxB, fun (l: Lifetime)(e: Ctx(l, Cta))(k: Launch(l))(own: TileOwn(l, 128))(permit: TmemPermit(l))
+        : Ctx(l, Cta) => {
+      let steps := ceilDivC(k.k, 64)
+      let body := fun (a: Lifetime)(t: Tmem(a, 128))(acc: Acc(a, AccState.empty))(e: Ctx(l, Cta))
+          : Pair(Ctx(l, Cta), Pair(Acc(a, AccState.ready), Unit)) => {
+        let handoff := fun (h: Lifetime)(hd: AccHandoff(h))(send: AccSend(h, a))(recv: AccRecv(h, a))(e: Ctx(l, Cta))
+            : Pair(Ctx(l, Cta), Acc(a, AccState.ready)) =>
+          withStaging(e, 2, Acc(a, AccState.ready), fun (s: Lifetime)(stg: Staging(s))(side: StoreSide(s))(e: Ctx(l, Cta))
+              : Pair(Ctx(l, Cta), Acc(a, AccState.ready)) =>
+            withRing(e, ringCfg, Acc(a, AccState.ready), fun (r: Lifetime)(ring: Ring(r, ringCfg))(p: Producer(r))(c: Consumer(r))(e: Ctx(l, Cta))
+                : Pair(Ctx(l, Cta), Acc(a, AccState.ready)) =>
+              roles4(e, Acc(a, AccState.ready),
+                fun (m: Lifetime)(e: Ctx(m, Load)): Pair(Ctx(m, Load), Unit) => producer(k, ring, steps, p, m, e),
+                fun (m: Lifetime)(e: Ctx(m, Issue)): Pair(Ctx(m, Issue), Unit) => issuer(ring, t, hd, steps, c, acc, send, m, e),
+                fun (m: Lifetime)(e: Ctx(m, Wg)): Pair(Ctx(m, Wg), Acc(a, AccState.ready)) => epilogue(k, t, hd, recv, own, stg, side, m, e))))
+        let (e, acc) := withAccHandoff(e, t, handoff)
+        (e, (acc, Unit.unit))
+      }
+      let (e, u) := withTmem(e, permit, 128, AccState.ready, Unit, body)
+      e
+    })
+}
+

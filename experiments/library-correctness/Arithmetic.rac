@@ -1,0 +1,95 @@
+namespace Arithmetic {
+  def reflexive (n: Nat): Nat.le(n, n) decreases structural(n) := {
+    match n returning Nat.le(n, n) with
+    | Nat.zero => Eq.refl(Bool.true)
+    | Nat.succ k => Arithmetic.reflexive(k)
+  }
+  def transitive (a: Nat)(b: Nat)(c: Nat)(ab: Nat.le(a, b))(bc: Nat.le(b, c)): Nat.le(a, c) decreases structural(a) := {
+    match a returning Nat.le(a, c) with
+    | Nat.zero => Eq.refl(Bool.true)
+    | Nat.succ x => {
+      match b returning Nat.le(a, c) with
+      | Nat.zero => False.elimP(Bool.falseNeTrue(ab), Nat.le(a, c))
+      | Nat.succ y => {
+        match c returning Nat.le(a, c) with
+        | Nat.zero => False.elimP(Bool.falseNeTrue(bc), Nat.le(a, c))
+        | Nat.succ z => Arithmetic.transitive(x, y, z, ab, bc)
+      }
+    }
+  }
+  def step (n: Nat): Nat.le(n, Nat.succ(n)) decreases structural(n) := {
+    match n returning Nat.le(n, Nat.succ(n)) with
+    | Nat.zero => Eq.refl(Bool.true)
+    | Nat.succ k => Arithmetic.step(k)
+  }
+  def notSuccessor (n: Nat)(h: Nat.le(Nat.succ(n), n)): False decreases structural(n) := {
+    match n returning False with
+    | Nat.zero => Bool.falseNeTrue(h)
+    | Nat.succ k => Arithmetic.notSuccessor(k, h)
+  }
+  def strictNotReverse (a: Nat)(b: Nat)(ab: Nat.lt(a, b))(ba: Nat.le(b, a)): False :=
+    Arithmetic.notSuccessor(a, Arithmetic.transitive(Nat.succ(a), b, a, ab, ba))
+  def addSuccessor (a: Nat)(b: Nat): Eq(Nat, Nat.add(Nat.succ(a), b), Nat.succ(Nat.add(a, b))) decreases structural(b) := {
+    match b returning Eq(Nat, Nat.add(Nat.succ(a), b), Nat.succ(Nat.add(a, b))) with
+    | Nat.zero => Eq.refl(Nat.succ(a))
+    | Nat.succ k => Arithmetic.addSuccessor(Nat.succ(a), k)
+  }
+  def addBound (a: Nat)(b: Nat): Nat.le(a, Nat.add(a, b)) decreases structural(b) := {
+    match b returning Nat.le(a, Nat.add(a, b)) with
+    | Nat.zero => Arithmetic.reflexive(a)
+    | Nat.succ k => Arithmetic.transitive(a, Nat.succ(a), Nat.add(Nat.succ(a), k), Arithmetic.step(a), Arithmetic.addBound(Nat.succ(a), k))
+  }
+
+  def addMonotone (a: Nat)(b: Nat)(k: Nat)(h: Nat.le(a, b)): Nat.le(Nat.add(a, k), Nat.add(b, k)) decreases structural(k) := {
+    match k returning Nat.le(Nat.add(a, k), Nat.add(b, k)) with
+    | Nat.zero => h
+    | Nat.succ j => Arithmetic.addMonotone(Nat.succ(a), Nat.succ(b), j, h)
+  }
+
+  def upper (ceiling: Nat): Nat -> Prop := fun (n: Nat): Prop => Nat.le(n, ceiling)
+  def lower (floor: Nat): Nat -> Prop := fun (n: Nat): Prop => Nat.le(floor, n)
+  def rewriteLeft {a: Nat}{b: Nat}(same: Eq(Nat, a, b))(ceiling: Nat)(h: Nat.le(a, ceiling)): Nat.le(b, ceiling) := Eq.substP(same, Arithmetic.upper(ceiling), h)
+  def rewriteRight {a: Nat}{b: Nat}(same: Eq(Nat, a, b))(floor: Nat)(h: Nat.le(floor, a)): Nat.le(floor, b) := Eq.substP(same, Arithmetic.lower(floor), h)
+  def zeroAdd (n: Nat): Eq(Nat, Nat.add(0, n), n) decreases structural(n) := {
+    match n returning Eq(Nat, Nat.add(0, n), n) with
+    | Nat.zero => Eq.refl(0)
+    | Nat.succ k => Eq.trans(Arithmetic.addSuccessor(0, k), congrArg(Arithmetic.zeroAdd(k), Nat, Nat.succ))
+  }
+  def addCommute (a: Nat)(b: Nat): Eq(Nat, Nat.add(a, b), Nat.add(b, a)) decreases structural(b) := {
+    match b returning Eq(Nat, Nat.add(a, b), Nat.add(b, a)) with
+    | Nat.zero => Eq.symm(Arithmetic.zeroAdd(a))
+    | Nat.succ k => Eq.trans(Arithmetic.addSuccessor(a, k), Eq.trans(congrArg(Arithmetic.addCommute(a, k), Nat, Nat.succ), Eq.symm(Arithmetic.addSuccessor(k, a))))
+  }
+  def addLeftMonotone (a: Nat)(b: Nat)(k: Nat)(h: Nat.le(a, b)): Nat.le(Nat.add(k, a), Nat.add(k, b)) :=
+    Arithmetic.rewriteRight(Arithmetic.addCommute(b, k), Nat.add(k, a),
+      Arithmetic.rewriteLeft(Arithmetic.addCommute(a, k), Nat.add(b, k), Arithmetic.addMonotone(a, b, k, h)))
+  def mulMonotone (a: Nat)(b: Nat)(k: Nat)(h: Nat.le(a, b)): Nat.le(Nat.mul(k, a), Nat.mul(k, b)) decreases structural(a) := {
+    match a returning Nat.le(Nat.mul(k, a), Nat.mul(k, b)) with
+    | Nat.zero => Eq.refl(Bool.true)
+    | Nat.succ x => {
+      match b returning Nat.le(Nat.mul(k, a), Nat.mul(k, b)) with
+      | Nat.zero => False.elimP(Bool.falseNeTrue(h), Nat.le(Nat.mul(k, a), Nat.mul(k, b)))
+      | Nat.succ y => Arithmetic.addLeftMonotone(Nat.mul(k, x), Nat.mul(k, y), k, Arithmetic.mulMonotone(x, y, k, h))
+    }
+  }
+  def strictCases (a: Nat)(b: Nat)(different: Not(Eq(Nat, a, b))): Or(Nat.lt(a, b), Nat.lt(b, a)) decreases structural(a) := {
+    match a returning Or(Nat.lt(a, b), Nat.lt(b, a)) with
+    | Nat.zero => {
+      match b returning Or(Nat.lt(a, b), Nat.lt(b, a)) with
+      | Nat.zero => False.elimP(different(Eq.refl(0)), Or(Nat.lt(a, b), Nat.lt(b, a)))
+      | Nat.succ y => Or.inl(Nat.lt(b, a), Eq.refl(Bool.true))
+    }
+    | Nat.succ x => {
+      match b returning Or(Nat.lt(a, b), Nat.lt(b, a)) with
+      | Nat.zero => Or.inr(Nat.lt(a, b), Eq.refl(Bool.true))
+      | Nat.succ y => Arithmetic.strictCases(x, y, fun (same: Eq(Nat, x, y)): False => different(congrArg(same, Nat, Nat.succ)))
+    }
+  }
+  def cancelRight (a: Nat)(b: Nat)(k: Nat)(same: Eq(Nat, Nat.add(a, k), Nat.add(b, k))): Eq(Nat, a, b) decreases structural(k) := {
+    match k returning Eq(Nat, a, b) with
+    | Nat.zero => same
+    | Nat.succ j => Nat.succInj(Arithmetic.cancelRight(Nat.succ(a), Nat.succ(b), j, same))
+  }
+  def cancelLeft (a: Nat)(b: Nat)(k: Nat)(same: Eq(Nat, Nat.add(k, a), Nat.add(k, b))): Eq(Nat, a, b) :=
+    Arithmetic.cancelRight(a, b, k, Eq.trans(Arithmetic.addCommute(a, k), Eq.trans(same, Arithmetic.addCommute(k, b))))
+}

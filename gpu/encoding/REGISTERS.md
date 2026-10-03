@@ -3,6 +3,10 @@
 Status: steps 1–3 of §8 **built** (2026-10-01): the toolkit container, the `Registers` module with bounds in every
 builder, and the register check in `check.sh`. Steps 4 and 5 are design.
 
+The current implementation lives in `Lowering.rac`, under namespace `Core`; `Core.rac` imports it as the
+client entry point. References below to Core's implementation mean that shared engine. Moving the source
+does not resolve the module-authority/import-cycle questions in §9.
+
 ## 1. Why
 
 The core models two of the SM's three on-chip resources exactly:

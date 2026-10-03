@@ -1,0 +1,6 @@
+// expect: LinearInType
+import encoding.Lowering
+namespace Rejected {
+  def bad {l: Lifetime}{g: Core.Group}(key: Core.Key)(ctx: Core.Ctx(l, g))
+      : Eq(Core.Gen, Core.state(key, ctx), Core.state(key, ctx)) := Eq.refl(Core.state(key, ctx))
+}

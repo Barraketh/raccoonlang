@@ -1,0 +1,14 @@
+// expect: TypeMismatch
+import Machine
+namespace Rejected {
+  open Core
+  open Cuda
+  open GpuMachine.{Machine, Ticket}
+  def bad {l: Lifetime}{x: Lifetime}{m: Lifetime}(machine: Machine(l, Group.warps(8, 4), CorrectAt(x, m, 8, OState.held)))
+      (buffer: ScoreBuffer(x, Rescaler.correction))(count: Val(l, Grain.uniform, DType.u32)): Machine(l, Group.warps(8, 4), CorrectAt(x, m, 8, OState.held)) :=
+    GpuMachine.repeat(machine, count, fun (n: Lifetime)(i: Val(n, Grain.uniform, DType.u32))(inner: Machine(n, Group.warps(8, 4), CorrectAt(x, m, 8, OState.held)))
+        : Machine(n, Group.warps(8, 4), Rescaling(x, m, 8)) => {
+      let (inner, alpha) := GpuMachine.awaitAlpha(inner, buffer)
+      inner
+    })
+}

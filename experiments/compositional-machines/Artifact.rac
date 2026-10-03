@@ -1,0 +1,35 @@
+import Cuda
+import Gpu
+import Emission
+
+namespace Artifact {
+  open Cuda
+
+  def output: Block := Block.seq(Stmt.ifElse(Emission.group(0),
+    Block.seq(Stmt.store(Expr.param("out"), Expr.special(Builtin.threadX), Expr.var(2)), Block.done),
+    Block.seq(Stmt.ifElse(Emission.group(1),
+      Block.seq(Stmt.store(Expr.param("out"), Expr.special(Builtin.threadX), Expr.var(3)), Block.done),
+      Block.seq(Stmt.store(Expr.param("out"), Expr.special(Builtin.threadX), Expr.lit(0)), Block.done)), Block.done)), Block.done)
+
+  def wrap (body: Block): Kernel := Kernel.mk("compositional_protocol",
+    List.cons(Param.scalar(DType.u32, "n"), List.cons(Param.scalar(DType.bool, "flag"),
+      List.cons(Param.output(DType.u32, "out"), List.nil(Param)))), 0,
+    Block.seq(Stmt.shared(DType.u32, 0, 128), Block.seq(Stmt.shared(DType.u32, 1, 128),
+      Block.seq(Stmt.declMut(DType.u32, 2, Expr.lit(0)), Block.seq(Stmt.declMut(DType.u32, 3, Expr.lit(0)),
+        Emission.append(Emission.writeBlock(1), Emission.append(body, Artifact.output)))))), Option.none(Launcher))
+
+  // This certificate names the actual target AST, not a separate event log.
+  struct Checked (program: Gpu.Program): Type
+   | mk (body: Block)(next: Nat)
+        (emits: Emission.Whole(program.code, Option.none(Nat), 4, body, next))
+        (kernel: Kernel)(shape: Eq(Kernel, kernel, Artifact.wrap(body))): Checked(program)
+
+  def compile (program: Gpu.Program): Checked(program) := {
+    let result := Emission.whole(program.code, Option.none(Nat), 4)
+    Checked.mk(program, result.block, result.next, result.valid, Artifact.wrap(result.block), Eq.refl(Artifact.wrap(result.block)))
+  }
+  def render (program: Gpu.Program): String := {
+    let result := Artifact.compile(program)
+    Cuda.boundedKernel(Option.some(Pair.mk(512, 1)), result.kernel)
+  }
+}

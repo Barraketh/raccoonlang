@@ -1,0 +1,34 @@
+import Client
+import CorePilot
+
+namespace Bridge {
+  open Cuda
+  def row: Expr := Expr.bin(BinOp.add, Expr.bin(BinOp.mul, Expr.special(Builtin.blockY), Expr.lit(8)), Expr.bin(BinOp.div, Expr.special(Builtin.threadX), Expr.lit(8)))
+  def col: Expr := Expr.bin(BinOp.add, Expr.bin(BinOp.mul, Expr.special(Builtin.blockX), Expr.lit(8)), Expr.bin(BinOp.rem, Expr.special(Builtin.threadX), Expr.lit(8)))
+  def output (next: Nat): Block := Block.seq(Stmt.decl(DType.u32, next, Expr.var(2)),
+    Block.seq(Stmt.decl(DType.u32, Nat.succ(next), Expr.var(3)),
+      Block.seq(Stmt.ifElse(Expr.bin(BinOp.land, Expr.bin(BinOp.lt, Bridge.row, Expr.param("M")), Expr.bin(BinOp.lt, Bridge.col, Expr.param("N"))),
+        Block.seq(Stmt.store(Expr.param("C"), Expr.bin(BinOp.add, Expr.bin(BinOp.mul, Bridge.row, Expr.param("N")), Bridge.col),
+          Expr.bin(BinOp.add, Expr.var(next), Expr.var(Nat.succ(next)))), Block.done), Block.done), Block.done)))
+
+  struct Checked (plan: Client.Plan): Type
+   | mk (first: Machine.Lowered(Pipeline.State, Pipeline.Op, Pipeline.spec(0), Client.first(plan).code, Option.some(4), 5))
+        (second: Machine.Lowered(Pipeline.State, Pipeline.Op, Pipeline.spec(1), Client.second(plan).code, Option.some(4), first.next))
+        (body: Block)(shape: Eq(Block, body,
+          Emission.append(Client.layout(plan), Block.seq(Stmt.declMut(DType.u32, 2, Expr.lit(0)),
+            Block.seq(Stmt.declMut(DType.u32, 3, Expr.lit(0)),
+              Emission.append(Machine.loopBlock(4, Emission.append(first.block, second.block)), Bridge.output(second.next))))))): Checked(plan)
+
+  def compile (plan: Client.Plan): Checked(plan) := {
+    let first := Machine.lower(Pipeline.spec(0), Client.first(plan).code, Option.some(4), 5)
+    let second := Machine.lower(Pipeline.spec(1), Client.second(plan).code, Option.some(4), first.next)
+    let body := Emission.append(Client.layout(plan), Block.seq(Stmt.declMut(DType.u32, 2, Expr.lit(0)),
+      Block.seq(Stmt.declMut(DType.u32, 3, Expr.lit(0)), Emission.append(Machine.loopBlock(4, Emission.append(first.block, second.block)), Bridge.output(second.next)))))
+    Checked.mk(plan, first, second, body, Eq.refl(body))
+  }
+  def plan: Client.Plan := Client.construct(Client.worker)
+  def actual: Kernel := Core.kernelSyntax(CorePilot.program)
+  // A checked link to the real Core builder's AST, including its allocations,
+  // register snapshots, loop bound, loads, barriers, and global output.
+  def productionMatches: Eq(Block, Bridge.actual.body, Bridge.compile(Bridge.plan).body) := Eq.refl(Bridge.compile(Bridge.plan).body)
+}

@@ -1,0 +1,7 @@
+// expect: TypeMismatch
+import RingObligations
+namespace Rejected {
+  def bad: RingObligations.SafeBarrier(Mbarrier.Action.complete(8), Mbarrier.pending(0, 16), Bool.false) :=
+    And.intro(And.intro(Eq.refl(Bool.true), Eq.refl(Bool.true)),
+      And.intro(Eq.refl(Bool.false), And.intro(Eq.refl(16), Eq.refl(0))))
+}

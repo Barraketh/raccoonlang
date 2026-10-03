@@ -1,0 +1,10 @@
+// expect: EvidenceNotDischarged
+import Gpu
+import Roles
+import BufferModel
+import WholeModel
+namespace Rejected {
+  def bad (l: Lifetime)(a: Gpu.Buffer(l, 0, 0))(b: Gpu.Buffer(l, 1, 1))
+      : Gpu.Whole(l, WholeModel.at(BufferModel.Phase.ready), WholeModel.at(BufferModel.Phase.writable)) :=
+    Gpu.split(WholeModel.Counts.mk(256, 256, 256, 256), Roles.left(l, a), Roles.right(l, b))
+}

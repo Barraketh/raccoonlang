@@ -1,0 +1,5 @@
+// expect: SealedConstructor
+import Dependent
+namespace Rejected {
+  def bad: Dependent.Program := Dependent.Cmd.mk(Retirement.Code.skip, Retirement.Typed.skip(Retirement.Mode.all, Retirement.Phase.outside))
+}

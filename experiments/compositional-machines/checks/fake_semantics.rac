@@ -1,0 +1,6 @@
+// expect: TypeMismatch
+import BufferModel
+import Contracts
+namespace Rejected {
+  def bad: BufferModel.Meaning(0, 0, BufferModel.Code.atom(0, 0, BufferModel.Op.write(2)), Contracts.identityRun(BufferModel.State)) := BufferModel.Meaning.skip(0, 0)
+}

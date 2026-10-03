@@ -1,0 +1,5 @@
+// expect: TypeMismatch
+import Coverage
+namespace Rejected {
+  def bad: Coverage.UniformCondition(Coverage.Condition.threadIs(0)) := Coverage.UniformCondition.literal(Bool.true)
+}

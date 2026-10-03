@@ -1,0 +1,147 @@
+import proofs.Lib
+
+// Contract semantics for one exclusively owned region. A handoff is an actual
+// release/acquire synchronization event. Mere scheduler order is NOT an edge.
+namespace HappensBefore {
+  inductive EdgeKind: Type
+   | programOrder (actor: Nat): EdgeKind
+   | synchronize (from: Nat)(to: Nat): EdgeKind
+  struct Edge: Type
+   | mk (before: Nat)(after: Nat)(from: Nat)(to: Nat)(kind: EdgeKind): Edge
+  struct Access: Type
+   | mk (event: Nat)(actor: Nat)(write: Bool): Access
+  inductive Path indices (edges: List(Edge)) (before: Nat)(after: Nat): Prop
+   | same (edges: List(Edge))(event: Nat): Path(edges, event, event)
+   | step (edges: List(Edge))(a: Nat)(b: Nat)(end: Nat)(from: Nat)(to: Nat)(kind: EdgeKind)
+       (edge: Spec.Mem(Edge, Edge.mk(a, b, from, to, kind), edges))(tail: Path(edges, b, end)): Path(edges, a, end)
+  // Standard closure rules: transitivity and monotonicity under adding edges.
+   | trans (edges: List(Edge))(a: Nat)(b: Nat)(c: Nat)(left: Path(edges, a, b))(right: Path(edges, b, c)): Path(edges, a, c)
+   | lift (old: List(Edge))(new: Edge)(a: Nat)(b: Nat)(oldPath: Path(old, a, b)): Path(List.cons(new, old), a, b)
+  def extend (old: List(Edge))(new: Edge)(a: Nat)(b: Nat)(path: Path(old, a, b)): Path(List.cons(new, old), a, b) :=
+    Path.lift(old, new, a, b, path)
+  def compose (edges: List(Edge))(a: Nat)(b: Nat)(c: Nat)(left: Path(edges, a, b))(right: Path(edges, b, c)): Path(edges, a, c) :=
+    Path.trans(edges, a, b, c, left, right)
+  struct State: Type
+   | mk (owner: Nat)(frontier: Nat)(history: List(Access))(edges: List(Edge)): State
+  def covered (s: State): Prop := (access: Access) -> Spec.Mem(Access, access, s.history) -> Path(s.edges, access.event, s.frontier)
+  def ordered (s: State): Prop := (a: Access) -> (b: Access) -> Spec.Mem(Access, a, s.history) -> Spec.Mem(Access, b, s.history) -> Or(Path(s.edges, a.event, b.event), Path(s.edges, b.event, a.event))
+  def invariant (s: State): Prop := And(HappensBefore.covered(s), HappensBefore.ordered(s))
+  def initial (owner: Nat): State := State.mk(owner, 0, List.nil(Access), List.nil(Edge))
+  def initialSafe (owner: Nat): HappensBefore.invariant(HappensBefore.initial(owner)) :=
+    And.intro(fun (access: Access)(member: Spec.Mem(Access, access, List.nil(Access))): Path(List.nil(Edge), access.event, 0) => {
+        match member returning Path(List.nil(Edge), access.event, 0) with
+      }, fun (a: Access)(b: Access)(left: Spec.Mem(Access, a, List.nil(Access)))(right: Spec.Mem(Access, b, List.nil(Access))): Or(Path(List.nil(Edge), a.event, b.event), Path(List.nil(Edge), b.event, a.event)) => {
+        match left returning Or(Path(List.nil(Edge), a.event, b.event), Path(List.nil(Edge), b.event, a.event)) with
+      })
+  inductive Action: Type
+   | access (actor: Nat)(write: Bool): Action
+   | handoff (to: Nat): Action
+  def Allowed (action: Action)(s: State): Prop := {
+    match action returning Prop with
+    | Action.access actor write => Eq(Nat, actor, s.owner)
+    | Action.handoff to => True
+  }
+  def edge (action: Action)(s: State): Edge := {
+    match action returning Edge with
+    | Action.access actor write => Edge.mk(s.frontier, Nat.succ(s.frontier), s.owner, actor, EdgeKind.programOrder(actor))
+    | Action.handoff to => Edge.mk(s.frontier, Nat.succ(s.frontier), s.owner, to, EdgeKind.synchronize(s.owner, to))
+  }
+  def after (action: Action)(s: State): State := {
+    match action returning State with
+    | Action.access actor write => State.mk(s.owner, Nat.succ(s.frontier), List.cons(Access.mk(Nat.succ(s.frontier), actor, write), s.history), List.cons(HappensBefore.edge(action, s), s.edges))
+    | Action.handoff to => State.mk(to, Nat.succ(s.frontier), s.history, List.cons(HappensBefore.edge(action, s), s.edges))
+  }
+  // Edges are emitted by these primitives, independently of the proof below.
+  // No edge is inferred merely because two scheduler steps were successive.
+  def linked (s: State)(from: Nat)(to: Nat)(kind: EdgeKind)(a: Access)(member: Spec.Mem(Access, a, s.history))(valid: HappensBefore.covered(s))
+      : Path(List.cons(Edge.mk(s.frontier, Nat.succ(s.frontier), from, to, kind), s.edges), a.event, Nat.succ(s.frontier)) :=
+    HappensBefore.compose(List.cons(Edge.mk(s.frontier, Nat.succ(s.frontier), from, to, kind), s.edges), a.event, s.frontier, Nat.succ(s.frontier),
+      HappensBefore.extend(s.edges, Edge.mk(s.frontier, Nat.succ(s.frontier), from, to, kind), a.event, s.frontier, valid(a, member)),
+      Path.step(List.cons(Edge.mk(s.frontier, Nat.succ(s.frontier), from, to, kind), s.edges), s.frontier, Nat.succ(s.frontier), Nat.succ(s.frontier), from, to, kind,
+        Spec.Mem.here(Edge.mk(s.frontier, Nat.succ(s.frontier), from, to, kind), s.edges), Path.same(List.cons(Edge.mk(s.frontier, Nat.succ(s.frontier), from, to, kind), s.edges), Nat.succ(s.frontier))))
+  def reaches (action: Action)(s: State)(a: Access)(member: Spec.Mem(Access, a, s.history))(valid: HappensBefore.covered(s))
+      : Path(List.cons(HappensBefore.edge(action, s), s.edges), a.event, Nat.succ(s.frontier)) := {
+    match action returning Path(List.cons(HappensBefore.edge(action, s), s.edges), a.event, Nat.succ(s.frontier)) with
+    | Action.access actor write => HappensBefore.linked(s, s.owner, actor, EdgeKind.programOrder(actor), a, member, valid)
+    | Action.handoff to => HappensBefore.linked(s, s.owner, to, EdgeKind.synchronize(s.owner, to), a, member, valid)
+  }
+  def oldOrdered (action: Action)(s: State)(a: Access)(b: Access)(left: Spec.Mem(Access, a, s.history))(right: Spec.Mem(Access, b, s.history))(valid: HappensBefore.ordered(s))
+      : Or(Path(List.cons(HappensBefore.edge(action, s), s.edges), a.event, b.event), Path(List.cons(HappensBefore.edge(action, s), s.edges), b.event, a.event)) := {
+    match valid(a, b, left, right) returning Or(Path(List.cons(HappensBefore.edge(action, s), s.edges), a.event, b.event), Path(List.cons(HappensBefore.edge(action, s), s.edges), b.event, a.event)) with
+    | Or.inl ab => Or.inl(Path(List.cons(HappensBefore.edge(action, s), s.edges), b.event, a.event), HappensBefore.extend(s.edges, HappensBefore.edge(action, s), a.event, b.event, ab))
+    | Or.inr ba => Or.inr(Path(List.cons(HappensBefore.edge(action, s), s.edges), a.event, b.event), HappensBefore.extend(s.edges, HappensBefore.edge(action, s), b.event, a.event, ba))
+  }
+  def preserve (action: Action)(s: State)(valid: HappensBefore.invariant(s))(allowed: Allowed(action, s)): HappensBefore.invariant(HappensBefore.after(action, s)) := {
+    match action returning HappensBefore.invariant(HappensBefore.after(action, s)) with
+    | Action.handoff to => And.intro(
+        fun (a: Access)(member: Spec.Mem(Access, a, s.history)): Path(List.cons(HappensBefore.edge(action, s), s.edges), a.event, Nat.succ(s.frontier)) => HappensBefore.reaches(action, s, a, member, valid.left),
+        fun (a: Access)(b: Access)(left: Spec.Mem(Access, a, s.history))(right: Spec.Mem(Access, b, s.history)): Or(Path(List.cons(HappensBefore.edge(action, s), s.edges), a.event, b.event), Path(List.cons(HappensBefore.edge(action, s), s.edges), b.event, a.event)) => HappensBefore.oldOrdered(action, s, a, b, left, right, valid.right))
+    | Action.access actor write => And.intro(
+        fun (a: Access)(member: Spec.Mem(Access, a, HappensBefore.after(action, s).history)): Path(HappensBefore.after(action, s).edges, a.event, Nat.succ(s.frontier)) => {
+          match member returning Path(HappensBefore.after(action, s).edges, a.event, Nat.succ(s.frontier)) with
+          | Spec.Mem.here rest => Path.same(HappensBefore.after(action, s).edges, Nat.succ(s.frontier))
+          | Spec.Mem.there head rest there => HappensBefore.reaches(action, s, a, there, valid.left)
+        },
+        fun (a: Access)(b: Access)(left: Spec.Mem(Access, a, HappensBefore.after(action, s).history))(right: Spec.Mem(Access, b, HappensBefore.after(action, s).history))
+            : Or(Path(HappensBefore.after(action, s).edges, a.event, b.event), Path(HappensBefore.after(action, s).edges, b.event, a.event)) => {
+          match left returning Or(Path(HappensBefore.after(action, s).edges, a.event, b.event), Path(HappensBefore.after(action, s).edges, b.event, a.event)) with
+          | Spec.Mem.here rest => {
+            match right returning Or(Path(HappensBefore.after(action, s).edges, a.event, b.event), Path(HappensBefore.after(action, s).edges, b.event, a.event)) with
+            | Spec.Mem.here rest => Or.inl(Path(HappensBefore.after(action, s).edges, b.event, a.event), Path.same(HappensBefore.after(action, s).edges, Nat.succ(s.frontier)))
+            | Spec.Mem.there head rest there => Or.inr(Path(HappensBefore.after(action, s).edges, a.event, b.event), HappensBefore.reaches(action, s, b, there, valid.left))
+          }
+          | Spec.Mem.there head rest there => {
+            match right returning Or(Path(HappensBefore.after(action, s).edges, a.event, b.event), Path(HappensBefore.after(action, s).edges, b.event, a.event)) with
+            | Spec.Mem.here rest => Or.inl(Path(HappensBefore.after(action, s).edges, b.event, a.event), HappensBefore.reaches(action, s, a, there, valid.left))
+            | Spec.Mem.there head rest other => HappensBefore.oldOrdered(action, s, a, b, there, other, valid.right)
+          }
+        })
+  }
+
+  def validEdge (edge: Edge): Prop := {
+    match edge.kind returning Prop with
+    | EdgeKind.programOrder actor => And(Eq(Nat, edge.from, actor), Eq(Nat, edge.to, actor))
+    | EdgeKind.synchronize from to => And(Eq(Nat, edge.from, from), Eq(Nat, edge.to, to))
+  }
+  def validEdges (s: State): Prop := (edge: Edge) -> Spec.Mem(Edge, edge, s.edges) -> HappensBefore.validEdge(edge)
+  def sound (s: State): Prop := And(HappensBefore.invariant(s), HappensBefore.validEdges(s))
+  def newEdgeValid (action: Action)(s: State)(allowed: Allowed(action, s)): HappensBefore.validEdge(HappensBefore.edge(action, s)) := {
+    match action returning HappensBefore.validEdge(HappensBefore.edge(action, s)) with
+    | Action.access actor write => And.intro(Eq.symm(allowed), Eq.refl(actor))
+    | Action.handoff to => And.intro(Eq.refl(s.owner), Eq.refl(to))
+  }
+  def preservedEdges (action: Action)(s: State)(valid: HappensBefore.validEdges(s))(allowed: Allowed(action, s)): HappensBefore.validEdges(HappensBefore.after(action, s)) := {
+    match action returning HappensBefore.validEdges(HappensBefore.after(action, s)) with
+    | Action.access actor write => fun (edge: Edge)(member: Spec.Mem(Edge, edge, HappensBefore.after(action, s).edges)): HappensBefore.validEdge(edge) => {
+      match member returning HappensBefore.validEdge(edge) with
+      | Spec.Mem.here rest => HappensBefore.newEdgeValid(action, s, allowed)
+      | Spec.Mem.there head rest there => valid(edge, there)
+    }
+    | Action.handoff to => fun (edge: Edge)(member: Spec.Mem(Edge, edge, HappensBefore.after(action, s).edges)): HappensBefore.validEdge(edge) => {
+      match member returning HappensBefore.validEdge(edge) with
+      | Spec.Mem.here rest => HappensBefore.newEdgeValid(action, s, allowed)
+      | Spec.Mem.there head rest there => valid(edge, there)
+    }
+  }
+  def initialSound (owner: Nat): HappensBefore.sound(HappensBefore.initial(owner)) := And.intro(HappensBefore.initialSafe(owner),
+    fun (edge: Edge)(member: Spec.Mem(Edge, edge, List.nil(Edge))): HappensBefore.validEdge(edge) => {
+      match member returning HappensBefore.validEdge(edge) with
+    })
+  inductive Execution indices (actions: List(Action))(before: State)(after: State): Prop
+   | done (s: State): Execution(List.nil(Action), s, s)
+   | next (action: Action)(rest: List(Action))(s: State)(end: State)(allowed: Allowed(action, s))
+       (tail: Execution(rest, HappensBefore.after(action, s), end)): Execution(List.cons(action, rest), s, end)
+  def everyExecution (actions: List(Action))(s: State)(end: State)(execution: Execution(actions, s, end))(valid: HappensBefore.sound(s))
+      : HappensBefore.sound(end) decreases structural(actions) := {
+    match execution returning HappensBefore.sound(end) with
+    | Execution.done same => valid
+    | Execution.next action rest s end allowed tail => HappensBefore.everyExecution(rest, HappensBefore.after(action, s), end, tail,
+        And.intro(HappensBefore.preserve(action, s, valid.left, allowed), HappensBefore.preservedEdges(action, s, valid.right, allowed)))
+  }
+  // Stronger than conflict ordering: every pair of this region's accesses is
+  // ordered, even two reads. Multiple independent regions use separation.
+  def noRace (owner: Nat)(actions: List(Action))(end: State)(execution: Execution(actions, HappensBefore.initial(owner), end))
+      (a: Access)(b: Access)(left: Spec.Mem(Access, a, end.history))(right: Spec.Mem(Access, b, end.history))
+      : Or(Path(end.edges, a.event, b.event), Path(end.edges, b.event, a.event)) :=
+    HappensBefore.everyExecution(actions, HappensBefore.initial(owner), end, execution, HappensBefore.initialSound(owner)).left.right(a, b, left, right)
+}

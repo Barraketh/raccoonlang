@@ -1,0 +1,10 @@
+// expect: TypeMismatch
+import Tiny
+namespace Rejected {
+  def bad (l: Lifetime)(r: Commands.Resource(l, Native.world(4, 2)))
+      (captured: Commands.Cmd(l, Native.world(4, 2), Protocol.Role.producer, Protocol.State.producing, Protocol.State.producing))
+      : Commands.Cmd(l, Native.world(4, 2), Protocol.Role.producer, Protocol.State.producing, Protocol.State.producing) :=
+    Commands.peeled(Protocol.Role.producer, Protocol.State.producing, Protocol.State.producing, r,
+      fun (i: Lifetime)(index: Commands.Index(i)): Commands.Cmd(Lifetime.union(l, i), Native.world(4, 2), Protocol.Role.producer, Protocol.State.producing, Protocol.State.producing) => Commands.inScope(i, captured),
+      fun (i: Lifetime)(index: Commands.Index(i)): Commands.Cmd(Lifetime.union(l, i), Native.world(4, 2), Protocol.Role.producer, Protocol.State.producing, Protocol.State.producing) => Commands.then(Commands.acquire(r), Commands.fill(r, index)))
+}

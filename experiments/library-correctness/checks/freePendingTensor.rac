@@ -1,0 +1,5 @@
+// expect: TypeMismatch
+import Tensor
+namespace Rejected {
+  def bad: Tensor.Allowed(Tensor.Action.free, Tensor.State.mk(Tensor.Phase.pending, 32, Bool.false, Bool.true, Bool.true)) := Eq.refl(Tensor.Phase.pending)
+}

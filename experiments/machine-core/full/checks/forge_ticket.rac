@@ -1,0 +1,8 @@
+// expect: SealedConstructor
+import Machine
+namespace Rejected {
+ open Core
+ open Cuda
+ open GpuMachine.{Machine, Ticket}
+ def bad {x:Lifetime}{m:Lifetime}(state:Rescaling(x,m,8))(fixed:Fixed(Rescaling(x,m,8))):Ticket(Rescaling(x,m,8)) := GpuMachine.Ticket.mk(state,fixed)
+}

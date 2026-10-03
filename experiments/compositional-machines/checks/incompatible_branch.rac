@@ -1,0 +1,8 @@
+// expect: TypeMismatch
+import Gpu
+import BufferModel
+namespace Rejected {
+  def bad (l: Lifetime)(a: Gpu.Local(l, 0, 0, BufferModel.at(BufferModel.Phase.borrowing), BufferModel.at(BufferModel.Phase.borrowing)))
+      (b: Gpu.Local(l, 0, 0, BufferModel.at(BufferModel.Phase.borrowing), BufferModel.at(BufferModel.Phase.reading)))
+      : Gpu.Local(l, 0, 0, BufferModel.at(BufferModel.Phase.borrowing), BufferModel.at(BufferModel.Phase.borrowing)) := Gpu.branch(a, b)
+}

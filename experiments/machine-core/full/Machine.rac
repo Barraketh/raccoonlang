@@ -1,0 +1,692 @@
+import encoding.Lowering
+import encoding.Layout
+
+// The emitter and its fixed, linear resource state travel together. Values remain
+// ordinary scoped read-only handles. A parked ticket owns state but emits no code.
+namespace GpuMachine {
+  open Core
+  open Cuda
+
+  sealed inductive Key: Type
+   | key: Key
+
+  sealed inductive Machine (l: Lifetime)(g: Group){k: Kind}{T: Lifetime}(S: Type { kind = k, scope = T }): Type { kind = lin, scope = union(l, T) }
+   | mk (emitter: Ctx(l, g))(state: S)(fixed: Fixed(S)): Machine(l, g, S)
+  sealed inductive Ticket {k: Kind}{T: Lifetime}(S: Type { kind = k, scope = T }): Type { kind = k, scope = T }
+   | mk (state: S)(fixed: Fixed(S)): Ticket(S)
+
+  def unpack {l: Lifetime}{g: Group}{k: Kind}{T: Lifetime}{S: Type { kind = k, scope = T }}(key: Key)(machine: Machine(l, g, S))
+      : Pair(Ctx(l, g), Pair(S, Fixed(S))) := {
+    match machine returning Pair(Ctx(l, g), Pair(S, Fixed(S))) with
+    | Machine.mk e state fixed => (e, (state, fixed))
+  }
+  def start {l: Lifetime}{g: Group}(key: Key)(e: Ctx(l, g)): Machine(l, g, Unit) := Machine.mk(e, Unit.unit, fixedUnit)
+  def finish {l: Lifetime}{g: Group}(key: Key)(machine: Machine(l, g, Unit)): Ctx(l, g) := {
+    let (e, (u, fixed)) := unpack(key, machine)
+    e
+  }
+  def park {l: Lifetime}{g: Group}{k: Kind}{T: Lifetime}{S: Type { kind = k, scope = T }}(machine: Machine(l, g, S))
+      : Pair(Machine(l, g, Unit), Ticket(S)) := {
+    let (e, (state, fixed)) := unpack(Key.key, machine)
+    (start(Key.key, e), Ticket.mk(state, fixed))
+  }
+  def use {l: Lifetime}{g: Group}{k: Kind}{T: Lifetime}{S: Type { kind = k, scope = T }}(machine: Machine(l, g, Unit))(ticket: Ticket(S)): Machine(l, g, S) := {
+    match ticket returning Machine(l, g, S) with
+    | Ticket.mk state fixed => Machine.mk(finish(Key.key, machine), state, fixed)
+  }
+  def join {l: Lifetime}{g: Group}{ka: Kind}{Ta: Lifetime}{A: Type { kind = ka, scope = Ta }}{kb: Kind}{Tb: Lifetime}{B: Type { kind = kb, scope = Tb }}
+      (machine: Machine(l, g, A))(ticket: Ticket(B)): Machine(l, g, Pair(A, B)) := {
+    let (e, (a, fa)) := unpack(Key.key, machine)
+    match ticket returning Machine(l, g, Pair(A, B)) with
+    | Ticket.mk b fb => Machine.mk(e, (a, b), fixedPair(fa, fb))
+  }
+  def split {l: Lifetime}{g: Group}{ka: Kind}{Ta: Lifetime}{A: Type { kind = ka, scope = Ta }}{kb: Kind}{Tb: Lifetime}{B: Type { kind = kb, scope = Tb }}
+      (machine: Machine(l, g, Pair(A, B))): Pair(Machine(l, g, A), Ticket(B)) := {
+    let (e, ((a, b), fixed)) := unpack(Key.key, machine)
+    (Machine.mk(e, a, fixedLeft(fixed)), Ticket.mk(b, fixedRight(fixed)))
+  }
+  def pairTickets {ka: Kind}{Ta: Lifetime}{A: Type { kind = ka, scope = Ta }}{kb: Kind}{Tb: Lifetime}{B: Type { kind = kb, scope = Tb }}
+      (left: Ticket(A))(right: Ticket(B)): Ticket(Pair(A, B)) := {
+    match left returning Ticket(Pair(A, B)) with
+    | Ticket.mk a fa => {
+      match right returning Ticket(Pair(A, B)) with
+      | Ticket.mk b fb => Ticket.mk((a, b), fixedPair(fa, fb))
+    }
+  }
+  def splitTicket {ka: Kind}{Ta: Lifetime}{A: Type { kind = ka, scope = Ta }}{kb: Kind}{Tb: Lifetime}{B: Type { kind = kb, scope = Tb }}
+      (ticket: Ticket(Pair(A, B))): Pair(Ticket(A), Ticket(B)) := {
+    match ticket returning Pair(Ticket(A), Ticket(B)) with
+    | Ticket.mk state fixed => {
+      let (a, b) := state
+      (Ticket.mk(a, fixedLeft(fixed)), Ticket.mk(b, fixedRight(fixed)))
+    }
+  }
+  def dropUnitRight {l: Lifetime}{g: Group}{k: Kind}{T: Lifetime}{S: Type { kind = k, scope = T }}
+      (machine: Machine(l, g, Pair(S, Unit))): Machine(l, g, S) := {
+    let (machine, unit) := split(machine)
+    machine
+  }
+  def dropUnitLeft {l: Lifetime}{g: Group}{k: Kind}{T: Lifetime}{S: Type { kind = k, scope = T }}
+      (machine: Machine(l, g, Pair(Unit, S))): Machine(l, g, S) := {
+    let (empty, ticket) := split(machine)
+    use(empty, ticket)
+  }
+  def focusLeft {l: Lifetime}{g: Group}{ka: Kind}{Ta: Lifetime}{A: Type { kind = ka, scope = Ta }}{kb: Kind}{Tb: Lifetime}{B: Type { kind = kb, scope = Tb }}
+      {kc: Kind}{Tc: Lifetime}{C: Type { kind = kc, scope = Tc }}{kf: Kind}{Sf: Lifetime}
+      (machine: Machine(l, g, Pair(A, B)))(body: { kind = kf, scope = Sf } Machine(l, g, A) -> Machine(l, g, C)): Machine(l, g, Pair(C, B)) := {
+    let (left, right) := split(machine)
+    join(body(left), right)
+  }
+  def focusLeftValue {l: Lifetime}{g: Group}{ka: Kind}{Ta: Lifetime}{A: Type { kind = ka, scope = Ta }}{kb: Kind}{Tb: Lifetime}{B: Type { kind = kb, scope = Tb }}
+      {kc: Kind}{Tc: Lifetime}{C: Type { kind = kc, scope = Tc }}{kv: Kind}{Tv: Lifetime}{V: Type { kind = kv, scope = Tv }}{kf: Kind}{Sf: Lifetime}
+      (machine: Machine(l, g, Pair(A, B)))(body: { kind = kf, scope = Sf } Machine(l, g, A) -> Pair(Machine(l, g, C), V)): Pair(Machine(l, g, Pair(C, B)), V) := {
+    let (left, right) := split(machine)
+    let (left, value) := body(left)
+    (join(left, right), value)
+  }
+  def focusRight {l: Lifetime}{g: Group}{ka: Kind}{Ta: Lifetime}{A: Type { kind = ka, scope = Ta }}{kb: Kind}{Tb: Lifetime}{B: Type { kind = kb, scope = Tb }}
+      {kc: Kind}{Tc: Lifetime}{C: Type { kind = kc, scope = Tc }}{kf: Kind}{Sf: Lifetime}
+      (machine: Machine(l, g, Pair(A, B)))(body: { kind = kf, scope = Sf } Machine(l, g, B) -> Machine(l, g, C)): Machine(l, g, Pair(A, C)) := {
+    let (left, right) := split(machine)
+    let (empty, a) := park(left)
+    let (empty, c) := park(body(use(empty, right)))
+    join(use(empty, a), c)
+  }
+  def repeatFrom {l: Lifetime}{g: Group}{k: Kind}{T: Lifetime}{S: Type { kind = k, scope = T }}{Sf: Lifetime}{Sn: Lifetime}
+      (machine: Machine(l, g, S))(startAt: Nat)(count: Val(Sn, Grain.uniform, DType.u32))
+      (body: { scope = Sf } (n: Lifetime) -> Val(n, Grain.uniform, DType.u32) -> Machine(n, g, S) -> Machine(n, g, S)): Machine(l, g, S) := {
+    let (e, (state, fixed)) := unpack(Key.key, machine)
+    let (e, state) := Core.loopFrom(e, startAt, count, fixed, state,
+      fun (n: Lifetime)(i: Val(n, Grain.uniform, DType.u32))(e: Ctx(n, g))(state: S): Pair(Ctx(n, g), S) => {
+        let (e, (state, f)) := unpack(Key.key, body(n, i, Machine.mk(e, state, fixed)))
+        (e, state)
+      })
+    Machine.mk(e, state, fixed)
+  }
+  def repeat {l: Lifetime}{g: Group}{k: Kind}{T: Lifetime}{S: Type { kind = k, scope = T }}{Sf: Lifetime}{Sn: Lifetime}
+      (machine: Machine(l, g, S))(count: Val(Sn, Grain.uniform, DType.u32))
+      (body: { scope = Sf } (n: Lifetime) -> Val(n, Grain.uniform, DType.u32) -> Machine(n, g, S) -> Machine(n, g, S)): Machine(l, g, S) := repeatFrom(machine, 0, count, body)
+  def peeled {l: Lifetime}{g: Group}{k0: Kind}{T0: Lifetime}{S0: Type { kind = k0, scope = T0 }}
+      {k1: Kind}{T1: Lifetime}{Sf: Lifetime}{Sr: Lifetime}{Sn: Lifetime}
+      (machine: Machine(l, g, S0))(S1: Type { kind = k1, scope = T1 })(count: Val(Sn, Grain.uniform, DType.u32))
+      (first: { scope = Sf } (n: Lifetime) -> Val(n, Grain.uniform, DType.u32) -> Machine(n, g, S0) -> Machine(n, g, S1))
+      (rest: { scope = Sr } (n: Lifetime) -> Val(n, Grain.uniform, DType.u32) -> Machine(n, g, S1) -> Machine(n, g, S1)): Machine(l, g, S1) := {
+    let (e, (state, fixed0)) := unpack(Key.key, machine)
+    let (e, (state, fixed1)) := Core.loopPeeledInferred(e, count, state,
+      fun (n: Lifetime)(i: Val(n, Grain.uniform, DType.u32))(e: Ctx(n, g))(state: S0): Pair(Ctx(n, g), Pair(Pair(S1, Fixed(S1)), Fixed(Pair(S1, Fixed(S1))))) => {
+        // Carry the witness alongside the state through the remaining loop.
+        let (e, (state, fixed)) := unpack(Key.key, first(n, i, Machine.mk(e, state, fixed0)))
+        (e, ((state, fixed), fixedPair(fixed, Core.fixedFixed(fixed))))
+      },
+      fun (n: Lifetime)(i: Val(n, Grain.uniform, DType.u32))(e: Ctx(n, g))(state: Pair(S1, Fixed(S1))): Pair(Ctx(n, g), Pair(S1, Fixed(S1))) => {
+        let (state, fixed) := state
+        unpack(Key.key, rest(n, i, Machine.mk(e, state, fixed)))
+      })
+    Machine.mk(e, state, fixed1)
+  }
+  def when {l: Lifetime}{g: Group}{k: Kind}{T: Lifetime}{S: Type { kind = k, scope = T }}{Sf: Lifetime}{Sc: Lifetime}{uc: Grain}
+      (machine: Machine(l, g, S))(cond: Val(Sc, uc, DType.bool))
+      (yes: { scope = Sf } (n: Lifetime) -> Machine(n, Group.arm(g, uc), S) -> Machine(n, Group.arm(g, uc), S)): Machine(l, g, S) := {
+    let (e, (state, fixed)) := unpack(Key.key, machine)
+    let (e, state) := Core.when(e, cond, fixed, state,
+      fun (n: Lifetime)(e: Ctx(n, Group.arm(g, uc)))(state: S): Pair(Ctx(n, Group.arm(g, uc)), S) => {
+        let (e, (state, f)) := unpack(Key.key, yes(n, Machine.mk(e, state, fixed)))
+        (e, state)
+      })
+    Machine.mk(e, state, fixed)
+  }
+
+
+  def fconst {ks: Kind}{Ts: Lifetime}{State: Type { kind = ks, scope = Ts }}{l: Lifetime}{g: Group}(machine: Machine(l, g, State))(bits: Nat): Pair(Machine(l, g, State), Val(l, Grain.uniform, DType.f32)) := {
+    let (e, (state, fixed)) := unpack(Key.key, machine)
+    let (e, value) := Core.fconst(e, bits)
+    (Machine.mk(e, state, fixed), value)
+  }
+
+  def reg {ks: Kind}{Ts: Lifetime}{State: Type { kind = ks, scope = Ts }}{l: Lifetime}{g: Group}{S: Lifetime}{u: Grain}{t: DType}(machine: Machine(l, g, State))(init: Val(S, u, t)): Pair(Machine(l, g, State), Reg(l, t)) := {
+    let (e, (state, fixed)) := unpack(Key.key, machine)
+    let (e, value) := Core.reg(e, init)
+    (Machine.mk(e, state, fixed), value)
+  }
+
+  def get {ks: Kind}{Ts: Lifetime}{State: Type { kind = ks, scope = Ts }}{l: Lifetime}{g: Group}{S: Lifetime}{t: DType}(machine: Machine(l, g, State))(r: Reg(S, t)): Pair(Machine(l, g, State), Val(l, Grain.thread, t)) := {
+    let (e, (state, fixed)) := unpack(Key.key, machine)
+    let (e, value) := Core.get(e, r)
+    (Machine.mk(e, state, fixed), value)
+  }
+
+  def set {ks: Kind}{Ts: Lifetime}{State: Type { kind = ks, scope = Ts }}{l: Lifetime}{g: Group}{S: Lifetime}{Sv: Lifetime}{u: Grain}{t: DType}(machine: Machine(l, g, State))(r: Reg(S, t))(v: Val(Sv, u, t)): Machine(l, g, State) := {
+    let (e, (state, fixed)) := unpack(Key.key, machine)
+    Machine.mk(Core.set(e, r, v), state, fixed)
+  }
+
+  def ex2 {ks: Kind}{Ts: Lifetime}{State: Type { kind = ks, scope = Ts }}{l: Lifetime}{g: Group}{S: Lifetime}{u: Grain}(machine: Machine(l, g, State))(x: Val(S, u, DType.f32)): Pair(Machine(l, g, State), Val(l, u, DType.f32)) := {
+    let (e, (state, fixed)) := unpack(Key.key, machine)
+    let (e, value) := Core.ex2(e, x)
+    (Machine.mk(e, state, fixed), value)
+  }
+
+  def ex2emu {ks: Kind}{Ts: Lifetime}{State: Type { kind = ks, scope = Ts }}{l: Lifetime}{g: Group}{S: Lifetime}{u: Grain}(machine: Machine(l, g, State))(x: Val(S, u, DType.f32)): Pair(Machine(l, g, State), Val(l, u, DType.f32)) := {
+    let (e, (state, fixed)) := unpack(Key.key, machine)
+    let (e, value) := Core.ex2emu(e, x)
+    (Machine.mk(e, state, fixed), value)
+  }
+
+  def lg2 {ks: Kind}{Ts: Lifetime}{State: Type { kind = ks, scope = Ts }}{l: Lifetime}{g: Group}{S: Lifetime}{u: Grain}(machine: Machine(l, g, State))(x: Val(S, u, DType.f32)): Pair(Machine(l, g, State), Val(l, u, DType.f32)) := {
+    let (e, (state, fixed)) := unpack(Key.key, machine)
+    let (e, value) := Core.lg2(e, x)
+    (Machine.mk(e, state, fixed), value)
+  }
+
+  def rcp {ks: Kind}{Ts: Lifetime}{State: Type { kind = ks, scope = Ts }}{l: Lifetime}{g: Group}{S: Lifetime}{u: Grain}(machine: Machine(l, g, State))(x: Val(S, u, DType.f32)): Pair(Machine(l, g, State), Val(l, u, DType.f32)) := {
+    let (e, (state, fixed)) := unpack(Key.key, machine)
+    let (e, value) := Core.rcp(e, x)
+    (Machine.mk(e, state, fixed), value)
+  }
+
+  def voteAny {ks: Kind}{Ts: Lifetime}{State: Type { kind = ks, scope = Ts }}{l: Lifetime}{f: Nat}{c: Nat}{S: Lifetime}{u: Grain}(machine: Machine(l, Group.warps(f, c), State))(cond: Val(S, u, DType.bool)): Pair(Machine(l, Group.warps(f, c), State), Val(l, Grain.warp, DType.bool)) := {
+    let (e, (state, fixed)) := unpack(Key.key, machine)
+    let (e, value) := Core.voteAny(e, cond)
+    (Machine.mk(e, state, fixed), value)
+  }
+
+  def maskedScores {ks: Kind}{Ts: Lifetime}{State: Type { kind = ks, scope = Ts }}{k: Lifetime}{f: Nat}{L: Lifetime}{Sb: Lifetime}{ub: Grain}{S: Lifetime}{u: Grain}(machine: Machine(k, Group.warps(f, 4), State))(mask: Mask(L))(block: Val(Sb, ub, DType.u32))(c: Nat)(v: F32x8(S, u)): Pair(Machine(k, Group.warps(f, 4), State), F32x8(k, Grain.thread)) := {
+    let (e, (state, fixed)) := unpack(Key.key, machine)
+    let (e, value) := Core.maskedScores(e, mask, block, c, v)
+    (Machine.mk(e, state, fixed), value)
+  }
+
+  def takeProducer {m: Lifetime}{r: Lifetime}{cfg: RingCfg}(machine: Machine(m, Group.lane, Unit))(w: Elected(m))(ring: Ring(r, cfg))(p: Producer(r)): Machine(m, Group.lane, ProducerAt(r, m)) := {
+    let (e, (u, previous)) := unpack(Key.key, machine)
+    let (e, state) := Core.takeProducer(e, w, ring, p)
+    Machine.mk(e, state, Core.fixedProducerAt(r, m))
+  }
+
+  def takeConsumer {m: Lifetime}{r: Lifetime}{cfg: RingCfg}(machine: Machine(m, Group.lane, Unit))(w: Elected(m))(ring: Ring(r, cfg))(c: Consumer(r)): Machine(m, Group.lane, ConsumerAt(r, m)) := {
+    let (e, (u, previous)) := unpack(Key.key, machine)
+    let (e, state) := Core.takeConsumer(e, w, ring, c)
+    Machine.mk(e, state, Core.fixedConsumerAt(r, m))
+  }
+
+  def acquire {n: Lifetime}{r: Lifetime}{m: Lifetime}{cfg: RingCfg}(machine: Machine(n, Group.lane, ProducerAt(r, m)))(ring: Ring(r, cfg)): Machine(n, Group.lane, Slot(r, m)) := {
+    let (e, (p, previous)) := unpack(Key.key, machine)
+    let (e, state) := Core.acquire(e, ring, p)
+    Machine.mk(e, state, Core.fixedSlot(r, m))
+  }
+
+  def fill {n: Lifetime}{r: Lifetime}{m: Lifetime}{cfg: RingCfg}{L: Lifetime}{S0: Lifetime}{S1: Lifetime}{S2: Lifetime}{S3: Lifetime}{u0: Grain}{u1: Grain}{u2: Grain}{u3: Grain}(machine: Machine(n, Group.lane, Slot(r, m)))(ring: Ring(r, cfg))(a: TMap(L, RingCfg.a(cfg)))(a0: Val(S0, u0, DType.u32))(a1: Val(S1, u1, DType.u32))(b: TMap(L, RingCfg.b(cfg)))(b0: Val(S2, u2, DType.u32))(b1: Val(S3, u3, DType.u32)): Machine(n, Group.lane, ProducerAt(r, m)) := {
+    let (e, (s, previous)) := unpack(Key.key, machine)
+    let (e, state) := Core.fill(e, ring, s, a, a0, a1, b, b0, b1)
+    Machine.mk(e, state, Core.fixedProducerAt(r, m))
+  }
+
+  def fillBlock {n: Lifetime}{r: Lifetime}{m: Lifetime}{cfg: RingCfg}{L: Lifetime}{S: Lifetime}{u: Grain}(machine: Machine(n, Group.lane, Slot(r, m)))(ring: Ring(r, cfg))(map: HeadMap(L, RingCfg.a(cfg)))(row: Val(S, u, DType.u32)): Machine(n, Group.lane, ProducerAt(r, m)) := {
+    let (e, (s, previous)) := unpack(Key.key, machine)
+    let (e, state) := Core.fillBlock(e, ring, s, map, row)
+    Machine.mk(e, state, Core.fixedProducerAt(r, m))
+  }
+
+  def finishProducer {n: Lifetime}{r: Lifetime}{m: Lifetime}{cfg: RingCfg}(machine: Machine(n, Group.lane, ProducerAt(r, m)))(ring: Ring(r, cfg)): Machine(n, Group.lane, Unit) := {
+    let (e, (p, previous)) := unpack(Key.key, machine)
+    start(Key.key, Core.finishProducer(e, ring, p))
+  }
+
+  def await {n: Lifetime}{r: Lifetime}{m: Lifetime}{cfg: RingCfg}(machine: Machine(n, Group.lane, ConsumerAt(r, m)))(ring: Ring(r, cfg)): Machine(n, Group.lane, Ready(r, m)) := {
+    let (e, (c, previous)) := unpack(Key.key, machine)
+    let (e, state) := Core.await(e, ring, c)
+    Machine.mk(e, state, Core.fixedReady(r, m))
+  }
+
+  def finishConsumer {n: Lifetime}{r: Lifetime}{m: Lifetime}(machine: Machine(n, Group.lane, ConsumerAt(r, m))): Machine(n, Group.lane, Unit) := {
+    let (e, (c, previous)) := unpack(Key.key, machine)
+    start(Key.key, Core.finishConsumer(e, c))
+  }
+
+  def takeRows {m: Lifetime}{f: Nat}{x: Lifetime}{h: Rescaler}(machine: Machine(m, Group.warps(f, 4), Unit))(buf: ScoreBuffer(x, h))(side: RowSide(x))[aligned: Eq(Nat, Nat.mod(f, 4), 0)]: Machine(m, Group.warps(f, 4), RowsAt(x, m, f, OState.fresh)) := {
+    let (e, (u, previous)) := unpack(Key.key, machine)
+    let (e, state) := Core.takeRows(e, buf, side)[aligned]
+    Machine.mk(e, state, Core.fixedRowsAt(x, m, f, OState.fresh))
+  }
+
+  def awaitScores {k: Lifetime}{f: Nat}{x: Lifetime}{h: Rescaler}{m: Lifetime}{o: OState}(machine: Machine(k, Group.warps(f, 4), RowsAt(x, m, f, o)))(buf: ScoreBuffer(x, h)): Machine(k, Group.warps(f, 4), Scored(x, m, f, o)) := {
+    let (e, (at, previous)) := unpack(Key.key, machine)
+    let (e, state) := Core.awaitScores(e, buf, at)
+    Machine.mk(e, state, Core.fixedScored(x, m, f, o))
+  }
+
+  def loadRow {k: Lifetime}{f: Nat}{x: Lifetime}{h: Rescaler}{m: Lifetime}{o: OState}(machine: Machine(k, Group.warps(f, 4), Scored(x, m, f, o)))(buf: ScoreBuffer(x, h)): Pair(Machine(k, Group.warps(f, 4), Loaded(x, m, f, o)), Row(k)) := {
+    let (e, (s, previous)) := unpack(Key.key, machine)
+    let (e, (state, value)) := Core.loadRow(e, buf, s)
+    (Machine.mk(e, state, Core.fixedLoaded(x, m, f, o)), value)
+  }
+
+  def publishAlpha {k: Lifetime}{f: Nat}{x: Lifetime}{m: Lifetime}{o: OState}{S: Lifetime}{u: Grain}(machine: Machine(k, Group.warps(f, 4), Probs(x, m, f, o)))(buf: ScoreBuffer(x, Rescaler.correction))(alpha: Val(S, u, DType.f32)): Machine(k, Group.warps(f, 4), RowsAt(x, m, f, OState.held)) := {
+    let (e, (p, previous)) := unpack(Key.key, machine)
+    let (e, state) := Core.publishAlpha(e, buf, p, alpha)
+    Machine.mk(e, state, Core.fixedRowsAt(x, m, f, OState.held))
+  }
+
+  def awaitFinal {k: Lifetime}{f: Nat}{x: Lifetime}{h: Rescaler}{m: Lifetime}(machine: Machine(k, Group.warps(f, 4), RowsAt(x, m, f, OState.held)))(buf: ScoreBuffer(x, h)): Machine(k, Group.warps(f, 4), Final(x, m, f)) := {
+    let (e, (at, previous)) := unpack(Key.key, machine)
+    let (e, state) := Core.awaitFinal(e, buf, at)
+    Machine.mk(e, state, Core.fixedFinal(x, m, f))
+  }
+
+  def storeFinal {k: Lifetime}{f: Nat}{x: Lifetime}{h: Rescaler}{m: Lifetime}{S: Lifetime}{u: Grain}{S2: Lifetime}{u2: Grain}{L: Lifetime}{t: DType}(machine: Machine(k, Group.warps(f, 4), Final(x, m, f)))(buf: ScoreBuffer(x, h))(inv: Val(S, u, DType.f32))(lse: Val(S2, u2, DType.f32))(out: AttnOut(L, t))(own: OOwn(L, t, f)): Machine(k, Group.warps(f, 4), Final(x, m, f)) := {
+    let (e, (o, previous)) := unpack(Key.key, machine)
+    let (e, state) := Core.storeFinal(e, buf, o, inv, lse, out, own)
+    Machine.mk(e, state, Core.fixedFinal(x, m, f))
+  }
+
+  def closeRows {k: Lifetime}{f: Nat}{x: Lifetime}{m: Lifetime}(machine: Machine(k, Group.warps(f, 4), Final(x, m, f))): Machine(k, Group.warps(f, 4), Unit) := {
+    let (e, (o, previous)) := unpack(Key.key, machine)
+    start(Key.key, Core.closeRows(e, o))
+  }
+
+  def takeCorrection {m: Lifetime}{f: Nat}{x: Lifetime}(machine: Machine(m, Group.warps(f, 4), Unit))(buf: ScoreBuffer(x, Rescaler.correction))(side: CorrectionSide(x))[aligned: Eq(Nat, Nat.mod(f, 4), 0)]: Machine(m, Group.warps(f, 4), CorrectAt(x, m, f, OState.fresh)) := {
+    let (e, (u, previous)) := unpack(Key.key, machine)
+    let (e, state) := Core.takeCorrection(e, buf, side)[aligned]
+    Machine.mk(e, state, Core.fixedCorrectAt(x, m, f, OState.fresh))
+  }
+
+  def awaitAlpha {k: Lifetime}{f: Nat}{x: Lifetime}{m: Lifetime}(machine: Machine(k, Group.warps(f, 4), CorrectAt(x, m, f, OState.held)))(buf: ScoreBuffer(x, Rescaler.correction)): Pair(Machine(k, Group.warps(f, 4), Rescaling(x, m, f)), Val(k, Grain.thread, DType.f32)) := {
+    let (e, (at, previous)) := unpack(Key.key, machine)
+    let (e, (state, value)) := Core.awaitAlpha(e, buf, at)
+    (Machine.mk(e, state, Core.fixedRescaling(x, m, f)), value)
+  }
+
+  def zeroQuadrants {k: Lifetime}{g: Group}{f: Nat}{x: Lifetime}{m: Lifetime}(machine: Machine(k, g, CorrectAt(x, m, f, OState.fresh)))(buf: ScoreBuffer(x, Rescaler.correction))[converged: Eq(Bool, Core.ownQuadrants(g, f), Bool.true)]: Machine(k, g, Rescaling(x, m, f)) := {
+    let (e, (at, previous)) := unpack(Key.key, machine)
+    let (e, state) := Core.zeroQuadrants(e, buf, at)[converged]
+    Machine.mk(e, state, Core.fixedRescaling(x, m, f))
+  }
+
+  def rescaleQuadrant {k: Lifetime}{g: Group}{f: Nat}{x: Lifetime}{m: Lifetime}{S: Lifetime}{u: Grain}(machine: Machine(k, g, Rescaling(x, m, f)))(buf: ScoreBuffer(x, Rescaler.correction))(alpha: Val(S, u, DType.f32))[converged: Eq(Bool, Core.ownQuadrants(g, f), Bool.true)]: Machine(k, g, Rescaling(x, m, f)) := {
+    let (e, (r, previous)) := unpack(Key.key, machine)
+    let (e, state) := Core.rescaleQuadrant(e, buf, r, alpha)[converged]
+    Machine.mk(e, state, Core.fixedRescaling(x, m, f))
+  }
+
+  def publishRescaled {k: Lifetime}{f: Nat}{x: Lifetime}{m: Lifetime}(machine: Machine(k, Group.warps(f, 4), Rescaling(x, m, f)))(buf: ScoreBuffer(x, Rescaler.correction)): Machine(k, Group.warps(f, 4), CorrectAt(x, m, f, OState.held)) := {
+    let (e, (r, previous)) := unpack(Key.key, machine)
+    let (e, state) := Core.publishRescaled(e, buf, r)
+    Machine.mk(e, state, Core.fixedCorrectAt(x, m, f, OState.held))
+  }
+
+  def finishCorrection {k: Lifetime}{f: Nat}{x: Lifetime}{m: Lifetime}(machine: Machine(k, Group.warps(f, 4), CorrectAt(x, m, f, OState.held))): Machine(k, Group.warps(f, 4), Unit) := {
+    let (e, (at, previous)) := unpack(Key.key, machine)
+    start(Key.key, Core.finishCorrection(e, at))
+  }
+
+  def takeMma {m: Lifetime}{x: Lifetime}{h: Rescaler}(machine: Machine(m, Group.lane, Unit))(w: Elected(m))(buf: ScoreBuffer(x, h))(side: MmaSide(x)): Machine(m, Group.lane, Holding(x, m)) := {
+    let (e, (u, previous)) := unpack(Key.key, machine)
+    let (e, state) := Core.takeMma(e, w, buf, side)
+    Machine.mk(e, state, Core.fixedHolding(x, m))
+  }
+
+  def awaitProbs {k: Lifetime}{x: Lifetime}{h: Rescaler}{m: Lifetime}(machine: Machine(k, Group.lane, MmaAt(x, m)))(buf: ScoreBuffer(x, h)): Machine(k, Group.lane, Published(x, m)) := {
+    let (e, (at, previous)) := unpack(Key.key, machine)
+    let (e, state) := Core.awaitProbs(e, buf, at)
+    Machine.mk(e, state, Core.fixedPublished(x, m))
+  }
+
+  def issueScores {k: Lifetime}{m: Lifetime}{x: Lifetime}{h: Rescaler}{ra: Lifetime}{ca: RingCfg}{rb: Lifetime}{cb: RingCfg}(machine: Machine(k, Group.lane, Pair(Holding(x, m), Pair(ReadyUsed(ra, m), ReadyUsed(rb, m)))))(w: Elected(m))(buf: ScoreBuffer(x, h))(ringA: Ring(ra, ca))(ringB: Ring(rb, cb)): Machine(k, Group.lane, Pair(Holding(x, m), Pair(ReadyUsed(ra, m), ReadyUsed(rb, m)))) := {
+    let (e, ((s, (a, b)), previous)) := unpack(Key.key, machine)
+    let (e, state) := Core.issueScores(e, w, buf, s, ringA, a, ringB, b)
+    Machine.mk(e, state, Core.fixedPair(Core.fixedHolding(x, m), Core.fixedPair(Core.fixedReadyUsed(ra, m), Core.fixedReadyUsed(rb, m))))
+  }
+
+  def issuePV {k: Lifetime}{m: Lifetime}{x: Lifetime}{h: Rescaler}{r: Lifetime}{c: RingCfg}(machine: Machine(k, Group.lane, Pair(Published(x, m), ReadyUsed(r, m))))(w: Elected(m))(buf: ScoreBuffer(x, h))(ring: Ring(r, c)): Machine(k, Group.lane, Pair(Holding(x, m), ReadyUsed(r, m))) := {
+    let (e, ((p, v), previous)) := unpack(Key.key, machine)
+    let (e, state) := Core.issuePV(e, w, buf, p, ring, v)
+    Machine.mk(e, state, Core.fixedPair(Core.fixedHolding(x, m), Core.fixedReadyUsed(r, m)))
+  }
+
+  def commitBuffer {k: Lifetime}{m: Lifetime}{x: Lifetime}{h: Rescaler}(machine: Machine(k, Group.lane, Holding(x, m)))(w: Elected(m))(buf: ScoreBuffer(x, h)): Machine(k, Group.lane, MmaAt(x, m)) := {
+    let (e, (s, previous)) := unpack(Key.key, machine)
+    let (e, state) := Core.commitBuffer(e, w, buf, s)
+    Machine.mk(e, state, Core.fixedMmaAt(x, m))
+  }
+
+  def finishMma {k: Lifetime}{x: Lifetime}{m: Lifetime}(machine: Machine(k, Group.lane, MmaAt(x, m))): Machine(k, Group.lane, Unit) := {
+    let (e, (at, previous)) := unpack(Key.key, machine)
+    start(Key.key, Core.finishMma(e, at))
+  }
+
+  def releaseByMma {n: Lifetime}{m: Lifetime}{r: Lifetime}{cfg: RingCfg}(machine: Machine(n, Group.lane, ReadyUsed(r, m)))(w: Elected(m))(ring: Ring(r, cfg)): Machine(n, Group.lane, ConsumerAt(r, m)) := {
+    let (e, (u, previous)) := unpack(Key.key, machine)
+    let (e, state) := Core.releaseByMma(e, w, ring, u)
+    Machine.mk(e, state, Core.fixedConsumerAt(r, m))
+  }
+
+  def takePairProducer {m: Lifetime}{r: Lifetime}{cfg: RingCfg}(machine: Machine(m, Group.lane, Unit))(w: Elected(m))(ring: PairRing(r, cfg))(p: Producer(r)): Machine(m, Group.lane, ProducerAt(r, m)) := {
+    let (e, (u, previous)) := unpack(Key.key, machine)
+    let (e, state) := Core.takePairProducer(e, w, ring, p)
+    Machine.mk(e, state, Core.fixedProducerAt(r, m))
+  }
+
+  def acquirePair {n: Lifetime}{r: Lifetime}{m: Lifetime}{cfg: RingCfg}(machine: Machine(n, Group.lane, ProducerAt(r, m)))(ring: PairRing(r, cfg)): Machine(n, Group.lane, Slot(r, m)) := {
+    let (e, (p, previous)) := unpack(Key.key, machine)
+    let (e, state) := Core.acquirePair(e, ring, p)
+    Machine.mk(e, state, Core.fixedSlot(r, m))
+  }
+
+  def fillPair {n: Lifetime}{r: Lifetime}{m: Lifetime}{cfg: RingCfg}{T: Lifetime}{w: Nat}{L: Lifetime}{S: Lifetime}{u: Grain}(machine: Machine(n, Group.lane, Slot(r, m)))(ring: PairRing(r, cfg))(tile: PairTile(T, w))(a: TMap(L, RingCfg.a(cfg)))(b: TMap(L, RingCfg.b(cfg)))(k0: Val(S, u, DType.u32)): Machine(n, Group.lane, ProducerAt(r, m)) := {
+    let (e, (s, previous)) := unpack(Key.key, machine)
+    let (e, state) := Core.fillPair(e, ring, s, tile, a, b, k0)
+    Machine.mk(e, state, Core.fixedProducerAt(r, m))
+  }
+
+  def finishPairProducer {n: Lifetime}{r: Lifetime}{m: Lifetime}{cfg: RingCfg}(machine: Machine(n, Group.lane, ProducerAt(r, m)))(ring: PairRing(r, cfg)): Machine(n, Group.lane, Unit) := {
+    let (e, (p, previous)) := unpack(Key.key, machine)
+    start(Key.key, Core.finishPairProducer(e, ring, p))
+  }
+
+  def takePairConsumer {m: Lifetime}{n: Lifetime}{r: Lifetime}{cfg: RingCfg}(machine: Machine(m, Group.lane, Unit))(w: Elected(m))(lead: Leader(n))(ring: PairRing(r, cfg))(c: Consumer(r)): Machine(m, Group.lane, ConsumerAt(r, m)) := {
+    let (e, (u, previous)) := unpack(Key.key, machine)
+    let (e, state) := Core.takePairConsumer(e, w, lead, ring, c)
+    Machine.mk(e, state, Core.fixedConsumerAt(r, m))
+  }
+
+  def awaitPair {n: Lifetime}{r: Lifetime}{m: Lifetime}{cfg: RingCfg}(machine: Machine(n, Group.lane, ConsumerAt(r, m)))(ring: PairRing(r, cfg)): Machine(n, Group.lane, Ready(r, m)) := {
+    let (e, (c, previous)) := unpack(Key.key, machine)
+    let (e, state) := Core.awaitPair(e, ring, c)
+    Machine.mk(e, state, Core.fixedReady(r, m))
+  }
+
+  def releasePair {n: Lifetime}{m: Lifetime}{r: Lifetime}{cfg: RingCfg}(machine: Machine(n, Group.lane, ReadyUsed(r, m)))(w: Elected(m))(ring: PairRing(r, cfg)): Machine(n, Group.lane, ConsumerAt(r, m)) := {
+    let (e, (u, previous)) := unpack(Key.key, machine)
+    let (e, state) := Core.releasePair(e, w, ring, u)
+    Machine.mk(e, state, Core.fixedConsumerAt(r, m))
+  }
+
+  def takePairAccProducer {m: Lifetime}{n: Lifetime}{q: Lifetime}{c: Nat}(machine: Machine(m, Group.lane, Unit))(w: Elected(m))(lead: Leader(n))(ring: PairAccRing(q, c))(p: AccProducer(q)): Machine(m, Group.lane, AccProducerAt(q, m)) := {
+    let (e, (u, previous)) := unpack(Key.key, machine)
+    let (e, state) := Core.takePairAccProducer(e, w, lead, ring, p)
+    Machine.mk(e, state, Core.fixedAccProducerAt(q, m))
+  }
+
+  def acquirePairAcc {k: Lifetime}{q: Lifetime}{n: Nat}{m: Lifetime}(machine: Machine(k, Group.lane, AccProducerAt(q, m)))(ring: PairAccRing(q, n)): Machine(k, Group.lane, AccFree(q, m)) := {
+    let (e, (p, previous)) := unpack(Key.key, machine)
+    let (e, state) := Core.acquirePairAcc(e, ring, p)
+    Machine.mk(e, state, Core.fixedAccFree(q, m))
+  }
+
+  def mmaPairFirst {k: Lifetime}{m: Lifetime}{r: Lifetime}{cfg: RingCfg}{q: Lifetime}{n: Nat}(machine: Machine(k, Group.lane, Pair(Ready(r, m), AccFree(q, m))))(w: Elected(m))(ring: PairRing(r, cfg))(accs: PairAccRing(q, n)): Machine(k, Group.lane, Pair(ReadyUsed(r, m), AccFilling(q, m))) := {
+    let (e, ((rd, acc), previous)) := unpack(Key.key, machine)
+    let (e, state) := Core.mmaPairFirst(e, w, ring, rd, accs, acc)
+    Machine.mk(e, state, Core.fixedPair(Core.fixedReadyUsed(r, m), Core.fixedAccFilling(q, m)))
+  }
+
+  def mmaPairNext {k: Lifetime}{m: Lifetime}{r: Lifetime}{cfg: RingCfg}{q: Lifetime}{n: Nat}(machine: Machine(k, Group.lane, Pair(Ready(r, m), AccFilling(q, m))))(w: Elected(m))(ring: PairRing(r, cfg))(accs: PairAccRing(q, n)): Machine(k, Group.lane, Pair(ReadyUsed(r, m), AccFilling(q, m))) := {
+    let (e, ((rd, acc), previous)) := unpack(Key.key, machine)
+    let (e, state) := Core.mmaPairNext(e, w, ring, rd, accs, acc)
+    Machine.mk(e, state, Core.fixedPair(Core.fixedReadyUsed(r, m), Core.fixedAccFilling(q, m)))
+  }
+
+  def commitPairAcc {k: Lifetime}{m: Lifetime}{q: Lifetime}{n: Nat}(machine: Machine(k, Group.lane, AccFilling(q, m)))(w: Elected(m))(ring: PairAccRing(q, n)): Machine(k, Group.lane, AccProducerAt(q, m)) := {
+    let (e, (acc, previous)) := unpack(Key.key, machine)
+    let (e, state) := Core.commitPairAcc(e, w, ring, acc)
+    Machine.mk(e, state, Core.fixedAccProducerAt(q, m))
+  }
+
+  def finishPairAccProducer {k: Lifetime}{q: Lifetime}{n: Nat}{m: Lifetime}(machine: Machine(k, Group.lane, AccProducerAt(q, m)))(ring: PairAccRing(q, n)): Machine(k, Group.lane, Unit) := {
+    let (e, (p, previous)) := unpack(Key.key, machine)
+    start(Key.key, Core.finishPairAccProducer(e, ring, p))
+  }
+
+  def takePairAccConsumer {m: Lifetime}{f: Nat}{q: Lifetime}{n: Nat}(machine: Machine(m, Group.warps(f, 4), Unit))[aligned: Eq(Nat, Nat.mod(f, 4), 0)](ring: PairAccRing(q, n))(c: AccConsumer(q)): Machine(m, Group.warps(f, 4), AccConsumerAt(q, m, f)) := {
+    let (e, (u, previous)) := unpack(Key.key, machine)
+    let (e, state) := Core.takePairAccConsumer(e, ring, c)[aligned]
+    Machine.mk(e, state, Core.fixedAccConsumerAt(q, m, f))
+  }
+
+  def awaitPairAcc {k: Lifetime}{f: Nat}{q: Lifetime}{n: Nat}{m: Lifetime}(machine: Machine(k, Group.warps(f, 4), AccConsumerAt(q, m, f)))(ring: PairAccRing(q, n)): Machine(k, Group.warps(f, 4), AccFull(q, m, f)) := {
+    let (e, (c, previous)) := unpack(Key.key, machine)
+    let (e, state) := Core.awaitPairAcc(e, ring, c)
+    Machine.mk(e, state, Core.fixedAccFull(q, m, f))
+  }
+
+  def loadPairChunk {k: Lifetime}{f: Nat}{q: Lifetime}{n: Nat}{m: Lifetime}{p: Lifetime}(machine: Machine(k, Group.warps(f, 4), AccFull(q, m, f)))(accs: PairAccRing(q, n))(chunk: ChunkAt(p, n)): Pair(Machine(k, Group.warps(f, 4), AccFull(q, m, f)), ChunkRegs(k)) := {
+    let (e, (full, previous)) := unpack(Key.key, machine)
+    let (e, (state, value)) := Core.loadPairChunk(e, accs, full, chunk)
+    (Machine.mk(e, state, Core.fixedAccFull(q, m, f)), value)
+  }
+
+  def releasePairAcc {k: Lifetime}{f: Nat}{q: Lifetime}{n: Nat}{m: Lifetime}(machine: Machine(k, Group.warps(f, 4), AccFull(q, m, f)))(ring: PairAccRing(q, n)): Machine(k, Group.warps(f, 4), AccConsumerAt(q, m, f)) := {
+    let (e, (full, previous)) := unpack(Key.key, machine)
+    let (e, state) := Core.releasePairAcc(e, ring, full)
+    Machine.mk(e, state, Core.fixedAccConsumerAt(q, m, f))
+  }
+
+  def finishAccConsumer {k: Lifetime}{f: Nat}{q: Lifetime}{m: Lifetime}(machine: Machine(k, Group.warps(f, 4), AccConsumerAt(q, m, f))): Machine(k, Group.warps(f, 4), Unit) := {
+    let (e, (c, previous)) := unpack(Key.key, machine)
+    start(Key.key, Core.finishAccConsumer(e, c))
+  }
+
+  def takeStore {m: Lifetime}{f: Nat}{s: Lifetime}(machine: Machine(m, Group.warps(f, 4), Unit))[aligned: Eq(Nat, Nat.mod(f, 4), 0)](stg: Staging(s))(side: StoreSide(s)): Machine(m, Group.warps(f, 4), StoreAt(s, m, f)) := {
+    let (e, (u, previous)) := unpack(Key.key, machine)
+    let (e, state) := Core.takeStore(e, stg, side)[aligned]
+    Machine.mk(e, state, Core.fixedStoreAt(s, m, f))
+  }
+
+  def acquireStage {k: Lifetime}{f: Nat}{s: Lifetime}{m: Lifetime}(machine: Machine(k, Group.warps(f, 4), StoreAt(s, m, f)))(stg: Staging(s)): Machine(k, Group.warps(f, 4), StageFree(s, m, f)) := {
+    let (e, (st, previous)) := unpack(Key.key, machine)
+    let (e, state) := Core.acquireStage(e, stg, st)
+    Machine.mk(e, state, Core.fixedStageFree(s, m, f))
+  }
+
+  def writeStage {k: Lifetime}{f: Nat}{s: Lifetime}{m: Lifetime}(machine: Machine(k, Group.warps(f, 4), StageFree(s, m, f)))(stg: Staging(s))(regs: ChunkRegs(k)): Machine(k, Group.warps(f, 4), StageWritten(s, m, f)) := {
+    let (e, (free, previous)) := unpack(Key.key, machine)
+    let (e, state) := Core.writeStage(e, stg, free, regs)
+    Machine.mk(e, state, Core.fixedStageWritten(s, m, f))
+  }
+
+  def fenceStage {k: Lifetime}{f: Nat}{s: Lifetime}{m: Lifetime}(machine: Machine(k, Group.warps(f, 4), StageWritten(s, m, f))): Machine(k, Group.warps(f, 4), StageFenced(s, m, f)) := {
+    let (e, (w, previous)) := unpack(Key.key, machine)
+    let (e, state) := Core.fenceStage(e, w)
+    Machine.mk(e, state, Core.fixedStageFenced(s, m, f))
+  }
+
+  def storeStage {k: Lifetime}{f: Nat}{s: Lifetime}{m: Lifetime}{L: Lifetime}{p: Lifetime}{bn: Nat}(machine: Machine(k, Group.warps(f, 4), StageFenced(s, m, f)))(stg: Staging(s))(out: CMap(L))(chunk: ChunkAt(p, bn))(own: ChunkOwn(p, bn)): Machine(k, Group.warps(f, 4), StoreAt(s, m, f)) := {
+    let (e, (fenced, previous)) := unpack(Key.key, machine)
+    let (e, state) := Core.storeStage(e, stg, fenced, out, chunk, own)
+    Machine.mk(e, state, Core.fixedStoreAt(s, m, f))
+  }
+
+  def finishStores {k: Lifetime}{f: Nat}{s: Lifetime}{m: Lifetime}(machine: Machine(k, Group.warps(f, 4), StoreAt(s, m, f)))(stg: Staging(s)): Machine(k, Group.warps(f, 4), Unit) := {
+    let (e, (st, previous)) := unpack(Key.key, machine)
+    start(Key.key, Core.finishStores(e, stg, st))
+  }
+
+  def withRing {l: Lifetime}{w: Nat}{kx: Kind}{Sx: Lifetime}{kf: Kind}{Sf: Lifetime}(machine: Machine(l, Group.cta(w), Unit))(cfg: RingCfg)(X: Type { kind = kx, scope = Sx })(body: { kind = kf, scope = Sf } (r: Lifetime) -> Ring(r, cfg) -> Producer(r) -> Consumer(r) -> Machine(l, Group.cta(w), Unit)
+        -> Pair(Machine(l, Group.cta(w), Unit), X)): Pair(Machine(l, Group.cta(w), Unit), X) := {
+    let (e, result) := Core.withRing(finish(Key.key, machine), cfg, X, fun (r: Lifetime)(arg1: Ring(r, cfg))(arg2: Producer(r))(arg3: Consumer(r))(arg4: Ctx(l, Group.cta(w))): Pair(Ctx(l, Group.cta(w)), X) => {
+        let (machine, result) := body(r, arg1, arg2, arg3, start(Key.key, arg4))
+        (finish(Key.key, machine), result)
+      })
+    (start(Key.key, e), result)
+  }
+
+  def withTmem {l: Lifetime}{w: Nat}{kx: Kind}{Sx: Lifetime}{kf: Kind}{Sf: Lifetime}(machine: Machine(l, Group.cta(w), Unit))(permit: TmemPermit(l))(cols: Nat)(done: AccState)(X: Type { kind = kx, scope = Sx })(body: { kind = kf, scope = Sf } (a: Lifetime) -> Tmem(a, cols) -> Acc(a, AccState.empty) -> Machine(l, Group.cta(w), Unit)
+        -> Pair(Machine(l, Group.cta(w), Unit), Pair(Acc(a, done), X))): Pair(Machine(l, Group.cta(w), Unit), X) := {
+    let (e, result) := Core.withTmem(finish(Key.key, machine), permit, cols, done, X, fun (a: Lifetime)(arg1: Tmem(a, cols))(arg2: Acc(a, AccState.empty))(arg3: Ctx(l, Group.cta(w))): Pair(Ctx(l, Group.cta(w)), Pair(Acc(a, done), X)) => {
+        let (machine, result) := body(a, arg1, arg2, start(Key.key, arg3))
+        (finish(Key.key, machine), result)
+      })
+    (start(Key.key, e), result)
+  }
+
+  def splitTmem {l: Lifetime}{w: Nat}{a: Lifetime}{cols: Nat}{kx: Kind}{Sx: Lifetime}{kf: Kind}{Sf: Lifetime}(machine: Machine(l, Group.cta(w), Unit))(t: Tmem(a, cols))(acc: Acc(a, AccState.empty))(k: Nat)(X: Type { kind = kx, scope = Sx })(body: { kind = kf, scope = Sf } (b: Lifetime) -> (c: Lifetime) -> Tmem(b, k) -> Acc(b, AccState.empty)
+        -> Tmem(c, Nat.sub(cols, k)) -> Acc(c, AccState.empty) -> Machine(l, Group.cta(w), Unit)
+        -> Pair(Machine(l, Group.cta(w), Unit), Pair(Pair(Acc(b, AccState.empty), Acc(c, AccState.empty)), X))): Pair(Machine(l, Group.cta(w), Unit), Pair(Acc(a, AccState.empty), X)) := {
+    let (e, result) := Core.splitTmem(finish(Key.key, machine), t, acc, k, X, fun (b: Lifetime)(c: Lifetime)(arg2: Tmem(b, k))(arg3: Acc(b, AccState.empty))(arg4: Tmem(c, Nat.sub(cols, k)))(arg5: Acc(c, AccState.empty))(arg6: Ctx(l, Group.cta(w))): Pair(Ctx(l, Group.cta(w)), Pair(Pair(Acc(b, AccState.empty), Acc(c, AccState.empty)), X)) => {
+        let (machine, result) := body(b, c, arg2, arg3, arg4, arg5, start(Key.key, arg6))
+        (finish(Key.key, machine), result)
+      })
+    (start(Key.key, e), result)
+  }
+
+  def withCorrectedBuffer {l: Lifetime}{w: Nat}{a: Lifetime}{kx: Kind}{Sx: Lifetime}{kf: Kind}{Sf: Lifetime}(machine: Machine(l, Group.cta(w), Unit))(t: Tmem(a, 256))(acc: Acc(a, AccState.empty))(X: Type { kind = kx, scope = Sx })(body: { kind = kf, scope = Sf } (x: Lifetime) -> ScoreBuffer(x, Rescaler.correction) -> RowSide(x) -> MmaSide(x) -> CorrectionSide(x)
+        -> Machine(l, Group.cta(w), Unit) -> Pair(Machine(l, Group.cta(w), Unit), X)): Pair(Machine(l, Group.cta(w), Unit), Pair(Acc(a, AccState.empty), X)) := {
+    let (e, result) := Core.withCorrectedBuffer(finish(Key.key, machine), t, acc, X, fun (x: Lifetime)(arg1: ScoreBuffer(x, Rescaler.correction))(arg2: RowSide(x))(arg3: MmaSide(x))(arg4: CorrectionSide(x))(arg5: Ctx(l, Group.cta(w))): Pair(Ctx(l, Group.cta(w)), X) => {
+        let (machine, result) := body(x, arg1, arg2, arg3, arg4, start(Key.key, arg5))
+        (finish(Key.key, machine), result)
+      })
+    (start(Key.key, e), result)
+  }
+
+  def withStaging {l: Lifetime}{w: Nat}{kx: Kind}{Sx: Lifetime}{kf: Kind}{Sf: Lifetime}(machine: Machine(l, Group.cta(w), Unit))(bufs: Nat)(X: Type { kind = kx, scope = Sx })(body: { kind = kf, scope = Sf } (s: Lifetime) -> Staging(s) -> StoreSide(s) -> Machine(l, Group.cta(w), Unit) -> Pair(Machine(l, Group.cta(w), Unit), X)): Pair(Machine(l, Group.cta(w), Unit), X) := {
+    let (e, result) := Core.withStaging(finish(Key.key, machine), bufs, X, fun (s: Lifetime)(arg1: Staging(s))(arg2: StoreSide(s))(arg3: Ctx(l, Group.cta(w))): Pair(Ctx(l, Group.cta(w)), X) => {
+        let (machine, result) := body(s, arg1, arg2, start(Key.key, arg3))
+        (finish(Key.key, machine), result)
+      })
+    (start(Key.key, e), result)
+  }
+
+  def withPairTmem {l: Lifetime}{w: Nat}{kx: Kind}{Sx: Lifetime}{kf: Kind}{Sf: Lifetime}(machine: Machine(l, Group.cta(w), Unit))(pair: CtaPair(l))(permit: TmemPermit(l))(done: AccState)(X: Type { kind = kx, scope = Sx })(body: { kind = kf, scope = Sf } (a: Lifetime) -> Tmem(a, 512) -> Acc(a, AccState.empty) -> Machine(l, Group.cta(w), Unit)
+        -> Pair(Machine(l, Group.cta(w), Unit), Pair(Acc(a, done), X))): Pair(Machine(l, Group.cta(w), Unit), X) := {
+    let (e, result) := Core.withPairTmem(finish(Key.key, machine), pair, permit, done, X, fun (a: Lifetime)(arg1: Tmem(a, 512))(arg2: Acc(a, AccState.empty))(arg3: Ctx(l, Group.cta(w))): Pair(Ctx(l, Group.cta(w)), Pair(Acc(a, done), X)) => {
+        let (machine, result) := body(a, arg1, arg2, start(Key.key, arg3))
+        (finish(Key.key, machine), result)
+      })
+    (start(Key.key, e), result)
+  }
+
+  def withPairRing {l: Lifetime}{w: Nat}{kx: Kind}{Sx: Lifetime}{kf: Kind}{Sf: Lifetime}(machine: Machine(l, Group.cta(w), Unit))(pair: CtaPair(l))(cfg: RingCfg)(X: Type { kind = kx, scope = Sx })(body: { kind = kf, scope = Sf } (r: Lifetime) -> PairRing(r, cfg) -> Producer(r) -> Consumer(r) -> Machine(l, Group.cta(w), Unit)
+        -> Pair(Machine(l, Group.cta(w), Unit), X)): Pair(Machine(l, Group.cta(w), Unit), X) := {
+    let (e, result) := Core.withPairRing(finish(Key.key, machine), pair, cfg, X, fun (r: Lifetime)(arg1: PairRing(r, cfg))(arg2: Producer(r))(arg3: Consumer(r))(arg4: Ctx(l, Group.cta(w))): Pair(Ctx(l, Group.cta(w)), X) => {
+        let (machine, result) := body(r, arg1, arg2, arg3, start(Key.key, arg4))
+        (finish(Key.key, machine), result)
+      })
+    (start(Key.key, e), result)
+  }
+
+  def withPairAccRing {l: Lifetime}{w: Nat}{a: Lifetime}{cols: Nat}{kx: Kind}{Sx: Lifetime}{kf: Kind}{Sf: Lifetime}(machine: Machine(l, Group.cta(w), Unit))(pair: CtaPair(l))(t: Tmem(a, cols))(acc: Acc(a, AccState.empty))(bufs: Nat)(n: Nat)(X: Type { kind = kx, scope = Sx })(body: { kind = kf, scope = Sf } (q: Lifetime) -> PairAccRing(q, n) -> AccProducer(q) -> AccConsumer(q) -> Machine(l, Group.cta(w), Unit)
+        -> Pair(Machine(l, Group.cta(w), Unit), X)): Pair(Machine(l, Group.cta(w), Unit), Pair(Acc(a, AccState.empty), X)) := {
+    let (e, result) := Core.withPairAccRing(finish(Key.key, machine), pair, t, acc, bufs, n, X, fun (q: Lifetime)(arg1: PairAccRing(q, n))(arg2: AccProducer(q))(arg3: AccConsumer(q))(arg4: Ctx(l, Group.cta(w))): Pair(Ctx(l, Group.cta(w)), X) => {
+        let (machine, result) := body(q, arg1, arg2, arg3, start(Key.key, arg4))
+        (finish(Key.key, machine), result)
+      })
+    (start(Key.key, e), result)
+  }
+
+  def correctedAttentionKernel (name: String)(causal: Bool)(t: DType)(body: (l: Lifetime) -> Machine(l, Group.cta(512), Unit) -> PairLaunch(l, TmaSpec.mk(64, 128), t) -> OOwn(l, t, 0) -> OOwn(l, t, 4)
+        -> TmemPermit(l) -> Registers.RegPool(l, 512, Registers.budget(512, 1)) -> Machine(l, Group.cta(512), Unit)): Program := {
+    Core.correctedAttentionKernel(name, causal, t, fun (l: Lifetime)(arg1: Ctx(l, Group.cta(512)))(arg2: PairLaunch(l, TmaSpec.mk(64, 128), t))(arg3: OOwn(l, t, 0))(arg4: OOwn(l, t, 4))(arg5: TmemPermit(l))(arg6: Registers.RegPool(l, 512, Registers.budget(512, 1))): Ctx(l, Group.cta(512)) => {
+        finish(Key.key, body(l, start(Key.key, arg1), arg2, arg3, arg4, arg5, arg6))
+      })
+  }
+
+  def pairGemmPersistentKernel (name: String)(sa: TmaSpec)(sb: TmaSpec)(band: Nat)(body: (l: Lifetime) -> Machine(l, Group.cta(256), Unit) -> TmaGemm(l, sa, sb) -> PairSched(l, Nat.mul(2, TmaSpec.outer(sb)))
+        -> PairSchedOwn(l, Nat.mul(2, TmaSpec.outer(sb))) -> CtaPair(l) -> TmemPermit(l) -> Machine(l, Group.cta(256), Unit)): Program := {
+    Core.pairGemmPersistentKernel(name, sa, sb, band, fun (l: Lifetime)(arg1: Ctx(l, Group.cta(256)))(arg2: TmaGemm(l, sa, sb))(arg3: PairSched(l, Nat.mul(2, TmaSpec.outer(sb))))(arg4: PairSchedOwn(l, Nat.mul(2, TmaSpec.outer(sb))))(arg5: CtaPair(l))(arg6: TmemPermit(l)): Ctx(l, Group.cta(256)) => {
+        finish(Key.key, body(l, start(Key.key, arg1), arg2, arg3, arg4, arg5, arg6))
+      })
+  }
+  def holdStage {n: Lifetime}{g: Group}{r: Lifetime}{m: Lifetime}(machine: Machine(n, g, Ready(r, m))): Machine(n, g, ReadyUsed(r, m)) := {
+    let (e, (ready, f)) := unpack(Key.key, machine)
+    Machine.mk(e, Core.holdStage(ready), fixedReadyUsed(r, m))
+  }
+  def elect {l: Lifetime}{f: Nat}{kf: Kind}{Sf: Lifetime}(machine: Machine(l, Group.warps(f, 1), Unit))
+      (body: { kind = kf, scope = Sf } (m: Lifetime) -> Elected(m) -> Machine(m, Group.lane, Unit) -> Machine(m, Group.lane, Unit))
+      : Machine(l, Group.warps(f, 1), Unit) := {
+    let (e, u) := Core.elect(finish(Key.key, machine), Unit,
+      fun (m: Lifetime)(w: Elected(m))(e: Ctx(m, Group.lane)): Pair(Ctx(m, Group.lane), Unit) =>
+        (finish(Key.key, body(m, w, start(Key.key, e))), Unit.unit))
+    start(Key.key, e)
+  }
+  def leaderIssue {l: Lifetime}{g: Group}{L: Lifetime}{r: Lifetime}{cfg: RingCfg}{q: Lifetime}{cols: Nat}{Sf: Lifetime}
+      (machine: Machine(l, g, Unit))(pair: CtaPair(L))(ring: PairRing(r, cfg))(accs: PairAccRing(q, cols))(consumer: Consumer(r))(producer: AccProducer(q))
+      (body: { scope = Sf } (n: Lifetime) -> Leader(n) -> Machine(n, g, Unit) -> Consumer(r) -> AccProducer(q) -> Machine(n, g, Unit))
+      : Machine(l, g, Unit) := {
+    let state := (consumer, producer)
+    let e := Core.onLeader(finish(Key.key, machine), pair, leaderOnlyPair(leaderOnlyConsumer(ring), leaderOnlyAccProducer(accs)), state,
+      fun (n: Lifetime)(lead: Leader(n))(e: Ctx(n, g))(state: Pair(Consumer(r), AccProducer(q))): Ctx(n, g) => {
+        let (consumer, producer) := state
+        finish(Key.key, body(n, lead, start(Key.key, e), consumer, producer))
+      })
+    start(Key.key, e)
+  }
+  def forPairTiles {l: Lifetime}{L: Lifetime}{g: Group}{w: Nat}{k: Kind}{T: Lifetime}{S: Type { kind = k, scope = T }}{Sf: Lifetime}
+      (machine: Machine(l, g, S))(sched: PairSched(L, w))
+      (body: { scope = Sf } (n: Lifetime) -> PairTile(n, w) -> Machine(n, g, S) -> Machine(n, g, S)): Machine(l, g, S) := {
+    let (e, (state, fixed)) := unpack(Key.key, machine)
+    let (e, state) := Core.forPairTiles(e, sched, fixed, state,
+      fun (n: Lifetime)(tile: PairTile(n, w))(e: Ctx(n, g))(state: S): Pair(Ctx(n, g), S) => {
+        let (e, (state, f)) := unpack(Key.key, body(n, tile, Machine.mk(e, state, fixed)))
+        (e, state)
+      })
+    Machine.mk(e, state, fixed)
+  }
+  def forOwnedPairTiles {l: Lifetime}{L: Lifetime}{g: Group}{w: Nat}{k: Kind}{T: Lifetime}{S: Type { kind = k, scope = T }}{Sf: Lifetime}
+      (machine: Machine(l, g, S))(sched: PairSched(L, w))(own: PairSchedOwn(L, w))
+      (body: { scope = Sf } (n: Lifetime) -> PairTile(n, w) -> HalfOwn(n) -> Machine(n, g, S) -> Machine(n, g, S)): Machine(l, g, S) := {
+    let (e, (state, fixed)) := unpack(Key.key, machine)
+    let (e, state) := Core.forOwnedPairTiles(e, sched, own, fixed, state,
+      fun (n: Lifetime)(tile: PairTile(n, w))(own: HalfOwn(n))(e: Ctx(n, g))(state: S): Pair(Ctx(n, g), S) => {
+        let (e, (state, f)) := unpack(Key.key, body(n, tile, own, Machine.mk(e, state, fixed)))
+        (e, state)
+      })
+    Machine.mk(e, state, fixed)
+  }
+  def forHalfChunks {l: Lifetime}{j: Lifetime}{g: Group}{w: Nat}{k: Kind}{T: Lifetime}{S: Type { kind = k, scope = T }}{Sf: Lifetime}
+      (machine: Machine(l, g, S))(tile: PairTile(j, w))(own: HalfOwn(j))
+      (body: { scope = Sf } (n: Lifetime) -> ChunkAt(n, w) -> ChunkOwn(n, w) -> Machine(n, g, S) -> Machine(n, g, S)): Machine(l, g, S) := {
+    let (e, (state, fixed)) := unpack(Key.key, machine)
+    let (e, state) := Core.forHalfChunks(e, tile, own, fixed, state,
+      fun (n: Lifetime)(chunk: ChunkAt(n, w))(own: ChunkOwn(n, w))(e: Ctx(n, g))(state: S): Pair(Ctx(n, g), S) => {
+        let (e, (state, f)) := unpack(Key.key, body(n, chunk, own, Machine.mk(e, state, fixed)))
+        (e, state)
+      })
+    Machine.mk(e, state, fixed)
+  }
+  def mapRow {l: Lifetime}{g: Group}{k: Kind}{T: Lifetime}{S: Type { kind = k, scope = T }}{Sf: Lifetime}
+      (machine: Machine(l, g, S))(row: Row(l))
+      (body: { scope = Sf } Nat -> F32x8(l, Grain.thread) -> Machine(l, g, Unit) -> Pair(Machine(l, g, Unit), F32x8(l, Grain.thread)))
+      : Pair(Machine(l, g, S), Row(l)) := {
+    let (e, (state, fixed)) := unpack(Key.key, machine)
+    let (e, row) := Core.mapRow(e, row,
+      fun (c: Nat)(values: F32x8(l, Grain.thread))(e: Ctx(l, g)): Pair(Ctx(l, g), F32x8(l, Grain.thread)) => {
+        let (machine, values) := body(c, values, start(Key.key, e))
+        (finish(Key.key, machine), values)
+      })
+    (Machine.mk(e, state, fixed), row)
+  }
+  def writeProbs {l: Lifetime}{f: Nat}{x: Lifetime}{h: Rescaler}{m: Lifetime}{o: OState}{S: Lifetime}{u: Grain}{Sf: Lifetime}
+      (machine: Machine(l, Group.warps(f, 4), Loaded(x, m, f, o)))(buffer: ScoreBuffer(x, h))(row: Row(l))
+      (body: { scope = Sf } Nat -> F32x8(l, Grain.thread) -> Machine(l, Group.warps(f, 4), Unit) -> Pair(Machine(l, Group.warps(f, 4), Unit), F32x8(S, u)))
+      : Machine(l, Group.warps(f, 4), Probs(x, m, f, o)) := {
+    let (e, (state, fixed)) := unpack(Key.key, machine)
+    let (e, state) := Core.writeProbs(e, buffer, state, row,
+      fun (c: Nat)(values: F32x8(l, Grain.thread))(e: Ctx(l, Group.warps(f, 4))): Pair(Ctx(l, Group.warps(f, 4)), F32x8(S, u)) => {
+        let (machine, values) := body(c, values, start(Key.key, e))
+        (finish(Key.key, machine), values)
+      })
+    Machine.mk(e, state, Core.fixedProbs(x, m, f, o))
+  }
+  def roles4 {l: Lifetime}{k0: Kind}{S0: Lifetime}{k1: Kind}{S1: Lifetime}{k2: Kind}{S2: Lifetime}
+      (machine: Machine(l, Layout.Cta, Unit))
+      (load: { kind = k0, scope = S0 } (m: Lifetime) -> Machine(m, Layout.Load, Unit) -> Machine(m, Layout.Load, Unit))
+      (issue: { kind = k1, scope = S1 } (m: Lifetime) -> Machine(m, Layout.Issue, Unit) -> Machine(m, Layout.Issue, Unit))
+      (store: { kind = k2, scope = S2 } (m: Lifetime) -> Machine(m, Layout.Wg, Unit) -> Machine(m, Layout.Wg, Unit)): Machine(l, Layout.Cta, Unit) := {
+    let (e, u) := Layout.roles4(finish(Key.key, machine), Unit,
+      fun (m: Lifetime)(e: Ctx(m, Layout.Load)): Pair(Ctx(m, Layout.Load), Unit) => (finish(Key.key, load(m, start(Key.key, e))), Unit.unit),
+      fun (m: Lifetime)(e: Ctx(m, Layout.Issue)): Pair(Ctx(m, Layout.Issue), Unit) => (finish(Key.key, issue(m, start(Key.key, e))), Unit.unit),
+      fun (m: Lifetime)(e: Ctx(m, Layout.Wg)): Pair(Ctx(m, Layout.Wg), Unit) => (finish(Key.key, store(m, start(Key.key, e))), Unit.unit))
+    start(Key.key, e)
+  }
+  def rolesCorrected {l: Lifetime}{k0: Kind}{S0: Lifetime}{k1: Kind}{S1: Lifetime}{k2: Kind}{S2: Lifetime}{k3: Kind}{S3: Lifetime}{k4: Kind}{S4: Lifetime}
+      (machine: Machine(l, Layout.CorrectedCta, Unit))(regs: Registers.RegPool(l, 512, 128))
+      (group0: { kind = k0, scope = S0 } (m: Lifetime) -> Machine(m, Group.warps(0, 4), Unit) -> Machine(m, Group.warps(0, 4), Unit))
+      (group1: { kind = k1, scope = S1 } (m: Lifetime) -> Machine(m, Group.warps(4, 4), Unit) -> Machine(m, Group.warps(4, 4), Unit))
+      (correct: { kind = k2, scope = S2 } (m: Lifetime) -> Machine(m, Group.warps(8, 4), Unit) -> Machine(m, Group.warps(8, 4), Unit))
+      (issue: { kind = k3, scope = S3 } (m: Lifetime) -> Machine(m, Layout.CorrectedIssue, Unit) -> Machine(m, Layout.CorrectedIssue, Unit))
+      (load: { kind = k4, scope = S4 } (m: Lifetime) -> Machine(m, Layout.CorrectedLoad, Unit) -> Machine(m, Layout.CorrectedLoad, Unit)): Machine(l, Layout.CorrectedCta, Unit) :=
+    start(Key.key, Layout.rolesCorrected(finish(Key.key, machine), regs,
+      fun (m: Lifetime)(e: Ctx(m, Group.warps(0, 4))): Pair(Ctx(m, Group.warps(0, 4)), Unit) => (finish(Key.key, group0(m, start(Key.key, e))), Unit.unit),
+      fun (m: Lifetime)(e: Ctx(m, Group.warps(4, 4))): Pair(Ctx(m, Group.warps(4, 4)), Unit) => (finish(Key.key, group1(m, start(Key.key, e))), Unit.unit),
+      fun (m: Lifetime)(e: Ctx(m, Group.warps(8, 4))): Pair(Ctx(m, Group.warps(8, 4)), Unit) => (finish(Key.key, correct(m, start(Key.key, e))), Unit.unit),
+      fun (m: Lifetime)(e: Ctx(m, Layout.CorrectedIssue)): Pair(Ctx(m, Layout.CorrectedIssue), Unit) => (finish(Key.key, issue(m, start(Key.key, e))), Unit.unit),
+      fun (m: Lifetime)(e: Ctx(m, Layout.CorrectedLoad)): Pair(Ctx(m, Layout.CorrectedLoad), Unit) => (finish(Key.key, load(m, start(Key.key, e))), Unit.unit)))
+}

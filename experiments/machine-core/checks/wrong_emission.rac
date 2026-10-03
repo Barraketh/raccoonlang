@@ -1,0 +1,5 @@
+// expect: TypeMismatch
+import Tiny
+namespace Rejected {
+  def bad (w: Native.World)(index: Cuda.Expr)(start: Nat): Protocol.Flow(w, Protocol.Role.store, Protocol.State.written(index), Protocol.State.fenced(index), Protocol.Plan.atom(Native.Op.fenceStage), Cuda.Block.done, start, start) := Protocol.Flow.atom(w, Protocol.Role.store, Protocol.State.written(index), Protocol.State.fenced(index), Native.Op.fenceStage, start, Protocol.Step.fence(index))
+}

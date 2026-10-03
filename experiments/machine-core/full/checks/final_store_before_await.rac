@@ -1,0 +1,8 @@
+// expect: ImplicitReconstructionFailed
+import Machine
+namespace Rejected {
+ open Core
+ open Cuda
+ open GpuMachine.{Machine, Ticket}
+ def bad {l:Lifetime}{x:Lifetime}{m:Lifetime}{f:Nat}{L:Lifetime}(row:Machine(l,Group.warps(f,4),RowsAt(x,m,f,OState.held)))(buffer:ScoreBuffer(x,Rescaler.correction))(inv:Val(l,Grain.thread,DType.f32))(out:AttnOut(L,DType.f32))(own:OOwn(L,DType.f32,f)):Machine(l,Group.warps(f,4),Final(x,m,f)) := GpuMachine.storeFinal(row,buffer,inv,inv,out,own)
+}

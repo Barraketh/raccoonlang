@@ -1,0 +1,46 @@
+import Api
+
+namespace LunaTiny {
+  open Gpu
+
+  def producer {l: Lifetime}{w: Layout}(p: Producer(l, w)): ProducerBody(l, w) :=
+    p.eachSlice(fun (i: Lifetime)(slice: Slice(l, i, w)): ProduceStep(l, i, w) =>
+      command Gpu.then {
+        slice.ring.acquire
+        slice.fill
+      })
+
+  def issuer {l: Lifetime}{w: Layout}(issuer: Issuer(l, w)): IssueBody(l, w) :=
+    issuer.peeled(
+      fun (i: Lifetime)(slice: Slice(l, i, w)): FirstStep(l, i, w) =>
+        command Gpu.then {
+          slice.ring.awaitFirst
+          slice.accumulator.overwrite
+          slice.ring.release
+        },
+      fun (i: Lifetime)(slice: Slice(l, i, w)): NextStep(l, i, w) =>
+        command Gpu.then {
+          slice.ring.awaitNext
+          slice.accumulator.accumulate
+          slice.ring.release
+        })
+
+  def store {l: Lifetime}{w: Layout}(store: Store(l, w)): StoreBody(l, w) :=
+    store.chunks(fun (i: Lifetime)(chunk: Chunk(l, i, w)): ChunkBody(chunk) =>
+      chunk.load(fun (values: Values(chunk)): LoadedBody(chunk) =>
+        command Gpu.then {
+          chunk.staging.acquire
+          chunk.staging.write(values)
+          chunk.staging.fence
+          chunk.output.store
+        }))
+
+  def build (name: String)(stages: Nat)(buffers: Nat)
+      [positiveStages: Nat.lt(0, stages)][positiveBuffers: Nat.lt(0, buffers)]: Program :=
+    (Gpu.tinyGemm(name, stages, buffers,
+      fun (l: Lifetime)(p: Producer(l, Gpu.layout(stages, buffers))): ProducerBody(l, Gpu.layout(stages, buffers)) => LunaTiny.producer(p),
+      fun (l: Lifetime)(issuer: Issuer(l, Gpu.layout(stages, buffers))): IssueBody(l, Gpu.layout(stages, buffers)) => LunaTiny.issuer(issuer),
+      fun (l: Lifetime)(store: Store(l, Gpu.layout(stages, buffers))): StoreBody(l, Gpu.layout(stages, buffers)) => LunaTiny.store(store)))[positiveStages, positiveBuffers]
+
+  def kernel: Program := LunaTiny.build("tinygemm", 4, 2)
+}

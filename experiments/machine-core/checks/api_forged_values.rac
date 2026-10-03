@@ -1,0 +1,5 @@
+// expect: SealedConstructor
+import Api
+namespace Rejected {
+  def bad (l: Lifetime): Commands.Values(l, Gpu.layout(4, 2), Cuda.Expr.lit(0)) := Commands.Values.mk(l, Gpu.layout(4, 2), Cuda.Expr.lit(0), 17)
+}

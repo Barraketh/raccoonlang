@@ -1,0 +1,2 @@
+import TinyClient
+Gpu.render(LunaTiny.kernel)

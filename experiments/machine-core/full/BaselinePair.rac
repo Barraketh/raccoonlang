@@ -1,0 +1,147 @@
+// Persistent GEMM by CTA pairs on sm_100a (gpu/encoding/TWO_CTA.md §6, step 4): C (f32) = A · Bᵀ with A (M×K) and
+// B (N×K) in bf16. Each pair of CTAs, one per two SMs, loops over the 256×256 tiles of C the schedule gives it (bands
+// of 8 tile rows, column by column within a band), each CTA computing and storing 128 rows of each tile. The pair's
+// tensor memory holds two accumulators of 256 columns, so storing one tile overlaps the MMAs of the next.
+//
+// Both CTAs run the CTA of eight warps of `Layout`. Warp 0 of each elects a thread that streams the 64-wide K slices of
+// every tile into a six-stage pair ring with TMA: its 128 rows of A and its 128 rows of B, the tile's columns split
+// between the CTAs. Warp 1 of the leader elects a thread that, per tile, takes a free accumulator, waits for both
+// halves of each stage, issues four tcgen05.mma of M = 256 and N = 256 over the pair, releases the stage in both CTAs
+// by one commit, and after the tile's last stage commits the accumulator to both CTAs. Warp 1 of the other CTA idles,
+// as do warps 2 and 3. Warps 4 to 7, an aligned warpgroup in each CTA, wait for their own CTA's rows of each
+// accumulator, store them 32 columns at a time through two staging buffers per warp (each warp its quadrant of the
+// rows, its lane 0 issuing the TMA stores), and hand the accumulator back to the leader once the tile's last chunk is
+// loaded, before its stores complete.
+//
+// Run: gpu/gen.sh gpu/encoding/examples/gemm_pair.rac, or gpu/encoding/harness/run_gemm_pair.sh
+
+import encoding.Core
+import encoding.Layout
+
+namespace CoreGemmPair {
+  open Core
+  open Cuda
+  open Layout
+
+  def boxA : TmaSpec := TmaSpec.mk(64, 128)
+  def boxB : TmaSpec := TmaSpec.mk(64, 128)
+  def ringCfg : RingCfg := RingCfg.mk(6, boxA, boxB)
+
+  // Tiles are visited in bands of 8 tile rows (2048 rows of A), column by column within a band.
+  def band : Nat := 8
+
+  def Gemm (l: Lifetime) : Type { scope = l } := TmaGemm(l, boxA, boxB)
+
+  // Each CTA's producer: for every tile, fill its half of one stage per K slice; then wait for every stage to be
+  // released.
+  def producer {l: Lifetime}{L: Lifetime}{r: Lifetime}(g: Gemm(l))(sched: PairSched(L, 256))(ring: PairRing(r, ringCfg))
+      (steps: Val(l, Grain.uniform, DType.u32))(p: Producer(r))(m: Lifetime)(e: Ctx(m, Load)): Pair(Ctx(m, Load), Unit) :=
+    elect(e, Unit, fun (j: Lifetime)(w: Elected(j))(e: Ctx(j, One)): Pair(Ctx(j, One), Unit) => {
+      let tile := fun (n: Lifetime)(t: PairTile(n, 256))(e: Ctx(n, One))(p: ProducerAt(r, j)): Pair(Ctx(n, One), ProducerAt(r, j)) => {
+        let step := fun (o: Lifetime)(i: Val(o, Grain.uniform, DType.u32))(e: Ctx(o, One))(p: ProducerAt(r, j)): Pair(Ctx(o, One), ProducerAt(r, j)) => {
+          let (e, s) := acquirePair(e, ring, p)
+          fillPair(e, ring, s, t, g.a, g.b, mulC(i, 64))
+        }
+        loopPeeled(e, steps, fixedProducerAt(r, j), p, step, step)
+      }
+      let (e, p) := takePairProducer(e, w, ring, p)
+      let (e, p) := forPairTiles(e, sched, fixedProducerAt(r, j), p, tile)
+      (finishPairProducer(e, ring, p), Unit.unit)
+    })
+
+  // The leader's MMA issuer: for every tile, take a free accumulator, accumulate every stage of both CTAs into it,
+  // releasing each stage when its MMAs complete, and commit it to both CTAs' warpgroups; then wait until both have read
+  // every accumulator.
+  def issue {n: Lifetime}{L: Lifetime}{r: Lifetime}{q: Lifetime}{l: Lifetime}(lead: Leader(n))(sched: PairSched(L, 256))
+      (ring: PairRing(r, ringCfg))(accs: PairAccRing(q, 256))(steps: Val(l, Grain.uniform, DType.u32))
+      (sides: Pair(Consumer(r), AccProducer(q)))(e: Ctx(n, Issue)): Ctx(n, Issue) := {
+    let (e, u) := elect(e, Unit, fun (j: Lifetime)(w: Elected(j))(e: Ctx(j, One)): Pair(Ctx(j, One), Unit) => {
+      let (c, p) := sides
+      let first := fun (o: Lifetime)(i: Val(o, Grain.uniform, DType.u32))(e: Ctx(o, One))(st: Pair(ConsumerAt(r, j), AccFree(q, j)))
+          : Pair(Ctx(o, One), Pair(ConsumerAt(r, j), AccFilling(q, j))) => {
+        let (c, acc) := st
+        let (e, rd) := awaitPair(e, ring, c)
+        let (e, (used, acc)) := mmaPairFirst(e, w, ring, rd, accs, acc)
+        let (e, c) := releasePair(e, w, ring, used)
+        (e, (c, acc))
+      }
+      let rest := fun (o: Lifetime)(i: Val(o, Grain.uniform, DType.u32))(e: Ctx(o, One))(st: Pair(ConsumerAt(r, j), AccFilling(q, j)))
+          : Pair(Ctx(o, One), Pair(ConsumerAt(r, j), AccFilling(q, j))) => {
+        let (c, acc) := st
+        let (e, rd) := awaitPair(e, ring, c)
+        let (e, (used, acc)) := mmaPairNext(e, w, ring, rd, accs, acc)
+        let (e, c) := releasePair(e, w, ring, used)
+        (e, (c, acc))
+      }
+      let tile := fun (o: Lifetime)(t: PairTile(o, 256))(e: Ctx(o, One))(st: Pair(ConsumerAt(r, j), AccProducerAt(q, j)))
+          : Pair(Ctx(o, One), Pair(ConsumerAt(r, j), AccProducerAt(q, j))) => {
+        let (c, p) := st
+        let (e, free) := acquirePairAcc(e, accs, p)
+        let (e, (c, acc)) := loopPeeled(e, steps, fixedPair(fixedConsumerAt(r, j), fixedAccFilling(q, j)), (c, free), first, rest)
+        let (e, p) := commitPairAcc(e, w, accs, acc)
+        (e, (c, p))
+      }
+      let (e, c) := takePairConsumer(e, w, lead, ring, c)
+      let (e, p) := takePairAccProducer(e, w, lead, accs, p)
+      let (e, (c, p)) := forPairTiles(e, sched, fixedPair(fixedConsumerAt(r, j), fixedAccProducerAt(q, j)), (c, p), tile)
+      (finishConsumer(finishPairAccProducer(e, accs, p), c), Unit.unit)
+    })
+    e
+  }
+
+  // Warp 1 of each CTA: the issuer in the leader, nothing in the other CTA.
+  def issuer {r: Lifetime}{q: Lifetime}{l: Lifetime}(pair: CtaPair(l))(sched: PairSched(l, 256))(ring: PairRing(r, ringCfg))
+      (accs: PairAccRing(q, 256))(steps: Val(l, Grain.uniform, DType.u32))(c: Consumer(r))(p: AccProducer(q))(m: Lifetime)(e: Ctx(m, Issue))
+      : Pair(Ctx(m, Issue), Unit) :=
+    (onLeader(e, pair, leaderOnlyPair(leaderOnlyConsumer(ring), leaderOnlyAccProducer(accs)), (c, p),
+      fun (n: Lifetime)(lead: Leader(n))(e: Ctx(n, Issue))(sides: Pair(Consumer(r), AccProducer(q))): Ctx(n, Issue) =>
+        issue(lead, sched, ring, accs, steps, sides, e)), Unit.unit)
+
+  // Each CTA's epilogue: for every tile, wait for its rows of the accumulator, store them a chunk of 32 columns at a
+  // time, each through a staging buffer, and release the accumulator to the leader; then wait for the stores.
+  def epilogue {l: Lifetime}{q: Lifetime}{s: Lifetime}(g: Gemm(l))(sched: PairSched(l, 256))(own: PairSchedOwn(l, 256))
+      (accs: PairAccRing(q, 256))(ac: AccConsumer(q))(stg: Staging(s))(side: StoreSide(s))(m: Lifetime)(e: Ctx(m, Wg))
+      : Pair(Ctx(m, Wg), Unit) := {
+    let chunk := fun (p: Lifetime)(ch: ChunkAt(p, 256))(co: ChunkOwn(p, 256))(e: Ctx(p, Wg))(st: Pair(AccFull(q, m, 4), StoreAt(s, m, 4)))
+        : Pair(Ctx(p, Wg), Pair(AccFull(q, m, 4), StoreAt(s, m, 4))) => {
+      let (full, sa) := st
+      let (e, (full, regs)) := loadPairChunk(e, accs, full, ch)
+      let (e, free) := acquireStage(e, stg, sa)
+      let (e, written) := writeStage(e, stg, free, regs)
+      let (e, fenced) := fenceStage(e, written)
+      let (e, sa) := storeStage(e, stg, fenced, g.c, ch, co)
+      (e, (full, sa))
+    }
+    let tile := fun (n: Lifetime)(t: PairTile(n, 256))(o: HalfOwn(n))(e: Ctx(n, Wg))(st: Pair(AccConsumerAt(q, m, 4), StoreAt(s, m, 4)))
+        : Pair(Ctx(n, Wg), Pair(AccConsumerAt(q, m, 4), StoreAt(s, m, 4))) => {
+      let (c, sa) := st
+      let (e, full) := awaitPairAcc(e, accs, c)
+      let (e, (full, sa)) := forHalfChunks(e, t, o, fixedPair(fixedAccFull(q, m, 4), fixedStoreAt(s, m, 4)), (full, sa), chunk)
+      let (e, c) := releasePairAcc(e, accs, full)
+      (e, (c, sa))
+    }
+    let (e, c) := takePairAccConsumer(e, accs, ac)
+    let (e, sa) := takeStore(e, stg, side)
+    let (e, (c, sa)) := forOwnedPairTiles(e, sched, own, fixedPair(fixedAccConsumerAt(q, m, 4), fixedStoreAt(s, m, 4)), (c, sa), tile)
+    (finishAccConsumer(finishStores(e, stg, sa), c), Unit.unit)
+  }
+
+  def kernel : Program :=
+    pairGemmPersistentKernel("gemm_pair", boxA, boxB, band, fun (l: Lifetime)(e: Ctx(l, Cta))(g: Gemm(l))(sched: PairSched(l, 256))
+        (own: PairSchedOwn(l, 256))(pair: CtaPair(l))(permit: TmemPermit(l)): Ctx(l, Cta) => {
+      let steps := ceilDivC(g.k, 64)
+      let body := fun (a: Lifetime)(t: Tmem(a, 512))(acc: Acc(a, AccState.empty))(e: Ctx(l, Cta)): Pair(Ctx(l, Cta), Pair(Acc(a, AccState.empty), Unit)) =>
+        withPairAccRing(e, pair, t, acc, 2, 256, Unit, fun (q: Lifetime)(accs: PairAccRing(q, 256))(ap: AccProducer(q))(ac: AccConsumer(q))(e: Ctx(l, Cta))
+            : Pair(Ctx(l, Cta), Unit) =>
+          withStaging(e, 2, Unit, fun (s: Lifetime)(stg: Staging(s))(side: StoreSide(s))(e: Ctx(l, Cta)): Pair(Ctx(l, Cta), Unit) =>
+            withPairRing(e, pair, ringCfg, Unit, fun (r: Lifetime)(ring: PairRing(r, ringCfg))(p: Producer(r))(c: Consumer(r))(e: Ctx(l, Cta))
+                : Pair(Ctx(l, Cta), Unit) =>
+              roles4(e, Unit,
+                fun (m: Lifetime)(e: Ctx(m, Load)): Pair(Ctx(m, Load), Unit) => producer(g, sched, ring, steps, p, m, e),
+                fun (m: Lifetime)(e: Ctx(m, Issue)): Pair(Ctx(m, Issue), Unit) => issuer(pair, sched, ring, accs, steps, c, ap, m, e),
+                fun (m: Lifetime)(e: Ctx(m, Wg)): Pair(Ctx(m, Wg), Unit) => epilogue(g, sched, own, accs, ac, stg, side, m, e)))))
+      let (e, u) := withPairTmem(e, pair, permit, AccState.empty, Unit, body)
+      e
+    })
+}
+

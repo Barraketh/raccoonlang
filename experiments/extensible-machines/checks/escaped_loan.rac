@@ -1,0 +1,9 @@
+// expect: TypeMismatch
+import Source
+namespace Rejected {
+  def bad (root: Lifetime)(a: Lifetime)(loan: Lifetime)(id: Nat)(g: Nat)(buffer: Allocation.Ref(root,a,id,64))(reader: Source.Reader(root,a,loan,id,g))
+      : Unit -> Nat := fun (u: Unit): Nat => {
+        let command := Source.read0(buffer,reader)
+        0
+      }
+}

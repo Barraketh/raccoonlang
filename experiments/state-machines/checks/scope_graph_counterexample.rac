@@ -1,0 +1,21 @@
+// expect: accept
+// This intentionally incomplete API demonstrates that a legal close history
+// alone does not prevent a closure capturing an unscoped handle.
+import Protocol
+import ReadProtocol
+namespace Counterexample {
+  struct Handle (loan: Nat): Type
+   | mk (value: Nat): Handle(loan)
+  def read {loan: Nat}(handle: Handle(loan)): Nat := handle.value
+  def closed: Protocol.Command(ReadProtocol.State, ReadProtocol.Event, ReadProtocol.relation(7), ReadProtocol.State.ready, ReadProtocol.State.reading) :=
+    Protocol.Command.mk(List.cons(ReadProtocol.Event.beginRead(7), List.cons(ReadProtocol.Event.close(7), List.nil(ReadProtocol.Event))),
+      Protocol.Run.more(ReadProtocol.State.ready, ReadProtocol.Event.beginRead(7), ReadProtocol.State.borrowing,
+        ReadProtocol.Step.beginRead(7, 7, Eq.refl(Bool.true)),
+        Protocol.Run.more(ReadProtocol.State.borrowing, ReadProtocol.Event.close(7), ReadProtocol.State.reading,
+          ReadProtocol.Step.close(7, 7, Eq.refl(Bool.true)), Protocol.Run.done(ReadProtocol.relation(7), ReadProtocol.State.reading))))
+  def escaped: Unit -> Nat := {
+    let handle := Handle.mk(7, 23)
+    let closed := Counterexample.closed
+    fun (u: Unit): Nat => Counterexample.read(handle)
+  }
+}

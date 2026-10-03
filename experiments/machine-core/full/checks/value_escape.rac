@@ -1,0 +1,8 @@
+// expect: TypeMismatch
+import Machine
+namespace Rejected {
+ open Core
+ open Cuda
+ open GpuMachine.{Machine, Ticket}
+ def bad {l:Lifetime}{n:Lifetime}(machine:Machine(n,Group.lane,Unit))(value:Val(l,Grain.uniform,DType.f32)):Pair(Machine(n,Group.lane,Unit),Val(l,Grain.uniform,DType.f32)) := GpuMachine.ex2(machine,value)
+}

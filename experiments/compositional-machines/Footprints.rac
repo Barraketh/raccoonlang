@@ -1,0 +1,45 @@
+import BufferModel
+
+namespace Footprints {
+  // A proposition a client can use without knowing a role's implementation.
+  // Every primitive in the structured body belongs to this resource/actor.
+  inductive Owns (id: Nat)(actor: Nat) indices (code: BufferModel.Code): Prop
+   | skip: Owns(id, actor, BufferModel.Code.skip)
+   | atom (op: BufferModel.Op): Owns(id, actor, BufferModel.Code.atom(id, actor, op))
+   | seq (a: BufferModel.Code)(b: BufferModel.Code)(left: Owns(id, actor, a))(right: Owns(id, actor, b)): Owns(id, actor, BufferModel.Code.seq(a, b))
+   | branch (a: BufferModel.Code)(b: BufferModel.Code)(left: Owns(id, actor, a))(right: Owns(id, actor, b)): Owns(id, actor, BufferModel.Code.branch(a, b))
+   | ifFirst (a: BufferModel.Code)(b: BufferModel.Code)(left: Owns(id, actor, a))(right: Owns(id, actor, b)): Owns(id, actor, BufferModel.Code.ifFirst(a, b))
+   | loop (body: BufferModel.Code)(valid: Owns(id, actor, body)): Owns(id, actor, BufferModel.Code.loop(body))
+
+  // The syntax index determines the footprint, independently of quotability
+  // of the semantic function index. No second stored certificate is needed.
+  def fromMeaning (id: Nat)(actor: Nat)(code: BufferModel.Code)
+      (run: Contracts.Runtime -> BufferModel.State -> Contracts.Outcome(BufferModel.State))
+      (valid: BufferModel.Meaning(id, actor, code, run)): Footprints.Owns(id, actor, code) decreases structural(code) := {
+    match code returning Footprints.Owns(id, actor, code) with
+    | BufferModel.Code.skip => Footprints.Owns.skip(id, actor)
+    | BufferModel.Code.atom resource role op => {
+      match valid returning Footprints.Owns(id, actor, code) with
+      | BufferModel.Meaning.atom op => Footprints.Owns.atom(id, actor, op)
+    }
+    | BufferModel.Code.seq a b => {
+      match valid returning Footprints.Owns(id, actor, code) with
+      | BufferModel.Meaning.seq a b f g left right => Footprints.Owns.seq(a, b,
+          Footprints.fromMeaning(id, actor, a, f, left), Footprints.fromMeaning(id, actor, b, g, right))
+    }
+    | BufferModel.Code.branch a b => {
+      match valid returning Footprints.Owns(id, actor, code) with
+      | BufferModel.Meaning.branch a b f g left right => Footprints.Owns.branch(a, b,
+          Footprints.fromMeaning(id, actor, a, f, left), Footprints.fromMeaning(id, actor, b, g, right))
+    }
+    | BufferModel.Code.ifFirst a b => {
+      match valid returning Footprints.Owns(id, actor, code) with
+      | BufferModel.Meaning.ifFirst a b f g left right => Footprints.Owns.ifFirst(a, b,
+          Footprints.fromMeaning(id, actor, a, f, left), Footprints.fromMeaning(id, actor, b, g, right))
+    }
+    | BufferModel.Code.loop body => {
+      match valid returning Footprints.Owns(id, actor, code) with
+      | BufferModel.Meaning.loop body f inner => Footprints.Owns.loop(body, Footprints.fromMeaning(id, actor, body, f, inner))
+    }
+  }
+}

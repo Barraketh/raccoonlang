@@ -7,7 +7,8 @@ plan of §8, verified in Raccoon. `DESIGN.md` explains the design; this document
 ## 1. The claim
 
 Let `P` be any Raccoon program that type-checks against `gpu/Prelude.rac`, imports the encoding core (`encoding.Core`,
-`gpu/encoding/Core.rac`), and prints `Core.render(p)` for a `Program p`. Then the printed CUDA C++, compiled for sm_100a
+`gpu/encoding/Core.rac`, whose checked implementation is `encoding.Lowering`), and prints `Core.render(p)` for a
+`Program p`. Then the printed CUDA C++, compiled for sm_100a
 and launched by its generated launcher (or, for a kernel without one, as its builder's launch contract says), satisfies:
 
 - **S1, no data race.** No two accesses to one shared- or global-memory location, at least one a write, from
@@ -39,8 +40,8 @@ Not claimed:
 - The platform assumptions of §3: our reading of the PTX ISA and CUDA semantics.
 - nvcc, ptxas, the driver and the hardware.
 
-Everything else is `gpu/encoding/Core.rac` and `gpu/encoding/Registers.rac`, whose operations must meet §6, and the
-typing discipline of §5, which makes clients use them correctly.
+Everything else is `gpu/encoding/Lowering.rac` (the `Core` interface) and `gpu/encoding/Registers.rac`, whose
+operations must meet §6, and the typing discipline of §5, which makes clients use them correctly.
 
 **A carve-out from §1.** The claim is for programs that do not call `Registers.pool`, which only
 the kernel builders may call (§7, M24). The language cannot refuse a client's call, since sealing is per file; a

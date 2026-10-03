@@ -1,0 +1,5 @@
+// expect: TypeMismatch
+import Tiny
+namespace Rejected {
+  def bad (l: Lifetime)(r: Commands.Resource(l, Native.world(4, 2))): Commands.Cmd(l, Native.world(4, 2), Protocol.Role.issuer, Protocol.State.empty, Protocol.State.pending) := Commands.release(r)
+}

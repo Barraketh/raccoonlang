@@ -1,0 +1,20 @@
+import Gpu
+import BufferModel
+
+namespace Roles {
+  // Separately checked over an arbitrary instance and actor. The caller sees
+  // only ready -> reading, not this implementation's loop and branch.
+  def worker {root: Lifetime}{id: Nat}{actor: Nat}(buffer: Gpu.Buffer(root, id, actor))
+      : Gpu.Local(root, id, actor, BufferModel.at(BufferModel.Phase.ready), BufferModel.at(BufferModel.Phase.reading)) :=
+    Gpu.borrow(buffer, fun (loan: Lifetime)(lease: Gpu.Lease(root, loan, id, actor))
+        : Gpu.Local(Lifetime.union(root, loan), id, actor, BufferModel.at(BufferModel.Phase.borrowing), BufferModel.at(BufferModel.Phase.borrowing)) => {
+      let once := Gpu.read(buffer, lease)
+      let twice := Gpu.sequence(once, once)
+      Gpu.loop(Gpu.branch(Gpu.ifFirst(twice, once), once))
+    })
+
+  def left (l: Lifetime)(buffer: Gpu.Buffer(l, 0, 0))
+      : Gpu.Local(l, 0, 0, BufferModel.at(BufferModel.Phase.ready), BufferModel.at(BufferModel.Phase.reading)) := Roles.worker(buffer)
+  def right (l: Lifetime)(buffer: Gpu.Buffer(l, 1, 1))
+      : Gpu.Local(l, 1, 1, BufferModel.at(BufferModel.Phase.ready), BufferModel.at(BufferModel.Phase.reading)) := Roles.worker(buffer)
+}

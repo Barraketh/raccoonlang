@@ -1,0 +1,9 @@
+// expect: SealedConstructor
+import Gpu
+import Contracts
+import BufferModel
+namespace Rejected {
+  def bad (l: Lifetime): Gpu.Local(l, 0, 0, BufferModel.at(BufferModel.Phase.ready), BufferModel.at(BufferModel.Phase.borrowing)) :=
+    Gpu.Local.mk(l, BufferModel.at(BufferModel.Phase.ready), BufferModel.at(BufferModel.Phase.borrowing), BufferModel.Code.atom(0, 0, BufferModel.Op.beginRead), BufferModel.operation(BufferModel.Op.beginRead),
+      BufferModel.Meaning.atom(0, 0, BufferModel.Op.beginRead), Footprints.Owns.atom(0, 0, BufferModel.Op.beginRead), BufferModel.operationSafe(BufferModel.Op.beginRead))
+}

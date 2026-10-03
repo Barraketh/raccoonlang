@@ -1,0 +1,8 @@
+import Api
+namespace ApiScopes {
+  // Unknown callback dependencies are preserved, even when they are not
+  // supplied by the role view itself. Empty dependencies need no annotation.
+  def retains {l: Lifetime}{w: Gpu.Layout}{s: Lifetime}(producer: Gpu.Producer(l, w))
+      (body: { scope = s } (i: Lifetime) -> Gpu.Slice(l, i, w) -> Gpu.ProduceStep(l, i, w))
+      : Gpu.ProducerBody(Lifetime.union(l, s), w) := producer.eachSlice(body)
+}

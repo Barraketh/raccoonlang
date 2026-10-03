@@ -1,0 +1,6 @@
+// expect: TypeMismatch
+import Source
+namespace Rejected {
+  def bad (root: Lifetime)(a: Lifetime)(b: Lifetime)(loan: Lifetime)(id: Nat)(g: Nat)(buffer: Allocation.Ref(root,a,id,64))(reader: Source.Reader(root,b,loan,id,g))
+      : Source.Borrowed(root,a,loan,id,g) := Source.read0(buffer,reader)
+}

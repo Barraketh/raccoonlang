@@ -1,0 +1,5 @@
+// expect: TypeMismatch
+import Endpoints
+namespace Rejected {
+  def bad: Endpoints.Cmd(Endpoints.Role.producer, Concurrent.Phase.ready, Concurrent.Phase.done) := Endpoints.sequence(Endpoints.acquire, Endpoints.finishProducer)
+}

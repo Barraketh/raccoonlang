@@ -1,0 +1,7 @@
+// expect: TypeMismatch
+import Lowering
+import Examples
+namespace Rejected {
+  def bad: Lowering.Restoration := Lowering.Restoration.mk(Examples.back, Eq.refl(Examples.backEvents),
+    List.reverse(Lowering.emitted), Eq.refl(Lowering.expected))
+}

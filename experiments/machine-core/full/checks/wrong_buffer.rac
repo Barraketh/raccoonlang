@@ -1,0 +1,8 @@
+// expect: TypeMismatch
+import Machine
+namespace Rejected {
+ open Core
+ open Cuda
+ open GpuMachine.{Machine, Ticket}
+ def bad {l:Lifetime}{x:Lifetime}{y:Lifetime}{m:Lifetime}(row:Machine(l,Group.warps(8,4),Rescaling(x,m,8)))(buffer:ScoreBuffer(y,Rescaler.correction)):Machine(l,Group.warps(8,4),CorrectAt(x,m,8,OState.held)) := GpuMachine.publishRescaled(row,buffer)
+}

@@ -1,6 +1,6 @@
 # Attention A3b: a correction warpgroup, a lazy rescale, an emulated exponential, a register split
 
-Status: built (2026-10-01), not run on hardware: `Core.rac`'s correction-warpgroup section, `Layout.rolesCorrected`,
+Status: built (2026-10-01), not run on hardware: `Lowering.rac`'s correction-warpgroup section, `Layout.rolesCorrected`,
 `examples/attention_a3b.rac`, `harness/attention_a3b_test.cu`, `rejected/attention_a3b_mutants.py`; `NOTES.md` §"A3b"
 records what was awkward. §7 lists where the build departs from the design as first written. It is the second
 performance step of `gpu/ATTENTION.md` §6 A3, on A3a as built (`gpu/encoding/A3.md` §6). FA4 facts are from `flash_attn/cute/flash_fwd_sm100.py` and `softmax.py` at

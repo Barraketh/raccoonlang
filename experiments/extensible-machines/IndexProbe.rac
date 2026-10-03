@@ -1,0 +1,13 @@
+// A minimal data-indexed backlink does not need a machine-specific core rule.
+namespace IndexProbe {
+  inductive Node: Type
+   | skip: Node
+   | atom: Node
+  inductive Typed indices (code: Node): Prop
+   | skip: Typed(Node.skip)
+   | atom: Typed(Node.atom)
+  def origin (proof: Typed(Node.atom)): True := {
+    match proof returning True with
+    | Typed.atom => True.intro
+  }
+}

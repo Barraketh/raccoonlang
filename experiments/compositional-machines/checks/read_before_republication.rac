@@ -1,0 +1,13 @@
+// expect: TypeMismatch
+import Gpu
+import Roles
+import Client
+import BufferModel
+import WholeModel
+namespace Rejected {
+  def bad (l: Lifetime)(a: Gpu.Buffer(l, 0, 0))(b: Gpu.Buffer(l, 1, 1))
+      : Gpu.Whole(l, WholeModel.at(BufferModel.Phase.ready), WholeModel.at(BufferModel.Phase.writable)) := {
+    let first := Gpu.split(Client.counts, Roles.left(l, a), Roles.right(l, b))
+    Gpu.thenWhole(first, Gpu.split(Client.counts, Roles.left(l, a), Roles.right(l, b)))
+  }
+}

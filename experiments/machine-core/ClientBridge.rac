@@ -1,0 +1,6 @@
+import TinyClient
+import Baseline
+namespace ClientBridge {
+  def sameKernel: Eq(Cuda.Kernel, Gpu.syntax(LunaTiny.kernel), Core.kernelSyntax(CoreTiny.kernel)) := Eq.refl(Core.kernelSyntax(CoreTiny.kernel))
+  def certifiedUnknown (program: Gpu.Program): Protocol.KernelFlow(Commands.world(program), Gpu.syntax(program)) := Gpu.certified(program)
+}

@@ -1,0 +1,17 @@
+import Protocol
+
+// Concrete target facts accompany the logical backlinks. These are separate
+// obligations: changing an emission template need not change a Step rule.
+namespace Templates {
+  def fenceReallyEmitsFence (world: Native.World)(start: Nat): Eq(Cuda.Block, Native.emit(world, Native.Op.fenceStage, start).body,
+      Cuda.Block.seq(Cuda.Stmt.instr(Cuda.Instr.fenceProxyAsync), Cuda.Block.seq(Cuda.Stmt.syncWarp, Cuda.Block.done))) :=
+    Eq.refl(Cuda.Block.seq(Cuda.Stmt.instr(Cuda.Instr.fenceProxyAsync), Cuda.Block.seq(Cuda.Stmt.syncWarp, Cuda.Block.done)))
+  def awaitReallyWaits (world: Native.World)(start: Nat): Eq(Cuda.Block, Native.emit(world, Native.Op.await, start).body,
+      Cuda.Block.seq(Cuda.Stmt.instr(Cuda.Instr.mbarWait(Cuda.BarrierScope.cta, Native.full(world, 4), Cuda.Expr.var(5))),
+        Cuda.Block.seq(Cuda.Stmt.instr(Cuda.Instr.tcFence(Cuda.ThreadSync.after)), Cuda.Block.done))) :=
+    Eq.refl(Cuda.Block.seq(Cuda.Stmt.instr(Cuda.Instr.mbarWait(Cuda.BarrierScope.cta, Native.full(world, 4), Cuda.Expr.var(5))),
+      Cuda.Block.seq(Cuda.Stmt.instr(Cuda.Instr.tcFence(Cuda.ThreadSync.after)), Cuda.Block.done)))
+  def releaseReallyCommits (world: Native.World)(start: Nat): Eq(Cuda.Block, Native.emit(world, Native.Op.release, start).body,
+      Cuda.Block.seq(Cuda.Stmt.instr(Cuda.Instr.tcCommit(Cuda.CtaGroup.one, Native.empty(world, 4), Option.none(Nat))), Native.block(Native.advance(4, 5, world.stages)))) :=
+    Eq.refl(Cuda.Block.seq(Cuda.Stmt.instr(Cuda.Instr.tcCommit(Cuda.CtaGroup.one, Native.empty(world, 4), Option.none(Nat))), Native.block(Native.advance(4, 5, world.stages))))
+}

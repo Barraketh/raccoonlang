@@ -1,0 +1,27 @@
+import Protocol
+import RegisterProtocol
+
+namespace Authority {
+  // A trace is copyable evidence. This cursor is the right to advance an
+  // actual machine. Only the builder and executor introduce cursors.
+  sealed inductive Cursor (l: Lifetime)(cfg: RegisterProtocol.Config)(s: RegisterProtocol.State)
+      : Type { kind = lin, scope = l }
+   | mk : Cursor(l, cfg, s)
+
+  def withKernel (cfg: RegisterProtocol.Config)(A: Type)
+      (body: (l: Lifetime) -> Cursor(l, cfg, RegisterProtocol.State.fresh) -> A): A :=
+    scope l => body(l, Cursor.mk(l, cfg, RegisterProtocol.State.fresh))
+
+  def execute {l: Lifetime}{cfg: RegisterProtocol.Config}{before: RegisterProtocol.State}{after: RegisterProtocol.State}
+      (cursor: Cursor(l, cfg, before))
+      (command: Protocol.Command(RegisterProtocol.State, RegisterProtocol.Event, RegisterProtocol.relation(cfg), before, after))
+      : Cursor(l, cfg, after) := {
+    match cursor returning Cursor(l, cfg, after) with
+    | Cursor.mk => Cursor.mk(l, cfg, after)
+  }
+
+  def finish {l: Lifetime}{cfg: RegisterProtocol.Config}(cursor: Cursor(l, cfg, RegisterProtocol.State.uniform)): Unit := {
+    match cursor returning Unit with
+    | Cursor.mk => Unit.unit
+  }
+}

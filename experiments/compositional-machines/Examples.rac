@@ -1,0 +1,27 @@
+import Contracts
+import BufferModel
+import WholeModel
+import Gpu
+import Roles
+import Client
+
+namespace Examples {
+  def program: Gpu.Program := Client.construct(Roles.left, Roles.right)
+  def initial: WholeModel.State := WholeModel.State.mk(Bool.true,
+    BufferModel.State.mk(BufferModel.Phase.ready, 0, 1), BufferModel.State.mk(BufferModel.Phase.ready, 0, 1))
+  def invariant: WholeModel.at(BufferModel.Phase.ready)(Examples.initial) :=
+    And.intro(Eq.refl(Bool.true), And.intro(Eq.refl(BufferModel.Phase.ready), Eq.refl(BufferModel.Phase.ready)))
+
+  // General result, not a test over an enumerated set of runtime counts.
+  def everyRuntime (runtime: Contracts.Runtime): Contracts.Post(WholeModel.at(BufferModel.Phase.ready), Examples.program.run(runtime, Examples.initial)) :=
+    Examples.program.safe(runtime, Examples.initial, Examples.invariant)
+
+  def zero: Eq(Contracts.Outcome(WholeModel.State), Examples.program.run(Contracts.Runtime.mk(0, Bool.true, 0), Examples.initial), Contracts.Outcome.ok(Examples.initial)) :=
+    Eq.refl(Contracts.Outcome.ok(Examples.initial))
+  def threeTrue: Eq(Contracts.Outcome(WholeModel.State), Examples.program.run(Contracts.Runtime.mk(3, Bool.true, 0), Examples.initial),
+      Contracts.Outcome.ok(WholeModel.State.mk(Bool.true, BufferModel.State.mk(BufferModel.Phase.ready, 20, 2), BufferModel.State.mk(BufferModel.Phase.ready, 20, 2)))) :=
+    Eq.refl(Contracts.Outcome.ok(WholeModel.State.mk(Bool.true, BufferModel.State.mk(BufferModel.Phase.ready, 20, 2), BufferModel.State.mk(BufferModel.Phase.ready, 20, 2))))
+  def threeFalse: Eq(Contracts.Outcome(WholeModel.State), Examples.program.run(Contracts.Runtime.mk(3, Bool.false, 0), Examples.initial),
+      Contracts.Outcome.ok(WholeModel.State.mk(Bool.true, BufferModel.State.mk(BufferModel.Phase.ready, 15, 2), BufferModel.State.mk(BufferModel.Phase.ready, 15, 2)))) :=
+    Eq.refl(Contracts.Outcome.ok(WholeModel.State.mk(Bool.true, BufferModel.State.mk(BufferModel.Phase.ready, 15, 2), BufferModel.State.mk(BufferModel.Phase.ready, 15, 2))))
+}

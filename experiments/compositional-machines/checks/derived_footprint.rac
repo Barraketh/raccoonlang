@@ -1,0 +1,9 @@
+// expect: accept
+// A generic derived certificate, with unknown code and semantic function.
+import Footprints
+namespace FootprintProbe {
+  def derive (id: Nat)(actor: Nat)(code: BufferModel.Code)
+      (run: Contracts.Runtime -> BufferModel.State -> Contracts.Outcome(BufferModel.State))
+      (valid: BufferModel.Meaning(id, actor, code, run)): Footprints.Owns(id, actor, code) :=
+    Footprints.fromMeaning(id, actor, code, run, valid)
+}

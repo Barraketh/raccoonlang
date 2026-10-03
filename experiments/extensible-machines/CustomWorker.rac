@@ -1,0 +1,37 @@
+import Demo
+
+// A client-defined body, admitted through the public proof interface without
+// changing the machine definition, command constructors or lowerer.
+namespace CustomWorker {
+  def cycle (id: Nat): Machine.Cmd(Pipeline.State, Pipeline.Op, Pipeline.spec(id), Pipeline.at(Pipeline.empty), Pipeline.at(Pipeline.empty)) := {
+    let reads := Machine.sequence(Pipeline.primitive(id, Pipeline.Op.read0),
+      Machine.sequence(Pipeline.primitive(id, Pipeline.Op.read1), Pipeline.primitive(id, Pipeline.Op.read0)))
+    let readers := Machine.sequence(Pipeline.primitive(id, Pipeline.Op.open0), Machine.sequence(Pipeline.primitive(id, Pipeline.Op.open1),
+      Machine.sequence(reads, Machine.sequence(Pipeline.primitive(id, Pipeline.Op.close0), Pipeline.primitive(id, Pipeline.Op.close1)))))
+    Machine.sequence(Pipeline.primitive(id, Pipeline.Op.store), Machine.sequence(Pipeline.primitive(id, Pipeline.Op.publish),
+      Machine.sequence(readers, Pipeline.primitive(id, Pipeline.Op.recycle))))
+  }
+  def advances (id: Nat): Progress.Advances(CustomWorker.cycle(id).run, Pipeline.invariant) :=
+    fun (g: Nat): Contracts.Safe(CustomWorker.cycle(id).run, Progress.stage(Pipeline.invariant, g), Progress.stage(Pipeline.invariant, Nat.succ(g))) =>
+    fun (r: Contracts.Runtime)(s: Pipeline.State)(initial: Pipeline.invariant(g, s))
+        : Contracts.Post(Progress.stage(Pipeline.invariant, Nat.succ(g)), CustomWorker.cycle(id).run(r, s)) => {
+      match s returning Contracts.Post(Progress.stage(Pipeline.invariant, Nat.succ(g)), CustomWorker.cycle(id).run(r, s)) with
+      | Pipeline.State.mk mode generation payload value => {
+        match initial.left returning Contracts.Post(Progress.stage(Pipeline.invariant, Nat.succ(g)), CustomWorker.cycle(id).run(r, s)) with
+        | Eq.refl same => {
+          match initial.right returning Contracts.Post(Progress.stage(Pipeline.invariant, Nat.succ(g)), CustomWorker.cycle(id).run(r, s)) with
+          | Eq.refl same => And.intro(Eq.refl(Pipeline.empty), Eq.refl(Nat.succ(g)))
+        }
+      }
+    }
+  def worker (root: Lifetime)(a: Lifetime)(id: Nat)(buffer: Allocation.Ref(root, a, id, 64)): Source.Body(root, a, id) :=
+    Source.certify(buffer, CustomWorker.cycle(id), CustomWorker.advances(id))
+  def plan: Client.Plan := Client.construct(CustomWorker.worker)
+  def everyCount (r: Contracts.Runtime): Contracts.Post(Progress.stage(Client.invariant, r.count), Contracts.repeat(Client.run(CustomWorker.plan), r, Demo.initial)) :=
+    Eq.substP(Progress.addZeroLeft(r.count),
+      fun (g: Nat): Prop => Contracts.Post(Progress.stage(Client.invariant, g), Contracts.repeat(Client.run(CustomWorker.plan), r, Demo.initial)),
+      Progress.repeat(Client.run(CustomWorker.plan), Client.invariant, Client.advanced(CustomWorker.plan), r, 0, Demo.initial, Demo.initialProof))
+  def three: Eq(Contracts.Outcome(Pair(Pipeline.State, Pipeline.State)), Contracts.repeat(Client.run(CustomWorker.plan), Contracts.Runtime.mk(3, Bool.false, 0), Demo.initial),
+      Contracts.Outcome.ok(Pair.mk(Pipeline.State.mk(Pipeline.empty, 3, 18, 3), Pipeline.State.mk(Pipeline.empty, 3, 18, 3)))) :=
+    Eq.refl(Contracts.Outcome.ok(Pair.mk(Pipeline.State.mk(Pipeline.empty, 3, 18, 3), Pipeline.State.mk(Pipeline.empty, 3, 18, 3))))
+}

@@ -1,0 +1,11 @@
+// expect: LinearInType
+import Machine
+namespace Rejected {
+  def snapshot {l: Lifetime}{g: Core.Group}(machineKey: GpuMachine.Key)(coreKey: Core.Key)(machine: GpuMachine.Machine(l, g, Unit)): Core.Gen := {
+    let (e, (u, fixed)) := GpuMachine.unpack(machineKey, machine)
+    Core.state(coreKey, e)
+  }
+  def bad {l: Lifetime}{g: Core.Group}(machineKey: GpuMachine.Key)(coreKey: Core.Key)(machine: GpuMachine.Machine(l, g, Unit))
+      : Eq(Core.Gen, Rejected.snapshot(machineKey, coreKey, machine), Rejected.snapshot(machineKey, coreKey, machine)) :=
+    Eq.refl(Rejected.snapshot(machineKey, coreKey, machine))
+}

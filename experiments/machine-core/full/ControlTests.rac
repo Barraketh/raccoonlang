@@ -1,0 +1,22 @@
+import Machine
+namespace ControlTests {
+  open Core
+  open Cuda
+  open GpuMachine.{Machine, Ticket}
+
+  // These check framing and control for unknown resource types, not just the
+  // concrete token combinations of the two kernels.
+  def framedRepeat {l: Lifetime}{g: Group}{ka: Kind}{Ta: Lifetime}{A: Type { kind = ka, scope = Ta }}
+      {kb: Kind}{Tb: Lifetime}{B: Type { kind = kb, scope = Tb }}{Sf: Lifetime}{Sn: Lifetime}
+      (machine: Machine(l, g, Pair(A, B)))(count: Val(Sn, Grain.uniform, DType.u32))
+      (body: { scope = Sf } (n: Lifetime) -> Val(n, Grain.uniform, DType.u32) -> Machine(n, g, A) -> Machine(n, g, A)): Machine(l, g, Pair(A, B)) :=
+    GpuMachine.repeat(machine, count, fun (n: Lifetime)(i: Val(n, Grain.uniform, DType.u32))(state: Machine(n, g, Pair(A, B))): Machine(n, g, Pair(A, B)) =>
+      GpuMachine.focusLeft(state, fun (left: Machine(n, g, A)): Machine(n, g, A) => body(n, i, left)))
+
+  def framedWhen {l: Lifetime}{g: Group}{ka: Kind}{Ta: Lifetime}{A: Type { kind = ka, scope = Ta }}
+      {kb: Kind}{Tb: Lifetime}{B: Type { kind = kb, scope = Tb }}{Sf: Lifetime}{Sc: Lifetime}{uc: Grain}
+      (machine: Machine(l, g, Pair(A, B)))(condition: Val(Sc, uc, DType.bool))
+      (body: { scope = Sf } (n: Lifetime) -> Machine(n, Group.arm(g, uc), A) -> Machine(n, Group.arm(g, uc), A)): Machine(l, g, Pair(A, B)) :=
+    GpuMachine.when(machine, condition, fun (n: Lifetime)(state: Machine(n, Group.arm(g, uc), Pair(A, B))): Machine(n, Group.arm(g, uc), Pair(A, B)) =>
+      GpuMachine.focusLeft(state, fun (left: Machine(n, Group.arm(g, uc), A)): Machine(n, Group.arm(g, uc), A) => body(n, left)))
+}

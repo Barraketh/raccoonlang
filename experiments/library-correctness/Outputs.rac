@@ -1,0 +1,112 @@
+import Geometry
+
+namespace Outputs {
+  inductive Unique indices (addresses: List(Nat)): Prop
+   | empty: Unique(List.nil(Nat))
+   | cons (address: Nat)(rest: List(Nat))(fresh: Not(Spec.Mem(Nat, address, rest)))(tail: Unique(rest)): Unique(List.cons(address, rest))
+  // Remove precisely one write permission. Neither side introduces an address.
+  inductive Erase (address: Nat) indices (before: List(Nat))(after: List(Nat)): Prop
+   | here (rest: List(Nat)): Erase(address, List.cons(address, rest), rest)
+   | there (head: Nat)(before: List(Nat))(after: List(Nat))(tail: Erase(address, before, after)): Erase(address, List.cons(head, before), List.cons(head, after))
+
+  def erasedMember (address: Nat)(before: List(Nat))(after: List(Nat))(erased: Erase(address, before, after)): Spec.Mem(Nat, address, before) decreases structural(before) := {
+    match erased returning Spec.Mem(Nat, address, before) with
+    | Erase.here rest => Spec.Mem.here(address, rest)
+    | Erase.there head before after tail => Spec.Mem.there(head, before, Outputs.erasedMember(address, before, after, tail))
+  }
+  def subset (address: Nat)(before: List(Nat))(after: List(Nat))(erased: Erase(address, before, after))(other: Nat)(member: Spec.Mem(Nat, other, after))
+      : Spec.Mem(Nat, other, before) decreases structural(before) := {
+    match erased returning Spec.Mem(Nat, other, before) with
+    | Erase.here rest => Spec.Mem.there(address, rest, member)
+    | Erase.there head before after tail => {
+      match member returning Spec.Mem(Nat, other, List.cons(head, before)) with
+      | Spec.Mem.here rest => Spec.Mem.here(head, before)
+      | Spec.Mem.there head rest there => Spec.Mem.there(head, before, Outputs.subset(address, before, after, tail, other, there))
+    }
+  }
+  def remainderUnique (address: Nat)(before: List(Nat))(after: List(Nat))(erased: Erase(address, before, after))(valid: Unique(before)): Unique(after) decreases structural(before) := {
+    match erased returning Unique(after) with
+    | Erase.here rest => {
+      match valid returning Unique(after) with
+      | Unique.cons first tail fresh unique => unique
+    }
+    | Erase.there head tailBefore tailAfter tail => {
+      match valid returning Unique(after) with
+      | Unique.cons first oldTail fresh unique => Unique.cons(head, tailAfter,
+          fun (member: Spec.Mem(Nat, head, tailAfter)): False => fresh(Outputs.subset(address, tailBefore, tailAfter, tail, head, member)),
+          Outputs.remainderUnique(address, tailBefore, tailAfter, tail, unique))
+    }
+  }
+  def unavailable (address: Nat)(before: List(Nat))(after: List(Nat))(erased: Erase(address, before, after))(valid: Unique(before))
+      : Not(Spec.Mem(Nat, address, after)) decreases structural(before) := fun (member: Spec.Mem(Nat, address, after)): False => {
+    match erased returning False with
+    | Erase.here rest => {
+      match valid returning False with
+      | Unique.cons first tail fresh unique => fresh(member)
+    }
+    | Erase.there head before after tail => {
+      match valid returning False with
+      | Unique.cons head before fresh unique => {
+        match member returning False with
+        | Spec.Mem.here rest => fresh(Outputs.erasedMember(address, before, after, tail))
+        | Spec.Mem.there first rest there => Outputs.unavailable(address, before, after, tail, unique)(there)
+      }
+    }
+  }
+
+  // This records effect meaning, not uniqueness: the same permissions would
+  // allow repeated writes if the initial list contained duplicate addresses.
+  inductive Trace indices (budget: Nat)(writes: List(Nat))(before: List(Nat))(after: List(Nat)): Prop
+   | skip (available: List(Nat)): Trace(0, List.nil(Nat), available, available)
+   | write (budget: Nat)(address: Nat)(rest: List(Nat))(before: List(Nat))(mid: List(Nat))(after: List(Nat))
+       (consumed: Erase(address, before, mid))(tail: Trace(budget, rest, mid, after)): Trace(Nat.succ(budget), List.cons(address, rest), before, after)
+   | discard (budget: Nat)(address: Nat)(writes: List(Nat))(before: List(Nat))(mid: List(Nat))(after: List(Nat))
+       (consumed: Erase(address, before, mid))(tail: Trace(budget, writes, mid, after)): Trace(Nat.succ(budget), writes, before, after)
+  def writesWereOwned (budget: Nat)(writes: List(Nat))(before: List(Nat))(after: List(Nat))(trace: Trace(budget, writes, before, after))
+      (address: Nat)(member: Spec.Mem(Nat, address, writes)): Spec.Mem(Nat, address, before) decreases structural(budget) := {
+    match trace returning Spec.Mem(Nat, address, before) with
+    | Trace.skip available => {
+      match member returning Spec.Mem(Nat, address, before) with
+    }
+    | Trace.write k head rest before mid after consumed tail => {
+      match member returning Spec.Mem(Nat, address, before) with
+      | Spec.Mem.here later => Outputs.erasedMember(head, before, mid, consumed)
+      | Spec.Mem.there first later there => Outputs.subset(head, before, mid, consumed, address, Outputs.writesWereOwned(k, rest, mid, after, tail, address, there))
+    }
+    | Trace.discard k head rest before mid after consumed tail => Outputs.subset(head, before, mid, consumed, address, Outputs.writesWereOwned(k, rest, mid, after, tail, address, member))
+  }
+  def everyTrace (budget: Nat)(writes: List(Nat))(before: List(Nat))(after: List(Nat))(trace: Trace(budget, writes, before, after))(unique: Unique(before))
+      : Unique(writes) decreases structural(budget) := {
+    match trace returning Unique(writes) with
+    | Trace.skip available => Unique.empty
+    | Trace.write k head rest before mid after consumed tail => Unique.cons(head, rest,
+        fun (member: Spec.Mem(Nat, head, rest)): False => Outputs.unavailable(head, before, mid, consumed, unique)(Outputs.writesWereOwned(k, rest, mid, after, tail, head, member)),
+        Outputs.everyTrace(k, rest, mid, after, tail, Outputs.remainderUnique(head, before, mid, consumed, unique)))
+    | Trace.discard k head rest before mid after consumed tail => Outputs.everyTrace(k, rest, mid, after, tail, Outputs.remainderUnique(head, before, mid, consumed, unique))
+  }
+
+  def range (first: Nat)(count: Nat): List(Nat) decreases structural(count) := {
+    match count returning List(Nat) with
+    | Nat.zero => List.nil(Nat)
+    | Nat.succ rest => List.cons(first, Outputs.range(Nat.succ(first), rest))
+  }
+  def rangeBound (first: Nat)(count: Nat)(address: Nat)(member: Spec.Mem(Nat, address, Outputs.range(first, count)))
+      : Nat.le(first, address) decreases structural(count) := {
+    match count returning Nat.le(first, address) with
+    | Nat.zero => {
+      match member returning Nat.le(first, address) with
+    }
+    | Nat.succ rest => {
+      match member returning Nat.le(first, address) with
+      | Spec.Mem.here tail => Arithmetic.reflexive(first)
+      | Spec.Mem.there head tail there => Arithmetic.transitive(first, Nat.succ(first), address, Arithmetic.step(first), Outputs.rangeBound(Nat.succ(first), rest, address, there))
+    }
+  }
+  def rangeUnique (first: Nat)(count: Nat): Unique(Outputs.range(first, count)) decreases structural(count) := {
+    match count returning Unique(Outputs.range(first, count)) with
+    | Nat.zero => Unique.empty
+    | Nat.succ rest => Unique.cons(first, Outputs.range(Nat.succ(first), rest),
+        fun (member: Spec.Mem(Nat, first, Outputs.range(Nat.succ(first), rest))): False => Arithmetic.notSuccessor(first, Outputs.rangeBound(Nat.succ(first), rest, first, member)),
+        Outputs.rangeUnique(Nat.succ(first), rest))
+  }
+}

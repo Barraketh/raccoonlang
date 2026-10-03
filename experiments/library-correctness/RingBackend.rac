@@ -1,0 +1,112 @@
+import Ring
+import Spec
+
+// Platform contracts are attached to exact native templates, separately from
+// the protocol proof. These constructors state A6-A9's intended implementation;
+// they do not establish NVIDIA's instruction semantics. In particular there is
+// no trusted 'withRing is safe' or 'fill is safe' constructor.
+namespace RingBackend {
+  open Cuda
+  open Concurrent.{Action}
+  open Endpoints.{Role, Code}
+  inductive Atomic indices (role: Role)(action: Action)(fresh: Nat)(block: Block): Prop
+   | acquire (fresh: Nat): Atomic(Role.producer, Action.acquire, fresh,
+       Block.seq(Stmt.instr(Instr.mbarWait(BarrierScope.cta, Expr.sharedAddr(8), Expr.var(0))), Block.done))
+   | issue (fresh: Nat): Atomic(Role.producer, Action.issue, fresh,
+       Block.seq(Stmt.instr(Instr.mbarArrive(Window.cta, Expr.sharedAddr(0), Arrival.expectTx(Expr.lit(8192)))),
+       Block.seq(Stmt.instr(Instr.tmaLoad(CtaGroup.one, Expr.sharedAddr(1024), Expr.paramAddr("I_map"), Expr.lit(0), Expr.lit(0), Expr.sharedAddr(0))),
+       Block.seq(Stmt.assign(0, Expr.bin(BinOp.bxor, Expr.var(0), Expr.lit(1))), Block.done))))
+   | await (fresh: Nat): Atomic(Role.consumer, Action.await, fresh,
+       Block.seq(Stmt.instr(Instr.mbarWait(BarrierScope.cta, Expr.sharedAddr(0), Expr.var(1))), Block.done))
+   | read (fresh: Nat): Atomic(Role.consumer, Action.read, fresh,
+       Block.seq(Stmt.decl(DType.bf16, fresh, Expr.index(Expr.sharedPtr(DType.bf16, 1024), Expr.lit(0))), Block.done))
+   | release (fresh: Nat): Atomic(Role.consumer, Action.release, fresh,
+       Block.seq(Stmt.instr(Instr.fenceProxyAsync),
+       Block.seq(Stmt.instr(Instr.mbarArrive(Window.cta, Expr.sharedAddr(8), Arrival.one)),
+       Block.seq(Stmt.assign(1, Expr.bin(BinOp.bxor, Expr.var(1), Expr.lit(1))), Block.done))))
+   | finishProducer (fresh: Nat): Atomic(Role.producer, Action.finishProducer, fresh,
+       Block.seq(Stmt.instr(Instr.mbarWait(BarrierScope.cta, Expr.sharedAddr(8), Expr.var(0))), Block.done))
+   | finishConsumer (fresh: Nat): Atomic(Role.consumer, Action.finishConsumer, fresh, Block.done)
+  inductive Plan indices (role: Role)(code: Code)(block: Block): Prop
+   | skip (role: Role): Plan(role, Code.skip, Block.done)
+   | atom (role: Role)(action: Action)(fresh: Nat)(block: Block)(native: Atomic(role, action, fresh, block)): Plan(role, Code.atom(action), block)
+   | sequence (role: Role)(a: Code)(b: Code)(left: Block)(right: Block)(first: Plan(role, a, left))(second: Plan(role, b, right))
+       : Plan(role, Code.seq(a, b), Block.seq(Stmt.scoped(left), Block.seq(Stmt.scoped(right), Block.done)))
+   | branch (role: Role)(a: Code)(b: Code)(yes: Block)(no: Block)(first: Plan(role, a, yes))(second: Plan(role, b, no))
+       : Plan(role, Code.branch(a, b), Block.seq(Stmt.ifElse(Ring.flag(role), yes, no), Block.done))
+   | loop (role: Role)(body: Code)(fresh: Nat)(block: Block)(inner: Plan(role, body, block))
+       : Plan(role, Code.loop(body), Block.seq(Stmt.forLoop(fresh, Expr.lit(0), Ring.count(role), block), Block.done))
+  // A conservative syntactic participation obligation on the actual endpoint
+  // AST. Only this slice's individual operations are admitted; no CTA/warp
+  // collective can be inserted into a thread-selected endpoint or its loops.
+  def Individual (i: Instr): Prop := {
+    match i returning Prop with
+    | Instr.mbarInit bar count => True
+    | Instr.mbarInval bar => True
+    | Instr.mbarArrive window bar arrival => True
+    | Instr.mbarWait level bar parity => True
+    | Instr.fenceMbarInit => True
+    | Instr.fenceProxyAsync => True
+    | Instr.tmaLoad group dst map x y bar => True
+    | _ => False
+  }
+  mutual {
+    def NoCollectives (block: Block): Prop decreases structural(block) := {
+      match block returning Prop with
+      | Block.done => True
+      | Block.seq stmt rest => And(RingBackend.IndividualStmt(stmt), RingBackend.NoCollectives(rest))
+    }
+    def IndividualStmt (stmt: Stmt): Prop decreases structural(stmt) := {
+      match stmt returning Prop with
+      | Stmt.decl t id init => True
+      | Stmt.declMut t id init => True
+      | Stmt.assign id value => True
+      | Stmt.forLoop id start count body => RingBackend.NoCollectives(body)
+      | Stmt.ifElse condition yes no => And(RingBackend.NoCollectives(yes), RingBackend.NoCollectives(no))
+      | Stmt.scoped body => RingBackend.NoCollectives(body)
+      | Stmt.instr i => RingBackend.Individual(i)
+      | _ => False
+    }
+  }
+  def setupSpecification: Block := Block.seq(Stmt.ifElse(Expr.bin(BinOp.eq, Expr.special(Builtin.threadX), Expr.lit(0)),
+    Block.seq(Stmt.instr(Instr.mbarInit(Expr.sharedAddr(0), Expr.lit(1))),
+    Block.seq(Stmt.instr(Instr.mbarInit(Expr.sharedAddr(8), Expr.lit(1))),
+    Block.seq(Stmt.instr(Instr.mbarArrive(Window.cta, Expr.sharedAddr(8), Arrival.one)),
+    Block.seq(Stmt.instr(Instr.fenceMbarInit), Block.done)))), Block.done), Block.seq(Stmt.sync, Block.done))
+  def closeSpecification: Block := Block.seq(Stmt.sync, Block.seq(Stmt.ifElse(
+    Expr.bin(BinOp.eq, Expr.special(Builtin.threadX), Expr.lit(0)),
+    Block.seq(Stmt.instr(Instr.mbarInval(Expr.sharedAddr(0))), Block.seq(Stmt.instr(Instr.mbarInval(Expr.sharedAddr(8))), Block.done)), Block.done), Block.done))
+  // Static region obligations of this root: two aligned count-one barriers,
+  // no overlap with the stage, and exact shared memory supplied by the launcher.
+  def MapContract: Prop := Eq(List(MapEncoding), Ring.launcher.maps,
+    List.cons(MapEncoding.mk("I_map", MapUse.load, Param.input(DType.bf16, "I"), "M", "N", 64, 64), List.nil(MapEncoding)))
+  def Layout: Prop := And(Nat.le(16, 1024), And(Nat.le(Nat.add(1024, Ring.bytes), Ring.sharedBytes),
+    And(Eq(Nat, Nat.mod(1024, 1024), 0), And(Eq(Nat, Ring.launcher.block, 64), RingBackend.MapContract))))
+  // Independently constrain the enclosing kernel too: endpoint plans alone
+  // would survive a lowerer that selected the wrong threads or omitted setup.
+  def paramsSpecification: List(Param) := List.cons(Param.tensorMap(MapUse.load, "I_map"),
+    List.cons(Param.scalar(DType.u32, "PK"), List.cons(Param.scalar(DType.u32, "CK"),
+    List.cons(Param.scalar(DType.bool, "Pflag"), List.cons(Param.scalar(DType.bool, "Cflag"), List.nil(Param))))))
+  def launcherSpecification: Launcher := Launcher.mk(
+    List.cons(Param.input(DType.bf16, "I"), List.cons(Param.scalar(DType.u32, "M"), List.cons(Param.scalar(DType.u32, "N"),
+    List.cons(Param.scalar(DType.u32, "PK"), List.cons(Param.scalar(DType.u32, "CK"),
+    List.cons(Param.scalar(DType.bool, "Pflag"), List.cons(Param.scalar(DType.bool, "Cflag"), List.nil(Param)))))))),
+    List.nil(Expr), List.cons(MapEncoding.mk("I_map", MapUse.load, Param.input(DType.bf16, "I"), "M", "N", 64, 64), List.nil(MapEncoding)),
+    Grid.blocks(Expr.lit(1), Expr.lit(1)), 64)
+  def kernelSpecification (p: Ring.Program): Kernel := {
+    let producer := Ring.compile(Role.producer, Endpoints.syntax(Ring.producerOf(p)), 2)
+    let consumer := Ring.compile(Role.consumer, Endpoints.syntax(Ring.consumerOf(p)), producer.next)
+    let endpoints := Block.seq(Stmt.ifElse(Expr.bin(BinOp.eq, Expr.special(Builtin.threadX), Expr.lit(0)), producer.block, Block.done),
+      Block.seq(Stmt.ifElse(Expr.bin(BinOp.eq, Expr.special(Builtin.threadX), Expr.lit(32)), consumer.block, Block.done), RingBackend.closeSpecification))
+    let body := Block.seq(Stmt.declMut(DType.u32, 0, Expr.lit(0)), Block.seq(Stmt.declMut(DType.u32, 1, Expr.lit(0)),
+      Block.seq(Stmt.scoped(RingBackend.setupSpecification), Block.seq(Stmt.scoped(endpoints), Block.done))))
+    Kernel.mk("primitive_copy_ring", RingBackend.paramsSpecification, 9216, body, Option.some(RingBackend.launcherSpecification))
+  }
+  def Shell (p: Ring.Program): Prop := Eq(Kernel, Ring.kernel(p), RingBackend.kernelSpecification(p))
+  struct Artifact (p: Ring.Program): Prop
+   | mk (producer: Plan(Role.producer, Endpoints.syntax(Ring.producerOf(p)), Ring.compile(Role.producer, Endpoints.syntax(Ring.producerOf(p)), 2).block))
+       (consumer: Plan(Role.consumer, Endpoints.syntax(Ring.consumerOf(p)), Ring.compile(Role.consumer, Endpoints.syntax(Ring.consumerOf(p)), Ring.compile(Role.producer, Endpoints.syntax(Ring.producerOf(p)), 2).next).block))
+       (setup: Eq(Block, Ring.setup, RingBackend.setupSpecification))
+       (close: Eq(Block, Ring.close, RingBackend.closeSpecification))(layout: RingBackend.Layout)
+       (shell: RingBackend.Shell(p)): Artifact(p)
+}

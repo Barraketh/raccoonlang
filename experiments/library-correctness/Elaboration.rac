@@ -1,0 +1,140 @@
+import Dependent
+
+namespace Elaboration {
+  open Retirement
+  struct Checked (code: Code)(mode: Mode)(before: Phase): Type
+   | mk (after: Phase)(valid: Typed(mode, code, before, after)): Checked(code, mode, before)
+
+  struct Same (a: Phase)(b: Phase): Type
+   | mk (proof: Eq(Phase, a, b)): Same(a, b)
+
+  def phaseEq (a: Phase)(b: Phase): Option(Same(a, b)) := {
+    match a returning Option(Same(a, b)) with
+    | Phase.outside => {
+      match b returning Option(Same(a, b)) with
+      | Phase.outside => Option.some(Same.mk(Eq.refl(Phase.outside)))
+      | _ => Option.none(Same(a, b))
+    }
+    | Phase.live => {
+      match b returning Option(Same(a, b)) with
+      | Phase.live => Option.some(Same.mk(Eq.refl(Phase.live)))
+      | _ => Option.none(Same(a, b))
+    }
+    | Phase.finished => {
+      match b returning Option(Same(a, b)) with
+      | Phase.finished => Option.some(Same.mk(Eq.refl(Phase.finished)))
+      | _ => Option.none(Same(a, b))
+    }
+  }
+
+  // Phase inference returns evidence about the exact input code.
+  // A rejected source tree produces no program.
+  def infer (code: Code)(mode: Mode)(before: Phase): Option(Checked(code, mode, before)) decreases structural(code) := {
+    match code returning Option(Checked(code, mode, before)) with
+    | Code.skip => Option.some(Checked.mk(before, Typed.skip(mode, before)))
+    | Code.local => Option.some(Checked.mk(before, Typed.local(mode, before)))
+    | Code.issue => {
+      match mode returning Option(Checked(code, mode, before)) with
+      | Mode.leader => Option.none(Checked(code, mode, before))
+      | Mode.all => {
+        match before returning Option(Checked(code, mode, before)) with
+        | Phase.live => Option.some(Checked.mk(Phase.live, Typed.issue))
+        | _ => Option.none(Checked(code, mode, before))
+      }
+    }
+    | Code.finish => {
+      match mode returning Option(Checked(code, mode, before)) with
+      | Mode.leader => Option.none(Checked(code, mode, before))
+      | Mode.all => {
+        match before returning Option(Checked(code, mode, before)) with
+        | Phase.live => Option.some(Checked.mk(Phase.finished, Typed.finish))
+        | _ => Option.none(Checked(code, mode, before))
+      }
+    }
+    | Code.seq a b => {
+      match Elaboration.infer(a, mode, before) returning Option(Checked(code, mode, before)) with
+      | Option.none => Option.none(Checked(code, mode, before))
+      | Option.some left => {
+        match Elaboration.infer(b, mode, left.after) returning Option(Checked(code, mode, before)) with
+        | Option.none => Option.none(Checked(code, mode, before))
+        | Option.some right => Option.some(Checked.mk(right.after, Typed.seq(mode, a, b, before, left.after, right.after, left.valid, right.valid)))
+      }
+    }
+    | Code.branch a b => {
+      match Elaboration.infer(a, mode, before) returning Option(Checked(code, mode, before)) with
+      | Option.none => Option.none(Checked(code, mode, before))
+      | Option.some left => {
+        match Elaboration.infer(b, mode, before) returning Option(Checked(code, mode, before)) with
+        | Option.none => Option.none(Checked(code, mode, before))
+        | Option.some right => {
+          match Elaboration.phaseEq(left.after, right.after) returning Option(Checked(code, mode, before)) with
+          | Option.none => Option.none(Checked(code, mode, before))
+          | Option.some equal => {
+            match equal.proof returning Option(Checked(code, mode, before)) with
+            | Eq.refl same => Option.some(Checked.mk(left.after, Typed.branch(mode, a, b, before, left.after, left.valid, right.valid)))
+          }
+        }
+      }
+    }
+    | Code.loop body => {
+      match Elaboration.infer(body, mode, before) returning Option(Checked(code, mode, before)) with
+      | Option.none => Option.none(Checked(code, mode, before))
+      | Option.some result => {
+        match Elaboration.phaseEq(result.after, before) returning Option(Checked(code, mode, before)) with
+        | Option.none => Option.none(Checked(code, mode, before))
+        | Option.some equal => {
+          match equal.proof returning Option(Checked(code, mode, before)) with
+          | Eq.refl same => Option.some(Checked.mk(before, Typed.loop(mode, body, before, result.valid)))
+        }
+      }
+    }
+    | Code.leader body => {
+      match Elaboration.infer(body, Mode.leader, before) returning Option(Checked(code, mode, before)) with
+      | Option.none => Option.none(Checked(code, mode, before))
+      | Option.some result => {
+        match Elaboration.phaseEq(result.after, before) returning Option(Checked(code, mode, before)) with
+        | Option.none => Option.none(Checked(code, mode, before))
+        | Option.some equal => {
+          match equal.proof returning Option(Checked(code, mode, before)) with
+          | Eq.refl same => Option.some(Checked.mk(before, Typed.leader(mode, body, before, result.valid)))
+        }
+      }
+    }
+    | Code.allocate body => {
+      match mode returning Option(Checked(code, mode, before)) with
+      | Mode.leader => Option.none(Checked(code, mode, before))
+      | Mode.all => {
+        match before returning Option(Checked(code, mode, before)) with
+        | Phase.outside => {
+          match Elaboration.infer(body, Mode.all, Phase.live) returning Option(Checked(code, mode, before)) with
+          | Option.none => Option.none(Checked(code, mode, before))
+          | Option.some result => {
+            match result.after returning Option(Checked(code, mode, before)) with
+            | Phase.finished => Option.some(Checked.mk(Phase.outside, Typed.allocate(body, result.valid)))
+            | _ => Option.none(Checked(code, mode, before))
+          }
+        }
+        | _ => Option.none(Checked(code, mode, before))
+      }
+    }
+  }
+
+  def certify {code: Code}{mode: Mode}{before: Phase}(checked: Checked(code, mode, before))
+      : Dependent.Cmd(mode, before, checked.after) := Dependent.elaborateDerivation(code, checked.valid)
+  def everyAcceptedSource {code: Code}{mode: Mode}{before: Phase}(checked: Checked(code, mode, before))(isLeader: Bool)
+      : Contracts.Safe(Retirement.interpretation(code, isLeader), Retirement.at(before), Retirement.at(checked.after)) :=
+    Retirement.sound(code, checked.valid, isLeader)
+
+  struct Accepted (code: Code): Type
+   | mk (program: Dependent.Program)(source: Eq(Code, Dependent.code(program), code)): Accepted(code)
+  def program (code: Code): Option(Accepted(code)) := {
+    match Elaboration.infer(code, Mode.all, Phase.outside) returning Option(Accepted(code)) with
+    | Option.none => Option.none(Accepted(code))
+    | Option.some checked => {
+      match checked.after returning Option(Accepted(code)) with
+      | Phase.outside => Option.some(Accepted.mk(Elaboration.certify(checked), Eq.refl(code)))
+      | _ => Option.none(Accepted(code))
+    }
+  }
+
+}

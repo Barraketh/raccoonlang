@@ -1,0 +1,9 @@
+// expect: TypeMismatch
+import Scoped
+namespace Rejected {
+  def Thunk: Type := (u: Unit) -> Nat
+  def escape: Unit -> Nat := Scoped.withLease(Rejected.Thunk,
+    fun (l: Lifetime)(lease: Scoped.Lease(l)): Unit -> Nat => {
+      fun (u: Unit): Nat => Scoped.read(lease)
+    })
+}

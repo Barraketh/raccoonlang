@@ -1,0 +1,5 @@
+// expect: SealedConstructor
+import Ring
+namespace Rejected {
+  def bad: Ring.Program := Ring.Program.mk(Ring.producer(Ring.fill), Ring.consumer(Ring.take(Ring.read)))
+}

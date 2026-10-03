@@ -1,0 +1,53 @@
+import encoding.Core
+
+namespace CorePilot {
+  open Core
+  open Cuda
+
+  def consume {l: Lifetime}{a: Lifetime}{loan: Lifetime}{indexScope: Lifetime}{accScope: Lifetime}
+      (e: Ctx(l, Group.cta(64)))(buffer: Smem(a, DType.u32, 64))(reader: SRead(a, loan, DType.u32, 64))
+      (index: Val(indexScope, Grain.thread, DType.u32))(acc: Reg(accScope, DType.u32)): Ctx(l, Group.cta(64)) := {
+    let (e, value) := Core.sread(e, buffer, reader, Core.remC(index, 64))
+    let (e, previous) := Core.get(e, acc)
+    Core.set(e, acc, Core.add(previous, value))
+  }
+  def cycle {l: Lifetime}{a: Lifetime}{valueScope: Lifetime}{indexScope: Lifetime}{accScope: Lifetime}
+      (e: Ctx(l, Group.cta(64)))(buffer: Smem(a, DType.u32, 64))(tile: Tile(a, DType.u32, 64, TileState.empty))
+      (value: Val(valueScope, Grain.uniform, DType.u32))(index: Val(indexScope, Grain.thread, DType.u32))(acc: Reg(accScope, DType.u32))
+      : Pair(Ctx(l, Group.cta(64)), Tile(a, DType.u32, 64, TileState.empty)) := {
+    let (e, written) := Core.storeMine(e, buffer, tile, value)
+    let (e, ready) := Core.sync1(e, written)
+    let (e, (reading, done)) := Core.reads(e, ready,
+      fun (loan: Lifetime)(reader: SRead(a, loan, DType.u32, 64))(e: Ctx(l, Group.cta(64))): Pair(Ctx(l, Group.cta(64)), Unit) => {
+        let e := CorePilot.consume(e, buffer, reader, index, acc)
+        (CorePilot.consume(e, buffer, reader, index, acc), Unit.unit)
+      })
+    Core.sync1(e, reading)
+  }
+  def program: Program := Core.tiledKernel("machine_pipeline_core", DType.u32, 8,
+    fun (l: Lifetime)(e: Ctx(l, Group.cta(64)))(launch: Launch(l, DType.u32, 8))(out: GOwn(l, DType.u32, 8)): Ctx(l, Group.cta(64)) =>
+      Core.shared(e, DType.u32, 64,
+        fun (a: Lifetime)(first: Smem(a, DType.u32, 64))(firstTile: Tile(a, DType.u32, 64, TileState.empty))(e: Ctx(l, Group.cta(64))): Ctx(l, Group.cta(64)) =>
+          Core.shared(e, DType.u32, 64,
+            fun (b: Lifetime)(second: Smem(b, DType.u32, 64))(secondTile: Tile(b, DType.u32, 64, TileState.empty))(e: Ctx(l, Group.cta(64))): Ctx(l, Group.cta(64)) => {
+              let (e, firstAcc) := Core.reg(e, Core.lit(0))
+              let (e, secondAcc) := Core.reg(e, Core.lit(0))
+              let index := Core.add(Core.mulC(launch.ty, 8), launch.tx)
+              let (e, (firstTile, secondTile)) := Core.loop(e, launch.k,
+                Core.fixedPair(Core.fixedTile(a, DType.u32, 64, TileState.empty), Core.fixedTile(b, DType.u32, 64, TileState.empty)),
+                (firstTile, secondTile),
+                fun (iteration: Lifetime)(i: Val(iteration, Grain.uniform, DType.u32))(e: Ctx(iteration, Group.cta(64)))
+                    (tiles: Pair(Tile(a, DType.u32, 64, TileState.empty), Tile(b, DType.u32, 64, TileState.empty)))
+                    : Pair(Ctx(iteration, Group.cta(64)), Pair(Tile(a, DType.u32, 64, TileState.empty), Tile(b, DType.u32, 64, TileState.empty))) => {
+                  let (firstTile, secondTile) := tiles
+                  let (e, firstTile) := CorePilot.cycle(e, first, firstTile, Core.add(i, Core.lit(1)), index, firstAcc)
+                  let (e, secondTile) := CorePilot.cycle(e, second, secondTile, Core.add(i, Core.lit(1)), index, secondAcc)
+                  (e, (firstTile, secondTile))
+                })
+              let _ := Core.release(firstTile)
+              let _ := Core.release(secondTile)
+              let (e, firstValue) := Core.get(e, firstAcc)
+              let (e, secondValue) := Core.get(e, secondAcc)
+              Core.gstore(e, launch.c, out, Core.add(firstValue, secondValue))
+            })))
+}

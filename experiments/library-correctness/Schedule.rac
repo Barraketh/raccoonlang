@@ -1,0 +1,21 @@
+import Geometry
+
+namespace Schedule {
+  // A proof-friendly alternative to band ordering. S5 needs disjoint visits;
+  // it does not need the separate functional claim that every tile is visited.
+  def ticket (stride: Nat)(visitor: Nat)(iteration: Nat): Nat := Geometry.address(stride, iteration, visitor)
+  def injective (stride: Nat)(a: Nat)(b: Nat)(i: Nat)(j: Nat)(aInGrid: Nat.lt(a, stride))(bInGrid: Nat.lt(b, stride))
+      (same: Eq(Nat, Schedule.ticket(stride, a, i), Schedule.ticket(stride, b, j))): And(Eq(Nat, a, b), Eq(Nat, i, j)) := {
+    let result := Geometry.injective(stride, i, j, a, b, aInGrid, bInGrid, same)
+    And.intro(result.right, result.left)
+  }
+  def distinctVisitors (stride: Nat)(a: Nat)(b: Nat)(i: Nat)(j: Nat)(aInGrid: Nat.lt(a, stride))(bInGrid: Nat.lt(b, stride))
+      (different: Not(Eq(Nat, a, b))): Not(Eq(Nat, Schedule.ticket(stride, a, i), Schedule.ticket(stride, b, j))) :=
+    fun (same: Eq(Nat, Schedule.ticket(stride, a, i), Schedule.ticket(stride, b, j))): False => different(Schedule.injective(stride, a, b, i, j, aInGrid, bInGrid, same).left)
+  def repeatedVisitor (stride: Nat)(a: Nat)(i: Nat)(j: Nat)(aInGrid: Nat.lt(a, stride))(different: Not(Eq(Nat, i, j)))
+      : Not(Eq(Nat, Schedule.ticket(stride, a, i), Schedule.ticket(stride, a, j))) :=
+    fun (same: Eq(Nat, Schedule.ticket(stride, a, i), Schedule.ticket(stride, a, j))): False => different(Schedule.injective(stride, a, a, i, j, aInGrid, aInGrid, same).right)
+  def pairHalf (tile: Nat)(rank: Nat): Nat := Geometry.address(2, tile, rank)
+  def distinctHalves (a: Nat)(b: Nat)(p: Nat)(q: Nat)(pBound: Nat.lt(p, 2))(qBound: Nat.lt(q, 2))
+      (same: Eq(Nat, Schedule.pairHalf(a, p), Schedule.pairHalf(b, q))): And(Eq(Nat, a, b), Eq(Nat, p, q)) := Geometry.injective(2, a, b, p, q, pBound, qBound, same)
+}

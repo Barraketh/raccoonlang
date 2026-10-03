@@ -1,0 +1,32 @@
+import encoding.Registers
+import proofs.Lib
+
+namespace Budgets {
+  def Count (n: Nat): Prop := And(Nat.le(24, n), And(Nat.le(n, 256), Eq(Nat, Nat.mod(n, 8), 0)))
+  def countSound (n: Nat)(checked: Eq(Bool, Registers.countOk(n), Bool.true)): Budgets.Count(n) :=
+    And.intro(Lib.andLeft(Nat.ble(24, n), Bool.and(Nat.ble(n, 256), Nat.isZero(Nat.mod(n, 8))), checked),
+      And.intro(Lib.andLeft(Nat.ble(n, 256), Nat.isZero(Nat.mod(n, 8)), Lib.andRight(Nat.ble(24, n), Bool.and(Nat.ble(n, 256), Nat.isZero(Nat.mod(n, 8))), checked)),
+        Lib.isZeroSound(Nat.mod(n, 8), Lib.andRight(Nat.ble(n, 256), Nat.isZero(Nat.mod(n, 8)), Lib.andRight(Nat.ble(24, n), Bool.and(Nat.ble(n, 256), Nat.isZero(Nat.mod(n, 8))), checked)))))
+  struct Counts: Type
+   | mk (a: Nat)(b: Nat)(c: Nat)(d: Nat): Counts
+  def total (cs: Counts): Nat := Nat.mul(128, Nat.add(Nat.add(cs.a, cs.b), Nat.add(cs.c, cs.d)))
+  def valid (baseline: Nat)(cs: Counts): Prop := And(And(Budgets.Count(cs.a), Budgets.Count(cs.b)),
+    And(And(Budgets.Count(cs.c), Budgets.Count(cs.d)), Nat.le(Budgets.total(cs), Nat.mul(512, baseline))))
+  def fitsSound (baseline: Nat)(cs: Counts)(checked: Eq(Bool, Registers.fits(baseline, cs.a, cs.b, cs.c, cs.d), Bool.true)): Budgets.valid(baseline, cs) := {
+    let counts := Lib.andLeft(Bool.and(Bool.and(Registers.countOk(cs.a), Registers.countOk(cs.b)), Bool.and(Registers.countOk(cs.c), Registers.countOk(cs.d))), Nat.ble(Budgets.total(cs), Nat.mul(512, baseline)), checked)
+    let low := Lib.andLeft(Bool.and(Registers.countOk(cs.a), Registers.countOk(cs.b)), Bool.and(Registers.countOk(cs.c), Registers.countOk(cs.d)), counts)
+    let high := Lib.andRight(Bool.and(Registers.countOk(cs.a), Registers.countOk(cs.b)), Bool.and(Registers.countOk(cs.c), Registers.countOk(cs.d)), counts)
+    And.intro(And.intro(Budgets.countSound(cs.a, Lib.andLeft(Registers.countOk(cs.a), Registers.countOk(cs.b), low)),
+      Budgets.countSound(cs.b, Lib.andRight(Registers.countOk(cs.a), Registers.countOk(cs.b), low))),
+      And.intro(And.intro(Budgets.countSound(cs.c, Lib.andLeft(Registers.countOk(cs.c), Registers.countOk(cs.d), high)),
+        Budgets.countSound(cs.d, Lib.andRight(Registers.countOk(cs.c), Registers.countOk(cs.d), high))),
+        Lib.andRight(Bool.and(Bool.and(Registers.countOk(cs.a), Registers.countOk(cs.b)), Bool.and(Registers.countOk(cs.c), Registers.countOk(cs.d))), Nat.ble(Budgets.total(cs), Nat.mul(512, baseline)), checked)))
+  }
+  // The baseline comes from the SAME immutable launch metadata as the pool.
+  // This avoids the representation mismatch permitted by public Registers.pool.
+  sealed struct Split (threads: Nat)(residency: Nat): Type
+   | mk (counts: Counts)(checked: Eq(Bool, Registers.fits(Registers.budget(threads, residency), counts.a, counts.b, counts.c, counts.d), Bool.true)): Split(threads, residency)
+  def split (residency: Nat)(cs: Counts)[checked: Eq(Bool, Registers.fits(Registers.budget(512, residency), cs.a, cs.b, cs.c, cs.d), Bool.true)]: Split(512, residency) := Split.mk(512, residency, cs, checked)
+  def everySplit {residency: Nat}(s: Split(512, residency)): Budgets.valid(Registers.budget(512, residency), s.counts) := Budgets.fitsSound(Registers.budget(512, residency), s.counts, s.checked)
+  def counts {residency: Nat}(s: Split(512, residency)): Counts := s.counts
+}

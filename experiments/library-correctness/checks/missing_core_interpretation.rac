@@ -1,0 +1,9 @@
+// expect: ImplicitReconstructionFailed
+import Bridges
+namespace Rejected {
+  // Attempt to apply the universal theorem without its interpretation premise.
+  // The Program's type does not provide that premise.
+  def bad (program: Core.Program)
+      : Target.Correct(Retirement.at(Retirement.Phase.outside), Retirement.at(Retirement.Phase.outside), Core.kernelSyntax(program).body) :=
+    Bridges.reflectedCore(program)
+}

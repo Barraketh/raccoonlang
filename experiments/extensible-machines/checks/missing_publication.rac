@@ -1,0 +1,6 @@
+// expect: TypeMismatch
+import Pipeline
+namespace Rejected {
+  def bad: Machine.Emits(Pipeline.State,Pipeline.Op,Pipeline.spec(0),Machine.Code.atom(Pipeline.Op.publish),Option.some(4),5,Cuda.Block.done,5) :=
+    Machine.Emits.atom(Pipeline.spec(0),Pipeline.Op.publish,Option.some(4),5)
+}

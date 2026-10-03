@@ -1,0 +1,8 @@
+// expect: TypeMismatch
+// The abstract command is valid. Its claimed implementation drops the barrier.
+import Lowering
+import Examples
+namespace Rejected {
+  def bad: Lowering.Restoration := Lowering.Restoration.mk(Examples.back, Eq.refl(Examples.backEvents),
+    Lowering.withoutBarrier, Eq.refl(Lowering.expected))
+}

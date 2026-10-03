@@ -1,0 +1,8 @@
+// expect: SealedConstructor
+import Authority
+import Examples
+import RegisterProtocol
+namespace Rejected {
+  def forge (l: Lifetime): Authority.Cursor(l, Examples.cfg, RegisterProtocol.State.uniform) :=
+    Authority.Cursor.mk(l, Examples.cfg, RegisterProtocol.State.uniform)
+}

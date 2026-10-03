@@ -1,0 +1,51 @@
+import HappensBefore
+import Arithmetic
+
+namespace History {
+  def bounded (s: HappensBefore.State): Prop := (access: HappensBefore.Access) -> Spec.Mem(HappensBefore.Access, access, s.history) -> Nat.le(access.event, s.frontier)
+  def identities (s: HappensBefore.State): Prop := (a: HappensBefore.Access) -> (b: HappensBefore.Access) -> Spec.Mem(HappensBefore.Access, a, s.history) -> Spec.Mem(HappensBefore.Access, b, s.history) -> Eq(Nat, a.event, b.event) -> Eq(HappensBefore.Access, a, b)
+  def valid (s: HappensBefore.State): Prop := And(History.bounded(s), History.identities(s))
+  def initial (owner: Nat): History.valid(HappensBefore.initial(owner)) := And.intro(
+    fun (a: HappensBefore.Access)(member: Spec.Mem(HappensBefore.Access, a, List.nil(HappensBefore.Access))): Nat.le(a.event, 0) => {
+      match member returning Nat.le(a.event, 0) with
+    },
+    fun (a: HappensBefore.Access)(b: HappensBefore.Access)(left: Spec.Mem(HappensBefore.Access, a, List.nil(HappensBefore.Access)))(right: Spec.Mem(HappensBefore.Access, b, List.nil(HappensBefore.Access)))(same: Eq(Nat, a.event, b.event)): Eq(HappensBefore.Access, a, b) => {
+      match left returning Eq(HappensBefore.Access, a, b) with
+    })
+  def preserveBound (action: HappensBefore.Action)(s: HappensBefore.State)(valid: History.bounded(s)): History.bounded(HappensBefore.after(action, s)) := {
+    match action returning History.bounded(HappensBefore.after(action, s)) with
+    | HappensBefore.Action.handoff to => fun (a: HappensBefore.Access)(member: Spec.Mem(HappensBefore.Access, a, s.history)): Nat.le(a.event, Nat.succ(s.frontier)) => Arithmetic.transitive(a.event, s.frontier, Nat.succ(s.frontier), valid(a, member), Arithmetic.step(s.frontier))
+    | HappensBefore.Action.access actor write => fun (a: HappensBefore.Access)(member: Spec.Mem(HappensBefore.Access, a, HappensBefore.after(action, s).history)): Nat.le(a.event, Nat.succ(s.frontier)) => {
+      match member returning Nat.le(a.event, Nat.succ(s.frontier)) with
+      | Spec.Mem.here rest => Arithmetic.reflexive(Nat.succ(s.frontier))
+      | Spec.Mem.there head rest there => Arithmetic.transitive(a.event, s.frontier, Nat.succ(s.frontier), valid(a, there), Arithmetic.step(s.frontier))
+    }
+  }
+  def preserveIdentities (action: HappensBefore.Action)(s: HappensBefore.State)(valid: History.valid(s)): History.identities(HappensBefore.after(action, s)) := {
+    match action returning History.identities(HappensBefore.after(action, s)) with
+    | HappensBefore.Action.handoff to => valid.right
+    | HappensBefore.Action.access actor write => fun (a: HappensBefore.Access)(b: HappensBefore.Access)
+        (left: Spec.Mem(HappensBefore.Access, a, HappensBefore.after(action, s).history))(right: Spec.Mem(HappensBefore.Access, b, HappensBefore.after(action, s).history))
+        (same: Eq(Nat, a.event, b.event)): Eq(HappensBefore.Access, a, b) => {
+      match left returning Eq(HappensBefore.Access, a, b) with
+      | Spec.Mem.here rest => {
+        match right returning Eq(HappensBefore.Access, a, b) with
+        | Spec.Mem.here rest => Eq.refl(HappensBefore.Access.mk(Nat.succ(s.frontier), actor, write))
+        | Spec.Mem.there head rest there => False.elimP(Arithmetic.notSuccessor(s.frontier, Arithmetic.rewriteLeft(Eq.symm(same), s.frontier, valid.left(b, there))), Eq(HappensBefore.Access, a, b))
+      }
+      | Spec.Mem.there head rest there => {
+        match right returning Eq(HappensBefore.Access, a, b) with
+        | Spec.Mem.here rest => False.elimP(Arithmetic.notSuccessor(s.frontier, Arithmetic.rewriteLeft(same, s.frontier, valid.left(a, there))), Eq(HappensBefore.Access, a, b))
+        | Spec.Mem.there head rest other => valid.right(a, b, there, other, same)
+      }
+    }
+  }
+  def preserve (action: HappensBefore.Action)(s: HappensBefore.State)(valid: History.valid(s)): History.valid(HappensBefore.after(action, s)) :=
+    And.intro(History.preserveBound(action, s, valid.left), History.preserveIdentities(action, s, valid))
+  def RaceFree (s: HappensBefore.State): Prop := (a: HappensBefore.Access) -> (b: HappensBefore.Access) -> Spec.Mem(HappensBefore.Access, a, s.history) -> Spec.Mem(HappensBefore.Access, b, s.history) -> Not(Eq(Nat, a.actor, b.actor)) ->
+    And(Not(Eq(Nat, a.event, b.event)), Or(HappensBefore.Path(s.edges, a.event, b.event), HappensBefore.Path(s.edges, b.event, a.event)))
+  def noRace (s: HappensBefore.State)(safe: HappensBefore.sound(s))(history: History.valid(s)): History.RaceFree(s) :=
+    fun (a: HappensBefore.Access)(b: HappensBefore.Access)(left: Spec.Mem(HappensBefore.Access, a, s.history))(right: Spec.Mem(HappensBefore.Access, b, s.history))(different: Not(Eq(Nat, a.actor, b.actor)))
+        : And(Not(Eq(Nat, a.event, b.event)), Or(HappensBefore.Path(s.edges, a.event, b.event), HappensBefore.Path(s.edges, b.event, a.event))) =>
+      And.intro(fun (same: Eq(Nat, a.event, b.event)): False => different(congrArg(history.right(a, b, left, right, same), Nat, HappensBefore.Access.actor)), safe.left.right(a, b, left, right))
+}

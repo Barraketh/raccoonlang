@@ -1,0 +1,5 @@
+// expect: SealedConstructor
+import Tiny
+namespace Rejected {
+  def bad: Commands.Program := Commands.Program.mk(Native.world(4, 2), MachineTiny.kernel.producer, MachineTiny.kernel.issuer, MachineTiny.kernel.store, "forged")
+}

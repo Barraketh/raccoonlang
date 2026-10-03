@@ -1,0 +1,31 @@
+import Machine
+
+// Facts about the shared lowering's actual target constructors, with unknown
+// resources/operands where possible. These are local facts, not a whole-kernel
+// protocol derivation. Full client equivalence is checked separately.
+namespace TargetFacts {
+  open Core
+  open Cuda
+
+  def publishWaitsBeforeArrival {x: Lifetime}{h: Rescaler}(buffer: ScoreBuffer(x, h))
+      : Eq(List(Stmt), Core.publishCode(buffer),
+        List.cons(Stmt.syncWarp, List.cons(Stmt.instr(Instr.tmemWait(TmemWait.store)),
+          List.cons(Stmt.instr(Instr.tcFence(ThreadSync.before)), List.cons(Core.mbarArrive(Core.probsFull(buffer)), List.nil(Stmt)))))) :=
+    Eq.refl(Core.publishCode(buffer))
+
+  def pairCommitReachesBoth (barrier: Expr): Eq(Stmt, Core.mmaCommit(CtaGroup.two, barrier), Stmt.instr(Instr.tcCommit(CtaGroup.two, barrier, Option.some(3)))) :=
+    Eq.refl(Core.mmaCommit(CtaGroup.two, barrier))
+
+  def singleCommitIsLocal (barrier: Expr): Eq(Stmt, Core.mmaCommit(CtaGroup.one, barrier), Stmt.instr(Instr.tcCommit(CtaGroup.one, barrier, Option.none(Nat)))) :=
+    Eq.refl(Core.mmaCommit(CtaGroup.one, barrier))
+
+  def warpVoteKeepsWarpsConverged (first: Nat)(count: Nat): Eq(Group, Group.arm(Group.warps(first, count), Grain.warp), Group.warpwise(first, count)) :=
+    Eq.refl(Group.warpwise(first, count))
+
+  def threadBranchDiverges (first: Nat)(count: Nat): Eq(Group, Group.arm(Group.warps(first, count), Grain.thread), Group.diverged(Nat.mul(32, count))) :=
+    Eq.refl(Group.diverged(Nat.mul(32, count)))
+
+  def a3bFitsRegisterPool: Eq(Bool, Registers.fits(128, 192, 192, 72, 56), Bool.true) := Eq.refl(Bool.true)
+  def a3bUsesEntirePool: Eq(Nat, Nat.add(Nat.add(192, 192), Nat.add(72, 56)), 512) := Eq.refl(512)
+  def tooManyRegistersRejected: Eq(Bool, Registers.fits(128, 256, 256, 72, 56), Bool.false) := Eq.refl(Bool.false)
+}

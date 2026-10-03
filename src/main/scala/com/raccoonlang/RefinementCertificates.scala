@@ -555,11 +555,17 @@ private[raccoonlang] object RefinementCertificates {
         .filter { case (a, b) =>
           !Sorts.isProposition(a.tpe) && !Linearity.isLinear(a.tpe) && ValueEquivalence.defEq(a.tpe, b.tpe)
         }
-      val equations = raw.map { case (a, b) =>
-        val proposition = TypeChecker.checkTypeTerm(eq(a, b, env), env).value
-        val ref = SyntheticLocalRef.fresh("constructorIndex")
-        env = env.putLocal(ref, Value.canonicalizeProof(VProof(proposition)))
-        Equation(a, b, CA.Term.LocalRef(ref, span))
+      // Refuting any subset suffices. An unsupported function-index quotation
+      // must not prevent a different data index from certifying the clash.
+      val equations = raw.flatMap { case (a, b) =>
+        try {
+          val proposition = TypeChecker.checkTypeTerm(eq(a, b, env), env).value
+          val ref = SyntheticLocalRef.fresh("constructorIndex")
+          env = env.putLocal(ref, Value.canonicalizeProof(VProof(proposition)))
+          Some(Equation(a, b, CA.Term.LocalRef(ref, span)))
+        } catch {
+          case _: Unsupported => None
+        }
       }
       val all =
         if (

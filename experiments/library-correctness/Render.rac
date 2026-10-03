@@ -1,0 +1,19 @@
+import Examples
+import Structural
+
+namespace Render {
+  open Cuda
+  def params: List(Param) := List.cons(Param.tensorMap(MapUse.store, "O_map"),
+    List.cons(Param.scalar(DType.u32, "K"), List.cons(Param.scalar(DType.bool, "flag"), List.cons(Param.scalar(DType.bool, "leader"), List.nil(Param)))))
+  def launcher: Launcher := Launcher.mk(
+    List.cons(Param.output(DType.f32, "O"), List.cons(Param.scalar(DType.u32, "M"), List.cons(Param.scalar(DType.u32, "N"),
+      List.cons(Param.scalar(DType.u32, "K"), List.cons(Param.scalar(DType.bool, "flag"), List.cons(Param.scalar(DType.bool, "leader"), List.nil(Param))))))),
+    List.nil(Expr), List.cons(MapEncoding.mk("O_map", MapUse.store, Param.output(DType.f32, "O"), "M", "N", 32, 32), List.nil(MapEncoding)),
+    Grid.blocks(Expr.lit(1), Expr.lit(1)), 32)
+  // An inspection artifact for the fragment, not a fully certified GPU library.
+  // In particular this example intentionally reuses output coordinates.
+  def kernel: Kernel := Kernel.mk("retirement_fragment", Render.params, 4096, Target.syntax(Examples.program), Option.some(Render.launcher))
+  def checked: Check.WellFormed(Render.kernel) := Check.Clean.mk(List.nil(String), List.nil(String), List.nil(String), List.nil(String), List.nil(String), List.nil(String), List.nil(String))
+  def structurallySound: Spec.WellFormed(Render.kernel) := WellFormed.sound(Render.kernel, Render.checked)
+}
+Cuda.boundedKernel(Option.some((32, 1)), Render.kernel)

@@ -1,0 +1,202 @@
+import Scheduler
+import History
+
+// Memory contract for the communicating slot. The synchronization events here
+// must be refined by actual empty/full waits and proxy/tensor fences in CUDA.
+namespace Coupled {
+  open Concurrent.{Action, Slot, Phase, Outcome}
+  def memory (action: Action)(h: HappensBefore.State): HappensBefore.State := {
+    match action returning HappensBefore.State with
+    | Action.acquire => HappensBefore.after(HappensBefore.Action.handoff(0), h)
+    | Action.issue => HappensBefore.after(HappensBefore.Action.access(2, Bool.true), HappensBefore.after(HappensBefore.Action.handoff(2), h))
+    | Action.await => HappensBefore.after(HappensBefore.Action.handoff(1), h)
+    | Action.read => HappensBefore.after(HappensBefore.Action.access(1, Bool.false), h)
+    | _ => h
+  }
+  def ownerAt (h: HappensBefore.State): Slot -> Prop := fun (slot: Slot): Prop => {
+    match slot returning Prop with
+    | Slot.writing => Eq(Nat, h.owner, 0)
+    | Slot.pending => Eq(Nat, h.owner, 2)
+    | Slot.full => Eq(Nat, h.owner, 2)
+    | Slot.reading => Eq(Nat, h.owner, 1)
+    | Slot.empty => True
+  }
+  def ownership (s: Concurrent.State)(h: HappensBefore.State): Prop := Coupled.ownerAt(h)(s.slot)
+  def post (action: Action)(s: Concurrent.State)(h: HappensBefore.State): Outcome -> Prop := fun (out: Outcome): Prop => {
+    match out returning Prop with
+    | Outcome.ran next => Coupled.ownership(next, Coupled.memory(action, h))
+    | Outcome.blocked => Coupled.ownership(s, h)
+    | Outcome.fault => False
+  }
+  def readerPreserved (s: Concurrent.State)(h: HappensBefore.State)(valid: Coupled.ownership(s, h))
+      : Coupled.ownership(s, Coupled.memory(Action.read, h)) := {
+    match s.slot returning Coupled.ownership(s, Coupled.memory(Action.read, h)) with
+    | _ => valid
+  }
+  def memorySafe (action: Action)(s: Concurrent.State)(h: HappensBefore.State)
+      (valid: Concurrent.Invariant(s))(allowed: Concurrent.Allowed(action, s))(ownership: Coupled.ownership(s, h))(safe: HappensBefore.sound(h))
+      : HappensBefore.sound(Coupled.memory(action, h)) := {
+    match action returning HappensBefore.sound(Coupled.memory(action, h)) with
+    | Action.acquire => And.intro(HappensBefore.preserve(HappensBefore.Action.handoff(0), h, safe.left, True.intro), HappensBefore.preservedEdges(HappensBefore.Action.handoff(0), h, safe.right, True.intro))
+    | Action.await => And.intro(HappensBefore.preserve(HappensBefore.Action.handoff(1), h, safe.left, True.intro), HappensBefore.preservedEdges(HappensBefore.Action.handoff(1), h, safe.right, True.intro))
+    | Action.issue => {
+      let handoff := HappensBefore.after(HappensBefore.Action.handoff(2), h)
+      let handed := And.intro(HappensBefore.preserve(HappensBefore.Action.handoff(2), h, safe.left, True.intro), HappensBefore.preservedEdges(HappensBefore.Action.handoff(2), h, safe.right, True.intro))
+      And.intro(HappensBefore.preserve(HappensBefore.Action.access(2, Bool.true), handoff, handed.left, Eq.refl(2)), HappensBefore.preservedEdges(HappensBefore.Action.access(2, Bool.true), handoff, handed.right, Eq.refl(2)))
+    }
+    | Action.read => {
+      let access := Concurrent.accessSafe(Action.read, s, valid, allowed)
+      let owner := Eq.substP(access.right.left, Coupled.ownerAt(h), ownership)
+      And.intro(HappensBefore.preserve(HappensBefore.Action.access(1, Bool.false), h, safe.left, Eq.symm(owner)), HappensBefore.preservedEdges(HappensBefore.Action.access(1, Bool.false), h, safe.right, Eq.symm(owner)))
+    }
+    | _ => safe
+  }
+  def preserve (action: Action)(s: Concurrent.State)(h: HappensBefore.State)(valid: Coupled.ownership(s, h))(allowed: Concurrent.Allowed(action, s))
+      : Coupled.post(action, s, h)(Concurrent.step(action, s)) := {
+    match s.active returning Coupled.post(action, s, h)(Concurrent.step(action, s)) with
+    | Bool.false => False.elimP(Bool.falseNeTrue(allowed.left), Coupled.post(action, s, h)(Concurrent.step(action, s)))
+    | Bool.true => {
+      match action returning Coupled.post(action, s, h)(Concurrent.step(action, s)) with
+      | Action.acquire => {
+        match s.producer.phase returning Coupled.post(action, s, h)(Concurrent.step(action, s)) with
+        | Phase.ready => {
+          match s.slot returning Coupled.post(action, s, h)(Concurrent.step(action, s)) with
+          | Slot.empty => Eq.refl(0)
+          | _ => valid
+        }
+        | Phase.held => Concurrent.heldNotReady(allowed.right, Coupled.post(action, s, h)(Concurrent.step(action, s)))
+        | Phase.done => Concurrent.doneNotReady(allowed.right, Coupled.post(action, s, h)(Concurrent.step(action, s)))
+      }
+      | Action.issue => {
+        match s.producer.phase returning Coupled.post(action, s, h)(Concurrent.step(action, s)) with
+        | Phase.ready => Concurrent.readyNotHeld(allowed.right, Coupled.post(action, s, h)(Concurrent.step(action, s)))
+        | Phase.held => Eq.refl(2)
+        | Phase.done => Concurrent.doneNotHeld(allowed.right, Coupled.post(action, s, h)(Concurrent.step(action, s)))
+      }
+      | Action.await => {
+        match s.consumer.phase returning Coupled.post(action, s, h)(Concurrent.step(action, s)) with
+        | Phase.ready => {
+          match s.slot returning Coupled.post(action, s, h)(Concurrent.step(action, s)) with
+          | Slot.full => Eq.refl(1)
+          | _ => valid
+        }
+        | Phase.held => Concurrent.heldNotReady(allowed.right, Coupled.post(action, s, h)(Concurrent.step(action, s)))
+        | Phase.done => Concurrent.doneNotReady(allowed.right, Coupled.post(action, s, h)(Concurrent.step(action, s)))
+      }
+      | Action.read => {
+        match s.consumer.phase returning Coupled.post(action, s, h)(Concurrent.step(action, s)) with
+        | Phase.ready => Concurrent.readyNotHeld(allowed.right, Coupled.post(action, s, h)(Concurrent.step(action, s)))
+        | Phase.held => Coupled.readerPreserved(s, h, valid)
+        | Phase.done => Concurrent.doneNotHeld(allowed.right, Coupled.post(action, s, h)(Concurrent.step(action, s)))
+      }
+      | Action.release => {
+        match s.consumer.phase returning Coupled.post(action, s, h)(Concurrent.step(action, s)) with
+        | Phase.ready => Concurrent.readyNotHeld(allowed.right, Coupled.post(action, s, h)(Concurrent.step(action, s)))
+        | Phase.held => True.intro
+        | Phase.done => Concurrent.doneNotHeld(allowed.right, Coupled.post(action, s, h)(Concurrent.step(action, s)))
+      }
+      | Action.finishProducer => {
+        match s.producer.phase returning Coupled.post(action, s, h)(Concurrent.step(action, s)) with
+        | Phase.ready => {
+          match s.slot returning Coupled.post(action, s, h)(Concurrent.step(action, s)) with
+          | Slot.empty => True.intro
+          | _ => valid
+        }
+        | Phase.held => Concurrent.heldNotReady(allowed.right, Coupled.post(action, s, h)(Concurrent.step(action, s)))
+        | Phase.done => Concurrent.doneNotReady(allowed.right, Coupled.post(action, s, h)(Concurrent.step(action, s)))
+      }
+      | Action.finishConsumer => {
+        match s.consumer.phase returning Coupled.post(action, s, h)(Concurrent.step(action, s)) with
+        | Phase.ready => valid
+        | Phase.held => Concurrent.heldNotReady(allowed.right, Coupled.post(action, s, h)(Concurrent.step(action, s)))
+        | Phase.done => Concurrent.doneNotReady(allowed.right, Coupled.post(action, s, h)(Concurrent.step(action, s)))
+      }
+      | Action.complete => {
+        match s.slot returning Coupled.post(action, s, h)(Concurrent.step(action, s)) with
+        | Slot.pending => valid
+        | Slot.empty => Concurrent.emptyNotPending(allowed.right, Coupled.post(action, s, h)(Concurrent.step(action, s)))
+        | Slot.writing => Concurrent.writingNotPending(allowed.right, Coupled.post(action, s, h)(Concurrent.step(action, s)))
+        | Slot.full => Concurrent.fullNotPending(allowed.right, Coupled.post(action, s, h)(Concurrent.step(action, s)))
+        | Slot.reading => Concurrent.readingNotPending(allowed.right, Coupled.post(action, s, h)(Concurrent.step(action, s)))
+      }
+      | Action.close => {
+        match s.producer.phase returning Coupled.post(action, s, h)(Concurrent.step(action, s)) with
+        | Phase.ready => Concurrent.readyNotDone(allowed.right.left, Coupled.post(action, s, h)(Concurrent.step(action, s)))
+        | Phase.held => Concurrent.heldNotDone(allowed.right.left, Coupled.post(action, s, h)(Concurrent.step(action, s)))
+        | Phase.done => {
+          match s.consumer.phase returning Coupled.post(action, s, h)(Concurrent.step(action, s)) with
+          | Phase.ready => Concurrent.readyNotDone(allowed.right.right, Coupled.post(action, s, h)(Concurrent.step(action, s)))
+          | Phase.held => Concurrent.heldNotDone(allowed.right.right, Coupled.post(action, s, h)(Concurrent.step(action, s)))
+          | Phase.done => valid
+        }
+      }
+    }
+  }
+  def history (actions: List(Action))(s: Concurrent.State)(h: HappensBefore.State): HappensBefore.State decreases structural(actions) := {
+    match actions returning HappensBefore.State with
+    | List.nil => h
+    | List.cons action rest => {
+      match Concurrent.step(action, s) returning HappensBefore.State with
+      | Outcome.ran next => Coupled.history(rest, next, Coupled.memory(action, h))
+      | Outcome.blocked => Coupled.history(rest, s, h)
+      | Outcome.fault => h
+    }
+  }
+  def continuation (action: Action)(rest: List(Action))(s: Concurrent.State)(h: HappensBefore.State): Outcome -> HappensBefore.State := fun (out: Outcome): HappensBefore.State => {
+    match out returning HappensBefore.State with
+    | Outcome.ran next => Coupled.history(rest, next, Coupled.memory(action, h))
+    | Outcome.blocked => Coupled.history(rest, s, h)
+    | Outcome.fault => h
+  }
+  def continued (action: Action)(rest: List(Action))(s: Concurrent.State)(end: Concurrent.State)(h: HappensBefore.State): Outcome -> Prop := fun (out: Outcome): Prop =>
+    And(HappensBefore.sound(Coupled.continuation(action, rest, s, h)(out)), Coupled.ownership(end, Coupled.continuation(action, rest, s, h)(out)))
+  def everyExecution (actions: List(Action))(s: Concurrent.State)(end: Concurrent.State)(execution: Concurrent.Execution(actions, s, end))
+      (h: HappensBefore.State)(valid: Concurrent.Invariant(s))(ownership: Coupled.ownership(s, h))(safe: HappensBefore.sound(h))
+      : And(HappensBefore.sound(Coupled.history(actions, s, h)), Coupled.ownership(end, Coupled.history(actions, s, h))) decreases structural(actions) := {
+    match execution returning And(HappensBefore.sound(Coupled.history(actions, s, h)), Coupled.ownership(end, Coupled.history(actions, s, h))) with
+    | Concurrent.Execution.done same => And.intro(safe, ownership)
+    | Concurrent.Execution.advance action rest s next end local actual tail => Eq.substP(Eq.symm(actual), Coupled.continued(action, rest, s, end, h),
+        Coupled.everyExecution(rest, next, end, tail, Coupled.memory(action, h), Concurrent.advances(action, s, next, valid, local, actual),
+          Eq.substP(actual, Coupled.post(action, s, h), Coupled.preserve(action, s, h, ownership, local)), Coupled.memorySafe(action, s, h, valid, local, ownership, safe)))
+    | Concurrent.Execution.blocked action rest s end local actual tail => Eq.substP(Eq.symm(actual), Coupled.continued(action, rest, s, end, h), Coupled.everyExecution(rest, s, end, tail, h, valid, ownership, safe))
+  }
+  def kernelHistory (producer: Endpoints.Cmd(Endpoints.Role.producer, Phase.ready, Phase.done))(consumer: Endpoints.Cmd(Endpoints.Role.consumer, Phase.ready, Phase.done))
+      (pRuntime: Contracts.Runtime)(cRuntime: Contracts.Runtime)(choices: List(Scheduler.Choice)): HappensBefore.State := {
+    let scheduled := Scheduler.kernel(producer, consumer, pRuntime, cRuntime, choices)
+    Coupled.history(scheduled.actions, Concurrent.initial, HappensBefore.initial(0))
+  }
+  def everyKernel (producer: Endpoints.Cmd(Endpoints.Role.producer, Phase.ready, Phase.done))(consumer: Endpoints.Cmd(Endpoints.Role.consumer, Phase.ready, Phase.done))
+      (pRuntime: Contracts.Runtime)(cRuntime: Contracts.Runtime)(choices: List(Scheduler.Choice))
+      : HappensBefore.sound(Coupled.kernelHistory(producer, consumer, pRuntime, cRuntime, choices)) := {
+    let scheduled := Scheduler.kernel(producer, consumer, pRuntime, cRuntime, choices)
+    Coupled.everyExecution(scheduled.actions, Concurrent.initial, scheduled.state, scheduled.execution, HappensBefore.initial(0), Concurrent.Invariant.idle(0, Bool.false, Bool.false), True.intro, HappensBefore.initialSound(0)).left
+  }
+
+  def memoryHistory (action: Action)(h: HappensBefore.State)(valid: History.valid(h)): History.valid(Coupled.memory(action, h)) := {
+    match action returning History.valid(Coupled.memory(action, h)) with
+    | Action.acquire => History.preserve(HappensBefore.Action.handoff(0), h, valid)
+    | Action.await => History.preserve(HappensBefore.Action.handoff(1), h, valid)
+    | Action.issue => History.preserve(HappensBefore.Action.access(2, Bool.true), HappensBefore.after(HappensBefore.Action.handoff(2), h), History.preserve(HappensBefore.Action.handoff(2), h, valid))
+    | Action.read => History.preserve(HappensBefore.Action.access(1, Bool.false), h, valid)
+    | _ => valid
+  }
+  def freshContinuation (action: Action)(rest: List(Action))(s: Concurrent.State)(h: HappensBefore.State): Outcome -> Prop := fun (out: Outcome): Prop => History.valid(Coupled.continuation(action, rest, s, h)(out))
+  def freshEvents (actions: List(Action))(s: Concurrent.State)(h: HappensBefore.State)(valid: History.valid(h))
+      : History.valid(Coupled.history(actions, s, h)) decreases structural(actions) := {
+    match actions returning History.valid(Coupled.history(actions, s, h)) with
+    | List.nil => valid
+    | List.cons action rest => {
+      match actual : Concurrent.step(action, s) returning History.valid(Coupled.history(actions, s, h)) with
+      | Outcome.ran next => Eq.substP(Eq.symm(actual), Coupled.freshContinuation(action, rest, s, h), Coupled.freshEvents(rest, next, Coupled.memory(action, h), Coupled.memoryHistory(action, h, valid)))
+      | Outcome.blocked => Eq.substP(Eq.symm(actual), Coupled.freshContinuation(action, rest, s, h), Coupled.freshEvents(rest, s, h, valid))
+      | Outcome.fault => Eq.substP(Eq.symm(actual), Coupled.freshContinuation(action, rest, s, h), valid)
+    }
+  }
+  def noRace (producer: Endpoints.Cmd(Endpoints.Role.producer, Phase.ready, Phase.done))(consumer: Endpoints.Cmd(Endpoints.Role.consumer, Phase.ready, Phase.done))
+      (pRuntime: Contracts.Runtime)(cRuntime: Contracts.Runtime)(choices: List(Scheduler.Choice))
+      : History.RaceFree(Coupled.kernelHistory(producer, consumer, pRuntime, cRuntime, choices)) := {
+    let scheduled := Scheduler.kernel(producer, consumer, pRuntime, cRuntime, choices)
+    History.noRace(Coupled.kernelHistory(producer, consumer, pRuntime, cRuntime, choices), Coupled.everyKernel(producer, consumer, pRuntime, cRuntime, choices),
+      Coupled.freshEvents(scheduled.actions, Concurrent.initial, HappensBefore.initial(0), History.initial(0)))
+  }
+}

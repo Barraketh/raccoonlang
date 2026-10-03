@@ -1,0 +1,5 @@
+// expect: EvidenceNotDischarged
+import Tiny
+namespace Rejected {
+  def bad: Commands.Program := Commands.kernel("bad", 0, 2, fun (l: Lifetime)(r: Commands.Resource(l, Native.world(0, 2))): Commands.Cmd(l, Native.world(0, 2), Protocol.Role.producer, Protocol.State.producing, Protocol.State.producing) => MachineTiny.producer(r), fun (l: Lifetime)(r: Commands.Resource(l, Native.world(0, 2))): Commands.Cmd(l, Native.world(0, 2), Protocol.Role.issuer, Protocol.State.empty, Protocol.State.pending) => MachineTiny.issuer(r), fun (l: Lifetime)(r: Commands.Resource(l, Native.world(0, 2))): Commands.Cmd(l, Native.world(0, 2), Protocol.Role.store, Protocol.State.storing, Protocol.State.done) => MachineTiny.epilogue(r))
+}

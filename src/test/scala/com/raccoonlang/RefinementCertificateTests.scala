@@ -24,6 +24,8 @@ class RefinementCertificateTests extends munit.FunSuite with TestSupport {
     }
   }
   test("many compatible index hypotheses cannot amplify a wrong proposal") {
+    // Confine fault injection to the fixtures even when this suite runs alone.
+    typecheckDecls("", Prelude.default)
     val indices = (1 to 12).map(i => s"n$i")
     val telescope = indices.map(n => s"($n:P)").mkString
     val args = indices.mkString(",")
@@ -142,5 +144,37 @@ class RefinementCertificateTests extends munit.FunSuite with TestSupport {
                            | | P.s n => Eq(P,P.z,P.z)
                            |""".stripMargin
     expectOnly[LinearInType](typecheckDecls(source))
+  }
+  test("a data index certifies exclusion when another index has unsupported function quotation") {
+    typecheckDecls(
+      """
+        |inductive Node:Type
+        | | zero:Node
+        | | one:Node
+        |def constant(n:Node):Node -> Node := fun (x:Node):Node => n
+        |inductive Typed indices (code:Node)(run:Node -> Node):Prop
+        | | zero:Typed(Node.zero,constant(Node.zero))
+        | | one:Typed(Node.one,constant(Node.one))
+        |inductive Flag:Prop
+        | | yes:Flag
+        |def origin(run:Node -> Node)(proof:Typed(Node.one,run)):Flag := match proof returning Flag with
+        | | Typed.one => Flag.yes
+        |""".stripMargin,
+      Prelude.none
+    )
+  }
+  test("discarding unsupported index equations does not certify an inhabited case") {
+    val source = """
+                   |inductive Node:Type
+                   | | zero:Node
+                   |def constant(n:Node):Node -> Node := fun (x:Node):Node => n
+                   |inductive Typed indices (run:Node -> Node):Prop
+                   | | mk:Typed(constant(Node.zero))
+                   |inductive Bottom:Prop
+                   |def impossible(run:Node -> Node)(proof:Typed(run)):Bottom := match proof returning Bottom with
+                   |""".stripMargin
+    RefinementCertificates.Testing.withProposals {
+      expectOnly[MissingCase](typecheckDecls(source, Prelude.none))
+    }
   }
 }

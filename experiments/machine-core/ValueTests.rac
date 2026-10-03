@@ -1,0 +1,24 @@
+import Api
+
+namespace ValueTests {
+  // Observe the first actual shared-store operand list, ignoring address setup.
+  def firstSharedInputs (body: Cuda.Block): Option(List(Cuda.Expr)) decreases structural(body) := {
+    match body returning Option(List(Cuda.Expr)) with
+    | Cuda.Block.done => Option.none(List(Cuda.Expr))
+    | Cuda.Block.seq stmt rest => {
+      match stmt returning Option(List(Cuda.Expr)) with
+      | Cuda.Stmt.instr instruction => {
+        match instruction returning Option(List(Cuda.Expr)) with
+        | Cuda.Instr.stShared address values => Option.some(values)
+        | _ => ValueTests.firstSharedInputs(rest)
+      }
+      | _ => ValueTests.firstSharedInputs(rest)
+    }
+  }
+  // The supplied data is independent of the fresh-name counter. Inferring
+  // data as start - 32 would fail this statement for an unknown start.
+  def writesSuppliedValues (world: Gpu.Layout)(start: Nat): Eq(Option(List(Cuda.Expr)),
+      ValueTests.firstSharedInputs(Native.emit(world, Native.Op.writeStage(17), start).body),
+      Option.some(List.cons(Cuda.Expr.var(17), List.cons(Cuda.Expr.var(18), List.cons(Cuda.Expr.var(19), List.cons(Cuda.Expr.var(20), List.nil(Cuda.Expr))))))) :=
+    Eq.refl(Option.some(List.cons(Cuda.Expr.var(17), List.cons(Cuda.Expr.var(18), List.cons(Cuda.Expr.var(19), List.cons(Cuda.Expr.var(20), List.nil(Cuda.Expr)))))))
+}

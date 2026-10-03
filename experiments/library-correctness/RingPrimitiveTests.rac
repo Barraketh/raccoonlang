@@ -1,0 +1,25 @@
+import RingPrimitives
+
+namespace RingPrimitiveTests {
+  // The first producer wait has a genuinely completed empty phase zero.
+  def firstWait: Eq(RingPrimitives.Outcome,
+      RingPrimitives.run(RingPrimitives.implementation(16, Concurrent.Action.acquire, Concurrent.initial), RingPrimitives.world(16, Concurrent.initial)),
+      RingPrimitives.Outcome.ran(RingPrimitives.World.mk(Mbarrier.waiting(0, Bool.true), Mbarrier.waiting(1, Bool.true), Bool.false))) :=
+    Eq.refl(RingPrimitives.Outcome.ran(RingPrimitives.World.mk(Mbarrier.waiting(0, Bool.true), Mbarrier.waiting(1, Bool.true), Bool.false)))
+  def unpublished: Mbarrier.State := Mbarrier.initial
+  def missingInitFence: Eq(Mbarrier.Outcome, Mbarrier.step(Mbarrier.Action.publish, RingPrimitiveTests.unpublished), Mbarrier.Outcome.fault) := Eq.refl(Mbarrier.Outcome.fault)
+  def useAfterInvalidation: Eq(Mbarrier.Outcome, Mbarrier.step(Mbarrier.Action.wait(0), Mbarrier.dead), Mbarrier.Outcome.fault) := Eq.refl(Mbarrier.Outcome.fault)
+  def stalePhase: Eq(Mbarrier.Outcome, Mbarrier.step(Mbarrier.Action.wait(0), Mbarrier.waiting(2, Bool.false)), Mbarrier.Outcome.fault) := Eq.refl(Mbarrier.Outcome.fault)
+  def currentWaitBlocks: Eq(Mbarrier.Outcome, Mbarrier.step(Mbarrier.Action.wait(7), Mbarrier.waiting(7, Bool.true)), Mbarrier.Outcome.blocked) := Eq.refl(Mbarrier.Outcome.blocked)
+  def zeroBytesCompletesEarly: Eq(Mbarrier.Outcome, Mbarrier.step(Mbarrier.Action.arrive(0), Mbarrier.waiting(0, Bool.true)), Mbarrier.Outcome.ran(Mbarrier.waiting(1, Bool.false))) := Eq.refl(Mbarrier.Outcome.ran(Mbarrier.waiting(1, Bool.false)))
+  def noUnobservedReuse: Eq(Mbarrier.Outcome, Mbarrier.step(Mbarrier.Action.arrive(16), Mbarrier.waiting(1, Bool.false)), Mbarrier.Outcome.fault) := Eq.refl(Mbarrier.Outcome.fault)
+  def partial: Mbarrier.State := Mbarrier.State.mk(Bool.true, Bool.true, Bool.true, 0, Bool.false, 16, 8, Bool.true)
+  def partialStillPending: Eq(Mbarrier.Outcome, Mbarrier.step(Mbarrier.Action.complete(8), Mbarrier.pending(0, 16)), Mbarrier.Outcome.ran(RingPrimitiveTests.partial)) := Eq.refl(Mbarrier.Outcome.ran(RingPrimitiveTests.partial))
+  def partialWaitBlocks: Eq(Mbarrier.Outcome, Mbarrier.step(Mbarrier.Action.wait(0), RingPrimitiveTests.partial), Mbarrier.Outcome.blocked) := Eq.refl(Mbarrier.Outcome.blocked)
+  def lastBytesComplete: Eq(Mbarrier.Outcome, Mbarrier.step(Mbarrier.Action.complete(8), RingPrimitiveTests.partial), Mbarrier.Outcome.ran(Mbarrier.waiting(1, Bool.false))) := Eq.refl(Mbarrier.Outcome.ran(Mbarrier.waiting(1, Bool.false)))
+  // Raw semantics also admits negative transaction debt (A47). The single-CTA
+  // public API orders expectation before issue; this is a platform-model test.
+  def early: Mbarrier.State := Mbarrier.State.mk(Bool.true, Bool.true, Bool.true, 0, Bool.true, 0, 16, Bool.true)
+  def earlyCompletion: Eq(Mbarrier.Outcome, Mbarrier.step(Mbarrier.Action.complete(16), Mbarrier.waiting(0, Bool.true)), Mbarrier.Outcome.ran(RingPrimitiveTests.early)) := Eq.refl(Mbarrier.Outcome.ran(RingPrimitiveTests.early))
+  def expectationBalancesEarlyCompletion: Eq(Mbarrier.Outcome, Mbarrier.step(Mbarrier.Action.arrive(16), RingPrimitiveTests.early), Mbarrier.Outcome.ran(Mbarrier.waiting(1, Bool.false))) := Eq.refl(Mbarrier.Outcome.ran(Mbarrier.waiting(1, Bool.false)))
+}

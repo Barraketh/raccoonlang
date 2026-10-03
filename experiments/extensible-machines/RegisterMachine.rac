@@ -1,0 +1,113 @@
+import Machine
+import WholeModel
+import encoding.Registers
+
+namespace RegisterMachine {
+  inductive State: Type
+   | uniform: State
+   | split: State
+   | joined: State
+   | restoring: State
+  inductive Op: Type
+   | split: Op
+   | join: Op
+   | restore: Op
+   | barrier: Op
+  def before (op: Op): State := {
+    match op returning State with
+    | Op.split => State.uniform
+    | Op.join => State.split
+    | Op.restore => State.joined
+    | Op.barrier => State.restoring
+  }
+  def after (op: Op): State := {
+    match op returning State with
+    | Op.split => State.split
+    | Op.join => State.joined
+    | Op.restore => State.restoring
+    | Op.barrier => State.uniform
+  }
+  def stateEq (a: State)(b: State): Bool := {
+    match a returning Bool with
+    | State.uniform => {
+      match b returning Bool with
+      | State.uniform => Bool.true
+      | _ => Bool.false
+    }
+    | State.split => {
+      match b returning Bool with
+      | State.split => Bool.true
+      | _ => Bool.false
+    }
+    | State.joined => {
+      match b returning Bool with
+      | State.joined => Bool.true
+      | _ => Bool.false
+    }
+    | State.restoring => {
+      match b returning Bool with
+      | State.restoring => Bool.true
+      | _ => Bool.false
+    }
+  }
+  def step (counts: WholeModel.Counts)(op: Op)(r: Contracts.Runtime)(s: State): Contracts.Outcome(State) :=
+    Contracts.select(WholeModel.fits(counts),
+      Contracts.select(RegisterMachine.stateEq(s, RegisterMachine.before(op)), Contracts.Outcome.ok(RegisterMachine.after(op)), Contracts.Outcome.fault(State)),
+      Contracts.Outcome.fault(State))
+  def emit (counts: WholeModel.Counts)(op: Op)(current: Option(Nat)): Cuda.Block := {
+    match op returning Cuda.Block with
+    | Op.split => Cuda.Block.seq(Emission.registerChange(0, 128, counts.a, Cuda.Block.done),
+        Cuda.Block.seq(Emission.registerChange(1, 128, counts.b, Cuda.Block.done),
+          Cuda.Block.seq(Emission.registerChange(2, 128, counts.c, Cuda.Block.done),
+            Cuda.Block.seq(Emission.registerChange(3, 128, counts.d, Cuda.Block.done), Cuda.Block.done))))
+    | Op.join => Cuda.Block.seq(Cuda.Stmt.sync, Cuda.Block.done)
+    | Op.restore => Cuda.Block.seq(Emission.registerChange(0, counts.a, 128, Cuda.Block.done),
+        Cuda.Block.seq(Emission.registerChange(1, counts.b, 128, Cuda.Block.done),
+          Cuda.Block.seq(Emission.registerChange(2, counts.c, 128, Cuda.Block.done),
+            Cuda.Block.seq(Emission.registerChange(3, counts.d, 128, Cuda.Block.done), Cuda.Block.done))))
+    | Op.barrier => Cuda.Block.seq(Cuda.Stmt.sync, Cuda.Block.done)
+  }
+  def behavior (counts: WholeModel.Counts): Op -> Contracts.Runtime -> State -> Contracts.Outcome(State) :=
+    fun (op: Op)(r: Contracts.Runtime)(s: State): Contracts.Outcome(State) => RegisterMachine.step(counts, op, r, s)
+  def emitter (counts: WholeModel.Counts): Op -> Option(Nat) -> Nat -> Machine.Target :=
+    fun (op: Op)(current: Option(Nat))(start: Nat): Machine.Target => Machine.Target.mk(RegisterMachine.emit(counts, op, current), start)
+  def spec (counts: WholeModel.Counts): Machine.Spec(State, Op) := Machine.Spec.mk(RegisterMachine.behavior(counts), RegisterMachine.emitter(counts))
+  def at (state: State): State -> Prop := fun (s: State): Prop => Eq(State, s, state)
+  def unguardedSafe (op: Op)(r: Contracts.Runtime)(s: State)(initial: Eq(State, s, RegisterMachine.before(op)))
+      : Contracts.Post(RegisterMachine.at(RegisterMachine.after(op)), Contracts.select(RegisterMachine.stateEq(s, RegisterMachine.before(op)), Contracts.Outcome.ok(RegisterMachine.after(op)), Contracts.Outcome.fault(State))) := {
+    match initial returning Contracts.Post(RegisterMachine.at(RegisterMachine.after(op)), Contracts.select(RegisterMachine.stateEq(s, RegisterMachine.before(op)), Contracts.Outcome.ok(RegisterMachine.after(op)), Contracts.Outcome.fault(State))) with
+    | Eq.refl same => {
+      match op returning Contracts.Post(RegisterMachine.at(RegisterMachine.after(op)), Contracts.select(RegisterMachine.stateEq(s, RegisterMachine.before(op)), Contracts.Outcome.ok(RegisterMachine.after(op)), Contracts.Outcome.fault(State))) with
+      | Op.split => Eq.refl(State.split)
+      | Op.join => Eq.refl(State.joined)
+      | Op.restore => Eq.refl(State.restoring)
+      | Op.barrier => Eq.refl(State.uniform)
+    }
+  }
+  def guardSafe (guard: Bool)(Q: State -> Prop)(outcome: Contracts.Outcome(State))(allowed: Eq(Bool, guard, Bool.true))(safe: Contracts.Post(Q, outcome))
+      : Contracts.Post(Q, Contracts.select(guard, outcome, Contracts.Outcome.fault(State))) := {
+    match guard returning Contracts.Post(Q, Contracts.select(guard, outcome, Contracts.Outcome.fault(State))) with
+    | Bool.true => safe
+    | Bool.false => False.elimP(Bool.falseNeTrue(allowed), Contracts.Post(Q, Contracts.select(guard, outcome, Contracts.Outcome.fault(State))))
+  }
+  def safe (counts: WholeModel.Counts)(op: Op)(fits: Eq(Bool, WholeModel.fits(counts), Bool.true))
+      : Contracts.Safe(Machine.operation(RegisterMachine.spec(counts), op), RegisterMachine.at(RegisterMachine.before(op)), RegisterMachine.at(RegisterMachine.after(op))) :=
+    fun (r: Contracts.Runtime)(s: State)(initial: Eq(State, s, RegisterMachine.before(op)))
+        : Contracts.Post(RegisterMachine.at(RegisterMachine.after(op)), RegisterMachine.step(counts, op, r, s)) =>
+      RegisterMachine.guardSafe(WholeModel.fits(counts), RegisterMachine.at(RegisterMachine.after(op)),
+        Contracts.select(RegisterMachine.stateEq(s, RegisterMachine.before(op)), Contracts.Outcome.ok(RegisterMachine.after(op)), Contracts.Outcome.fault(State)),
+        fits, RegisterMachine.unguardedSafe(op, r, s, initial))
+  def primitive (counts: WholeModel.Counts)(op: Op)(fits: Eq(Bool, WholeModel.fits(counts), Bool.true))
+      : Machine.Cmd(State, Op, RegisterMachine.spec(counts), RegisterMachine.at(RegisterMachine.before(op)), RegisterMachine.at(RegisterMachine.after(op))) :=
+    Machine.primitive(RegisterMachine.spec(counts), op, RegisterMachine.at(RegisterMachine.before(op)), RegisterMachine.at(RegisterMachine.after(op)), RegisterMachine.safe(counts, op, fits))
+  def cycle (counts: WholeModel.Counts)(fits: Eq(Bool, WholeModel.fits(counts), Bool.true))
+      : Machine.Cmd(State, Op, RegisterMachine.spec(counts), RegisterMachine.at(State.uniform), RegisterMachine.at(State.uniform)) :=
+    Machine.sequence(RegisterMachine.primitive(counts, Op.split, fits), Machine.sequence(RegisterMachine.primitive(counts, Op.join, fits),
+      Machine.sequence(RegisterMachine.primitive(counts, Op.restore, fits), RegisterMachine.primitive(counts, Op.barrier, fits))))
+
+  def production (l: Lifetime): Unit := {
+    let pool := Registers.pool(l, 512, 1)
+    let ((a, b), (c, d)) := Registers.split(pool, 192, 192, 72, 56)
+    Registers.join(a, b, c, d)
+  }
+}

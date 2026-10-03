@@ -1,0 +1,8 @@
+// expect: ImplicitReconstructionFailed
+import Machine
+namespace Rejected {
+ open Core
+ open Cuda
+ open GpuMachine.{Machine, Ticket}
+ def bad {l:Lifetime}{s:Lifetime}{m:Lifetime}{p:Lifetime}{L:Lifetime}(machine:Machine(l,Group.warps(4,4),StageWritten(s,m,4)))(staging:Staging(s))(out:CMap(L))(chunk:ChunkAt(p,256))(own:ChunkOwn(p,256)):Machine(l,Group.warps(4,4),StoreAt(s,m,4)) := GpuMachine.storeStage(machine,staging,out,chunk,own)
+}

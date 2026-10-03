@@ -1,0 +1,100 @@
+import Contracts
+import Cuda
+import Emission
+
+// Open machine definitions; none of the control rules knows an operation,
+// resource family, or machine state constructor.
+namespace Machine {
+  struct Target: Type
+   | mk (block: Cuda.Block)(next: Nat): Target
+  struct Spec (S: Type)(Op: Type): Type
+   | mk (step: Op -> Contracts.Runtime -> S -> Contracts.Outcome(S))
+        (emit: Op -> Option(Nat) -> Nat -> Target): Spec(S, Op)
+
+  inductive Code (Op: Type): Type
+   | skip: Code(Op)
+   | atom (op: Op): Code(Op)
+   | seq (first: Code(Op))(second: Code(Op)): Code(Op)
+   | branch (yes: Code(Op))(no: Code(Op)): Code(Op)
+   | loop (body: Code(Op)): Code(Op)
+
+  def operation {S: Type}{Op: Type}(m: Spec(S, Op))(op: Op): Contracts.Runtime -> S -> Contracts.Outcome(S) :=
+    fun (r: Contracts.Runtime)(s: S): Contracts.Outcome(S) => m.step(op, r, s)
+
+  inductive Meaning (S: Type)(Op: Type)(m: Spec(S, Op)) indices (code: Code(Op))(run: Contracts.Runtime -> S -> Contracts.Outcome(S)): Prop
+   | skip: Meaning(S, Op, m, Code.skip(Op), Contracts.identityRun(S))
+   | atom (op: Op): Meaning(S, Op, m, Code.atom(op), Machine.operation(m, op))
+   | seq (a: Code(Op))(b: Code(Op))(f: Contracts.Runtime -> S -> Contracts.Outcome(S))(g: Contracts.Runtime -> S -> Contracts.Outcome(S))
+       (left: Meaning(S, Op, m, a, f))(right: Meaning(S, Op, m, b, g)): Meaning(S, Op, m, Code.seq(a, b), Contracts.composed(f, g))
+   | branch (a: Code(Op))(b: Code(Op))(f: Contracts.Runtime -> S -> Contracts.Outcome(S))(g: Contracts.Runtime -> S -> Contracts.Outcome(S))
+       (left: Meaning(S, Op, m, a, f))(right: Meaning(S, Op, m, b, g)): Meaning(S, Op, m, Code.branch(a, b), Contracts.conditional(f, g))
+   | loop (body: Code(Op))(f: Contracts.Runtime -> S -> Contracts.Outcome(S))(valid: Meaning(S, Op, m, body, f))
+       : Meaning(S, Op, m, Code.loop(body), Contracts.repeated(f))
+
+  struct Cmd (S: Type)(Op: Type)(m: Spec(S, Op))(P: S -> Prop)(Q: S -> Prop): Type
+   | mk (code: Code(Op))(run: Contracts.Runtime -> S -> Contracts.Outcome(S))
+        (meaning: Meaning(S, Op, m, code, run))(safe: Contracts.Safe(run, P, Q)): Cmd(S, Op, m, P, Q)
+
+  def primitive {S: Type}{Op: Type}(m: Spec(S, Op))(op: Op)(P: S -> Prop)(Q: S -> Prop)
+      (safe: Contracts.Safe(Machine.operation(m, op), P, Q)): Cmd(S, Op, m, P, Q) :=
+    Cmd.mk(P, Q, Code.atom(op), Machine.operation(m, op), Meaning.atom(m, op), safe)
+
+  def sequence {S: Type}{Op: Type}{m: Spec(S, Op)}{P: S -> Prop}{M: S -> Prop}{Q: S -> Prop}
+      (a: Cmd(S, Op, m, P, M))(b: Cmd(S, Op, m, M, Q)): Cmd(S, Op, m, P, Q) :=
+    Cmd.mk(P, Q, Code.seq(a.code, b.code), Contracts.composed(a.run, b.run),
+      Meaning.seq(a.code, b.code, a.run, b.run, a.meaning, b.meaning), Contracts.sequenceSafe(a.run, b.run, P, M, Q, a.safe, b.safe))
+
+  def branch {S: Type}{Op: Type}{m: Spec(S, Op)}{P: S -> Prop}{Q: S -> Prop}
+      (a: Cmd(S, Op, m, P, Q))(b: Cmd(S, Op, m, P, Q)): Cmd(S, Op, m, P, Q) :=
+    Cmd.mk(P, Q, Code.branch(a.code, b.code), Contracts.conditional(a.run, b.run),
+      Meaning.branch(a.code, b.code, a.run, b.run, a.meaning, b.meaning), Contracts.branchSafe(a.run, b.run, P, Q, a.safe, b.safe))
+
+  def loop {S: Type}{Op: Type}{m: Spec(S, Op)}{I: S -> Prop}(body: Cmd(S, Op, m, I, I)): Cmd(S, Op, m, I, I) :=
+    Cmd.mk(I, I, Code.loop(body.code), Contracts.repeated(body.run), Meaning.loop(body.code, body.run, body.meaning), Contracts.repeatSafe(body.run, I, body.safe))
+
+  def loopBlock (id: Nat)(body: Cuda.Block): Cuda.Block := Cuda.Block.seq(Cuda.Stmt.forLoop(id, Cuda.Expr.lit(0), Cuda.Expr.param("K"), body), Cuda.Block.done)
+
+  // Emission templates belong to the machine definition. The recursive
+  // lowerer and all its binding/correspondence proofs are shared.
+  inductive Emits (S: Type)(Op: Type)(m: Spec(S, Op)) indices (code: Code(Op))(current: Option(Nat))(start: Nat)(block: Cuda.Block)(next: Nat): Prop
+   | skip (current: Option(Nat))(start: Nat): Emits(S, Op, m, Code.skip(Op), current, start, Cuda.Block.done, start)
+   | atom (op: Op)(current: Option(Nat))(start: Nat): Emits(S, Op, m, Code.atom(op), current, start, m.emit(op, current, start).block, m.emit(op, current, start).next)
+   | seq (a: Code(Op))(b: Code(Op))(current: Option(Nat))(start: Nat)(mid: Nat)(end: Nat)(first: Cuda.Block)(second: Cuda.Block)
+       (left: Emits(S, Op, m, a, current, start, first, mid))(right: Emits(S, Op, m, b, current, mid, second, end))
+       : Emits(S, Op, m, Code.seq(a, b), current, start, Emission.append(first, second), end)
+   | branch (a: Code(Op))(b: Code(Op))(current: Option(Nat))(start: Nat)(mid: Nat)(end: Nat)(first: Cuda.Block)(second: Cuda.Block)
+       (left: Emits(S, Op, m, a, current, start, first, mid))(right: Emits(S, Op, m, b, current, mid, second, end))
+       : Emits(S, Op, m, Code.branch(a, b), current, start, Emission.flagBranch(first, second), end)
+   | loop (body: Code(Op))(current: Option(Nat))(start: Nat)(end: Nat)(block: Cuda.Block)
+       (valid: Emits(S, Op, m, body, Option.some(start), Nat.succ(start), block, end))
+       : Emits(S, Op, m, Code.loop(body), current, start, Machine.loopBlock(start, block), end)
+
+  struct Lowered (S: Type)(Op: Type)(m: Spec(S, Op))(code: Code(Op))(current: Option(Nat))(start: Nat): Type
+   | mk (block: Cuda.Block)(next: Nat)(valid: Emits(S, Op, m, code, current, start, block, next)): Lowered(S, Op, m, code, current, start)
+
+  def lower {S: Type}{Op: Type}(m: Spec(S, Op))(code: Code(Op))(current: Option(Nat))(start: Nat)
+      : Lowered(S, Op, m, code, current, start) decreases structural(code) := {
+    match code returning Lowered(S, Op, m, code, current, start) with
+    | Code.skip => Lowered.mk(Cuda.Block.done, start, Emits.skip(m, current, start))
+    | Code.atom op => {
+      let result := m.emit(op, current, start)
+      Lowered.mk(result.block, result.next, Emits.atom(m, op, current, start))
+    }
+    | Code.seq a b => {
+      let left := Machine.lower(m, a, current, start)
+      let right := Machine.lower(m, b, current, left.next)
+      Lowered.mk(Emission.append(left.block, right.block), right.next,
+        Emits.seq(a, b, current, start, left.next, right.next, left.block, right.block, left.valid, right.valid))
+    }
+    | Code.branch a b => {
+      let left := Machine.lower(m, a, current, start)
+      let right := Machine.lower(m, b, current, left.next)
+      Lowered.mk(Emission.flagBranch(left.block, right.block), right.next,
+        Emits.branch(a, b, current, start, left.next, right.next, left.block, right.block, left.valid, right.valid))
+    }
+    | Code.loop body => {
+      let result := Machine.lower(m, body, Option.some(start), Nat.succ(start))
+      Lowered.mk(Machine.loopBlock(start, result.block), result.next, Emits.loop(body, current, start, result.next, result.block, result.valid))
+    }
+  }
+}

@@ -1,0 +1,57 @@
+import Concurrent
+import RingObligations
+
+// Ghost logical epochs are unbounded. The native endpoint registers contain
+// only one parity bit and flip on issue/release, so no epoch counter is narrowed
+// to a wrapping u32. This is the remaining small native phase simulation.
+namespace RingParity {
+  def ofEpoch (epoch: Nat): Bool decreases structural(epoch) := {
+    match epoch returning Bool with
+    | Nat.zero => Bool.false
+    | Nat.succ n => Bool.not(RingParity.ofEpoch(n))
+  }
+  struct Bits: Type
+   | mk (producer: Bool)(consumer: Bool): Bits
+  def initial: Bits := Bits.mk(Bool.false, Bool.false)
+  def after (action: Concurrent.Action)(bits: Bits): Bits := {
+    match action returning Bits with
+    | Concurrent.Action.issue => Bits.mk(Bool.not(bits.producer), bits.consumer)
+    | Concurrent.Action.release => Bits.mk(bits.producer, Bool.not(bits.consumer))
+    | _ => bits
+  }
+  def actual (action: Concurrent.Action)(bits: Bits)(out: Concurrent.Outcome): Bits := {
+    match out returning Bits with
+    | Concurrent.Outcome.ran next => RingParity.after(action, bits)
+    | _ => bits
+  }
+  def Matches (s: Concurrent.State)(bits: Bits): Prop :=
+    And(Eq(Bool, bits.producer, RingParity.ofEpoch(s.producer.round)),
+      Eq(Bool, bits.consumer, RingParity.ofEpoch(s.consumer.round)))
+  def nativeReady (bit: Bool)(barrierEpoch: Nat): Bool := Bool.not(Bool.beq(bit, RingParity.ofEpoch(barrierEpoch)))
+  def logicalReady (epoch: Nat)(barrierEpoch: Nat): Bool := Nat.beq(barrierEpoch, Nat.succ(epoch))
+  // The native bit trace follows the raw source execution. Its successful
+  // constructor fixes the next bits to after(action,start), rather than allowing
+  // an arbitrary intermediate witness that could merely fit the final state.
+  inductive BitTrace indices (actions: List(Concurrent.Action))(before: Concurrent.State)(after: Concurrent.State)
+      (start: Bits)(end: Bits): Prop
+   | done (s: Concurrent.State)(bits: Bits): BitTrace(List.nil(Concurrent.Action), s, s, bits, bits)
+   | advance (action: Concurrent.Action)(rest: List(Concurrent.Action))(before: Concurrent.State)(mid: Concurrent.State)(after: Concurrent.State)
+       (start: Bits)(end: Bits)
+       (actual: Eq(Concurrent.Outcome, Concurrent.step(action, before), Concurrent.Outcome.ran(mid)))
+       (tail: BitTrace(rest, mid, after, RingParity.after(action, start), end))
+       : BitTrace(List.cons(action, rest), before, after, start, end)
+   | blocked (action: Concurrent.Action)(rest: List(Concurrent.Action))(before: Concurrent.State)(after: Concurrent.State)
+       (start: Bits)(end: Bits)
+       (actual: Eq(Concurrent.Outcome, Concurrent.step(action, before), Concurrent.Outcome.blocked))
+       (tail: BitTrace(rest, before, after, start, end))
+       : BitTrace(List.cons(action, rest), before, after, start, end)
+  def TraceResult (actions: List(Concurrent.Action))(before: Concurrent.State)(after: Concurrent.State)(start: Bits)
+      : Bits -> Prop := fun (endBits: Bits): Prop => And(BitTrace(actions, before, after, start, endBits), RingParity.Matches(after, endBits))
+  def post (s: Concurrent.State)(bits: Bits)(action: Concurrent.Action): Concurrent.Outcome -> Prop :=
+    fun (out: Concurrent.Outcome): Prop => {
+      match out returning Prop with
+      | Concurrent.Outcome.ran next => RingParity.Matches(next, RingParity.actual(action, bits, out))
+      | Concurrent.Outcome.blocked => RingParity.Matches(s, bits)
+      | Concurrent.Outcome.fault => False
+    }
+}

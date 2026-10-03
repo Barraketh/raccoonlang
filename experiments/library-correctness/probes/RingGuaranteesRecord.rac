@@ -1,0 +1,12 @@
+// Compiler-performance reproducer; deliberately excluded from the default suite.
+// The equivalent conjunction in RingLibrary.rac checks in seconds, while this
+// record declaration timed out at 120s and 25s during the October 3 experiment.
+import RingLibrary
+
+namespace RingGuaranteesRecord {
+  struct Guarantees (p: Ring.Program)(pr: Contracts.Runtime)(cr: Contracts.Runtime)(schedule: List(Scheduler.Choice)): Prop
+   | mk (backend: RingBackend.Artifact(p))
+       (primitives: RingObligations.History(Ring.bytes, Ring.execute(p, pr, cr, schedule).actions, Concurrent.initial, Ring.execute(p, pr, cr, schedule).state))
+       (memory: RingLibrary.MemorySafe(p, pr, cr, schedule))(participation: RingLibrary.Participation(p))
+       (checked: Check.WellFormed(Ring.kernel(p)) -> Spec.WellFormed(Ring.kernel(p))): Guarantees(p, pr, cr, schedule)
+}

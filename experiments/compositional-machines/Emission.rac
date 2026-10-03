@@ -1,0 +1,155 @@
+import Cuda
+import BufferModel
+import WholeModel
+import encoding.Core
+
+namespace Emission {
+  open Cuda
+
+  def append (a: Block)(b: Block): Block decreases structural(a) := {
+    match a returning Block with
+    | Block.done => b
+    | Block.seq stmt rest => Block.seq(stmt, Emission.append(rest, b))
+  }
+  def group (actor: Nat): Expr := Expr.bin(BinOp.eq,
+    Expr.bin(BinOp.div, Expr.special(Builtin.warp), Expr.lit(4)), Expr.lit(actor))
+  def index (current: Option(Nat)): Expr := {
+    match current returning Expr with
+    | Option.none => Expr.bin(BinOp.rem, Expr.special(Builtin.threadX), Expr.lit(128))
+    | Option.some id => Expr.bin(BinOp.rem, Expr.var(id), Expr.lit(128))
+  }
+  def currentIndex (current: Option(Nat)): Expr := {
+    match current returning Expr with
+    | Option.none => Expr.special(Builtin.threadX)
+    | Option.some id => Expr.var(id)
+  }
+
+  // Authoritative target templates for this deliberately small GPU subset.
+  // Opening/closing transfer ghost permissions; the load and publication
+  // barriers are concrete operations.
+  def atom (id: Nat)(op: BufferModel.Op)(current: Option(Nat)): Block := {
+    match op returning Block with
+    | BufferModel.Op.beginRead => Block.done
+    | BufferModel.Op.close => Block.done
+    | BufferModel.Op.read => Block.seq(Stmt.assign(Nat.add(id, 2),
+        Expr.bin(BinOp.add, Expr.var(Nat.add(id, 2)), Expr.index(Expr.var(id), Emission.index(current)))), Block.done)
+    | BufferModel.Op.write value => Block.seq(Stmt.store(Expr.var(id),
+        Expr.bin(BinOp.rem, Expr.special(Builtin.threadX), Expr.lit(128)), Expr.lit(value)), Block.done)
+  }
+
+  def flagBranch (a: Block)(b: Block): Block := Block.seq(Stmt.ifElse(Expr.param("flag"), a, b), Block.done)
+  def firstBranch (current: Option(Nat))(a: Block)(b: Block): Block :=
+    Block.seq(Stmt.ifElse(Expr.bin(BinOp.eq, Emission.currentIndex(current), Expr.lit(0)), a, b), Block.done)
+  def loopBlock (id: Nat)(body: Block): Block := Block.seq(Stmt.forLoop(id, Expr.lit(0), Expr.param("n"), body), Block.done)
+
+  inductive Local indices (code: BufferModel.Code)(current: Option(Nat))(start: Nat)(block: Block)(next: Nat): Prop
+   | skip (current: Option(Nat))(start: Nat): Local(BufferModel.Code.skip, current, start, Block.done, start)
+   | atom (id: Nat)(actor: Nat)(op: BufferModel.Op)(current: Option(Nat))(start: Nat)
+       : Local(BufferModel.Code.atom(id, actor, op), current, start, Emission.atom(id, op, current), start)
+   | seq (a: BufferModel.Code)(b: BufferModel.Code)(current: Option(Nat))(start: Nat)(mid: Nat)(end: Nat)(first: Block)(second: Block)
+       (left: Local(a, current, start, first, mid))(right: Local(b, current, mid, second, end))
+       : Local(BufferModel.Code.seq(a, b), current, start, Emission.append(first, second), end)
+   | branch (a: BufferModel.Code)(b: BufferModel.Code)(current: Option(Nat))(start: Nat)(mid: Nat)(end: Nat)(first: Block)(second: Block)
+       (left: Local(a, current, start, first, mid))(right: Local(b, current, mid, second, end))
+       : Local(BufferModel.Code.branch(a, b), current, start, Emission.flagBranch(first, second), end)
+   | ifFirst (a: BufferModel.Code)(b: BufferModel.Code)(current: Option(Nat))(start: Nat)(mid: Nat)(end: Nat)(first: Block)(second: Block)
+       (left: Local(a, current, start, first, mid))(right: Local(b, current, mid, second, end))
+       : Local(BufferModel.Code.ifFirst(a, b), current, start, Emission.firstBranch(current, first, second), end)
+   | loop (body: BufferModel.Code)(current: Option(Nat))(start: Nat)(end: Nat)(block: Block)
+       (valid: Local(body, Option.some(start), Nat.succ(start), block, end))
+       : Local(BufferModel.Code.loop(body), current, start, Emission.loopBlock(start, block), end)
+
+  struct LocalResult (code: BufferModel.Code)(current: Option(Nat))(start: Nat): Type
+   | mk (block: Block)(next: Nat)(valid: Local(code, current, start, block, next)): LocalResult(code, current, start)
+
+  def local (code: BufferModel.Code)(current: Option(Nat))(start: Nat): LocalResult(code, current, start) decreases structural(code) := {
+    match code returning LocalResult(code, current, start) with
+    | BufferModel.Code.skip => LocalResult.mk(Block.done, start, Local.skip(current, start))
+    | BufferModel.Code.atom id actor op => LocalResult.mk(Emission.atom(id, op, current), start, Local.atom(id, actor, op, current, start))
+    | BufferModel.Code.seq a b => {
+      let left := Emission.local(a, current, start)
+      let right := Emission.local(b, current, left.next)
+      LocalResult.mk(Emission.append(left.block, right.block), right.next,
+        Local.seq(a, b, current, start, left.next, right.next, left.block, right.block, left.valid, right.valid))
+    }
+    | BufferModel.Code.branch a b => {
+      let left := Emission.local(a, current, start)
+      let right := Emission.local(b, current, left.next)
+      LocalResult.mk(Emission.flagBranch(left.block, right.block), right.next,
+        Local.branch(a, b, current, start, left.next, right.next, left.block, right.block, left.valid, right.valid))
+    }
+    | BufferModel.Code.ifFirst a b => {
+      let left := Emission.local(a, current, start)
+      let right := Emission.local(b, current, left.next)
+      LocalResult.mk(Emission.firstBranch(current, left.block, right.block), right.next,
+        Local.ifFirst(a, b, current, start, left.next, right.next, left.block, right.block, left.valid, right.valid))
+    }
+    | BufferModel.Code.loop body => {
+      let out := Emission.local(body, Option.some(start), Nat.succ(start))
+      LocalResult.mk(Emission.loopBlock(start, out.block), out.next, Local.loop(body, current, start, out.next, out.block, out.valid))
+    }
+  }
+
+  def registerChange (actor: Nat)(from: Nat)(to: Nat)(body: Block): Stmt :=
+    Stmt.ifElse(Emission.group(actor), Emission.append(Core.toBlock(Core.setMaxRegs(from, to), Block.done), body), Block.done)
+  def splitBlock (counts: WholeModel.Counts)(a: Block)(b: Block): Block :=
+    Block.seq(Emission.registerChange(0, 128, counts.a, a),
+      Block.seq(Emission.registerChange(1, 128, counts.b, b),
+        Block.seq(Emission.registerChange(2, 128, counts.c, Block.done),
+          Block.seq(Emission.registerChange(3, 128, counts.d, Block.done),
+            Block.seq(Stmt.sync,
+              Block.seq(Emission.registerChange(0, counts.a, 128, Block.done),
+                Block.seq(Emission.registerChange(1, counts.b, 128, Block.done),
+                  Block.seq(Emission.registerChange(2, counts.c, 128, Block.done),
+                    Block.seq(Emission.registerChange(3, counts.d, 128, Block.done), Block.seq(Stmt.sync, Block.done))))))))))
+  def writeBlock (value: Nat): Block :=
+    Block.seq(Stmt.ifElse(Emission.group(0), Emission.atom(0, BufferModel.Op.write(value), Option.none(Nat)), Block.done),
+      Block.seq(Stmt.ifElse(Emission.group(1), Emission.atom(1, BufferModel.Op.write(value), Option.none(Nat)), Block.done), Block.seq(Stmt.sync, Block.done)))
+
+  inductive Whole indices (code: WholeModel.Code)(current: Option(Nat))(start: Nat)(block: Block)(next: Nat): Prop
+   | skip (current: Option(Nat))(start: Nat): Whole(WholeModel.Code.skip, current, start, Block.done, start)
+   | split (counts: WholeModel.Counts)(a: BufferModel.Code)(b: BufferModel.Code)(current: Option(Nat))(start: Nat)(mid: Nat)(end: Nat)(first: Block)(second: Block)
+       (left: Local(a, current, start, first, mid))(right: Local(b, current, mid, second, end))
+       : Whole(WholeModel.Code.split(counts, a, b), current, start, Emission.splitBlock(counts, first, second), end)
+   | writeBoth (value: Nat)(current: Option(Nat))(start: Nat): Whole(WholeModel.Code.writeBoth(value), current, start, Emission.writeBlock(value), start)
+   | seq (a: WholeModel.Code)(b: WholeModel.Code)(current: Option(Nat))(start: Nat)(mid: Nat)(end: Nat)(first: Block)(second: Block)
+       (left: Whole(a, current, start, first, mid))(right: Whole(b, current, mid, second, end))
+       : Whole(WholeModel.Code.seq(a, b), current, start, Emission.append(first, second), end)
+   | branch (a: WholeModel.Code)(b: WholeModel.Code)(current: Option(Nat))(start: Nat)(mid: Nat)(end: Nat)(first: Block)(second: Block)
+       (left: Whole(a, current, start, first, mid))(right: Whole(b, current, mid, second, end))
+       : Whole(WholeModel.Code.branch(a, b), current, start, Emission.flagBranch(first, second), end)
+   | loop (body: WholeModel.Code)(current: Option(Nat))(start: Nat)(end: Nat)(block: Block)
+       (valid: Whole(body, Option.some(start), Nat.succ(start), block, end))
+       : Whole(WholeModel.Code.loop(body), current, start, Emission.loopBlock(start, block), end)
+
+  struct WholeResult (code: WholeModel.Code)(current: Option(Nat))(start: Nat): Type
+   | mk (block: Block)(next: Nat)(valid: Whole(code, current, start, block, next)): WholeResult(code, current, start)
+
+  def whole (code: WholeModel.Code)(current: Option(Nat))(start: Nat): WholeResult(code, current, start) decreases structural(code) := {
+    match code returning WholeResult(code, current, start) with
+    | WholeModel.Code.skip => WholeResult.mk(Block.done, start, Whole.skip(current, start))
+    | WholeModel.Code.split counts a b => {
+      let left := Emission.local(a, current, start)
+      let right := Emission.local(b, current, left.next)
+      WholeResult.mk(Emission.splitBlock(counts, left.block, right.block), right.next,
+        Whole.split(counts, a, b, current, start, left.next, right.next, left.block, right.block, left.valid, right.valid))
+    }
+    | WholeModel.Code.writeBoth value => WholeResult.mk(Emission.writeBlock(value), start, Whole.writeBoth(value, current, start))
+    | WholeModel.Code.seq a b => {
+      let left := Emission.whole(a, current, start)
+      let right := Emission.whole(b, current, left.next)
+      WholeResult.mk(Emission.append(left.block, right.block), right.next,
+        Whole.seq(a, b, current, start, left.next, right.next, left.block, right.block, left.valid, right.valid))
+    }
+    | WholeModel.Code.branch a b => {
+      let left := Emission.whole(a, current, start)
+      let right := Emission.whole(b, current, left.next)
+      WholeResult.mk(Emission.flagBranch(left.block, right.block), right.next,
+        Whole.branch(a, b, current, start, left.next, right.next, left.block, right.block, left.valid, right.valid))
+    }
+    | WholeModel.Code.loop body => {
+      let out := Emission.whole(body, Option.some(start), Nat.succ(start))
+      WholeResult.mk(Emission.loopBlock(start, out.block), out.next, Whole.loop(body, current, start, out.next, out.block, out.valid))
+    }
+  }
+}

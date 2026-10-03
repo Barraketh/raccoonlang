@@ -1,0 +1,280 @@
+import RingParity
+import Concurrent
+import Scheduler
+
+// Parity proofs refine the unbounded endpoint epochs in Concurrent to the
+// actual one-bit phase registers and the nativeReady expression used by the
+// CUDA templates. These are ghost facts; runtime selection still uses data.
+namespace RingParityProofs {
+  open Concurrent.{Action, Phase, Outcome, State, Invariant, Execution}
+
+  def ofEpochNext (epoch: Nat)
+      : Eq(Bool, RingParity.ofEpoch(Nat.succ(epoch)), Bool.not(RingParity.ofEpoch(epoch))) :=
+    Eq.refl(Bool.not(RingParity.ofEpoch(epoch)))
+
+  def natBeqRefl (n: Nat): Eq(Bool, Nat.beq(n, n), Bool.true) decreases structural(n) := {
+    match n returning Eq(Bool, Nat.beq(n, n), Bool.true) with
+    | Nat.zero => Eq.refl(Bool.true)
+    | Nat.succ k => RingParityProofs.natBeqRefl(k)
+  }
+
+  def natBeqToNext (n: Nat): Eq(Bool, Nat.beq(n, Nat.succ(n)), Bool.false) decreases structural(n) := {
+    match n returning Eq(Bool, Nat.beq(n, Nat.succ(n)), Bool.false) with
+    | Nat.zero => Eq.refl(Bool.false)
+    | Nat.succ k => RingParityProofs.natBeqToNext(k)
+  }
+
+  def boolBeqRefl (b: Bool): Eq(Bool, Bool.beq(b, b), Bool.true) := {
+    match b returning Eq(Bool, Bool.beq(b, b), Bool.true) with
+    | Bool.false => Eq.refl(Bool.true)
+    | Bool.true => Eq.refl(Bool.true)
+  }
+
+  def boolBeqNot (b: Bool): Eq(Bool, Bool.beq(b, Bool.not(b)), Bool.false) := {
+    match b returning Eq(Bool, Bool.beq(b, Bool.not(b)), Bool.false) with
+    | Bool.false => Eq.refl(Bool.false)
+    | Bool.true => Eq.refl(Bool.false)
+  }
+
+  def nativeCurrent (epoch: Nat)
+      : Eq(Bool, RingParity.nativeReady(RingParity.ofEpoch(epoch), epoch), Bool.false) := {
+    let same := RingParityProofs.boolBeqRefl(RingParity.ofEpoch(epoch))
+    Eq.substP(Eq.symm(same), fun (test: Bool): Prop => Eq(Bool, Bool.not(test), Bool.false), Eq.refl(Bool.false))
+  }
+
+  def nativeNext (epoch: Nat)
+      : Eq(Bool, RingParity.nativeReady(RingParity.ofEpoch(epoch), Nat.succ(epoch)), Bool.true) := {
+    let opposite := RingParityProofs.boolBeqNot(RingParity.ofEpoch(epoch))
+    Eq.substP(Eq.symm(opposite), fun (test: Bool): Prop => Eq(Bool, Bool.not(test), Bool.true), Eq.refl(Bool.true))
+  }
+
+  def logicalCurrent (epoch: Nat)
+      : Eq(Bool, RingParity.logicalReady(epoch, epoch), Bool.false) := RingParityProofs.natBeqToNext(epoch)
+
+  def logicalNext (epoch: Nat)
+      : Eq(Bool, RingParity.logicalReady(epoch, Nat.succ(epoch)), Bool.true) := RingParityProofs.natBeqRefl(Nat.succ(epoch))
+
+  def phaseWaitAgrees (epoch: Nat)(barrierEpoch: Nat)
+      (near: Or(Eq(Nat, barrierEpoch, epoch), Eq(Nat, barrierEpoch, Nat.succ(epoch))))
+      : Eq(Bool, RingParity.nativeReady(RingParity.ofEpoch(epoch), barrierEpoch), RingParity.logicalReady(epoch, barrierEpoch)) := {
+    match near returning Eq(Bool, RingParity.nativeReady(RingParity.ofEpoch(epoch), barrierEpoch), RingParity.logicalReady(epoch, barrierEpoch)) with
+    | Or.inl same => Eq.substP(Eq.symm(same),
+        fun (candidate: Nat): Prop => Eq(Bool, RingParity.nativeReady(RingParity.ofEpoch(epoch), candidate), RingParity.logicalReady(epoch, candidate)),
+        Eq.trans(RingParityProofs.nativeCurrent(epoch), Eq.symm(RingParityProofs.logicalCurrent(epoch))))
+    | Or.inr next => Eq.substP(Eq.symm(next),
+        fun (candidate: Nat): Prop => Eq(Bool, RingParity.nativeReady(RingParity.ofEpoch(epoch), candidate), RingParity.logicalReady(epoch, candidate)),
+        Eq.trans(RingParityProofs.nativeNext(epoch), Eq.symm(RingParityProofs.logicalNext(epoch))))
+  }
+
+  // A successful issue/release advances exactly one endpoint epoch and flips
+  // the corresponding native bit. All other successful actions preserve the
+  // endpoint epochs and both bits; blocked waits preserve the whole relation.
+  def preserve (action: Action)(s: State)(bits: RingParity.Bits)
+      (valid: Invariant(s))(allowed: Concurrent.Allowed(action, s))(matches: RingParity.Matches(s, bits))
+      : RingParity.post(s, bits, action)(Concurrent.step(action, s)) := {
+    match valid returning RingParity.post(s, bits, action)(Concurrent.step(action, s)) with
+    | Invariant.inactive n => False.elimP(Bool.falseNeTrue(allowed.left), RingParity.post(s, bits, action)(Concurrent.step(action, s)))
+    | Invariant.idle n p c => {
+      match action returning RingParity.post(s, bits, action)(Concurrent.step(action, s)) with
+      | Action.acquire => {
+        match p returning RingParity.post(s, bits, action)(Concurrent.step(action, s)) with
+        | Bool.false => matches
+        | Bool.true => Concurrent.doneNotReady(allowed.right, RingParity.post(s, bits, action)(Concurrent.step(action, s)))
+      }
+      | Action.issue => {
+        match p returning RingParity.post(s, bits, action)(Concurrent.step(action, s)) with
+        | Bool.false => Concurrent.readyNotHeld(allowed.right, RingParity.post(s, bits, action)(Concurrent.step(action, s)))
+        | Bool.true => Concurrent.doneNotHeld(allowed.right, RingParity.post(s, bits, action)(Concurrent.step(action, s)))
+      }
+      | Action.complete => Concurrent.emptyNotPending(allowed.right, RingParity.post(s, bits, action)(Concurrent.step(action, s)))
+      | Action.await => {
+        match c returning RingParity.post(s, bits, action)(Concurrent.step(action, s)) with
+        | Bool.false => matches
+        | Bool.true => Concurrent.doneNotReady(allowed.right, RingParity.post(s, bits, action)(Concurrent.step(action, s)))
+      }
+      | Action.read => {
+        match c returning RingParity.post(s, bits, action)(Concurrent.step(action, s)) with
+        | Bool.false => Concurrent.readyNotHeld(allowed.right, RingParity.post(s, bits, action)(Concurrent.step(action, s)))
+        | Bool.true => Concurrent.doneNotHeld(allowed.right, RingParity.post(s, bits, action)(Concurrent.step(action, s)))
+      }
+      | Action.release => {
+        match c returning RingParity.post(s, bits, action)(Concurrent.step(action, s)) with
+        | Bool.false => Concurrent.readyNotHeld(allowed.right, RingParity.post(s, bits, action)(Concurrent.step(action, s)))
+        | Bool.true => Concurrent.doneNotHeld(allowed.right, RingParity.post(s, bits, action)(Concurrent.step(action, s)))
+      }
+      | Action.finishProducer => {
+        match p returning RingParity.post(s, bits, action)(Concurrent.step(action, s)) with
+        | Bool.false => matches
+        | Bool.true => Concurrent.doneNotReady(allowed.right, RingParity.post(s, bits, action)(Concurrent.step(action, s)))
+      }
+      | Action.finishConsumer => {
+        match c returning RingParity.post(s, bits, action)(Concurrent.step(action, s)) with
+        | Bool.false => matches
+        | Bool.true => Concurrent.doneNotReady(allowed.right, RingParity.post(s, bits, action)(Concurrent.step(action, s)))
+      }
+      | Action.close => {
+        match p returning RingParity.post(s, bits, action)(Concurrent.step(action, s)) with
+        | Bool.false => Concurrent.readyNotDone(allowed.right.left, RingParity.post(s, bits, action)(Concurrent.step(action, s)))
+        | Bool.true => {
+          match c returning RingParity.post(s, bits, action)(Concurrent.step(action, s)) with
+          | Bool.false => Concurrent.readyNotDone(allowed.right.right, RingParity.post(s, bits, action)(Concurrent.step(action, s)))
+          | Bool.true => matches
+        }
+      }
+    }
+    | Invariant.writing n c => {
+      match action returning RingParity.post(s, bits, action)(Concurrent.step(action, s)) with
+      | Action.acquire => Concurrent.heldNotReady(allowed.right, RingParity.post(s, bits, action)(Concurrent.step(action, s)))
+      | Action.issue => {
+        let producer := Eq.trans(congrArg(matches.left, Bool, Bool.not), Eq.symm(RingParityProofs.ofEpochNext(n)))
+        And.intro(producer, matches.right)
+      }
+      | Action.complete => Concurrent.writingNotPending(allowed.right, RingParity.post(s, bits, action)(Concurrent.step(action, s)))
+      | Action.await => {
+        match c returning RingParity.post(s, bits, action)(Concurrent.step(action, s)) with
+        | Bool.false => matches
+        | Bool.true => Concurrent.doneNotReady(allowed.right, RingParity.post(s, bits, action)(Concurrent.step(action, s)))
+      }
+      | Action.read => {
+        match c returning RingParity.post(s, bits, action)(Concurrent.step(action, s)) with
+        | Bool.false => Concurrent.readyNotHeld(allowed.right, RingParity.post(s, bits, action)(Concurrent.step(action, s)))
+        | Bool.true => Concurrent.doneNotHeld(allowed.right, RingParity.post(s, bits, action)(Concurrent.step(action, s)))
+      }
+      | Action.release => {
+        match c returning RingParity.post(s, bits, action)(Concurrent.step(action, s)) with
+        | Bool.false => Concurrent.readyNotHeld(allowed.right, RingParity.post(s, bits, action)(Concurrent.step(action, s)))
+        | Bool.true => Concurrent.doneNotHeld(allowed.right, RingParity.post(s, bits, action)(Concurrent.step(action, s)))
+      }
+      | Action.finishProducer => Concurrent.heldNotReady(allowed.right, RingParity.post(s, bits, action)(Concurrent.step(action, s)))
+      | Action.finishConsumer => {
+        match c returning RingParity.post(s, bits, action)(Concurrent.step(action, s)) with
+        | Bool.false => matches
+        | Bool.true => Concurrent.doneNotReady(allowed.right, RingParity.post(s, bits, action)(Concurrent.step(action, s)))
+      }
+      | Action.close => Concurrent.heldNotDone(allowed.right.left, RingParity.post(s, bits, action)(Concurrent.step(action, s)))
+    }
+    | Invariant.pending n c => {
+      match action returning RingParity.post(s, bits, action)(Concurrent.step(action, s)) with
+      | Action.acquire => matches
+      | Action.issue => Concurrent.readyNotHeld(allowed.right, RingParity.post(s, bits, action)(Concurrent.step(action, s)))
+      | Action.complete => matches
+      | Action.await => {
+        match c returning RingParity.post(s, bits, action)(Concurrent.step(action, s)) with
+        | Bool.false => matches
+        | Bool.true => Concurrent.doneNotReady(allowed.right, RingParity.post(s, bits, action)(Concurrent.step(action, s)))
+      }
+      | Action.read => {
+        match c returning RingParity.post(s, bits, action)(Concurrent.step(action, s)) with
+        | Bool.false => Concurrent.readyNotHeld(allowed.right, RingParity.post(s, bits, action)(Concurrent.step(action, s)))
+        | Bool.true => Concurrent.doneNotHeld(allowed.right, RingParity.post(s, bits, action)(Concurrent.step(action, s)))
+      }
+      | Action.release => {
+        match c returning RingParity.post(s, bits, action)(Concurrent.step(action, s)) with
+        | Bool.false => Concurrent.readyNotHeld(allowed.right, RingParity.post(s, bits, action)(Concurrent.step(action, s)))
+        | Bool.true => Concurrent.doneNotHeld(allowed.right, RingParity.post(s, bits, action)(Concurrent.step(action, s)))
+      }
+      | Action.finishProducer => matches
+      | Action.finishConsumer => {
+        match c returning RingParity.post(s, bits, action)(Concurrent.step(action, s)) with
+        | Bool.false => matches
+        | Bool.true => Concurrent.doneNotReady(allowed.right, RingParity.post(s, bits, action)(Concurrent.step(action, s)))
+      }
+      | Action.close => Concurrent.readyNotDone(allowed.right.left, RingParity.post(s, bits, action)(Concurrent.step(action, s)))
+    }
+    | Invariant.full n c => {
+      match action returning RingParity.post(s, bits, action)(Concurrent.step(action, s)) with
+      | Action.acquire => matches
+      | Action.issue => Concurrent.readyNotHeld(allowed.right, RingParity.post(s, bits, action)(Concurrent.step(action, s)))
+      | Action.complete => Concurrent.fullNotPending(allowed.right, RingParity.post(s, bits, action)(Concurrent.step(action, s)))
+      | Action.await => {
+        match c returning RingParity.post(s, bits, action)(Concurrent.step(action, s)) with
+        | Bool.false => matches
+        | Bool.true => Concurrent.doneNotReady(allowed.right, RingParity.post(s, bits, action)(Concurrent.step(action, s)))
+      }
+      | Action.read => {
+        match c returning RingParity.post(s, bits, action)(Concurrent.step(action, s)) with
+        | Bool.false => Concurrent.readyNotHeld(allowed.right, RingParity.post(s, bits, action)(Concurrent.step(action, s)))
+        | Bool.true => Concurrent.doneNotHeld(allowed.right, RingParity.post(s, bits, action)(Concurrent.step(action, s)))
+      }
+      | Action.release => {
+        match c returning RingParity.post(s, bits, action)(Concurrent.step(action, s)) with
+        | Bool.false => Concurrent.readyNotHeld(allowed.right, RingParity.post(s, bits, action)(Concurrent.step(action, s)))
+        | Bool.true => Concurrent.doneNotHeld(allowed.right, RingParity.post(s, bits, action)(Concurrent.step(action, s)))
+      }
+      | Action.finishProducer => matches
+      | Action.finishConsumer => {
+        match c returning RingParity.post(s, bits, action)(Concurrent.step(action, s)) with
+        | Bool.false => matches
+        | Bool.true => Concurrent.doneNotReady(allowed.right, RingParity.post(s, bits, action)(Concurrent.step(action, s)))
+      }
+      | Action.close => Concurrent.readyNotDone(allowed.right.left, RingParity.post(s, bits, action)(Concurrent.step(action, s)))
+    }
+    | Invariant.reading n => {
+      match action returning RingParity.post(s, bits, action)(Concurrent.step(action, s)) with
+      | Action.acquire => matches
+      | Action.issue => Concurrent.readyNotHeld(allowed.right, RingParity.post(s, bits, action)(Concurrent.step(action, s)))
+      | Action.complete => Concurrent.readingNotPending(allowed.right, RingParity.post(s, bits, action)(Concurrent.step(action, s)))
+      | Action.await => Concurrent.heldNotReady(allowed.right, RingParity.post(s, bits, action)(Concurrent.step(action, s)))
+      | Action.read => matches
+      | Action.release => {
+        let consumer := Eq.trans(congrArg(matches.right, Bool, Bool.not), Eq.symm(RingParityProofs.ofEpochNext(n)))
+        And.intro(matches.left, consumer)
+      }
+      | Action.finishProducer => matches
+      | Action.finishConsumer => Concurrent.heldNotReady(allowed.right, RingParity.post(s, bits, action)(Concurrent.step(action, s)))
+      | Action.close => Concurrent.readyNotDone(allowed.right.left, RingParity.post(s, bits, action)(Concurrent.step(action, s)))
+    }
+  }
+
+  def ranMatches (action: Action)(s: State)(next: State)(bits: RingParity.Bits)
+      (valid: Invariant(s))(allowed: Concurrent.Allowed(action, s))
+      (actual: Eq(Outcome, Concurrent.step(action, s), Outcome.ran(next)))
+      (matches: RingParity.Matches(s, bits))
+      : RingParity.Matches(next, RingParity.after(action, bits)) :=
+    Eq.substP(actual, fun (out: Outcome): Prop => RingParity.post(s, bits, action)(out),
+      RingParityProofs.preserve(action, s, bits, valid, allowed, matches))
+
+  def blockedMatches (action: Action)(s: State)(bits: RingParity.Bits)
+      (valid: Invariant(s))(allowed: Concurrent.Allowed(action, s))
+      (actual: Eq(Outcome, Concurrent.step(action, s), Outcome.blocked))
+      (matches: RingParity.Matches(s, bits))
+      : RingParity.Matches(s, bits) :=
+    Eq.substP(actual, fun (out: Outcome): Prop => RingParity.post(s, bits, action)(out),
+      RingParityProofs.preserve(action, s, bits, valid, allowed, matches))
+
+  def everyExecution (actions: List(Action))(before: State)(after: State)
+      (execution: Execution(actions, before, after))(bits: RingParity.Bits)
+      (valid: Invariant(before))(matches: RingParity.Matches(before, bits))
+      : Exists(RingParity.Bits, RingParity.TraceResult(actions, before, after, bits)) decreases structural(actions) := {
+    match execution returning Exists(RingParity.Bits, RingParity.TraceResult(actions, before, after, bits)) with
+    | Execution.done same => Exists.intro(RingParity.TraceResult(actions, before, after, bits), bits, And.intro(RingParity.BitTrace.done(before, bits), matches))
+    | Execution.advance action rest before mid after local actual tail => {
+      let nextValid := Concurrent.advances(action, before, mid, valid, local, actual)
+      let middleMatches := RingParityProofs.ranMatches(action, before, mid, bits, valid, local, actual, matches)
+      match RingParityProofs.everyExecution(rest, mid, after, tail, RingParity.after(action, bits), nextValid, middleMatches)
+          returning Exists(RingParity.Bits, RingParity.TraceResult(actions, before, after, bits)) with
+      | Exists.intro endBits result => Exists.intro(RingParity.TraceResult(actions, before, after, bits), endBits,
+          And.intro(RingParity.BitTrace.advance(action, rest, before, mid, after, bits, endBits, actual, result.left), result.right))
+      }
+    | Execution.blocked action rest before after local actual tail => {
+      let middleMatches := RingParityProofs.blockedMatches(action, before, bits, valid, local, actual, matches)
+      match RingParityProofs.everyExecution(rest, before, after, tail, bits, valid, middleMatches)
+          returning Exists(RingParity.Bits, RingParity.TraceResult(actions, before, after, bits)) with
+      | Exists.intro endBits result => Exists.intro(RingParity.TraceResult(actions, before, after, bits), endBits,
+          And.intro(RingParity.BitTrace.blocked(action, rest, before, after, bits, endBits, actual, result.left), result.right))
+      }
+  }
+
+  // Any admitted endpoint programs and runtime contracts, under any scheduler
+  // choices, produce a bit trace whose final one-bit registers match the two
+  // logical Concurrent endpoint rounds.
+  def everyKernel (producer: Endpoints.Cmd(Endpoints.Role.producer, Phase.ready, Phase.done))
+      (consumer: Endpoints.Cmd(Endpoints.Role.consumer, Phase.ready, Phase.done))
+      (pRuntime: Contracts.Runtime)(cRuntime: Contracts.Runtime)(choices: List(Scheduler.Choice))
+      : Exists(RingParity.Bits, RingParity.TraceResult(Scheduler.kernel(producer, consumer, pRuntime, cRuntime, choices).actions,
+        Concurrent.initial, Scheduler.kernel(producer, consumer, pRuntime, cRuntime, choices).state, RingParity.initial)) := {
+    let scheduled := Scheduler.kernel(producer, consumer, pRuntime, cRuntime, choices)
+    RingParityProofs.everyExecution(scheduled.actions, Concurrent.initial, scheduled.state, scheduled.execution,
+      RingParity.initial, Concurrent.Invariant.idle(0, Bool.false, Bool.false), And.intro(Eq.refl(Bool.false), Eq.refl(Bool.false)))
+  }
+}

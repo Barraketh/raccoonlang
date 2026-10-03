@@ -1,0 +1,29 @@
+import Cuda
+import encoding.Core
+
+namespace Allocation {
+  // The linear cursor prevents resetting or replaying the allocation counter.
+  sealed struct Cursor (root: Lifetime)(next: Nat): Type { kind = lin, scope = root }
+   | mk (declarations: List(Cuda.Stmt)): Cursor(root, next)
+  sealed struct Ref (root: Lifetime)(identity: Lifetime)(id: Nat)(width: Nat): Type { scope = Lifetime.union(root, identity) }
+   | mk: Ref(root, identity, id, width)
+
+  def allocate {root: Lifetime}{next: Nat}{Sf: Lifetime}{X: Type}(cursor: Cursor(root, next))(width: Nat)
+      (body: { scope = Sf } (identity: Lifetime) -> Ref(root, identity, next, width) -> Cursor(root, Nat.succ(next)) -> X): X := {
+    match cursor returning X with
+    | Cursor.mk declarations => scope identity => body(identity, Ref.mk(root, identity, next, width),
+        Cursor.mk(root, Nat.succ(next), List.cons(Cuda.Stmt.shared(Cuda.DType.u32, next, width), declarations)))
+  }
+  def finish {root: Lifetime}{next: Nat}(cursor: Cursor(root, next)): Cuda.Block := {
+    match cursor returning Cuda.Block with
+    | Cursor.mk declarations => Core.toBlock(declarations, Cuda.Block.done)
+  }
+  def run (X: Type)(body: (root: Lifetime) -> Cursor(root, 0) -> X): X := scope root => body(root, Cursor.mk(root, 0, List.nil(Cuda.Stmt)))
+
+  def successorDisjoint (n: Nat): Not(Eq(Nat, n, Nat.succ(n))) decreases structural(n) :=
+    fun (same: Eq(Nat, n, Nat.succ(n))): False => {
+      match n returning False with
+      | Nat.zero => Nat.zeroNeSucc(0, same)
+      | Nat.succ rest => Allocation.successorDisjoint(rest)(Nat.succInj(same))
+    }
+}

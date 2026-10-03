@@ -1,0 +1,500 @@
+[
+  {
+    "name": "register_roundtrip",
+    "protocol": "registers",
+    "events": [
+      "initialize 1 128",
+      "split",
+      "join",
+      "restore",
+      "barrier"
+    ],
+    "states": [
+      "fresh",
+      "uniform",
+      "split",
+      "joined",
+      "restoring",
+      "uniform"
+    ],
+    "goal": "uniform",
+    "accept": true
+  },
+  {
+    "name": "register_repeat",
+    "protocol": "registers",
+    "events": [
+      "initialize 1 128",
+      "split",
+      "join",
+      "restore",
+      "barrier",
+      "split",
+      "join",
+      "restore",
+      "barrier"
+    ],
+    "states": [
+      "fresh",
+      "uniform",
+      "split",
+      "joined",
+      "restoring",
+      "uniform",
+      "split",
+      "joined",
+      "restoring",
+      "uniform"
+    ],
+    "goal": "uniform",
+    "accept": true
+  },
+  {
+    "name": "register_live_split",
+    "protocol": "registers",
+    "events": [
+      "initialize 1 128",
+      "split"
+    ],
+    "states": [
+      "fresh",
+      "uniform",
+      "split"
+    ],
+    "goal": "split",
+    "accept": true
+  },
+  {
+    "name": "register_wrong_kernel",
+    "protocol": "registers",
+    "events": [
+      "initialize 2 128",
+      "split",
+      "join",
+      "restore",
+      "barrier"
+    ],
+    "states": [
+      "fresh",
+      "uniform",
+      "split",
+      "joined",
+      "restoring",
+      "uniform"
+    ],
+    "goal": "uniform",
+    "accept": false
+  },
+  {
+    "name": "register_wrong_budget",
+    "protocol": "registers",
+    "events": [
+      "initialize 1 256",
+      "split",
+      "join",
+      "restore",
+      "barrier"
+    ],
+    "states": [
+      "fresh",
+      "uniform",
+      "split",
+      "joined",
+      "restoring",
+      "uniform"
+    ],
+    "goal": "uniform",
+    "accept": false
+  },
+  {
+    "name": "register_wrong_residency",
+    "protocol": "registers",
+    "events": [
+      "initialize 1 128",
+      "split",
+      "join",
+      "restore",
+      "barrier"
+    ],
+    "states": [
+      "fresh",
+      "uniform",
+      "split",
+      "joined",
+      "restoring",
+      "uniform"
+    ],
+    "goal": "uniform",
+    "accept": false,
+    "config": [
+      1,
+      512,
+      2
+    ]
+  },
+  {
+    "name": "register_over_budget",
+    "protocol": "registers",
+    "events": [
+      "initialize 1 128",
+      "split",
+      "join",
+      "restore",
+      "barrier"
+    ],
+    "states": [
+      "fresh",
+      "uniform",
+      "split",
+      "joined",
+      "restoring",
+      "uniform"
+    ],
+    "goal": "uniform",
+    "accept": false,
+    "counts": [
+      192,
+      192,
+      192,
+      192
+    ]
+  },
+  {
+    "name": "register_invalid_count",
+    "protocol": "registers",
+    "events": [
+      "initialize 1 128",
+      "split",
+      "join",
+      "restore",
+      "barrier"
+    ],
+    "states": [
+      "fresh",
+      "uniform",
+      "split",
+      "joined",
+      "restoring",
+      "uniform"
+    ],
+    "goal": "uniform",
+    "accept": false,
+    "counts": [
+      191,
+      192,
+      72,
+      56
+    ]
+  },
+  {
+    "name": "register_missing_join",
+    "protocol": "registers",
+    "events": [
+      "initialize 1 128",
+      "split",
+      "restore",
+      "barrier"
+    ],
+    "states": [
+      "fresh",
+      "uniform",
+      "split",
+      "restoring",
+      "uniform"
+    ],
+    "goal": "uniform",
+    "accept": false
+  },
+  {
+    "name": "register_missing_barrier",
+    "protocol": "registers",
+    "events": [
+      "initialize 1 128",
+      "split",
+      "join",
+      "restore"
+    ],
+    "states": [
+      "fresh",
+      "uniform",
+      "split",
+      "joined",
+      "restoring"
+    ],
+    "goal": "uniform",
+    "accept": false
+  },
+  {
+    "name": "register_second_split_early",
+    "protocol": "registers",
+    "events": [
+      "initialize 1 128",
+      "split",
+      "join",
+      "restore",
+      "split"
+    ],
+    "states": [
+      "fresh",
+      "uniform",
+      "split",
+      "joined",
+      "restoring",
+      "split"
+    ],
+    "goal": "split",
+    "accept": false
+  },
+  {
+    "name": "read_roundtrip",
+    "protocol": "reads",
+    "events": [
+      "beginRead 7",
+      "read 7",
+      "read 7",
+      "close 7",
+      "barrier",
+      "write",
+      "retire"
+    ],
+    "states": [
+      "ready",
+      "borrowing",
+      "borrowing",
+      "borrowing",
+      "reading",
+      "writable",
+      "writable",
+      "retired"
+    ],
+    "goal": "retired",
+    "accept": true
+  },
+  {
+    "name": "read_wrong_loan",
+    "protocol": "reads",
+    "events": [
+      "beginRead 7",
+      "read 8",
+      "read 7",
+      "close 7",
+      "barrier",
+      "write",
+      "retire"
+    ],
+    "states": [
+      "ready",
+      "borrowing",
+      "borrowing",
+      "borrowing",
+      "reading",
+      "writable",
+      "writable",
+      "retired"
+    ],
+    "goal": "retired",
+    "accept": false
+  },
+  {
+    "name": "read_after_close",
+    "protocol": "reads",
+    "events": [
+      "beginRead 7",
+      "close 7",
+      "read 7"
+    ],
+    "states": [
+      "ready",
+      "borrowing",
+      "reading",
+      "borrowing"
+    ],
+    "goal": "borrowing",
+    "accept": false
+  },
+  {
+    "name": "read_double_close",
+    "protocol": "reads",
+    "events": [
+      "beginRead 7",
+      "close 7",
+      "close 7"
+    ],
+    "states": [
+      "ready",
+      "borrowing",
+      "reading",
+      "reading"
+    ],
+    "goal": "reading",
+    "accept": false
+  },
+  {
+    "name": "read_write_before_barrier",
+    "protocol": "reads",
+    "events": [
+      "beginRead 7",
+      "close 7",
+      "write"
+    ],
+    "states": [
+      "ready",
+      "borrowing",
+      "reading",
+      "writable"
+    ],
+    "goal": "writable",
+    "accept": false
+  },
+  {
+    "name": "read_write_while_borrowed",
+    "protocol": "reads",
+    "events": [
+      "beginRead 7",
+      "write"
+    ],
+    "states": [
+      "ready",
+      "borrowing",
+      "writable"
+    ],
+    "goal": "writable",
+    "accept": false
+  },
+  {
+    "name": "read_after_retire",
+    "protocol": "reads",
+    "events": [
+      "beginRead 7",
+      "read 7",
+      "read 7",
+      "close 7",
+      "barrier",
+      "write",
+      "retire",
+      "beginRead 7"
+    ],
+    "states": [
+      "ready",
+      "borrowing",
+      "borrowing",
+      "borrowing",
+      "reading",
+      "writable",
+      "writable",
+      "retired",
+      "borrowing"
+    ],
+    "goal": "borrowing",
+    "accept": false
+  },
+  {
+    "name": "actor_leader_then_peer",
+    "protocol": "actors",
+    "events": [
+      "enterLeader",
+      "finishLeader",
+      "leaveLeader",
+      "finishPeer"
+    ],
+    "states": [
+      "bothPending",
+      "leaderPendingInside",
+      "leaderDoneInside",
+      "peerPendingOutside",
+      "done"
+    ],
+    "goal": "done",
+    "accept": true
+  },
+  {
+    "name": "actor_all_participate",
+    "protocol": "actors",
+    "events": [
+      "finishBoth"
+    ],
+    "states": [
+      "bothPending",
+      "done"
+    ],
+    "goal": "done",
+    "accept": true
+  },
+  {
+    "name": "actor_peer_inside_leader",
+    "protocol": "actors",
+    "events": [
+      "enterLeader",
+      "finishPeer"
+    ],
+    "states": [
+      "bothPending",
+      "leaderPendingInside",
+      "done"
+    ],
+    "goal": "done",
+    "accept": false
+  },
+  {
+    "name": "actor_all_inside_leader",
+    "protocol": "actors",
+    "events": [
+      "enterLeader",
+      "finishBoth"
+    ],
+    "states": [
+      "bothPending",
+      "leaderPendingInside",
+      "done"
+    ],
+    "goal": "done",
+    "accept": false
+  },
+  {
+    "name": "actor_exit_unfinished",
+    "protocol": "actors",
+    "events": [
+      "enterLeader",
+      "leaveLeader",
+      "finishPeer"
+    ],
+    "states": [
+      "bothPending",
+      "leaderPendingInside",
+      "peerPendingOutside",
+      "done"
+    ],
+    "goal": "done",
+    "accept": false
+  },
+  {
+    "name": "actor_peer_before_leader",
+    "protocol": "actors",
+    "events": [
+      "finishPeer"
+    ],
+    "states": [
+      "bothPending",
+      "done"
+    ],
+    "goal": "done",
+    "accept": false
+  },
+  {
+    "name": "actor_claim_all_done",
+    "protocol": "actors",
+    "events": [
+      "enterLeader",
+      "finishLeader",
+      "leaveLeader"
+    ],
+    "states": [
+      "bothPending",
+      "leaderPendingInside",
+      "leaderDoneInside",
+      "peerPendingOutside"
+    ],
+    "goal": "done",
+    "accept": false
+  }
+]

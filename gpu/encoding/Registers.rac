@@ -1,5 +1,5 @@
 // Registers as a modelled resource (gpu/encoding/REGISTERS.md): the CTA's register pool and its warpgroups' shares,
-// which only this module makes and ends. It emits nothing: emission needs `Core.Key`, which only `Core.rac` can build,
+// which only this module makes and ends. It emits nothing: emission needs `Core.Key`, which only `Lowering.rac` can build,
 // so `Core` is this module's client, and its emitters of `setmaxnreg` require a share (REGISTERS.md §2).
 //
 // The rules:

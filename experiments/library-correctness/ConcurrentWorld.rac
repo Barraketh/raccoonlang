@@ -1,0 +1,31 @@
+import Concurrent
+import World
+
+namespace ConcurrentWorld {
+  def before (action: Concurrent.Action): Concurrent.State -> Prop := fun (s: Concurrent.State): Prop =>
+    And(Concurrent.Invariant(s), Concurrent.Allowed(action, s))
+  def total (s: Concurrent.State)(out: Concurrent.Outcome): Contracts.Outcome(Concurrent.State) := {
+    match out returning Contracts.Outcome(Concurrent.State) with
+    | Concurrent.Outcome.ran next => Contracts.Outcome.ok(next)
+    | Concurrent.Outcome.blocked => Contracts.Outcome.ok(s)
+    | Concurrent.Outcome.fault => Contracts.Outcome.fault(Concurrent.State)
+  }
+  def run (action: Concurrent.Action): Contracts.Runtime -> Concurrent.State -> Contracts.Outcome(Concurrent.State) :=
+    fun (r: Contracts.Runtime)(s: Concurrent.State): Contracts.Outcome(Concurrent.State) => ConcurrentWorld.total(s, Concurrent.step(action, s))
+  def totalSafe (s: Concurrent.State)(out: Concurrent.Outcome)(valid: Concurrent.post(s)(out))
+      : Contracts.Post(Concurrent.Invariant, ConcurrentWorld.total(s, out)) := {
+    match out returning Contracts.Post(Concurrent.Invariant, ConcurrentWorld.total(s, out)) with
+    | Concurrent.Outcome.ran next => valid
+    | Concurrent.Outcome.blocked => valid
+    | Concurrent.Outcome.fault => valid
+  }
+  def safe (action: Concurrent.Action): Contracts.Safe(ConcurrentWorld.run(action), ConcurrentWorld.before(action), Concurrent.Invariant) :=
+    fun (r: Contracts.Runtime)(s: Concurrent.State)(initial: ConcurrentWorld.before(action)(s))
+      : Contracts.Post(Concurrent.Invariant, ConcurrentWorld.run(action)(r, s)) => ConcurrentWorld.totalSafe(s, Concurrent.step(action, s), Concurrent.preserve(action, s, initial.left, initial.right))
+  // Framing reuses the authoritative generic world-update proof. Resource
+  // ids remain distinct even when their protocol phases/counters are equal.
+  def everyOtherResource (action: Concurrent.Action)(r: Contracts.Runtime)(cells: World.Cells(Concurrent.State))(id: Nat)(peer: Nat)
+      (different: Not(Eq(Nat, peer, id)))(initial: ConcurrentWorld.before(action)(cells(id)))
+      : Contracts.Post(World.unchanged(cells, peer), World.apply(cells, id, ConcurrentWorld.run(action)(r, cells(id)))) :=
+    World.frameRun(ConcurrentWorld.run(action), ConcurrentWorld.before(action), Concurrent.Invariant, ConcurrentWorld.safe(action), r, cells, id, peer, different, initial)
+}

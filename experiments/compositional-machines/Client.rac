@@ -1,0 +1,19 @@
+import Gpu
+import BufferModel
+import WholeModel
+
+namespace Client {
+  def counts: WholeModel.Counts := WholeModel.Counts.mk(192, 192, 72, 56)
+
+  // This definition is checked with neutral callback parameters. Its proof
+  // cannot inspect a callback's implementation or enumerate its histories.
+  def construct
+      (left: (l: Lifetime) -> Gpu.Buffer(l, 0, 0) -> Gpu.Local(l, 0, 0, BufferModel.at(BufferModel.Phase.ready), BufferModel.at(BufferModel.Phase.reading)))
+      (right: (l: Lifetime) -> Gpu.Buffer(l, 1, 1) -> Gpu.Local(l, 1, 1, BufferModel.at(BufferModel.Phase.ready), BufferModel.at(BufferModel.Phase.reading))): Gpu.Program :=
+    Gpu.kernel(fun (l: Lifetime)(a: Gpu.Buffer(l, 0, 0))(b: Gpu.Buffer(l, 1, 1))
+        : Gpu.Whole(l, WholeModel.at(BufferModel.Phase.ready), WholeModel.at(BufferModel.Phase.ready)) => {
+      let work := Gpu.split(Client.counts, left(l, a), right(l, b))
+      let cycle := Gpu.thenWhole(work, Gpu.writeBoth(l, 2))
+      Gpu.loopWhole(cycle)
+    })
+}

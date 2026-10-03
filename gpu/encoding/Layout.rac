@@ -3,7 +3,7 @@
 // A3a's two query tiles (`rolesPair`); and the sixteen of A3b's, with a correction warpgroup (`rolesCorrected`). Other
 // layouts use `Core.split`.
 
-import encoding.Core
+import encoding.Lowering
 
 namespace Layout {
   open Core

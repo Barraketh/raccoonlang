@@ -1,0 +1,3 @@
+import AttentionClient
+{ String.append(Core.render(LunaAttention.build("attention_a3b", Bool.false, Cuda.DType.f32)),
+    Core.render(LunaAttention.build("attention_a3b_causal", Bool.true, Cuda.DType.bf16))) }

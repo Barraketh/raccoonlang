@@ -1,0 +1,44 @@
+import Retirement
+
+namespace Frame {
+  open Retirement
+  // A leader-only arm cannot change the abstract peer resource at all.
+  // This is stronger than preserving the peer's phase.
+  def preserves {p: Phase}{q: Phase}(code: Code)(valid: Typed(Mode.leader, code, p, q))(rank: Bool)(I: State -> Prop)
+      : Contracts.Safe(Retirement.interpretation(code, rank), I, I) decreases structural(code) := {
+    match code returning Contracts.Safe(Retirement.interpretation(code, rank), I, I) with
+    | Code.skip => fun (r: Contracts.Runtime)(s: State)(h: I(s)): Contracts.Post(I, Contracts.Outcome.ok(s)) => h
+    | Code.local => fun (r: Contracts.Runtime)(s: State)(h: I(s)): Contracts.Post(I, Contracts.Outcome.ok(s)) => h
+    | Code.issue => {
+      match valid returning Contracts.Safe(Retirement.interpretation(code, rank), I, I) with
+    }
+    | Code.finish => {
+      match valid returning Contracts.Safe(Retirement.interpretation(code, rank), I, I) with
+    }
+    | Code.seq a b => {
+      match valid returning Contracts.Safe(Retirement.interpretation(code, rank), I, I) with
+      | Typed.seq m a b p mid q left right => Contracts.sequenceSafe(Retirement.interpretation(a, rank), Retirement.interpretation(b, rank), I, I, I,
+          Frame.preserves(a, left, rank, I), Frame.preserves(b, right, rank, I))
+    }
+    | Code.branch a b => {
+      match valid returning Contracts.Safe(Retirement.interpretation(code, rank), I, I) with
+      | Typed.branch m a b p q yes no => Contracts.branchSafe(Retirement.interpretation(a, rank), Retirement.interpretation(b, rank), I, I,
+          Frame.preserves(a, yes, rank, I), Frame.preserves(b, no, rank, I))
+    }
+    | Code.loop body => {
+      match valid returning Contracts.Safe(Retirement.interpretation(code, rank), I, I) with
+      | Typed.loop m body p h => Contracts.repeatSafe(Retirement.interpretation(body, rank), I, Frame.preserves(body, h, rank, I))
+    }
+    | Code.leader body => {
+      match valid returning Contracts.Safe(Retirement.interpretation(code, rank), I, I) with
+      | Typed.leader m body p h => fun (r: Contracts.Runtime)(s: State)(initial: I(s)): Contracts.Post(I, Retirement.run(code, rank, r, s)) =>
+        Contracts.selectSafe(rank, I, Retirement.run(body, rank, r, s), Contracts.Outcome.ok(s), Frame.preserves(body, h, rank, I)(r, s, initial), initial)
+    }
+    | Code.allocate body => {
+      match valid returning Contracts.Safe(Retirement.interpretation(code, rank), I, I) with
+    }
+  }
+  def unchanged (s: State): State -> Prop := fun (t: State): Prop => Eq(State, t, s)
+  def peerUnchanged {p: Phase}{q: Phase}(code: Code)(valid: Typed(Mode.leader, code, p, q))(rank: Bool)(r: Contracts.Runtime)(s: State)
+      : Contracts.Post(Frame.unchanged(s), Retirement.run(code, rank, r, s)) := Frame.preserves(code, valid, rank, Frame.unchanged(s))(r, s, Eq.refl(s))
+}

@@ -9,6 +9,23 @@ Related problems that are written up elsewhere:
 - Sharing a sealed capability between two trusted modules: `gpu/encoding/REGISTERS.md` §9.
 - Checking generated code by running it: `gpu/EVALUATOR.md`.
 
+Implementation direction for problem 1: [Reflected typing and library safety](REFLECTED_TYPING.md), a staged plan for
+internal typing propositions, declaration reflection, and semantic library composition.
+The [compositional machine experiment](../../experiments/compositional-machines/README.md) tests a narrower
+alternative: explicit contracts and structured emission certificates in the existing core.
+The [extensible follow-up](../../experiments/extensible-machines/README.md) tests fresh identity, indexed loop
+progress and an actual Core AST connection; its [source interface](../../experiments/extensible-machines/SURFACE.md)
+sets out the proposed language functionality and remaining proof obligations.
+The [TinyGEMM comparison](../../experiments/machine-core/README.md) and
+[A3b/pair client ports](../../experiments/machine-core/full/RESULTS.md) test an alternative interface and exact
+Core lowering equivalence. They do not prove the library-wide safety claim.
+The [kernel-independent proof experiment](../../experiments/library-correctness/README.md) checks universal
+retirement/coverage and peer-frame theorems, compares the evidence needed by the three language routes, and
+records the remaining obligations. It does not establish a complete replacement for Core.
+Its [primitive copy-ring continuation](../../experiments/library-correctness/RING_DESIGN.md) now emits CUDA and
+proves arbitrary-client primitive protocols, exact kernel assembly and phase parity for a single-stage slice.
+The [friction log](../../experiments/library-correctness/RING_DESIGN_FRICTION.md) records actual proof costs and tooling issues.
+
 ## 0. Background for a new reader
 
 **Raccoon** (`docs/language.md`, `docs/kernel.md`) is a dependently typed language with the following features.

@@ -1,0 +1,10 @@
+// expect: TypeMismatch
+import Examples
+import Authority
+import RegisterProtocol
+namespace Rejected {
+  def other: RegisterProtocol.Config := RegisterProtocol.Config.mk(2, 512, 1)
+  def wrong: Unit := Authority.withKernel(Rejected.other, Unit,
+    fun (l: Lifetime)(cursor: Authority.Cursor(l, Rejected.other, RegisterProtocol.State.fresh)): Unit =>
+      Authority.finish(Authority.execute(cursor, Examples.initialize)))
+}

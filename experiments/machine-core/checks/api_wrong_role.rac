@@ -1,0 +1,10 @@
+// expect: TypeMismatch
+import Api
+namespace Rejected {
+  open Gpu
+  def bad {l: Lifetime}{i: Lifetime}{w: Layout}(slice: Slice(l, i, w)): ProduceStep(l, i, w) :=
+    command Gpu.then {
+      slice.ring.acquire
+      slice.accumulator.overwrite
+    }
+}

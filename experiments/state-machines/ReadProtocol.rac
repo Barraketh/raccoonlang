@@ -1,0 +1,98 @@
+import Protocol
+
+namespace ReadProtocol {
+  inductive State : Type
+   | ready : State
+   | borrowing : State
+   | reading : State
+   | writable : State
+   | retired : State
+
+  inductive Event : Type
+   | beginRead (loan: Nat) : Event
+   | read (loan: Nat) : Event
+   | close (loan: Nat) : Event
+   | barrier : Event
+   | write : Event
+   | retire : Event
+
+  inductive Step (loan: Nat) indices (before: State)(event: Event)(after: State) : Prop
+   | beginRead (id: Nat)(same: Eq(Bool, Nat.beq(id, loan), Bool.true))
+       : Step(loan, State.ready, Event.beginRead(id), State.borrowing)
+   | read (id: Nat)(same: Eq(Bool, Nat.beq(id, loan), Bool.true))
+       : Step(loan, State.borrowing, Event.read(id), State.borrowing)
+   | close (id: Nat)(same: Eq(Bool, Nat.beq(id, loan), Bool.true))
+       : Step(loan, State.borrowing, Event.close(id), State.reading)
+   | barrier : Step(loan, State.reading, Event.barrier, State.writable)
+   | write : Step(loan, State.writable, Event.write, State.writable)
+   | retire : Step(loan, State.writable, Event.retire, State.retired)
+
+  def relation (loan: Nat): State -> Event -> State -> Prop :=
+    fun (s: State)(event: Event)(t: State): Prop => Step(loan, s, event, t)
+  def Choice (loan: Nat)(s: State)(event: Event): Type := Option(Protocol.CheckedStep(State, Event, ReadProtocol.relation(loan), s, event))
+  def reject (loan: Nat)(s: State)(event: Event): Choice(loan, s, event) :=
+    Option.none(Protocol.CheckedStep(State, Event, ReadProtocol.relation(loan), s, event))
+
+  def choose (loan: Nat)(s: State)(event: Event): Choice(loan, s, event) := {
+    match s returning Choice(loan, s, event) with
+    | State.ready => {
+      match event returning Choice(loan, s, event) with
+      | Event.beginRead id => {
+        match same : Nat.beq(id, loan) returning Choice(loan, s, event) with
+        | Bool.true => Option.some(Protocol.CheckedStep.mk(ReadProtocol.relation(loan), s, event, State.borrowing, Step.beginRead(loan, id, same)))
+        | Bool.false => ReadProtocol.reject(loan, s, event)
+      }
+      | _ => ReadProtocol.reject(loan, s, event)
+    }
+    | State.borrowing => {
+      match event returning Choice(loan, s, event) with
+      | Event.read id => {
+        match same : Nat.beq(id, loan) returning Choice(loan, s, event) with
+        | Bool.true => Option.some(Protocol.CheckedStep.mk(ReadProtocol.relation(loan), s, event, State.borrowing, Step.read(loan, id, same)))
+        | Bool.false => ReadProtocol.reject(loan, s, event)
+      }
+      | Event.close id => {
+        match same : Nat.beq(id, loan) returning Choice(loan, s, event) with
+        | Bool.true => Option.some(Protocol.CheckedStep.mk(ReadProtocol.relation(loan), s, event, State.reading, Step.close(loan, id, same)))
+        | Bool.false => ReadProtocol.reject(loan, s, event)
+      }
+      | _ => ReadProtocol.reject(loan, s, event)
+    }
+    | State.reading => {
+      match event returning Choice(loan, s, event) with
+      | Event.barrier => Option.some(Protocol.CheckedStep.mk(ReadProtocol.relation(loan), s, event, State.writable, Step.barrier(loan)))
+      | _ => ReadProtocol.reject(loan, s, event)
+    }
+    | State.writable => {
+      match event returning Choice(loan, s, event) with
+      | Event.write => Option.some(Protocol.CheckedStep.mk(ReadProtocol.relation(loan), s, event, State.writable, Step.write(loan)))
+      | Event.retire => Option.some(Protocol.CheckedStep.mk(ReadProtocol.relation(loan), s, event, State.retired, Step.retire(loan)))
+      | _ => ReadProtocol.reject(loan, s, event)
+    }
+    | State.retired => ReadProtocol.reject(loan, s, event)
+  }
+
+  def incoming (s: State)(t: State): Prop := {
+    match t returning Prop with
+    | State.reading => Eq(State, s, State.borrowing)
+    | State.retired => Eq(State, s, State.writable)
+    | _ => True
+  }
+
+  def incomingLaw {loan: Nat}{s: State}{event: Event}{t: State}(edge: Step(loan, s, event, t))
+      : ReadProtocol.incoming(s, t) := {
+    match edge returning ReadProtocol.incoming(s, t) with
+    | Step.beginRead id same => True.intro
+    | Step.read id same => True.intro
+    | Step.close id same => Eq.refl(State.borrowing)
+    | Step.barrier => True.intro
+    | Step.write => True.intro
+    | Step.retire => Eq.refl(State.writable)
+  }
+
+  def closeBacklink {loan: Nat}{s: State}{event: Event}(edge: Step(loan, s, event, State.reading))
+      : Eq(State, s, State.borrowing) := ReadProtocol.incomingLaw(edge)
+
+  def retireBacklink {loan: Nat}{s: State}{event: Event}(edge: Step(loan, s, event, State.retired))
+      : Eq(State, s, State.writable) := ReadProtocol.incomingLaw(edge)
+}

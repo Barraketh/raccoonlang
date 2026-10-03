@@ -1,0 +1,74 @@
+import Contracts
+
+namespace Separation {
+  def first {A: Type}{B: Type}(state: Pair(A, B)): A := {
+    match state returning A with
+    | Pair.mk a b => a
+  }
+  def second {A: Type}{B: Type}(state: Pair(A, B)): B := {
+    match state returning B with
+    | Pair.mk a b => b
+  }
+  def both {A: Type}{B: Type}(P: A -> Prop)(Q: B -> Prop): Pair(A, B) -> Prop :=
+    fun (state: Pair(A, B)): Prop => And(P(Separation.first(state)), Q(Separation.second(state)))
+
+  def merge {A: Type}{B: Type}(left: Contracts.Outcome(A))(right: Contracts.Outcome(B)): Contracts.Outcome(Pair(A, B)) := {
+    match left returning Contracts.Outcome(Pair(A, B)) with
+    | Contracts.Outcome.fault => Contracts.Outcome.fault(Pair(A, B))
+    | Contracts.Outcome.ok a => {
+      match right returning Contracts.Outcome(Pair(A, B)) with
+      | Contracts.Outcome.fault => Contracts.Outcome.fault(Pair(A, B))
+      | Contracts.Outcome.ok b => Contracts.Outcome.ok((a, b))
+    }
+  }
+  def mergeRight {A: Type}{B: Type}(right: Contracts.Outcome(B))(left: Contracts.Outcome(A)): Contracts.Outcome(Pair(A, B)) := {
+    match right returning Contracts.Outcome(Pair(A, B)) with
+    | Contracts.Outcome.fault => Contracts.Outcome.fault(Pair(A, B))
+    | Contracts.Outcome.ok b => {
+      match left returning Contracts.Outcome(Pair(A, B)) with
+      | Contracts.Outcome.fault => Contracts.Outcome.fault(Pair(A, B))
+      | Contracts.Outcome.ok a => Contracts.Outcome.ok((a, b))
+    }
+  }
+
+  // Independence is a semantic restriction: each computation receives only
+  // its own state slice. Merely preserving a postcondition would be weaker.
+  def parallel {A: Type}{B: Type}(left: Contracts.Runtime -> A -> Contracts.Outcome(A))(right: Contracts.Runtime -> B -> Contracts.Outcome(B))
+      : Contracts.Runtime -> Pair(A, B) -> Contracts.Outcome(Pair(A, B)) :=
+    fun (runtime: Contracts.Runtime)(state: Pair(A, B)): Contracts.Outcome(Pair(A, B)) =>
+      Separation.merge(left(runtime, Separation.first(state)), right(runtime, Separation.second(state)))
+
+  def mergeSafe {A: Type}{B: Type}(left: Contracts.Outcome(A))(right: Contracts.Outcome(B))(P: A -> Prop)(Q: B -> Prop)
+      (a: Contracts.Post(P, left))(b: Contracts.Post(Q, right)): Contracts.Post(Separation.both(P, Q), Separation.merge(left, right)) := {
+    match left returning Contracts.Post(Separation.both(P, Q), Separation.merge(left, right)) with
+    | Contracts.Outcome.fault => False.elimP(a, Contracts.Post(Separation.both(P, Q), Separation.merge(left, right)))
+    | Contracts.Outcome.ok x => {
+      match right returning Contracts.Post(Separation.both(P, Q), Separation.merge(left, right)) with
+      | Contracts.Outcome.fault => False.elimP(b, Contracts.Post(Separation.both(P, Q), Separation.merge(left, right)))
+      | Contracts.Outcome.ok y => And.intro(a, b)
+    }
+  }
+
+  def parallelSafe {A: Type}{B: Type}(left: Contracts.Runtime -> A -> Contracts.Outcome(A))(right: Contracts.Runtime -> B -> Contracts.Outcome(B))
+      (P: A -> Prop)(Q: A -> Prop)(R: B -> Prop)(T: B -> Prop)(a: Contracts.Safe(left, P, Q))(b: Contracts.Safe(right, R, T))
+      : Contracts.Safe(Separation.parallel(left, right), Separation.both(P, R), Separation.both(Q, T)) :=
+    fun (runtime: Contracts.Runtime)(state: Pair(A, B))(initial: And(P(Separation.first(state)), R(Separation.second(state))))
+        : Contracts.Post(Separation.both(Q, T), Separation.parallel(left, right)(runtime, state)) =>
+      Separation.mergeSafe(left(runtime, Separation.first(state)), right(runtime, Separation.second(state)), Q, T,
+        a(runtime, Separation.first(state), initial.left), b(runtime, Separation.second(state), initial.right))
+
+  def independentOrder {A: Type}{B: Type}(left: Contracts.Outcome(A))(right: Contracts.Outcome(B))
+      : Eq(Contracts.Outcome(Pair(A, B)), Separation.merge(left, right), Separation.mergeRight(right, left)) := {
+    match left returning Eq(Contracts.Outcome(Pair(A, B)), Separation.merge(left, right), Separation.mergeRight(right, left)) with
+    | Contracts.Outcome.ok a => {
+      match right returning Eq(Contracts.Outcome(Pair(A, B)), Separation.merge(left, right), Separation.mergeRight(right, left)) with
+      | Contracts.Outcome.ok b => Eq.refl(Contracts.Outcome.ok((a, b)))
+      | Contracts.Outcome.fault => Eq.refl(Contracts.Outcome.fault(Pair(A, B)))
+    }
+    | Contracts.Outcome.fault => {
+      match right returning Eq(Contracts.Outcome(Pair(A, B)), Separation.merge(left, right), Separation.mergeRight(right, left)) with
+      | Contracts.Outcome.ok b => Eq.refl(Contracts.Outcome.fault(Pair(A, B)))
+      | Contracts.Outcome.fault => Eq.refl(Contracts.Outcome.fault(Pair(A, B)))
+    }
+  }
+}

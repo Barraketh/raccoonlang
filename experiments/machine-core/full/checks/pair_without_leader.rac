@@ -1,0 +1,8 @@
+// expect: ImplicitReconstructionFailed
+import Machine
+namespace Rejected {
+ open Core
+ open Cuda
+ open GpuMachine.{Machine, Ticket}
+ def bad {l:Lifetime}{r:Lifetime}{cfg:RingCfg}(machine:Machine(l,Group.lane,Unit))(elected:Elected(l))(ring:PairRing(r,cfg))(side:Consumer(r)):Machine(l,Group.lane,ConsumerAt(r,l)) := GpuMachine.takePairConsumer(machine,elected,Unit.unit,ring,side)
+}

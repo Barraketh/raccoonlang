@@ -1,0 +1,139 @@
+import Protocol
+import encoding.Registers
+
+namespace RegisterProtocol {
+  struct Config : Type
+   | mk (kernel: Nat)(threads: Nat)(residency: Nat) : Config
+
+  struct Counts : Type
+   | mk (c0: Nat)(c1: Nat)(c2: Nat)(c3: Nat) : Counts
+
+  inductive State : Type
+   | fresh : State
+   | uniform : State
+   | split (counts: Counts) : State
+   | joined (counts: Counts) : State
+   | restoring (counts: Counts) : State
+
+  inductive Event : Type
+   | initialize (kernel: Nat)(budget: Nat) : Event
+   | split (counts: Counts) : Event
+   | join : Event
+   | restore : Event
+   | barrier : Event
+
+  def budget (cfg: Config): Nat := Registers.budget(cfg.threads, cfg.residency)
+  def poolOk (cfg: Config)(kernel: Nat)(budget: Nat): Bool :=
+    Bool.and(Nat.beq(kernel, cfg.kernel), Nat.beq(budget, RegisterProtocol.budget(cfg)))
+  def fits (cfg: Config)(cs: Counts): Bool := Bool.and(Nat.beq(cfg.threads, 512),
+    Registers.fits(RegisterProtocol.budget(cfg), cs.c0, cs.c1, cs.c2, cs.c3))
+
+  // The authoritative introduction rules. Uniform includes synchronization,
+  // rather than just equality of the physical register counts.
+  inductive Step (cfg: Config) indices (before: State)(event: Event)(after: State) : Prop
+   | initialize (kernel: Nat)(budget: Nat)(ok: Eq(Bool, RegisterProtocol.poolOk(cfg, kernel, budget), Bool.true))
+       : Step(cfg, State.fresh, Event.initialize(kernel, budget), State.uniform)
+   | split (cs: Counts)(ok: Eq(Bool, RegisterProtocol.fits(cfg, cs), Bool.true))
+       : Step(cfg, State.uniform, Event.split(cs), State.split(cs))
+   | join (cs: Counts) : Step(cfg, State.split(cs), Event.join, State.joined(cs))
+   | restore (cs: Counts) : Step(cfg, State.joined(cs), Event.restore, State.restoring(cs))
+   | barrier (cs: Counts) : Step(cfg, State.restoring(cs), Event.barrier, State.uniform)
+
+  def relation (cfg: Config): State -> Event -> State -> Prop :=
+    fun (s: State)(event: Event)(t: State): Prop => Step(cfg, s, event, t)
+
+  def Choice (cfg: Config)(s: State)(event: Event): Type :=
+    Option(Protocol.CheckedStep(State, Event, RegisterProtocol.relation(cfg), s, event))
+  def reject (cfg: Config)(s: State)(event: Event): Choice(cfg, s, event) :=
+    Option.none(Protocol.CheckedStep(State, Event, RegisterProtocol.relation(cfg), s, event))
+
+  // Proof-producing inference, not a second validator. A mistaken choice must
+  // still typecheck as one of Step's introductions.
+  def choose (cfg: Config)(s: State)(event: Event): Choice(cfg, s, event) := {
+    match s returning Choice(cfg, s, event) with
+    | State.fresh => {
+      match event returning Choice(cfg, s, event) with
+      | Event.initialize kernel budget => {
+        match ok : RegisterProtocol.poolOk(cfg, kernel, budget) returning Choice(cfg, s, event) with
+        | Bool.true => Option.some(Protocol.CheckedStep.mk(RegisterProtocol.relation(cfg), s, event, State.uniform, Step.initialize(cfg, kernel, budget, ok)))
+        | Bool.false => RegisterProtocol.reject(cfg, s, event)
+      }
+      | _ => RegisterProtocol.reject(cfg, s, event)
+    }
+    | State.uniform => {
+      match event returning Choice(cfg, s, event) with
+      | Event.split cs => {
+        match ok : RegisterProtocol.fits(cfg, cs) returning Choice(cfg, s, event) with
+        | Bool.true => Option.some(Protocol.CheckedStep.mk(RegisterProtocol.relation(cfg), s, event, State.split(cs), Step.split(cfg, cs, ok)))
+        | Bool.false => RegisterProtocol.reject(cfg, s, event)
+      }
+      | _ => RegisterProtocol.reject(cfg, s, event)
+    }
+    | State.split cs => {
+      match event returning Choice(cfg, s, event) with
+      | Event.join => Option.some(Protocol.CheckedStep.mk(RegisterProtocol.relation(cfg), s, event, State.joined(cs), Step.join(cfg, cs)))
+      | _ => RegisterProtocol.reject(cfg, s, event)
+    }
+    | State.joined cs => {
+      match event returning Choice(cfg, s, event) with
+      | Event.restore => Option.some(Protocol.CheckedStep.mk(RegisterProtocol.relation(cfg), s, event, State.restoring(cs), Step.restore(cfg, cs)))
+      | _ => RegisterProtocol.reject(cfg, s, event)
+    }
+    | State.restoring cs => {
+      match event returning Choice(cfg, s, event) with
+      | Event.barrier => Option.some(Protocol.CheckedStep.mk(RegisterProtocol.relation(cfg), s, event, State.uniform, Step.barrier(cfg, cs)))
+      | _ => RegisterProtocol.reject(cfg, s, event)
+    }
+  }
+
+  inductive UniformPredecessor indices (s: State) : Prop
+   | initial : UniformPredecessor(State.fresh)
+   | restoring (cs: Counts) : UniformPredecessor(State.restoring(cs))
+
+  def incoming (s: State)(t: State): Prop := {
+    match t returning Prop with
+    | State.uniform => UniformPredecessor(s)
+    | _ => True
+  }
+
+  def incomingLaw {cfg: Config}{s: State}{event: Event}{t: State}(edge: Step(cfg, s, event, t))
+      : RegisterProtocol.incoming(s, t) := {
+    match edge returning RegisterProtocol.incoming(s, t) with
+    | Step.initialize kernel budget ok => UniformPredecessor.initial
+    | Step.split cs ok => True.intro
+    | Step.join cs => True.intro
+    | Step.restore cs => True.intro
+    | Step.barrier cs => UniformPredecessor.restoring(cs)
+  }
+
+  // A backward theorem for every instance, event and incoming edge.
+  def uniformBacklink {cfg: Config}{s: State}{event: Event}(edge: Step(cfg, s, event, State.uniform))
+      : UniformPredecessor(s) := RegisterProtocol.incomingLaw(edge)
+
+  def safe (cfg: Config)(s: State): Prop := {
+    match s returning Prop with
+    | State.split cs => Eq(Bool, RegisterProtocol.fits(cfg, cs), Bool.true)
+    | State.joined cs => Eq(Bool, RegisterProtocol.fits(cfg, cs), Bool.true)
+    | State.restoring cs => Eq(Bool, RegisterProtocol.fits(cfg, cs), Bool.true)
+    | _ => True
+  }
+
+  def preservesBudget (cfg: Config)(s: State)(event: Event)(t: State)(edge: Step(cfg, s, event, t))
+      (initial: RegisterProtocol.safe(cfg, s)): RegisterProtocol.safe(cfg, t) := {
+    match edge returning RegisterProtocol.safe(cfg, t) with
+    | Step.initialize kernel budget ok => True.intro
+    | Step.split cs ok => ok
+    | Step.join cs => initial
+    | Step.restore cs => initial
+    | Step.barrier cs => True.intro
+  }
+
+  def commandSafe (cfg: Config){before: State}{after: State}
+      (command: Protocol.Command(State, Event, RegisterProtocol.relation(cfg), before, after))
+      (initial: RegisterProtocol.safe(cfg, before)): RegisterProtocol.safe(cfg, after) :=
+    Protocol.preserves(
+      fun (s: State): Prop => RegisterProtocol.safe(cfg, s),
+      fun (s: State)(event: Event)(t: State)(edge: Step(cfg, s, event, t))(h: RegisterProtocol.safe(cfg, s))
+        : RegisterProtocol.safe(cfg, t) => RegisterProtocol.preservesBudget(cfg, s, event, t, edge, h),
+      command.events, command.valid, initial)
+}

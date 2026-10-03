@@ -1,0 +1,21 @@
+import Separation
+import Gpu
+
+namespace Invariants {
+  def equalTo {S: Type}(before: S): S -> Prop := fun (after: S): Prop => Eq(S, after, before)
+
+  // An arbitrary certified computation on one slice preserves the other
+  // slice exactly, even when its own payload changes.
+  def frame {A: Type}{B: Type}(run: Contracts.Runtime -> A -> Contracts.Outcome(A))
+      (P: A -> Prop)(Q: A -> Prop)(safe: Contracts.Safe(run, P, Q))
+      (runtime: Contracts.Runtime)(own: A)(peer: B)(initial: P(own))
+      : Contracts.Post(Separation.both(Q, Invariants.equalTo(peer)),
+          Separation.merge(run(runtime, own), Contracts.Outcome.ok(peer))) :=
+    Separation.mergeSafe(run(runtime, own), Contracts.Outcome.ok(peer), Q, Invariants.equalTo(peer),
+      safe(runtime, own, initial), Eq.refl(peer))
+
+  // The callback implementation is opaque. The contract still provides a
+  // proposition about every primitive in its program tree.
+  def footprint {l: Lifetime}{id: Nat}{actor: Nat}{P: BufferModel.State -> Prop}{Q: BufferModel.State -> Prop}
+      (role: Gpu.Local(l, id, actor, P, Q)): Footprints.Owns(id, actor, Gpu.localCode(role)) := Gpu.localFootprint(role)
+}

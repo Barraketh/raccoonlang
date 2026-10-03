@@ -1,0 +1,6 @@
+// expect: TypeMismatch
+import Api
+namespace Rejected {
+  open Gpu
+  def bad {l: Lifetime}{i: Lifetime}{w: Layout}(chunk: Chunk(l, i, w))(values: Values(chunk)): Commands.Values(l, w, chunk.coordinate) := values
+}

@@ -1,0 +1,7 @@
+// expect: TypeMismatch
+import Emission
+import BufferModel
+namespace Rejected {
+  def bad: Emission.Local(BufferModel.Code.loop(BufferModel.Code.skip), Option.none(Nat), 4, Cuda.Block.done, 5) :=
+    Emission.Local.loop(BufferModel.Code.skip, Option.none(Nat), 4, 5, Cuda.Block.done, Emission.Local.skip(Option.some(4), 5))
+}

@@ -1,0 +1,121 @@
+import Native
+
+namespace Protocol {
+  inductive Role: Type
+   | producer: Role
+   | issuer: Role
+   | store: Role
+  inductive State: Type
+   | producing: State
+   | slot: State
+   | empty: State
+   | readyEmpty: State
+   | pending: State
+   | readyPending: State
+   | used: State
+   | storing: State
+   | chunk (index: Cuda.Expr): State
+   | loaded (index: Cuda.Expr): State
+   | free (index: Cuda.Expr): State
+   | written (index: Cuda.Expr): State
+   | fenced (index: Cuda.Expr): State
+   | stored (index: Cuda.Expr): State
+   | done: State
+
+  // This catalogue is both the typestate rule and the proposition used in
+  // proofs. There is no independent user-supplied step/emit pair.
+  inductive Step indices (role: Role)(before: State)(after: State)(op: Native.Op): Prop
+   | acquire: Step(Role.producer, State.producing, State.slot, Native.Op.acquire)
+   | fill (index: Cuda.Expr): Step(Role.producer, State.slot, State.producing, Native.Op.fill(index))
+   | awaitFirst: Step(Role.issuer, State.empty, State.readyEmpty, Native.Op.await)
+   | awaitNext: Step(Role.issuer, State.pending, State.readyPending, Native.Op.await)
+   | first: Step(Role.issuer, State.readyEmpty, State.used, Native.Op.mmaFirst)
+   | next: Step(Role.issuer, State.readyPending, State.used, Native.Op.mmaNext)
+   | release: Step(Role.issuer, State.used, State.pending, Native.Op.release)
+   | load (index: Cuda.Expr): Step(Role.store, State.chunk(index), State.loaded(index), Native.Op.load(index))
+   | acquireStage (index: Cuda.Expr): Step(Role.store, State.loaded(index), State.free(index), Native.Op.acquireStage)
+   | write (index: Cuda.Expr)(values: Nat): Step(Role.store, State.free(index), State.written(index), Native.Op.writeStage(values))
+   | fence (index: Cuda.Expr): Step(Role.store, State.written(index), State.fenced(index), Native.Op.fenceStage)
+   | store (index: Cuda.Expr): Step(Role.store, State.fenced(index), State.stored(index), Native.Op.store(index))
+
+  def loopBlock (id: Nat)(first: Cuda.Expr)(count: Cuda.Expr)(body: Cuda.Block): Cuda.Block :=
+    Cuda.Block.seq(Cuda.Stmt.forLoop(id, first, count, body), Cuda.Block.done)
+  def peeledBlock (first: Cuda.Block)(id: Nat)(rest: Cuda.Block): Cuda.Block :=
+    Cuda.Block.seq(Cuda.Stmt.scoped(first), Protocol.loopBlock(id, Cuda.Expr.lit(1), Native.steps, rest))
+
+  inductive Plan: Type
+   | atom (op: Native.Op): Plan
+   | seq (first: Plan)(second: Plan): Plan
+   | peeled (first: Plan)(rest: Plan): Plan
+   | chunks (body: Plan): Plan
+
+  // A derivation indexes both retained command syntax and the actual target
+  // block. Proofs recurse over the syntax, rather than erased Prop evidence.
+  inductive Flow (world: Native.World) indices (role: Role)(before: State)(after: State)(plan: Plan)(body: Cuda.Block)(start: Nat)(end: Nat): Prop
+   | atom (role: Role)(before: State)(after: State)(op: Native.Op)(start: Nat)(legal: Step(role, before, after, op))
+       : Flow(world, role, before, after, Plan.atom(op), Native.emit(world, op, start).body, start, Native.emit(world, op, start).next)
+   | seq (role: Role)(before: State)(middle: State)(after: State)(pa: Plan)(pb: Plan)(a: Cuda.Block)(b: Cuda.Block)(start: Nat)(mid: Nat)(end: Nat)
+       (left: Flow(world, role, before, middle, pa, a, start, mid))(right: Flow(world, role, middle, after, pb, b, mid, end))
+       : Flow(world, role, before, after, Plan.seq(pa, pb), Native.append(a, b), start, end)
+   | peeled (role: Role)(before: State)(invariant: State)(pa: Plan)(pb: Plan)(a: Cuda.Block)(b: Cuda.Block)(start: Nat)(id: Nat)(end: Nat)
+       (first: Flow(world, role, before, invariant, pa, a, start, id))(rest: Flow(world, role, invariant, invariant, pb, b, Nat.succ(id), end))
+       : Flow(world, role, before, invariant, Plan.peeled(pa, pb), Protocol.peeledBlock(a, id, b), start, end)
+   | chunks (plan: Plan)(body: Cuda.Block)(id: Nat)(end: Nat)
+       (valid: Flow(world, Role.store, State.chunk(Cuda.Expr.var(id)), State.stored(Cuda.Expr.var(id)), plan, body, Nat.succ(id), end))
+       : Flow(world, Role.store, State.storing, State.done, Plan.chunks(plan), Protocol.loopBlock(id, Cuda.Expr.lit(0), Cuda.Expr.lit(4), body), id, end)
+
+  struct Output (world: Native.World)(role: Role)(before: State)(after: State)(start: Nat): Type
+   | mk (plan: Plan)(body: Cuda.Block)(next: Nat)(proof: Flow(world, role, before, after, plan, body, start, next)): Output(world, role, before, after, start)
+
+  inductive KernelFlow indices (world: Native.World)(kernel: Cuda.Kernel): Prop
+   | assembled (world: Native.World)(name: String)(pPlan: Plan)(iPlan: Plan)(sPlan: Plan)(producer: Cuda.Block)(pEnd: Nat)(issuer: Cuda.Block)(iEnd: Nat)(store: Cuda.Block)(end: Nat)
+       (p: Flow(world, Role.producer, State.producing, State.producing, pPlan, producer, 7, pEnd))
+       (i: Flow(world, Role.issuer, State.empty, State.pending, iPlan, issuer, Nat.succ(pEnd), iEnd))
+       (s: Flow(world, Role.store, State.storing, State.done, sPlan, store, iEnd, end))
+       : KernelFlow(world, Native.assemble(name, world, producer, pEnd, issuer, store))
+
+  // These are universally quantified backlinks, with no reflection axiom
+  // or inspection of an opaque library token's construction history.
+  def fencedCameFromWritten {role: Role}{before: State}{op: Native.Op}(index: Cuda.Expr)(step: Step(role, before, State.fenced(index), op))
+      : Eq(State, before, State.written(index)) := {
+    match step returning Eq(State, before, State.written(index)) with
+    | Step.fence i => Eq.refl(State.written(i))
+  }
+  def storeRequiresFence {before: State}{after: State}{index: Cuda.Expr}(step: Step(Role.store, before, after, Native.Op.store(index)))
+      : Eq(State, before, State.fenced(index)) := {
+    match step returning Eq(State, before, State.fenced(index)) with
+    | Step.store i => Eq.refl(State.fenced(i))
+  }
+  def releaseRequiresMma {before: State}{after: State}(step: Step(Role.issuer, before, after, Native.Op.release))
+      : Eq(State, before, State.used) := {
+    match step returning Eq(State, before, State.used) with
+    | Step.release => Eq.refl(State.used)
+  }
+  def firstRequiresEmptyStage {before: State}{after: State}(step: Step(Role.issuer, before, after, Native.Op.mmaFirst))
+      : Eq(State, before, State.readyEmpty) := {
+    match step returning Eq(State, before, State.readyEmpty) with
+    | Step.first => Eq.refl(State.readyEmpty)
+  }
+  def storedIsTerminal {role: Role}{after: State}{op: Native.Op}(index: Cuda.Expr)(step: Step(role, State.stored(index), after, op)): False := {
+    match step returning False with
+  }
+  def cannotContinueStored {world: Native.World}{role: Role}{after: State}{body: Cuda.Block}{start: Nat}{end: Nat}
+      (index: Cuda.Expr)(plan: Plan)(flow: Flow(world, role, State.stored(index), after, plan, body, start, end)): False decreases structural(plan) := {
+    match plan returning False with
+    | Plan.atom op => {
+      match flow returning False with
+      | Flow.atom r a b op n legal => Protocol.storedIsTerminal(index, legal)
+    }
+    | Plan.seq left right => {
+      match flow returning False with
+      | Flow.seq r a m b pa pb leftBody rightBody n mid end first second => Protocol.cannotContinueStored(index, left, first)
+    }
+    | Plan.peeled first rest => {
+      match flow returning False with
+      | Flow.peeled r a b pa pb leftBody rightBody n mid end initial repeated => Protocol.cannotContinueStored(index, first, initial)
+    }
+    | Plan.chunks body => {
+      match flow returning False with
+    }
+  }
+}

@@ -1,0 +1,7 @@
+// expect: TypeMismatch
+import Api
+namespace Rejected {
+  open Gpu
+  def bad {l: Lifetime}{i: Lifetime}{w: Layout}{v: Layout}(chunk: Chunk(l, i, w))(other: Chunk(l, i, v))(values: Values(other)):
+      Commands.Cmd(Lifetime.union(l, i), w, Protocol.Role.store, Protocol.State.free(chunk.coordinate), Protocol.State.written(chunk.coordinate)) := chunk.staging.write(values)
+}

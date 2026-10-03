@@ -1,0 +1,70 @@
+import Protocol
+import RegisterProtocol
+import ReadProtocol
+import ActorProtocol
+import Authority
+import Scoped
+import Frame
+
+namespace Examples {
+  def cfg: RegisterProtocol.Config := RegisterProtocol.Config.mk(1, 512, 1)
+  def counts: RegisterProtocol.Counts := RegisterProtocol.Counts.mk(192, 192, 72, 56)
+  def regRelation: RegisterProtocol.State -> RegisterProtocol.Event -> RegisterProtocol.State -> Prop := RegisterProtocol.relation(Examples.cfg)
+  def regChoose (s: RegisterProtocol.State)(event: RegisterProtocol.Event): RegisterProtocol.Choice(Examples.cfg, s, event) :=
+    RegisterProtocol.choose(Examples.cfg, s, event)
+
+  def initialize: Protocol.Command(RegisterProtocol.State, RegisterProtocol.Event, Examples.regRelation, RegisterProtocol.State.fresh, RegisterProtocol.State.uniform) :=
+    Protocol.require(Protocol.infer(Examples.regRelation, Examples.regChoose, RegisterProtocol.State.fresh,
+      List.cons(RegisterProtocol.Event.initialize(1, 128), List.nil(RegisterProtocol.Event))),
+      RegisterProtocol.State.uniform, Eq.refl(Option.some(RegisterProtocol.State.uniform)))
+
+  def splitEvents: List(RegisterProtocol.Event) := List.cons(RegisterProtocol.Event.split(Examples.counts), List.nil(RegisterProtocol.Event))
+  def split: Protocol.Command(RegisterProtocol.State, RegisterProtocol.Event, Examples.regRelation, RegisterProtocol.State.uniform, RegisterProtocol.State.split(Examples.counts)) :=
+    Protocol.require(Protocol.infer(Examples.regRelation, Examples.regChoose, RegisterProtocol.State.uniform, Examples.splitEvents),
+      RegisterProtocol.State.split(Examples.counts), Eq.refl(Option.some(RegisterProtocol.State.split(Examples.counts))))
+
+  def backEvents: List(RegisterProtocol.Event) := List.cons(RegisterProtocol.Event.join,
+    List.cons(RegisterProtocol.Event.restore, List.cons(RegisterProtocol.Event.barrier, List.nil(RegisterProtocol.Event))))
+  def back: Protocol.Command(RegisterProtocol.State, RegisterProtocol.Event, Examples.regRelation, RegisterProtocol.State.split(Examples.counts), RegisterProtocol.State.uniform) :=
+    Protocol.require(Protocol.infer(Examples.regRelation, Examples.regChoose, RegisterProtocol.State.split(Examples.counts), Examples.backEvents),
+      RegisterProtocol.State.uniform, Eq.refl(Option.some(RegisterProtocol.State.uniform)))
+
+  // Composition retains its proof without reflecting a typing derivation.
+  def roundtrip: Protocol.Command(RegisterProtocol.State, RegisterProtocol.Event, Examples.regRelation, RegisterProtocol.State.uniform, RegisterProtocol.State.uniform) :=
+    Protocol.Command.mk(List.append(Examples.split.events, Examples.back.events),
+      Protocol.append(Examples.split.events, Examples.split.valid, Examples.back.valid))
+
+  def fitsThroughout: RegisterProtocol.safe(Examples.cfg, RegisterProtocol.State.split(Examples.counts)) :=
+    RegisterProtocol.commandSafe(Examples.cfg, Examples.split, True.intro)
+
+  def returnsFromRestoring: RegisterProtocol.UniformPredecessor(RegisterProtocol.State.restoring(Examples.counts)) :=
+    RegisterProtocol.uniformBacklink(RegisterProtocol.Step.barrier(Examples.cfg, Examples.counts))
+
+  def framed: Protocol.Run(Pair(RegisterProtocol.State, Nat), RegisterProtocol.Event,
+      Frame.relation(RegisterProtocol.State, RegisterProtocol.Event, Nat, Examples.regRelation),
+      (RegisterProtocol.State.uniform, 42), Examples.roundtrip.events, (RegisterProtocol.State.uniform, 42)) :=
+    Frame.lift(Nat, Examples.regRelation, Examples.roundtrip.events, Examples.roundtrip.valid, 42)
+
+  def peerStillPending: Eq(Bool, ActorProtocol.peerPending(ActorProtocol.State.leaderDoneInside), Bool.true) :=
+    ActorProtocol.peerFrame(ActorProtocol.Step.finishLeader)
+
+  def retiredFromWritable: Eq(ReadProtocol.State, ReadProtocol.State.writable, ReadProtocol.State.writable) :=
+    ReadProtocol.retireBacklink(ReadProtocol.Step.retire(7))
+
+  // Evidence can be copied; execution advances one linear cursor each time.
+  def copyDescription: Pair(
+      Protocol.Command(RegisterProtocol.State, RegisterProtocol.Event, Examples.regRelation, RegisterProtocol.State.uniform, RegisterProtocol.State.uniform),
+      Protocol.Command(RegisterProtocol.State, RegisterProtocol.Event, Examples.regRelation, RegisterProtocol.State.uniform, RegisterProtocol.State.uniform)) :=
+    (Examples.roundtrip, Examples.roundtrip)
+
+  def executeTwice: Unit := Authority.withKernel(Examples.cfg, Unit,
+    fun (l: Lifetime)(cursor: Authority.Cursor(l, Examples.cfg, RegisterProtocol.State.fresh)): Unit => {
+      let cursor := Authority.execute(cursor, Examples.initialize)
+      let cursor := Authority.execute(cursor, Examples.roundtrip)
+      let cursor := Authority.execute(cursor, Examples.roundtrip)
+      Authority.finish(cursor)
+    })
+
+  def scopedReads: Nat := Scoped.withLease(Nat,
+    fun (l: Lifetime)(lease: Scoped.Lease(l)): Nat => Nat.add(Scoped.read(lease), Scoped.read(lease)))
+}

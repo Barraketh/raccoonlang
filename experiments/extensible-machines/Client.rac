@@ -1,0 +1,37 @@
+import Source
+import Separation
+
+namespace Client {
+  def Worker: Type := (root: Lifetime) -> (allocation: Lifetime) -> (id: Nat)
+    -> Allocation.Ref(root, allocation, id, 64) -> Source.Body(root, allocation, id)
+  def worker (root: Lifetime)(a: Lifetime)(id: Nat)(buffer: Allocation.Ref(root, a, id, 64)): Source.Body(root, a, id) := Source.standard(buffer)
+
+  sealed struct Plan: Type
+   | mk (layout: Cuda.Block)
+        (first: Machine.Cmd(Pipeline.State, Pipeline.Op, Pipeline.spec(0), Pipeline.at(Pipeline.empty), Pipeline.at(Pipeline.empty)))
+        (second: Machine.Cmd(Pipeline.State, Pipeline.Op, Pipeline.spec(1), Pipeline.at(Pipeline.empty), Pipeline.at(Pipeline.empty)))
+        (firstProgress: Progress.Advances(first.run, Pipeline.invariant))(secondProgress: Progress.Advances(second.run, Pipeline.invariant)): Plan
+
+  def construct (worker: Worker): Plan := Allocation.run(Plan,
+    fun (root: Lifetime)(cursor: Allocation.Cursor(root, 0)): Plan => Allocation.allocate(cursor, 64,
+      fun (a: Lifetime)(first: Allocation.Ref(root, a, 0, 64))(cursor: Allocation.Cursor(root, 1)): Plan => Allocation.allocate(cursor, 64,
+        fun (b: Lifetime)(second: Allocation.Ref(root, b, 1, 64))(cursor: Allocation.Cursor(root, 2)): Plan => {
+          let left := worker(root, a, 0, first)
+          let right := worker(root, b, 1, second)
+          Plan.mk(Allocation.finish(cursor), Source.command(left), Source.command(right), Source.advanced(left), Source.advanced(right))
+        })))
+  def layout (plan: Plan): Cuda.Block := plan.layout
+  def first (plan: Plan): Machine.Cmd(Pipeline.State, Pipeline.Op, Pipeline.spec(0), Pipeline.at(Pipeline.empty), Pipeline.at(Pipeline.empty)) := plan.first
+  def second (plan: Plan): Machine.Cmd(Pipeline.State, Pipeline.Op, Pipeline.spec(1), Pipeline.at(Pipeline.empty), Pipeline.at(Pipeline.empty)) := plan.second
+  def run (plan: Plan): Contracts.Runtime -> Pair(Pipeline.State, Pipeline.State) -> Contracts.Outcome(Pair(Pipeline.State, Pipeline.State)) :=
+    Separation.parallel(plan.first.run, plan.second.run)
+  def invariant (g: Nat)(state: Pair(Pipeline.State, Pipeline.State)): Prop :=
+    And(Pipeline.invariant(g, Separation.first(state)), Pipeline.invariant(g, Separation.second(state)))
+  def advanced (plan: Plan): Progress.Advances(Client.run(plan), Client.invariant) :=
+    fun (g: Nat): Contracts.Safe(Client.run(plan), Progress.stage(Client.invariant, g), Progress.stage(Client.invariant, Nat.succ(g))) =>
+    fun (r: Contracts.Runtime)(state: Pair(Pipeline.State, Pipeline.State))(initial: Client.invariant(g, state))
+        : Contracts.Post(Progress.stage(Client.invariant, Nat.succ(g)), Client.run(plan)(r, state)) =>
+      Separation.mergeSafe(plan.first.run(r, Separation.first(state)), plan.second.run(r, Separation.second(state)),
+        Progress.stage(Pipeline.invariant, Nat.succ(g)), Progress.stage(Pipeline.invariant, Nat.succ(g)),
+        plan.firstProgress(g)(r, Separation.first(state), initial.left), plan.secondProgress(g)(r, Separation.second(state), initial.right))
+}

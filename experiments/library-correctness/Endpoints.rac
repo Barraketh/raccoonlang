@@ -1,0 +1,160 @@
+import Concurrent
+import Contracts
+
+namespace Endpoints {
+  open Concurrent.{Phase, Action}
+  inductive Role: Type
+   | producer: Role
+   | consumer: Role
+  def phase (role: Role)(s: Concurrent.State): Phase := {
+    match role returning Phase with
+    | Role.producer => s.producer.phase
+    | Role.consumer => s.consumer.phase
+  }
+  def other (role: Role)(s: Concurrent.State): Phase := {
+    match role returning Phase with
+    | Role.producer => s.consumer.phase
+    | Role.consumer => s.producer.phase
+  }
+  inductive Transition indices (role: Role)(action: Action)(before: Phase)(after: Phase): Prop
+   | acquire: Transition(Role.producer, Action.acquire, Phase.ready, Phase.held)
+   | issue: Transition(Role.producer, Action.issue, Phase.held, Phase.ready)
+   | finishProducer: Transition(Role.producer, Action.finishProducer, Phase.ready, Phase.done)
+   | await: Transition(Role.consumer, Action.await, Phase.ready, Phase.held)
+   | read: Transition(Role.consumer, Action.read, Phase.held, Phase.held)
+   | release: Transition(Role.consumer, Action.release, Phase.held, Phase.ready)
+   | finishConsumer: Transition(Role.consumer, Action.finishConsumer, Phase.ready, Phase.done)
+  inductive Code: Type
+   | skip: Code
+   | atom (action: Action): Code
+   | seq (a: Code)(b: Code): Code
+   | branch (a: Code)(b: Code): Code
+   | loop (body: Code): Code
+  inductive Typed indices (role: Role)(code: Code)(before: Phase)(after: Phase): Prop
+   | skip (role: Role)(p: Phase): Typed(role, Code.skip, p, p)
+   | atom (role: Role)(action: Action)(p: Phase)(q: Phase)(valid: Transition(role, action, p, q)): Typed(role, Code.atom(action), p, q)
+   | seq (role: Role)(a: Code)(b: Code)(p: Phase)(q: Phase)(r: Phase)(left: Typed(role, a, p, q))(right: Typed(role, b, q, r)): Typed(role, Code.seq(a, b), p, r)
+   | branch (role: Role)(a: Code)(b: Code)(p: Phase)(q: Phase)(yes: Typed(role, a, p, q))(no: Typed(role, b, p, q)): Typed(role, Code.branch(a, b), p, q)
+   | loop (role: Role)(body: Code)(p: Phase)(valid: Typed(role, body, p, p)): Typed(role, Code.loop(body), p, p)
+  inductive Stream indices (role: Role)(actions: List(Action))(before: Phase)(after: Phase): Prop
+   | empty (role: Role)(p: Phase): Stream(role, List.nil(Action), p, p)
+   | next (role: Role)(action: Action)(rest: List(Action))(p: Phase)(q: Phase)(r: Phase)
+       (head: Transition(role, action, p, q))(tail: Stream(role, rest, q, r)): Stream(role, List.cons(action, rest), p, r)
+  def append (role: Role)(a: List(Action))(b: List(Action))(p: Phase)(q: Phase)(r: Phase)(left: Stream(role, a, p, q))(right: Stream(role, b, q, r))
+      : Stream(role, List.append(a, b), p, r) decreases structural(a) := {
+    match left returning Stream(role, List.append(a, b), p, r) with
+    | Stream.empty role phase => right
+    | Stream.next role action rest p mid q head tail => Stream.next(role, action, List.append(rest, b), p, mid, r, head, Endpoints.append(role, rest, b, mid, q, r, tail, right))
+  }
+  def repeat (n: Nat)(body: List(Action)): List(Action) decreases structural(n) := {
+    match n returning List(Action) with
+    | Nat.zero => List.nil(Action)
+    | Nat.succ k => List.append(body, Endpoints.repeat(k, body))
+  }
+  def repeated (role: Role)(n: Nat)(body: List(Action))(p: Phase)(valid: Stream(role, body, p, p)): Stream(role, Endpoints.repeat(n, body), p, p) decreases structural(n) := {
+    match n returning Stream(role, Endpoints.repeat(n, body), p, p) with
+    | Nat.zero => Stream.empty(role, p)
+    | Nat.succ k => Endpoints.append(role, body, Endpoints.repeat(k, body), p, p, p, valid, Endpoints.repeated(role, k, body, p, valid))
+  }
+  def expand (code: Code)(r: Contracts.Runtime): List(Action) decreases structural(code) := {
+    match code returning List(Action) with
+    | Code.skip => List.nil(Action)
+    | Code.atom action => List.cons(action, List.nil(Action))
+    | Code.seq a b => List.append(Endpoints.expand(a, r), Endpoints.expand(b, r))
+    | Code.branch a b => {
+      match r.flag returning List(Action) with
+      | Bool.true => Endpoints.expand(a, r)
+      | Bool.false => Endpoints.expand(b, r)
+    }
+    | Code.loop body => Endpoints.repeat(r.count, Endpoints.expand(body, r))
+  }
+  def expansion (role: Role)(code: Code)(p: Phase)(q: Phase)(valid: Typed(role, code, p, q))(r: Contracts.Runtime)
+      : Stream(role, Endpoints.expand(code, r), p, q) decreases structural(code) := {
+    match valid returning Stream(role, Endpoints.expand(code, r), p, q) with
+    | Typed.skip role p => Stream.empty(role, p)
+    | Typed.atom role action p q head => Stream.next(role, action, List.nil(Action), p, q, q, head, Stream.empty(role, q))
+    | Typed.seq role a b p mid q left right => Endpoints.append(role, Endpoints.expand(a, r), Endpoints.expand(b, r), p, mid, q, Endpoints.expansion(role, a, p, mid, left, r), Endpoints.expansion(role, b, mid, q, right, r))
+    | Typed.branch role a b p q yes no => {
+      match r.flag returning Stream(role, Endpoints.expand(code, r), p, q) with
+      | Bool.true => Endpoints.expansion(role, a, p, q, yes, r)
+      | Bool.false => Endpoints.expansion(role, b, p, q, no, r)
+    }
+    | Typed.loop role body p h => Endpoints.repeated(role, r.count, Endpoints.expand(body, r), p, Endpoints.expansion(role, body, p, p, h, r))
+  }
+
+  sealed struct Cmd (role: Role)(before: Phase)(after: Phase): Type
+   | mk (code: Code)(valid: Typed(role, code, before, after)): Cmd(role, before, after)
+  def syntax {role: Role}{p: Phase}{q: Phase}(cmd: Cmd(role, p, q)): Code := cmd.code
+  def typing {role: Role}{p: Phase}{q: Phase}(cmd: Cmd(role, p, q)): Typed(role, Endpoints.syntax(cmd), p, q) := cmd.valid
+  def acquire: Cmd(Role.producer, Phase.ready, Phase.held) := Cmd.mk(Code.atom(Action.acquire), Typed.atom(Role.producer, Action.acquire, Phase.ready, Phase.held, Transition.acquire))
+  def issue: Cmd(Role.producer, Phase.held, Phase.ready) := Cmd.mk(Code.atom(Action.issue), Typed.atom(Role.producer, Action.issue, Phase.held, Phase.ready, Transition.issue))
+  def finishProducer: Cmd(Role.producer, Phase.ready, Phase.done) := Cmd.mk(Code.atom(Action.finishProducer), Typed.atom(Role.producer, Action.finishProducer, Phase.ready, Phase.done, Transition.finishProducer))
+  def await: Cmd(Role.consumer, Phase.ready, Phase.held) := Cmd.mk(Code.atom(Action.await), Typed.atom(Role.consumer, Action.await, Phase.ready, Phase.held, Transition.await))
+  def read: Cmd(Role.consumer, Phase.held, Phase.held) := Cmd.mk(Code.atom(Action.read), Typed.atom(Role.consumer, Action.read, Phase.held, Phase.held, Transition.read))
+  def release: Cmd(Role.consumer, Phase.held, Phase.ready) := Cmd.mk(Code.atom(Action.release), Typed.atom(Role.consumer, Action.release, Phase.held, Phase.ready, Transition.release))
+  def finishConsumer: Cmd(Role.consumer, Phase.ready, Phase.done) := Cmd.mk(Code.atom(Action.finishConsumer), Typed.atom(Role.consumer, Action.finishConsumer, Phase.ready, Phase.done, Transition.finishConsumer))
+  def sequence {role: Role}{p: Phase}{q: Phase}{r: Phase}(a: Cmd(role, p, q))(b: Cmd(role, q, r)): Cmd(role, p, r) := Cmd.mk(Code.seq(a.code, b.code), Typed.seq(role, a.code, b.code, p, q, r, a.valid, b.valid))
+  def branch {role: Role}{p: Phase}{q: Phase}(a: Cmd(role, p, q))(b: Cmd(role, p, q)): Cmd(role, p, q) := Cmd.mk(Code.branch(a.code, b.code), Typed.branch(role, a.code, b.code, p, q, a.valid, b.valid))
+  def loop {role: Role}{p: Phase}(body: Cmd(role, p, p)): Cmd(role, p, p) := Cmd.mk(Code.loop(body.code), Typed.loop(role, body.code, p, body.valid))
+  struct Queue (role: Role)(phase: Phase): Type
+   | mk (actions: List(Action))(valid: Stream(role, actions, phase, Phase.done)): Queue(role, phase)
+  def queue {role: Role}(program: Cmd(role, Phase.ready, Phase.done))(runtime: Contracts.Runtime): Queue(role, Phase.ready) := Queue.mk(Endpoints.expand(program.code, runtime), Endpoints.expansion(role, program.code, Phase.ready, Phase.done, program.valid, runtime))
+
+  def allowed (role: Role)(action: Action)(p: Phase)(q: Phase)(s: Concurrent.State)(transition: Transition(role, action, p, q))
+      (current: Eq(Phase, Endpoints.phase(role, s), p))(active: Eq(Bool, s.active, Bool.true)): Concurrent.Allowed(action, s) := {
+    match transition returning Concurrent.Allowed(action, s) with
+    | Transition.acquire => And.intro(active, current)
+    | Transition.issue => And.intro(active, current)
+    | Transition.finishProducer => And.intro(active, current)
+    | Transition.await => And.intro(active, current)
+    | Transition.read => And.intro(active, current)
+    | Transition.release => And.intro(active, current)
+    | Transition.finishConsumer => And.intro(active, current)
+  }
+
+  // Computational metadata remains data; proof elimination does not select
+  // executable instructions or phases.
+  def nextPhase (action: Action): Phase := {
+    match action returning Phase with
+    | Action.acquire => Phase.held
+    | Action.await => Phase.held
+    | Action.read => Phase.held
+    | Action.issue => Phase.ready
+    | Action.release => Phase.ready
+    | _ => Phase.done
+  }
+  def head (role: Role)(action: Action)(rest: List(Action))(p: Phase)(valid: Stream(role, List.cons(action, rest), p, Phase.done))
+      : Transition(role, action, p, Endpoints.nextPhase(action)) := {
+    match valid returning Transition(role, action, p, Endpoints.nextPhase(action)) with
+    | Stream.next role action rest p q done head tail => {
+      match head returning Transition(role, action, p, Endpoints.nextPhase(action)) with
+      | Transition.acquire => Transition.acquire
+      | Transition.issue => Transition.issue
+      | Transition.finishProducer => Transition.finishProducer
+      | Transition.await => Transition.await
+      | Transition.read => Transition.read
+      | Transition.release => Transition.release
+      | Transition.finishConsumer => Transition.finishConsumer
+    }
+  }
+  def tail (role: Role)(action: Action)(rest: List(Action))(p: Phase)(valid: Stream(role, List.cons(action, rest), p, Phase.done))
+      : Stream(role, rest, Endpoints.nextPhase(action), Phase.done) := {
+    match valid returning Stream(role, rest, Endpoints.nextPhase(action), Phase.done) with
+    | Stream.next role action rest p q done head tail => {
+      match head returning Stream(role, rest, Endpoints.nextPhase(action), Phase.done) with
+      | Transition.acquire => tail
+      | Transition.issue => tail
+      | Transition.finishProducer => tail
+      | Transition.await => tail
+      | Transition.read => tail
+      | Transition.release => tail
+      | Transition.finishConsumer => tail
+    }
+  }
+
+  def streamToDone (role: Role)(phase: Phase): List(Action) -> Prop := fun (actions: List(Action)): Prop => Stream(role, actions, phase, Phase.done)
+  def emptyDone (role: Role)(phase: Phase)(queue: Queue(role, phase))(empty: Eq(List(Action), queue.actions, List.nil(Action))): Eq(Phase, phase, Phase.done) := {
+    match Eq.substP(empty, Endpoints.streamToDone(role, phase), queue.valid) returning Eq(Phase, phase, Phase.done) with
+    | Stream.empty role done => Eq.refl(Phase.done)
+  }
+}

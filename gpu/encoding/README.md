@@ -1,5 +1,13 @@
 # gpu/encoding: the GPU core
 
+Implementation note: the checked lowering implementation now lives in
+`Lowering.rac`, under the existing `Core` namespace. `Core.rac` imports it as the
+existing client interface. The machine API experiment imports `Lowering` directly;
+both interfaces use the same sealed types, instruction templates and safety checks.
+Historical references below to the implementation in `Core.rac` refer to that
+shared implementation. This extraction does not split its trust boundary or
+resolve the resource-module import cycle discussed in `REGISTERS.md` §9.
+
 Status: started 2026-10-01; steps 1 and 2 below done for A1, paged attention (P1) and A2 (causal and non-causal
 masking, any `seq` ≥ 1, bf16 output, for both kernels) except the hardware runs: the core, the examples, the unit
 checks, the mutants of `ATTENTION.md` §5 (`rejected/`), the host harnesses and the FA4 comparison (`harness/`), and
@@ -134,7 +142,7 @@ The box needs no JVM.
 
 ## Layout
 
-- `Core.rac`: the core.
+- `Core.rac`: the existing interface; `Lowering.rac`: its shared checked implementation.
 - `Registers.rac`: the CTA's register pool and its warpgroups' shares, which the core uses as a client (`REGISTERS.md`).
 - `Layout.rac`: the CTA of eight warps that the attention and GEMM examples share (`roles4`), A3a's of twelve
   (`rolesPair`), and A3b's of sixteen (`rolesCorrected`).

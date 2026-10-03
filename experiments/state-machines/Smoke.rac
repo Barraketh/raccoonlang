@@ -1,0 +1,11 @@
+import Examples
+import Lowering
+import encoding.Core
+import Cuda
+
+namespace Smoke {
+  def readResult: Eq(Nat, Examples.scopedReads, 14) := Eq.refl(14)
+  def executionResult: Eq(Unit, Examples.executeTwice, Unit.unit) := Eq.refl(Unit.unit)
+}
+
+{ Cuda.block(0, Lowering.blockOf(Lowering.correct.code), "") }
