@@ -24,6 +24,17 @@ sealed trait Value {
   def key: ValueKey.Key
   def needsStructuralDefEq: Boolean
 
+  private[this] lazy val occurrenceSummary0: ValueAnalysis.OccurrenceSummary = ValueAnalysis.buildOccurrences(this)
+  private[this] lazy val positivitySummary0: ValueAnalysis.ForbiddenExpr = ValueAnalysis.buildPositivity(this)
+
+  /** Kernel-owned target occurrence metadata, computed once for this immutable value. */
+  private[raccoonlang] final def occurrences: ValueAnalysis.OccurrenceSummary =
+    ValueAnalysis.withOccurrenceGuard(this)(occurrenceSummary0)
+
+  /** Kernel-owned strict-positivity metadata, computed once for this immutable value. */
+  private[raccoonlang] final def positivity: ValueAnalysis.ForbiddenExpr =
+    ValueAnalysis.withPositivityGuard(this)(positivitySummary0)
+
   override def toString: String = PrettyPrinter.print(this)
 }
 
@@ -561,6 +572,12 @@ object Value {
   ) extends Value {
     require(binders.nonEmpty, "VPi requires at least one binder")
 
+    private[this] lazy val analysisTelescope0: ValueAnalysis.RigidTelescope = ValueAnalysis.buildPiTelescope(this)
+
+    /** One fresh rigid telescope shared by occurrence and positivity metadata. */
+    private[raccoonlang] def analysisTelescope: ValueAnalysis.RigidTelescope =
+      ValueAnalysis.withInspectionGuard(this, ValueAnalysis.RigidTelescope.unknown)(analysisTelescope0)
+
     private[raccoonlang] lazy val runtimeSlotLayout: RuntimeSlotLayout =
       RuntimeSlotLayout(binders.map(_.localRef))
 
@@ -904,6 +921,12 @@ object Value {
       id: ValueId,
       body: LamBody
   ) extends Value {
+    private[this] lazy val analysisResult0: ValueAnalysis.RigidTelescope = ValueAnalysis.buildLambdaResult(this)
+
+    /** One fresh rigid inspection shared by strict-positivity queries. */
+    private[raccoonlang] def analysisResult: ValueAnalysis.RigidTelescope =
+      ValueAnalysis.withInspectionGuard(this, ValueAnalysis.RigidTelescope.unknown)(analysisResult0)
+
     override val synDeps: DepSet = id match {
       case ValueId.Const(_) => DepSet.unionAll(Iterator(tpe.synDeps, body.synDeps))
       case ValueId.LocalId(_, params) =>
