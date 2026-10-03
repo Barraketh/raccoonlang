@@ -1,0 +1,5 @@
+import buffer.Program
+
+def forged (r: Lifetime)(b: Lifetime): Buffer.ScratchOwn(r, b) := Buffer.ScratchOwn.mk(r, b)
+
+{ Unit.unit }

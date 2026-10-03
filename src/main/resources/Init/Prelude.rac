@@ -369,6 +369,11 @@ inductive Pair {u: Level}{v: Level}{k1: Kind}{k2: Kind}{S: Lifetime}{T: Lifetime
     : Type { level = max(u, v), kind = join(k1, k2), scope = union(S, T) }
  | mk (fst: A)(snd: B) : Pair(A, B)
 
+namespace Buffer.Native {
+  // Internal generic bytecode boundary. Buffer.Program exposes the typed, scoped builder and maps this pair to Result.
+  def executeEncoded (program: List(Nat))(inputs: List(List(Nat))): Pair(Nat, List(List(Nat))) := builtin
+}
+
 struct Sigma {u: Level}{v: Level}{S: Lifetime}{T: Lifetime}{Sb: Lifetime}(A: Type { level = u, scope = S })(B: { scope = Sb } A -> Type { level = v, scope = T }) : Type { level = max(u, v), scope = union(S, union(T, Sb)) }
  | mk (fst: A)(snd: B(fst)) : Sigma(A, B)
 

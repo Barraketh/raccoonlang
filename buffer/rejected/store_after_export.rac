@@ -1,0 +1,11 @@
+import buffer.Program
+
+def useAfterExport {r: Lifetime}{m: Lifetime}{b: Lifetime}{o: Lifetime}{v: Lifetime}
+    (ctx: Buffer.Ctx(r, m))(handle: Buffer.OutputHandle(r, b))(owner: Buffer.OutputOwn(r, b))
+    (offset: Buffer.Val64(r, o))(value: Buffer.Val32(r, v))
+    : Pair(Buffer.Ctx(r, m), Buffer.OutputOwn(r, b)) := {
+  let closed := Buffer.exportOutput(ctx, handle, owner)
+  Buffer.store8Output(closed, handle, owner, offset, value)
+}
+
+{ Unit.unit }

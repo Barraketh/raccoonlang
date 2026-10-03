@@ -48,8 +48,13 @@ class NativeLiteralTests extends munit.FunSuite with TestSupport {
     finally stream.close()
   }
 
+  // These fixtures isolate Packed's Nat/String layout admission from the unrelated generic Buffer builtin, whose
+  // exact ordinary-List contract is tested separately.
+  private lazy val literalPreludeSource =
+    bundledPreludeSource.replaceFirst("(?s)namespace Buffer\\.Native \\{.*?\\n\\}\\n", "")
+
   private def syntheticFullNative(sourceName: String, addendum: String): Prelude.Config =
-    Prelude.fromSource(sourceName, bundledPreludeSource + "\n" + addendum, Set(Prelude.ImportPath))
+    Prelude.fromSource(sourceName, literalPreludeSource + "\n" + addendum, Set(Prelude.ImportPath))
 
   private lazy val fullNativePrelude = syntheticFullNative("synthetic-full-native", fullNativeAddendum)
 
@@ -854,7 +859,7 @@ class NativeLiteralTests extends munit.FunSuite with TestSupport {
     assertEquals(stringReason(syntheticFullNative("sealed-char", sealedChar)), "`Char` is sealed")
     val sealedList = Prelude.fromSource(
       "sealed-list",
-      bundledPreludeSource.replace("\ninductive List ", "\nsealed inductive List ") + "\n" + fullNativeAddendum,
+      literalPreludeSource.replace("\ninductive List ", "\nsealed inductive List ") + "\n" + fullNativeAddendum,
       Set(Prelude.ImportPath)
     )
     assertEquals(stringReason(sealedList), "`List Char` is sealed")

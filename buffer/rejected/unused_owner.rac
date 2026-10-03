@@ -1,0 +1,5 @@
+import buffer.Program
+
+def discard {r: Lifetime}{b: Lifetime}(owner: Buffer.ScratchOwn(r, b)): Unit := Unit.unit
+
+{ Unit.unit }

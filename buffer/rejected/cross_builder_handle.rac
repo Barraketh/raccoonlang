@@ -1,0 +1,21 @@
+import buffer.Program
+
+def invalid: Buffer.Program := {
+  let (program, _) := Buffer.build(Nat, fun (r: Lifetime)(ctx: Buffer.Ctx(r, r)): Pair(Buffer.Ctx(r, r), Nat) => {
+    let (afterInput, _) := Buffer.withInput(ctx, 1, Nat,
+        fun (b: Lifetime)(input: Buffer.InputHandle(r, b))(inside: Buffer.Ctx(r, b))
+            : Pair(Buffer.Ctx(r, b), Nat) => {
+      let (_, _) := Buffer.build(Nat, fun (other: Lifetime)(otherCtx: Buffer.Ctx(other, other))
+          : Pair(Buffer.Ctx(other, other), Nat) => {
+        let (withOffset, offset) := Buffer.const64(otherCtx, 0)
+        let (loadedCtx, _) := Buffer.load8Input(withOffset, input, offset)
+        (loadedCtx, Nat.zero)
+      })
+      (inside, Nat.zero)
+    })
+    (afterInput, Nat.zero)
+  })
+  program
+}
+
+{ invalid }

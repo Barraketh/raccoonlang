@@ -1,0 +1,42 @@
+import buffer.Program
+
+def incrementProgram: Buffer.Program := {
+  let (program, _) := Buffer.build(Nat, fun (r: Lifetime)(ctx: Buffer.Ctx(r, r)): Pair(Buffer.Ctx(r, r), Nat) => {
+    let (afterInput, _) := Buffer.withInput(ctx, 1, Nat,
+        fun (inputLife: Lifetime)(input: Buffer.InputHandle(r, inputLife))(inputCtx: Buffer.Ctx(r, inputLife))
+            : Pair(Buffer.Ctx(r, inputLife), Nat) => {
+      let (afterOutput, _) := Buffer.withOutput(inputCtx, 1, Nat,
+          fun (outputLife: Lifetime)(output: Buffer.OutputHandle(r, outputLife))(owner: Buffer.OutputOwn(r, outputLife))
+              (outputCtx: Buffer.Ctx(r, outputLife)): Pair(Buffer.Ctx(r, outputLife), Nat) => {
+        let (withOffset, _) := Buffer.const64(outputCtx, 0)
+        let (withOne, one) := Buffer.const32(withOffset, 1)
+        let (loopCtx, finalOwner) := Buffer.repeat32(withOne, one, Buffer.fixedOutput(output), owner,
+            fun (bodyLife: Lifetime)(index: Buffer.Val32(r, bodyLife))(bodyCtx: Buffer.Ctx(r, bodyLife))
+                (bodyOwner: Buffer.OutputOwn(r, outputLife))
+                : Pair(Buffer.Ctx(r, bodyLife), Buffer.OutputOwn(r, outputLife)) => {
+              let (at, offset) := Buffer.extend32To64(bodyCtx, index)
+              let (loaded, byte) := Buffer.load8Input(at, input, offset)
+              let (added, incremented) := Buffer.add32(loaded, byte, one)
+              Buffer.store8Output(added, output, bodyOwner, offset, incremented)
+            })
+        let finished := Buffer.exportOutput(loopCtx, output, finalOwner)
+        (finished, Nat.zero)
+      })
+      (afterOutput, Nat.zero)
+    })
+    (afterInput, Nat.zero)
+  })
+  program
+}
+
+def runIncrement(program: Buffer.Program)(value: Nat): Buffer.Result :=
+  Buffer.run(program, List.cons(List.cons(value, List.nil(Nat)), List.nil(List(Nat))))
+
+def incrementByteRuns : Pair(Buffer.Result, Pair(Buffer.Result, Buffer.Result)) := {
+  let program := incrementProgram
+  let first := runIncrement(program, 41)
+  let second := runIncrement(program, 9)
+  Pair.mk(first, Pair.mk(second, runIncrement(program, 41)))
+}
+
+{ incrementByteRuns }

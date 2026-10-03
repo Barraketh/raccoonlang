@@ -928,16 +928,23 @@ Diagnostics were fully stripped before the accepted frozen-class timings.
 
 ## 11. Opt-in native host-buffer backend (2026-10-02)
 
-`NativeGpuBackend` is a Scala host interpreter for the **same checked `Cuda.Kernel` AST** used by the TinyGEMM source
-path. It decodes and validates the checked `Cuda.Kernel` and `TinyDevice.Inputs` values, including their exact 128×128×64
-dimensions, launcher parameters, tensor maps, grid, and requirement expressions. It does not substitute a kernel body or
-key execution on its name. Unsupported constructors may remain in an AST when unreachable; a reached unsupported
-operation returns an explicit failure category.
+> **Historical prototype checkpoint.** This section records the earlier Scala prototype that decoded GPU-specific AST
+> into a GPU-aware host interpreter. That boundary was rejected: the language runtime should expose only the independent
+> finite `Buffer.Program` API described in [the buffer-program guide](../docs/buffer-program.md), while GPU scheduling,
+> descriptors and lowering remain ordinary GPU-library code. The TinyGEMM migration to that API is not yet complete.
+> The figures and implementation notes below belong only to the old prototype and are not measurements of the generic
+> buffer executor.
 
-This is an opt-in host-buffer experiment, not a GPU driver, a new Raccoon primitive, or evaluator v0. It supports the
-current one-CTA TinyGEMM subset. `--backend source` remains the default; `--backend native` runs the decoded AST through
-the host backend. The mathematical data domain is exact `Z/257`: BF16 and F32 determine typed widths, aliases, and
-addressing, but this run does not implement BF16 rounding or IEEE floating-point arithmetic. Scheduling is one
+The prototype's `NativeGpuBackend` was a Scala host interpreter for the **same checked `Cuda.Kernel` AST** used by the
+TinyGEMM source path. It decoded and validated the checked `Cuda.Kernel` and `TinyDevice.Inputs` values, including their
+exact 128×128×64 dimensions, launcher parameters, tensor maps, grid, and requirement expressions. It did not substitute a
+kernel body or key execution on its name. Unsupported constructors could remain in an AST when unreachable; a reached
+unsupported operation returned an explicit failure category.
+
+That opt-in host-buffer prototype was not a GPU driver or a new Raccoon primitive. It supported the one-CTA TinyGEMM
+subset through `--backend native` (with `--backend source` as the default at that checkpoint). Its mathematical data
+domain was exact `Z/257`: BF16 and F32 determined typed widths, aliases, and addressing, but it did not implement BF16
+rounding or IEEE floating-point arithmetic. Scheduling was one
 deterministic round-robin order with FIFO async completion; there is no race detector, alternative schedule or
 weak-memory model. As in the source evaluator, issuing `tmemLoad` into an already initialized register leaves its old
 value readable until a successful `wait::ld` publishes the pending load. This is a bounded shared-model behavior, not

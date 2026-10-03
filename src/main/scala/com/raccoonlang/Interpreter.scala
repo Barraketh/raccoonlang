@@ -564,7 +564,10 @@ object Interpreter {
                       }
                     case _ =>
                   }
-                  env.putGlobal(name, publishedValue(Builtins.instantiate(name, tyV), tyV))
+                  val builtinValue =
+                    if (name == NativeBufferBuiltins.Name) NativeBufferBuiltins.instantiate(name, tyV, env)
+                    else Builtins.instantiate(name, tyV)
+                  env.putGlobal(name, publishedValue(builtinValue, tyV))
 
                 case CoreAst.ConstBody.TermBody(term) =>
                   val checkedTy = TypeChecker.checkDeclType(ty, env).value
