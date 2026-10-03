@@ -472,6 +472,30 @@ object LanguageParser {
       .named("Body")
   }
 
+  /**
+   * `command join { a\n b\n c }` is `join(a, join(b, c))`. Ordinary lets and opens keep their lexical scope over the
+   * remaining statements. This is library-directed notation: the join is an ordinary function, and its type decides the
+   * sequencing rule. No effect or GPU rule belongs to the parser.
+   */
+  private def commandBlock(implicit sourceId: Option[SourceId]): Parser[Term] = {
+    val item: Parser[Either[BodyStmt, Term]] = bodyStmt.map(Left.apply) | term.map(Right.apply)
+    (kw("command") ~ pathP ~ symTight('{') ~/ skipAllWs ~ item.rep(0, lineSep) ~ skipAllWs ~ symTight('}'))
+      .flatSpanned(sourceId)
+      .map { case (path, items, span) =>
+        val join = path.tail.foldLeft[Term](Ident(path.head, span)) { case (base, field) =>
+          Select(base, field, span)
+        }
+        val result = items.lastOption match {
+          case Some(Right(out)) => out
+          case _                => throw ParseError(span.start, span.start, "A command block ends with a command")
+        }
+        items.init.foldRight(result) {
+          case (Right(next), rest) => App(join, Vector(next, rest), Vector.empty, next.span)
+          case (Left(stmt), rest)  => Body(Vector(stmt), rest, stmt.span)
+        }
+      }
+  }
+
   private def lambda(implicit sourceId: Option[SourceId]): Parser[Term] =
     (kw("fun") ~/ (closureStart ~ closureFields).? ~ funcHeader ~ sym("=>") ~/ skipAllWs ~ term)
       .flatSpanned(sourceId)
@@ -550,14 +574,14 @@ object LanguageParser {
       evidenceGroup(term).map(TermEvidence.tupled)).rep(0)
 
   private def term(implicit sourceId: Option[SourceId]): Parser[Term] =
-    ((lambda | scopeP | matchP | closedPi | body | simplePi | termAtom) ~ termTrailers ~ spacedArguments).map {
-      case (base, trailers) =>
+    ((lambda | scopeP | matchP | commandBlock | closedPi | body | simplePi | termAtom) ~ termTrailers ~ spacedArguments)
+      .map { case (base, trailers) =>
         trailers.foldLeft(base) {
           case (cur, TermDot(name, sp))        => Select(cur, name, trailerSpan(cur, sp))
           case (cur, TermApp(args, sp))        => App(cur, args, Vector.empty, trailerSpan(cur, sp))
           case (cur, TermEvidence(proofs, sp)) => suppliedEvidence(cur, proofs, sp)
         }
-    }
+      }
 
   private def funcHeader(implicit sourceId: Option[SourceId]): Parser[FuncHeader] =
     (layoutParam.rep(0) ~ skipAllWs ~ sym(':') ~/ skipAllWs ~ typeTerm).flatSpanned(sourceId).map(FuncHeader.tupled)

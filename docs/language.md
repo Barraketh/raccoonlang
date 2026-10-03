@@ -579,6 +579,26 @@ term:
 A type annotation on `let` must equal the value's own type. Local bindings may
 shadow earlier names.
 
+`command join { ... }` composes a sequence using an ordinary named function:
+
+```raccoon
+command Gpu.then {
+  chunk.staging.acquire
+  chunk.staging.write(values)
+  chunk.staging.fence
+  chunk.output.store
+}
+```
+
+This expands to a right-associated sequence of `Gpu.then` applications. For
+three commands `a`, `b`, `c`, the expansion is `Gpu.then(a, Gpu.then(b, c))`.
+The function's type supplies the composition rule; the notation adds no typing or evaluation
+rule. A single command is itself. Ordinary `let` and `open` statements scope
+over the remaining sequence. Items follow the usual line-break rules, and the
+block must end with a command. `command` remains an ordinary identifier outside
+this notation. Result-binding notation such as `let values <- load` is not
+implemented.
+
 Natural-number literals are arbitrary non-negative integers. They require the
 active prelude to provide the validated unary `Nat` layout used by the bundled
 prelude. String literal syntax uses JSON-style escapes and Unicode scalar
