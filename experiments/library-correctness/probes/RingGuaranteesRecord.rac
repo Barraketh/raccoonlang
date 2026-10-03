@@ -1,6 +1,8 @@
 // Compiler-performance reproducer; deliberately excluded from the default suite.
 // The equivalent conjunction in RingLibrary.rac checks in seconds, while this
-// record declaration timed out at 120s and 25s during the October 3 experiment.
+// record declaration timed out at 120s and 25s on the original acaf536 base.
+// After rebasing onto native-buffer-program at eed468e, it exceeded a fresh
+// 15s limit with the positivity-cache prototype held aside (October 3).
 import RingLibrary
 
 namespace RingGuaranteesRecord {

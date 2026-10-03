@@ -13,10 +13,9 @@ from check_experiment import check_experiment, compiler_command
 
 
 def baseline():
-    source = (ROOT / "gpu/encoding/examples/tinygemm.rac").read_text()
-    source = source.split("\n{ Core.render(Tiny.kernel) }")[0]
+    source = (ROOT / "gpu/encoding/TinyGemm.rac").read_text()
     source = source.replace("namespace Tiny {", "namespace CoreTiny {").replace("Tiny.", "CoreTiny.")
-    expected = source + "\n"
+    expected = source
     assert (HERE / "Baseline.rac").read_text() == expected, "Baseline must be the current real TinyGEMM client."
 
 

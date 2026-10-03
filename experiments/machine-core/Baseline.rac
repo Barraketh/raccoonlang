@@ -7,7 +7,7 @@
 // the block 32 columns at a time: each warp reads its quadrant of the accumulator's lanes, writes it into a staging
 // buffer in shared memory, and its lane 0 stores the buffer to C with TMA.
 //
-// Run: gpu/gen.sh gpu/encoding/examples/tinygemm.rac
+// Definitions for the one-tile TinyGEMM kernel; intentionally has no module body.
 
 import encoding.Core
 import encoding.Layout
@@ -108,4 +108,3 @@ namespace CoreTiny {
       e
     })
 }
-

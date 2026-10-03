@@ -3,6 +3,15 @@
 These observations were made by root while designing, integrating and reviewing
 Luna's proofs. The separate Luna logs record proof-authoring diagnostics.
 
+The original timing observations below were taken on `soundness_improvements`
+at `acaf536`, before integrating the existing interpreter optimizations. On
+October 3 the experiment work was rebased onto `codex/native-buffer-program`
+at `eed468e`, which includes `codex/frame-composition-experiments` at `321d5b6`.
+With the earlier positivity-cache prototype held aside, the preserved record
+reproducer still exceeded a fresh 15-second limit on this optimized base. This
+is a bounded reproduction, not a measured comparison with the earlier timeouts;
+it does not identify the remaining cause or justify a particular optimization.
+
 | Observation | Category | Resolution / implication |
 |---|---|---|
 | `RingClient` initially failed `Check.WellFormed` with `v3 declared twice` and repeated `v2 declared twice`. | Lowering bug. | Threaded fresh IDs through sequencing, both branch arms and nested loops. The same client then checked and emitted CUDA. No proof-language change. |

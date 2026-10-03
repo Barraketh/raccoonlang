@@ -251,3 +251,29 @@ the friction logs rather than counted as successful safety checks.
 `sbt validate` also passes formatting and all 936 tests (0 failures, 0 errors).
 The logs for this run are `/tmp/raccoon-primitive-ring-experiment.log` and
 `/tmp/raccoon-primitive-ring-validate.log`.
+
+On October 3, the experiment work was rebased onto `codex/native-buffer-program`
+at `eed468e`, including `codex/frame-composition-experiments` at `321d5b6`.
+The shared lowering retains upstream's `Core.checkedKernel` accessor requiring
+`Core.WellFormed` evidence alongside the experiment's `Core.kernelSyntax`. TinyGEMM's baseline fixture now
+tracks the upstream definitions in `gpu/encoding/TinyGemm.rac`; the example file
+imports those definitions and renders the kernel.
+
+On this base, `sbt validate` passes formatting and all 1037 tests. The library
+runner again passes 71/71 checks and rejects all 33 mutations, with the host C++
+syntax checks passing. TinyGEMM passes 46/46 checks, complete AST comparisons
+and byte-identical CUDA; the A3b/pair runner passes 35 fixture checks, all eight
+variant AST comparisons, both byte-identical CUDA/launcher comparisons and both
+lowering mutations. Logs are `/tmp/raccoon-native-rebase-validate.log`,
+`/tmp/raccoon-native-rebase-library.log`, `/tmp/raccoon-native-rebase-tiny.log`
+and `/tmp/raccoon-native-rebase-full.log`.
+
+The earlier state-machine, compositional and extensible experiment runners pass
+69/69, 34/34 and 37/37 checks respectively. Their logs use the same
+`/tmp/raccoon-native-rebase-` prefix followed by `state-machines.log`,
+`compositional-machines.log` and `extensible-machines.log`.
+
+The preserved record reproducer still exceeds a 15-second limit on this base;
+the log is `/tmp/raccoon-native-rebase-record.log`. Earlier timing observations
+describe the original base. The new positivity-cache prototype remains held
+aside, and this integration adds no further performance optimization.

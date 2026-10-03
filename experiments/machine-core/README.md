@@ -89,8 +89,9 @@ Eq(Cuda.Kernel,
    Core.kernelSyntax(CoreTiny.kernel))
 ```
 
-`Baseline.rac` is the real current Core client with its rendering expression removed and namespace renamed.
-The runner verifies that correspondence against `gpu/encoding/examples/tinygemm.rac`. It checks complete kernel
+`Baseline.rac` is the real current Core client with its namespace renamed.
+The runner verifies that correspondence against `gpu/encoding/TinyGemm.rac`, the definitions imported by
+`gpu/encoding/examples/tinygemm.rac`. It checks complete kernel
 equality for four/two, one/one, two/two and six/two ring stages/staging buffers. This includes every instruction,
 operand, binding, control node, shared offset and size, map encoding, host requirement, grid and block size.
 Launch bounds are checked separately in the rendered output.
