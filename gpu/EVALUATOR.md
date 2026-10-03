@@ -1,6 +1,6 @@
 # An evaluator for generated kernels
 
-Status: **proposal with bounded execution experiments** (updated 2026-10-02; originally 2026-10-01). Step 1, typed instructions, is built (§3). The one-tile TinyGEMM evaluator spike and its opt-in Scala host-buffer backend are complete for the checked 128×128×64 Z/257 workload, with source/native AST and all 13 mutation checks, full validation and a successful Native Image screen. JVM samples point to interpreter binding/application and proof handling; native JFR samples identify polling sites rather than exclusive method costs. A source-only ring-helper fusion A/B did not establish a reliable speedup. The current evidence supports C1 performance work on Raccoon's own evaluator and the bounded host-buffer boundary in §11; it does not quantify broad redesign savings or make the proposed evaluator v0 complete. It follows the first B200 session (`gpu/encoding/NOTES.md`,
+Status: **proposal with a bounded generic execution path** (updated 2026-10-03; originally 2026-10-01). Step 1, typed instructions, is built (§3). The source-only generic `Buffer.Program` path for the checked 128×128×64 one-CTA TinyGEMM workload has passed its focused API, decoder and scheduler tests, and `sbt validate` passed 1,029/1,029; two seeded benchmark runs are reported in §12. The Scala GPU-aware host-buffer prototype and its measurements in §11 are historical and were removed from the current branch; they do not measure the generic buffer executor. Earlier JVM samples point to interpreter binding/application and proof handling; native JFR samples identify polling sites rather than exclusive method costs. A source-only ring-helper fusion A/B did not establish a reliable speedup. Existing evidence supports C1 performance work on Raccoon's own evaluator, but does not quantify broad redesign savings or make the proposed evaluator v0 complete. It follows the first B200 session (`gpu/encoding/NOTES.md`,
 "Hardware session"), whose failures and the hostile reviews before it share one shape: the generated code did
 something other than what was meant.
 
@@ -931,7 +931,8 @@ Diagnostics were fully stripped before the accepted frozen-class timings.
 > **Historical prototype checkpoint, removed from the current branch.** This section records the earlier Scala prototype that decoded GPU-specific AST
 > into a GPU-aware host interpreter. That boundary was rejected: the language runtime should expose only the independent
 > finite `Buffer.Program` API described in [the buffer-program guide](../docs/buffer-program.md), while GPU scheduling,
-> descriptors and lowering remain ordinary GPU-library code. The TinyGEMM migration to that API is not yet complete.
+> descriptors and lowering remain ordinary GPU-library code. At this checkpoint the TinyGEMM migration to that API was
+> not complete; subsequent integration, validation and measurement are reported in §12.
 > The GPU-aware Scala classes, execution path and native-only tests were removed from `codex/native-buffer-program`.
 > The figures and commands below belong only to the old prototype on `codex/gpu-native-backend`; they are not a current
 > native backend and are not measurements of the generic buffer executor.
@@ -1070,5 +1071,92 @@ target/performance/gpu-native-backend/raccoon-tinygemm-native-overlap-fixed --ba
 
 The complete sample logs, baseline and journal source snapshots, exact per-file fingerprints, commands, setup timings,
 allocation counters and validation records are preserved under ignored
-[`target/performance/gpu-native-backend`](../target/performance/gpu-native-backend). These records describe a bounded
-historical experiment; the ordinary GPU-library lowering to `Buffer.Program` remains future work.
+[`target/performance/gpu-native-backend`](../target/performance/gpu-native-backend). These records describe only that
+bounded historical experiment. Current generic `Buffer.Program` measurements are in §12 and apply only to that path.
+
+## 12. Generic `Buffer.Program` pipeline (bounded implementation)
+
+The implementation lives in ordinary GPU-library Raccoon code above the independent finite buffer
+language in [`buffer/Program.rac`](../buffer/Program.rac). The host runtime executes only generic encoded programs
+through `Buffer.run`; it does not decode CUDA nodes, schedule GPU events, allocate GPU model state, or select a kernel
+implementation. The public facade is [`evaluator/BufferGpuPlan.rac`](evaluator/BufferGpuPlan.rac).
+
+**Status.** The focused public API test passed 2/2, including the checked kernel and ten non-fuel rejection mutants;
+decoder-focused tests passed 1/1 and the scheduler edge test passed 1/1. The two-seed generic-buffer benchmark
+completed with every output checked. `sbt validate` passed 1,029/1,029, so the repository validation gate is green for
+this revision. These results do not establish a general CUDA evaluator.
+
+**Supported input.** The first slice accepts only the checked one-CTA TinyGEMM shape M=128, N=128, K=64. The kernel
+parameters, host parameters, tensor maps, grid expression and launch requirements must match the existing pure
+`TinyDevice` shape predicates, and the launch block size is 256. Dynamic shared memory must be positive, four-byte
+aligned and no larger than 262,144 bytes. The kernel name is not part of the predicate: a renamed kernel with an
+identical body is compiled from its body. Other shapes, scalar parameter sets, multi-CTA grids and unsupported AST
+forms are rejected.
+
+**Compilation.** `Evaluator.BufferGpuPlan.compile(kernel)` takes only a `Cuda.Kernel`; no input arrays are available to
+the compiler or retained by its sealed `Plan`. It expands the actual kernel body with the 128×128×64 compile-time
+shape, decodes the expanded statements, and asks the event scheduler to validate protocols and produce ordered
+`BufferData.Action`s. The scheduler is responsible for its finite warp schedule, event completion, barriers, TMEM
+allocation/initialization, output coverage and quiescent exit checks. The facade lowers those actions through
+`BufferData.lower` into a generic six-buffer `Buffer.Program` and checks the fixed and discovered extents, slot banks,
+program words and instruction count against the generic VM limits before it returns `CompileResult.ready(plan)`.
+Unsupported source or a failed check returns `CompileResult.rejected(code)`.
+
+The plan exposes `planProgram(plan)` for inspection and `planStats(plan)` for the scheduler's
+`WarpMachine.Stats`. The program contains ordinary input loads, integer operations, repeats and output stores. It does
+not contain precomputed TinyGEMM answers or calls back into the GPU model. The measured plan has 385,941 words,
+114,024 instructions, six buffers, 43,752 U32 slots and 36,102 U64 slots.
+
+**Execution and errors.** `Evaluator.BufferGpuPlan.run(plan, inputA, inputB)` requires exactly 8,192 values in each
+input list and values in 0..256, the current Z/257 input domain. It encodes both inputs as 16-bit little-endian fields,
+calls `Buffer.run` once, requires exactly one output, and decodes exactly 16,384 32-bit output fields in 0..256. Each
+`Buffer.run` invocation creates fresh private native buffers and returns immutable output lists. A successful result
+contains the outputs and plan stats. `RunError.invalidInput(0)` identifies A and `(1)` identifies B;
+`RunError.bufferFailure(code)` carries a generic VM failure code; `RunError.invalidOutput` reports the wrong output
+count, length or scalar domain. There is no execution fuel parameter: the program's loops are structured and finite,
+and generic program/resource validation remains in force. The fixed byte extents are A=16 KiB, B=16 KiB,
+output=64 KiB and TMEM=64 KiB. The facade rejects programs over 1,000,000 words, 200,000 instructions, or 65,536
+entries in either slot bank; variable buffer extents are limited to 64 MiB each and the total layout to 256 MiB.
+Dynamic shared memory must be 4-byte aligned, positive and at most 256 KiB. These explicit limits are for this first
+slice, not general device limits.
+
+**Measured host execution.** The generic buffer path was measured with two warmups and three timed samples per seed;
+reported values are medians. Compilation likewise used two warmups and three samples. Allocation is measured with the
+executing worker's `ThreadMXBean` counter and reports cumulative allocated bytes, not peak or live memory.
+`BufferGpuPlan.run` includes 16-bit input conversion, generic program
+validation/preparation, fresh private buffers, execution and output-list marshalling. The source boundary is
+`TinyGemmApi.run` plus output API evaluation. The prepared-VM boundary runs `NativeBufferProgram.Prepared.run` with
+U16LE inputs already built and is a supporting lower-level measurement. Host-side output comparison is outside all
+three timed regions; worker creation and join are outside the public/source regions. Every sample checked all 16,384
+output values.
+
+| Boundary | Seed 17 median / allocated bytes | Seed 83 median / allocated bytes |
+| --- | ---: | ---: |
+| `BufferGpuPlan.run` | 477.294 ms / 1,040,535,496 B | 488.172 ms / 1,040,664,344 B |
+| Source run + output API | 8.687 s / 12,236,795,208 B | 8.596 s / 12,236,775,200 B |
+| Prepared generic VM | 48.813 ms / 1,339,048 B | 48.370 ms / 1,339,048 B |
+
+Plan compilation had a 12.782 s median and 16,212,409,160 allocated bytes; module load/check took 9.961 s.
+The plan stats were 1,251 warp steps, 88 async completions, 98,304 TMA bytes, 1,048,576 scalar multiplies,
+1,048,576 scalar adds, four MMA instructions, 64 TMEM loads and 16 TMA stores. Compilation is intended to happen
+once, with the input-independent plan reused across calls. These figures describe one local bounded experiment, not GPU
+throughput or a general performance claim. Measurements in §11 belong to the
+removed GPU-aware Scala prototype and do not measure this generic path.
+
+**Reproduction.** The focused checks and benchmark are:
+
+```sh
+sbt 'testOnly com.raccoonlang.BufferGpuApiTests'
+sbt 'testOnly com.raccoonlang.BufferGpuDecodeTests'
+sbt 'testOnly com.raccoonlang.BufferGpuEventScheduleTests'
+sbt 'runMain com.raccoonlang.BufferGpuSpikeBenchmark --warmups 2 --samples 3'
+sbt scalafmtAll
+sbt validate
+```
+
+The API test compares both independent input sets with source results, reuses one compiled plan with changed A and B
+inputs, checks malformed inputs and repeated/concurrent use, accepts a renamed identical kernel, and exercises
+wrong-K descriptor and overlapping-TMEM-load mutations. The decoder test covers its supported instruction subset and
+rejections. `sbt validate` passed 1,029/1,029; the full run is recorded in
+[`target/performance/gpu-buffer-evaluator/validate.log`](../target/performance/gpu-buffer-evaluator/validate.log).
+The benchmark log is [`target/performance/gpu-buffer-evaluator/buffer-gpu-spike-benchmark.log`](../target/performance/gpu-buffer-evaluator/buffer-gpu-spike-benchmark.log).
