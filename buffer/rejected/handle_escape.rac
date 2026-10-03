@@ -1,0 +1,17 @@
+import buffer.Program
+
+def invalid: Buffer.Program := {
+  let (program, _) := Buffer.build(Nat, fun (r: Lifetime)(ctx: Buffer.Ctx(r, r)): Pair(Buffer.Ctx(r, r), Nat) => {
+    let (afterScratch, _) := Buffer.withScratch(ctx, 1, { scope = r } (_: Unit) -> Nat,
+        fun (b: Lifetime)(scratch: Buffer.ScratchHandle(r, b))(owner: Buffer.ScratchOwn(r, b))(inside: Buffer.Ctx(r, b))
+            : Pair(Buffer.Ctx(r, b), { scope = r } (_: Unit) -> Nat) => {
+      let released := Buffer.releaseScratch(inside, scratch, owner)
+      let extent := fun (_: Unit): Nat => Buffer.scratchBytes(scratch)
+      (released, extent)
+    })
+    (afterScratch, Nat.zero)
+  })
+  program
+}
+
+{ invalid }

@@ -1117,13 +1117,19 @@ module that declares `Nat.add` gets an ordinary definition. A native literal
 layout refuses a sealed family. No prelude declaration's type names an atom, since
 `LifetimeEscapes` refuses any global whose type does.
 
+The bundled trusted surface also includes the generic byte-buffer entry point
+`Buffer.Native.executeEncoded` (see [finite native buffer programs](buffer-program.md)).
+Its type is fixed to ordinary encoded words and byte lists; the implementation
+validates the standard collection layout before running any program.
+
 A test keeps a golden inventory of the bundled prelude's trusted surface: every
 axiom and builtin with its declared type, every native operation, every native
 literal layout, and every sealed family. A change to any of them changes the
 golden file, and is reviewed against the obligations. The bundled prelude's
-axioms are `Quot` and `Quot.sound`, its builtins `Quot.mk`, `Quot.lift` and
-`Quot.ind`, its native operations the Nat ones listed below, and its one native
-literal layout `Nat`'s. It declares no sealed family.
+axioms are `Quot` and `Quot.sound`, its builtins `Quot.mk`, `Quot.lift`,
+`Quot.ind` and `Buffer.Native.executeEncoded`, its native operations the Nat
+ones listed below, and its one native literal layout `Nat`'s. It declares no
+sealed family.
 
 ### Natural numbers
 

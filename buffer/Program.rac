@@ -1,0 +1,415 @@
+// Pure source builders for finite programs over private little-endian byte buffers.
+// Each allocation exists for the whole native invocation, even when its builder is nested in a repeat body.
+namespace Buffer {
+  // Only this module can emit bytecode or rebase a context across source scopes.
+  sealed inductive Key : Type
+   | key : Key
+
+  struct State : Type
+   | mk (next32: Nat)(next64: Nat)(bufferCount: Nat)(instructionCount: Nat)
+        (buffersReversed: List(Nat))(codeReversed: List(Nat)) : State
+
+  sealed inductive Ctx (r: Lifetime)(m: Lifetime) : Type { kind = lin, scope = union(r, m) }
+   | mk (state: State) : Ctx(r, m)
+
+  sealed struct Program : Type
+   | mk (words: List(Nat)) : Program
+
+  sealed struct InputHandle (r: Lifetime)(b: Lifetime) : Type { scope = union(r, b) }
+   | mk (id: Nat)(bytes: Nat) : InputHandle(r, b)
+
+  sealed struct ScratchHandle (r: Lifetime)(b: Lifetime) : Type { scope = union(r, b) }
+   | mk (id: Nat)(bytes: Nat) : ScratchHandle(r, b)
+
+  sealed inductive ScratchOwn (r: Lifetime)(b: Lifetime) : Type { kind = lin, scope = union(r, b) }
+   | mk : ScratchOwn(r, b)
+
+  sealed struct OutputHandle (r: Lifetime)(b: Lifetime) : Type { scope = union(r, b) }
+   | mk (id: Nat)(bytes: Nat) : OutputHandle(r, b)
+
+  // Public extents let higher-level source libraries size loops without exposing buffer IDs or storage.
+  def inputBytes {r: Lifetime}{b: Lifetime}(handle: InputHandle(r, b)): Nat := handle.bytes
+  def scratchBytes {r: Lifetime}{b: Lifetime}(handle: ScratchHandle(r, b)): Nat := handle.bytes
+  def outputBytes {r: Lifetime}{b: Lifetime}(handle: OutputHandle(r, b)): Nat := handle.bytes
+
+  sealed inductive OutputOwn (r: Lifetime)(b: Lifetime) : Type { kind = lin, scope = union(r, b) }
+   | mk : OutputOwn(r, b)
+
+  sealed struct Val32 (r: Lifetime)(s: Lifetime) : Type { scope = union(r, s) }
+   | mk (id: Nat) : Val32(r, s)
+
+  sealed struct Val64 (r: Lifetime)(s: Lifetime) : Type { scope = union(r, s) }
+   | mk (id: Nat) : Val64(r, s)
+
+  // Registers are mutable program state; Val values are immutable snapshots copied from them.
+  sealed struct Reg32 (r: Lifetime) : Type { scope = r }
+   | mk (id: Nat) : Reg32(r)
+
+  sealed struct Reg64 (r: Lifetime) : Type { scope = r }
+   | mk (id: Nat) : Reg64(r)
+
+  sealed inductive Fixed {k: Kind}{T: Lifetime}(S: Type { kind = k, scope = T }) : Type { scope = T }
+   | mk : Fixed(S)
+
+  inductive Result : Type
+   | success (outputs: List(List(Nat))) : Result
+   | failure (code: Nat) : Result
+
+  def fixedUnit : Fixed(Unit) := Fixed.mk(Unit)
+
+  def fixedScratch {r: Lifetime}{b: Lifetime}(handle: ScratchHandle(r, b)): Fixed(ScratchOwn(r, b)) :=
+    Fixed.mk(ScratchOwn(r, b))
+
+  def fixedOutput {r: Lifetime}{b: Lifetime}(handle: OutputHandle(r, b)): Fixed(OutputOwn(r, b)) :=
+    Fixed.mk(OutputOwn(r, b))
+
+  def fixedPair {ka: Kind}{Ta: Lifetime}{A: Type { kind = ka, scope = Ta }}
+      {kb: Kind}{Tb: Lifetime}{B: Type { kind = kb, scope = Tb }}
+      (a: Fixed(A))(b: Fixed(B)): Fixed(Pair(A, B)) := Fixed.mk(Pair(A, B))
+
+  def emit {r: Lifetime}{m: Lifetime}(key: Key)(ctx: Ctx(r, m))(opcode: Nat)(operands: List(Nat)): Ctx(r, m) := {
+    match ctx returning Ctx(r, m) with
+    | Ctx.mk state => {
+      let reversed := List.reverse(List.cons(opcode, operands))
+      let nextCode := List.append(reversed, state.codeReversed)
+      Ctx.mk(r, m, State.mk(state.next32, state.next64, state.bufferCount, Nat.succ(state.instructionCount),
+        state.buffersReversed, nextCode))
+    }
+  }
+
+  def rebase {r: Lifetime}{a: Lifetime}(key: Key)(target: Lifetime)(ctx: Ctx(r, a)): Ctx(r, target) := {
+    match ctx returning Ctx(r, target) with
+    | Ctx.mk state => Ctx.mk(r, target, state)
+  }
+
+  def fresh32 {r: Lifetime}{m: Lifetime}(key: Key)(ctx: Ctx(r, m)): Pair(Ctx(r, m), Val32(r, m)) := {
+    match ctx returning Pair(Ctx(r, m), Val32(r, m)) with
+    | Ctx.mk state =>
+      (Ctx.mk(r, m, State.mk(Nat.succ(state.next32), state.next64, state.bufferCount, state.instructionCount,
+        state.buffersReversed, state.codeReversed)), Val32.mk(r, m, state.next32))
+  }
+
+  def fresh64 {r: Lifetime}{m: Lifetime}(key: Key)(ctx: Ctx(r, m)): Pair(Ctx(r, m), Val64(r, m)) := {
+    match ctx returning Pair(Ctx(r, m), Val64(r, m)) with
+    | Ctx.mk state =>
+      (Ctx.mk(r, m, State.mk(state.next32, Nat.succ(state.next64), state.bufferCount, state.instructionCount,
+        state.buffersReversed, state.codeReversed)), Val64.mk(r, m, state.next64))
+  }
+
+  def allocate {r: Lifetime}{m: Lifetime}(key: Key)(ctx: Ctx(r, m))(role: Nat)(bytes: Nat): Pair(Ctx(r, m), Nat) := {
+    match ctx returning Pair(Ctx(r, m), Nat) with
+    | Ctx.mk state => {
+      // Descriptors are serialized in allocation order. Each buffer ID is its position in this list.
+      let reversed := List.cons(bytes, List.cons(role, state.buffersReversed))
+      (Ctx.mk(r, m, State.mk(state.next32, state.next64, Nat.succ(state.bufferCount), state.instructionCount,
+        reversed, state.codeReversed)), state.bufferCount)
+    }
+  }
+
+  def build {kf: Kind}{Sf: Lifetime}{kx: Kind}{Sx: Lifetime}
+      (X: Type { kind = kx, scope = Sx })
+      (body: { kind = kf, scope = Sf } (r: Lifetime) -> Ctx(r, r) -> Pair(Ctx(r, r), X))
+      : Pair(Program, X) := scope r => {
+    let initial := State.mk(0, 0, 0, 0, List.nil(Nat), List.nil(Nat))
+    let (ctx, result) := body(r, Ctx.mk(r, r, initial))
+    match ctx returning Pair(Program, X) with
+    | Ctx.mk state => {
+      let code := List.append(List.reverse(state.codeReversed), List.cons(0, List.nil(Nat)))
+      let header := List.cons(1112884806, List.cons(3,
+        List.cons(state.next32, List.cons(state.next64,
+          List.cons(state.bufferCount, List.cons(Nat.succ(state.instructionCount), List.nil(Nat)))))))
+      let descriptors := List.reverse(state.buffersReversed)
+      let instructions := code
+      (Program.mk(List.append(header, List.append(descriptors, instructions))), result)
+    }
+  }
+
+  def withInput {r: Lifetime}{l: Lifetime}{kf: Kind}{Sf: Lifetime}{kx: Kind}{Sx: Lifetime}
+      (ctx: Ctx(r, l))(bytes: Nat)(X: Type { kind = kx, scope = Sx })
+      (body: { kind = kf, scope = Sf } (b: Lifetime) -> InputHandle(r, b) -> Ctx(r, b) -> Pair(Ctx(r, b), X))
+      : Pair(Ctx(r, l), X) := {
+    let (withBuffer, id) := allocate(Key.key, ctx, 0, bytes)
+    scope b => {
+      let (inside, result) := body(b, InputHandle.mk(r, b, id, bytes), rebase(Key.key, b, withBuffer))
+      (rebase(Key.key, l, inside), result)
+    }
+  }
+
+  def withScratch {r: Lifetime}{l: Lifetime}{kf: Kind}{Sf: Lifetime}{kx: Kind}{Sx: Lifetime}
+      (ctx: Ctx(r, l))(bytes: Nat)(X: Type { kind = kx, scope = Sx })
+      (body: { kind = kf, scope = Sf } (b: Lifetime) -> ScratchHandle(r, b) -> ScratchOwn(r, b) -> Ctx(r, b) -> Pair(Ctx(r, b), X))
+      : Pair(Ctx(r, l), X) := {
+    let (withBuffer, id) := allocate(Key.key, ctx, 1, bytes)
+    scope b => {
+      let (inside, result) := body(b, ScratchHandle.mk(r, b, id, bytes), ScratchOwn.mk(r, b), rebase(Key.key, b, withBuffer))
+      (rebase(Key.key, l, inside), result)
+    }
+  }
+
+  def withOutput {r: Lifetime}{l: Lifetime}{kf: Kind}{Sf: Lifetime}{kx: Kind}{Sx: Lifetime}
+      (ctx: Ctx(r, l))(bytes: Nat)(X: Type { kind = kx, scope = Sx })
+      (body: { kind = kf, scope = Sf } (b: Lifetime) -> OutputHandle(r, b) -> OutputOwn(r, b) -> Ctx(r, b) -> Pair(Ctx(r, b), X))
+      : Pair(Ctx(r, l), X) := {
+    let (withBuffer, id) := allocate(Key.key, ctx, 2, bytes)
+    scope b => {
+      let (inside, result) := body(b, OutputHandle.mk(r, b, id, bytes), OutputOwn.mk(r, b), rebase(Key.key, b, withBuffer))
+      (rebase(Key.key, l, inside), result)
+    }
+  }
+
+  def releaseScratch {r: Lifetime}{l: Lifetime}{b: Lifetime}(ctx: Ctx(r, l))
+      (handle: ScratchHandle(r, b))(own: ScratchOwn(r, b)): Ctx(r, l) := {
+    match own returning Ctx(r, l) with
+    | ScratchOwn.mk => ctx
+  }
+
+  def exportOutput {r: Lifetime}{l: Lifetime}{b: Lifetime}(ctx: Ctx(r, l))
+      (handle: OutputHandle(r, b))(own: OutputOwn(r, b)): Ctx(r, l) := {
+    match own returning Ctx(r, l) with
+    | OutputOwn.mk => ctx
+  }
+
+  def const32 {r: Lifetime}{m: Lifetime}(ctx: Ctx(r, m))(value: Nat): Pair(Ctx(r, m), Val32(r, m)) := {
+    let (withRegister, dst) := fresh32(Key.key, ctx)
+    (emit(Key.key, withRegister, 1, List.cons(dst.id, List.cons(value, List.nil(Nat)))), dst)
+  }
+
+  def const64 {r: Lifetime}{m: Lifetime}(ctx: Ctx(r, m))(value: Nat): Pair(Ctx(r, m), Val64(r, m)) := {
+    let (withRegister, dst) := fresh64(Key.key, ctx)
+    (emit(Key.key, withRegister, 2, List.cons(dst.id, List.cons(value, List.nil(Nat)))), dst)
+  }
+
+  def newReg32 {r: Lifetime}{m: Lifetime}(ctx: Ctx(r, m)): Pair(Ctx(r, m), Reg32(r)) := {
+    let (next, slot) := fresh32(Key.key, ctx)
+    (next, Reg32.mk(r, slot.id))
+  }
+
+  def newReg64 {r: Lifetime}{m: Lifetime}(ctx: Ctx(r, m)): Pair(Ctx(r, m), Reg64(r)) := {
+    let (next, slot) := fresh64(Key.key, ctx)
+    (next, Reg64.mk(r, slot.id))
+  }
+
+  def getReg32 {r: Lifetime}{m: Lifetime}(ctx: Ctx(r, m))(reg: Reg32(r)): Pair(Ctx(r, m), Val32(r, m)) := {
+    let (next, value) := fresh32(Key.key, ctx)
+    (emit(Key.key, next, 3, List.cons(value.id, List.cons(reg.id, List.nil(Nat)))), value)
+  }
+
+  def setReg32 {r: Lifetime}{m: Lifetime}{v: Lifetime}(ctx: Ctx(r, m))(reg: Reg32(r))(value: Val32(r, v)): Ctx(r, m) :=
+    emit(Key.key, ctx, 3, List.cons(reg.id, List.cons(value.id, List.nil(Nat))))
+
+  def getReg64 {r: Lifetime}{m: Lifetime}(ctx: Ctx(r, m))(reg: Reg64(r)): Pair(Ctx(r, m), Val64(r, m)) := {
+    let (next, value) := fresh64(Key.key, ctx)
+    (emit(Key.key, next, 4, List.cons(value.id, List.cons(reg.id, List.nil(Nat)))), value)
+  }
+
+  def setReg64 {r: Lifetime}{m: Lifetime}{v: Lifetime}(ctx: Ctx(r, m))(reg: Reg64(r))(value: Val64(r, v)): Ctx(r, m) :=
+    emit(Key.key, ctx, 4, List.cons(reg.id, List.cons(value.id, List.nil(Nat))))
+
+  def alu32 {r: Lifetime}{m: Lifetime}{a: Lifetime}{b: Lifetime}(key: Key)(ctx: Ctx(r, m))
+      (left: Val32(r, a))(right: Val32(r, b))(operator: Nat): Pair(Ctx(r, m), Val32(r, m)) := {
+    let (withRegister, dst) := fresh32(Key.key, ctx)
+    (emit(Key.key, withRegister, 5, List.cons(dst.id, List.cons(left.id, List.cons(right.id, List.cons(operator, List.nil(Nat)))))), dst)
+  }
+
+  def alu64 {r: Lifetime}{m: Lifetime}{a: Lifetime}{b: Lifetime}(key: Key)(ctx: Ctx(r, m))
+      (left: Val64(r, a))(right: Val64(r, b))(operator: Nat): Pair(Ctx(r, m), Val64(r, m)) := {
+    let (withRegister, dst) := fresh64(Key.key, ctx)
+    (emit(Key.key, withRegister, 6, List.cons(dst.id, List.cons(left.id, List.cons(right.id, List.cons(operator, List.nil(Nat)))))), dst)
+  }
+
+  def add32 {r: Lifetime}{m: Lifetime}{a: Lifetime}{b: Lifetime}(ctx: Ctx(r, m))(x: Val32(r, a))(y: Val32(r, b)): Pair(Ctx(r, m), Val32(r, m)) := alu32(Key.key, ctx, x, y, 0)
+  def sub32 {r: Lifetime}{m: Lifetime}{a: Lifetime}{b: Lifetime}(ctx: Ctx(r, m))(x: Val32(r, a))(y: Val32(r, b)): Pair(Ctx(r, m), Val32(r, m)) := alu32(Key.key, ctx, x, y, 1)
+  def mul32 {r: Lifetime}{m: Lifetime}{a: Lifetime}{b: Lifetime}(ctx: Ctx(r, m))(x: Val32(r, a))(y: Val32(r, b)): Pair(Ctx(r, m), Val32(r, m)) := alu32(Key.key, ctx, x, y, 2)
+  def udiv32 {r: Lifetime}{m: Lifetime}{a: Lifetime}{b: Lifetime}(ctx: Ctx(r, m))(x: Val32(r, a))(y: Val32(r, b)): Pair(Ctx(r, m), Val32(r, m)) := alu32(Key.key, ctx, x, y, 3)
+  def urem32 {r: Lifetime}{m: Lifetime}{a: Lifetime}{b: Lifetime}(ctx: Ctx(r, m))(x: Val32(r, a))(y: Val32(r, b)): Pair(Ctx(r, m), Val32(r, m)) := alu32(Key.key, ctx, x, y, 4)
+  def and32 {r: Lifetime}{m: Lifetime}{a: Lifetime}{b: Lifetime}(ctx: Ctx(r, m))(x: Val32(r, a))(y: Val32(r, b)): Pair(Ctx(r, m), Val32(r, m)) := alu32(Key.key, ctx, x, y, 5)
+  def or32 {r: Lifetime}{m: Lifetime}{a: Lifetime}{b: Lifetime}(ctx: Ctx(r, m))(x: Val32(r, a))(y: Val32(r, b)): Pair(Ctx(r, m), Val32(r, m)) := alu32(Key.key, ctx, x, y, 6)
+  def xor32 {r: Lifetime}{m: Lifetime}{a: Lifetime}{b: Lifetime}(ctx: Ctx(r, m))(x: Val32(r, a))(y: Val32(r, b)): Pair(Ctx(r, m), Val32(r, m)) := alu32(Key.key, ctx, x, y, 7)
+  def shl32 {r: Lifetime}{m: Lifetime}{a: Lifetime}{b: Lifetime}(ctx: Ctx(r, m))(x: Val32(r, a))(y: Val32(r, b)): Pair(Ctx(r, m), Val32(r, m)) := alu32(Key.key, ctx, x, y, 8)
+  def lshr32 {r: Lifetime}{m: Lifetime}{a: Lifetime}{b: Lifetime}(ctx: Ctx(r, m))(x: Val32(r, a))(y: Val32(r, b)): Pair(Ctx(r, m), Val32(r, m)) := alu32(Key.key, ctx, x, y, 9)
+  def add64 {r: Lifetime}{m: Lifetime}{a: Lifetime}{b: Lifetime}(ctx: Ctx(r, m))(x: Val64(r, a))(y: Val64(r, b)): Pair(Ctx(r, m), Val64(r, m)) := alu64(Key.key, ctx, x, y, 0)
+  def sub64 {r: Lifetime}{m: Lifetime}{a: Lifetime}{b: Lifetime}(ctx: Ctx(r, m))(x: Val64(r, a))(y: Val64(r, b)): Pair(Ctx(r, m), Val64(r, m)) := alu64(Key.key, ctx, x, y, 1)
+  def mul64 {r: Lifetime}{m: Lifetime}{a: Lifetime}{b: Lifetime}(ctx: Ctx(r, m))(x: Val64(r, a))(y: Val64(r, b)): Pair(Ctx(r, m), Val64(r, m)) := alu64(Key.key, ctx, x, y, 2)
+  def udiv64 {r: Lifetime}{m: Lifetime}{a: Lifetime}{b: Lifetime}(ctx: Ctx(r, m))(x: Val64(r, a))(y: Val64(r, b)): Pair(Ctx(r, m), Val64(r, m)) := alu64(Key.key, ctx, x, y, 3)
+  def urem64 {r: Lifetime}{m: Lifetime}{a: Lifetime}{b: Lifetime}(ctx: Ctx(r, m))(x: Val64(r, a))(y: Val64(r, b)): Pair(Ctx(r, m), Val64(r, m)) := alu64(Key.key, ctx, x, y, 4)
+  def and64 {r: Lifetime}{m: Lifetime}{a: Lifetime}{b: Lifetime}(ctx: Ctx(r, m))(x: Val64(r, a))(y: Val64(r, b)): Pair(Ctx(r, m), Val64(r, m)) := alu64(Key.key, ctx, x, y, 5)
+  def or64 {r: Lifetime}{m: Lifetime}{a: Lifetime}{b: Lifetime}(ctx: Ctx(r, m))(x: Val64(r, a))(y: Val64(r, b)): Pair(Ctx(r, m), Val64(r, m)) := alu64(Key.key, ctx, x, y, 6)
+  def xor64 {r: Lifetime}{m: Lifetime}{a: Lifetime}{b: Lifetime}(ctx: Ctx(r, m))(x: Val64(r, a))(y: Val64(r, b)): Pair(Ctx(r, m), Val64(r, m)) := alu64(Key.key, ctx, x, y, 7)
+  def shl64 {r: Lifetime}{m: Lifetime}{a: Lifetime}{b: Lifetime}(ctx: Ctx(r, m))(x: Val64(r, a))(y: Val64(r, b)): Pair(Ctx(r, m), Val64(r, m)) := alu64(Key.key, ctx, x, y, 8)
+  def lshr64 {r: Lifetime}{m: Lifetime}{a: Lifetime}{b: Lifetime}(ctx: Ctx(r, m))(x: Val64(r, a))(y: Val64(r, b)): Pair(Ctx(r, m), Val64(r, m)) := alu64(Key.key, ctx, x, y, 9)
+
+  def eq32 {r: Lifetime}{m: Lifetime}{a: Lifetime}{b: Lifetime}(ctx: Ctx(r, m))(x: Val32(r, a))(y: Val32(r, b))
+      : Pair(Ctx(r, m), Val32(r, m)) := {
+    let (withRegister, dst) := fresh32(Key.key, ctx)
+    (emit(Key.key, withRegister, 7, List.cons(dst.id, List.cons(x.id, List.cons(y.id, List.cons(0, List.nil(Nat)))))), dst)
+  }
+
+  def ult32 {r: Lifetime}{m: Lifetime}{a: Lifetime}{b: Lifetime}(ctx: Ctx(r, m))(x: Val32(r, a))(y: Val32(r, b))
+      : Pair(Ctx(r, m), Val32(r, m)) := {
+    let (withRegister, dst) := fresh32(Key.key, ctx)
+    (emit(Key.key, withRegister, 7, List.cons(dst.id, List.cons(x.id, List.cons(y.id, List.cons(1, List.nil(Nat)))))), dst)
+  }
+
+  def eq64 {r: Lifetime}{m: Lifetime}{a: Lifetime}{b: Lifetime}(ctx: Ctx(r, m))(x: Val64(r, a))(y: Val64(r, b))
+      : Pair(Ctx(r, m), Val32(r, m)) := {
+    let (withRegister, dst) := fresh32(Key.key, ctx)
+    (emit(Key.key, withRegister, 8, List.cons(dst.id, List.cons(x.id, List.cons(y.id, List.cons(0, List.nil(Nat)))))), dst)
+  }
+
+  def ult64 {r: Lifetime}{m: Lifetime}{a: Lifetime}{b: Lifetime}(ctx: Ctx(r, m))(x: Val64(r, a))(y: Val64(r, b))
+      : Pair(Ctx(r, m), Val32(r, m)) := {
+    let (withRegister, dst) := fresh32(Key.key, ctx)
+    (emit(Key.key, withRegister, 8, List.cons(dst.id, List.cons(x.id, List.cons(y.id, List.cons(1, List.nil(Nat)))))), dst)
+  }
+
+  def extend32To64 {r: Lifetime}{m: Lifetime}{a: Lifetime}(ctx: Ctx(r, m))(x: Val32(r, a))
+      : Pair(Ctx(r, m), Val64(r, m)) := {
+    let (withRegister, dst) := fresh64(Key.key, ctx)
+    (emit(Key.key, withRegister, 23, List.cons(dst.id, List.cons(x.id, List.nil(Nat)))), dst)
+  }
+
+  def load32 {r: Lifetime}{m: Lifetime}{o: Lifetime}(key: Key)(ctx: Ctx(r, m))
+      (buffer: Nat)(offset: Val64(r, o))(opcode: Nat): Pair(Ctx(r, m), Val32(r, m)) := {
+    let (withRegister, dst) := fresh32(Key.key, ctx)
+    (emit(Key.key, withRegister, opcode, List.cons(dst.id, List.cons(buffer, List.cons(offset.id, List.nil(Nat))))), dst)
+  }
+
+  def load64 {r: Lifetime}{m: Lifetime}{o: Lifetime}(key: Key)(ctx: Ctx(r, m))
+      (buffer: Nat)(offset: Val64(r, o)): Pair(Ctx(r, m), Val64(r, m)) := {
+    let (withRegister, dst) := fresh64(Key.key, ctx)
+    (emit(Key.key, withRegister, 12, List.cons(dst.id, List.cons(buffer, List.cons(offset.id, List.nil(Nat))))), dst)
+  }
+
+  def load8Input {r: Lifetime}{m: Lifetime}{b: Lifetime}{o: Lifetime}(ctx: Ctx(r, m))(buffer: InputHandle(r, b))(offset: Val64(r, o)): Pair(Ctx(r, m), Val32(r, m)) := load32(Key.key, ctx, buffer.id, offset, 9)
+  def load16Input {r: Lifetime}{m: Lifetime}{b: Lifetime}{o: Lifetime}(ctx: Ctx(r, m))(buffer: InputHandle(r, b))(offset: Val64(r, o)): Pair(Ctx(r, m), Val32(r, m)) := load32(Key.key, ctx, buffer.id, offset, 10)
+  def load32Input {r: Lifetime}{m: Lifetime}{b: Lifetime}{o: Lifetime}(ctx: Ctx(r, m))(buffer: InputHandle(r, b))(offset: Val64(r, o)): Pair(Ctx(r, m), Val32(r, m)) := load32(Key.key, ctx, buffer.id, offset, 11)
+  def load64Input {r: Lifetime}{m: Lifetime}{b: Lifetime}{o: Lifetime}(ctx: Ctx(r, m))(buffer: InputHandle(r, b))(offset: Val64(r, o)): Pair(Ctx(r, m), Val64(r, m)) := load64(Key.key, ctx, buffer.id, offset)
+
+  def load8Scratch {r: Lifetime}{m: Lifetime}{b: Lifetime}{o: Lifetime}(ctx: Ctx(r, m))(buffer: ScratchHandle(r, b))(own: ScratchOwn(r, b))(offset: Val64(r, o))
+      : Pair(Ctx(r, m), Pair(ScratchOwn(r, b), Val32(r, m))) := {
+    let (next, value) := load32(Key.key, ctx, buffer.id, offset, 9)
+    (next, (own, value))
+  }
+
+  def load16Scratch {r: Lifetime}{m: Lifetime}{b: Lifetime}{o: Lifetime}(ctx: Ctx(r, m))(buffer: ScratchHandle(r, b))(own: ScratchOwn(r, b))(offset: Val64(r, o))
+      : Pair(Ctx(r, m), Pair(ScratchOwn(r, b), Val32(r, m))) := {
+    let (next, value) := load32(Key.key, ctx, buffer.id, offset, 10)
+    (next, (own, value))
+  }
+
+  def load32Scratch {r: Lifetime}{m: Lifetime}{b: Lifetime}{o: Lifetime}(ctx: Ctx(r, m))(buffer: ScratchHandle(r, b))(own: ScratchOwn(r, b))(offset: Val64(r, o))
+      : Pair(Ctx(r, m), Pair(ScratchOwn(r, b), Val32(r, m))) := {
+    let (next, value) := load32(Key.key, ctx, buffer.id, offset, 11)
+    (next, (own, value))
+  }
+
+  def load64Scratch {r: Lifetime}{m: Lifetime}{b: Lifetime}{o: Lifetime}(ctx: Ctx(r, m))(buffer: ScratchHandle(r, b))(own: ScratchOwn(r, b))(offset: Val64(r, o))
+      : Pair(Ctx(r, m), Pair(ScratchOwn(r, b), Val64(r, m))) := {
+    let (next, value) := load64(Key.key, ctx, buffer.id, offset)
+    (next, (own, value))
+  }
+
+  def load8Output {r: Lifetime}{m: Lifetime}{b: Lifetime}{o: Lifetime}(ctx: Ctx(r, m))(buffer: OutputHandle(r, b))(own: OutputOwn(r, b))(offset: Val64(r, o))
+      : Pair(Ctx(r, m), Pair(OutputOwn(r, b), Val32(r, m))) := {
+    let (next, value) := load32(Key.key, ctx, buffer.id, offset, 9)
+    (next, (own, value))
+  }
+
+  def load16Output {r: Lifetime}{m: Lifetime}{b: Lifetime}{o: Lifetime}(ctx: Ctx(r, m))(buffer: OutputHandle(r, b))(own: OutputOwn(r, b))(offset: Val64(r, o))
+      : Pair(Ctx(r, m), Pair(OutputOwn(r, b), Val32(r, m))) := {
+    let (next, value) := load32(Key.key, ctx, buffer.id, offset, 10)
+    (next, (own, value))
+  }
+
+  def load32Output {r: Lifetime}{m: Lifetime}{b: Lifetime}{o: Lifetime}(ctx: Ctx(r, m))(buffer: OutputHandle(r, b))(own: OutputOwn(r, b))(offset: Val64(r, o))
+      : Pair(Ctx(r, m), Pair(OutputOwn(r, b), Val32(r, m))) := {
+    let (next, value) := load32(Key.key, ctx, buffer.id, offset, 11)
+    (next, (own, value))
+  }
+
+  def load64Output {r: Lifetime}{m: Lifetime}{b: Lifetime}{o: Lifetime}(ctx: Ctx(r, m))(buffer: OutputHandle(r, b))(own: OutputOwn(r, b))(offset: Val64(r, o))
+      : Pair(Ctx(r, m), Pair(OutputOwn(r, b), Val64(r, m))) := {
+    let (next, value) := load64(Key.key, ctx, buffer.id, offset)
+    (next, (own, value))
+  }
+
+  def store32 {r: Lifetime}{m: Lifetime}{o: Lifetime}{v: Lifetime}(key: Key)(ctx: Ctx(r, m))
+      (buffer: Nat)(offset: Val64(r, o))(value: Val32(r, v))(opcode: Nat): Ctx(r, m) :=
+    emit(Key.key, ctx, opcode, List.cons(buffer, List.cons(offset.id, List.cons(value.id, List.nil(Nat)))))
+
+  def store64 {r: Lifetime}{m: Lifetime}{o: Lifetime}{v: Lifetime}(key: Key)(ctx: Ctx(r, m))
+      (buffer: Nat)(offset: Val64(r, o))(value: Val64(r, v)): Ctx(r, m) :=
+    emit(Key.key, ctx, 16, List.cons(buffer, List.cons(offset.id, List.cons(value.id, List.nil(Nat)))))
+
+  def store8Output {r: Lifetime}{m: Lifetime}{b: Lifetime}{o: Lifetime}{v: Lifetime}(ctx: Ctx(r, m))(buffer: OutputHandle(r, b))(own: OutputOwn(r, b))(offset: Val64(r, o))(value: Val32(r, v))
+      : Pair(Ctx(r, m), OutputOwn(r, b)) := (store32(Key.key, ctx, buffer.id, offset, value, 13), own)
+  def store16Output {r: Lifetime}{m: Lifetime}{b: Lifetime}{o: Lifetime}{v: Lifetime}(ctx: Ctx(r, m))(buffer: OutputHandle(r, b))(own: OutputOwn(r, b))(offset: Val64(r, o))(value: Val32(r, v))
+      : Pair(Ctx(r, m), OutputOwn(r, b)) := (store32(Key.key, ctx, buffer.id, offset, value, 14), own)
+  def store32Output {r: Lifetime}{m: Lifetime}{b: Lifetime}{o: Lifetime}{v: Lifetime}(ctx: Ctx(r, m))(buffer: OutputHandle(r, b))(own: OutputOwn(r, b))(offset: Val64(r, o))(value: Val32(r, v))
+      : Pair(Ctx(r, m), OutputOwn(r, b)) := (store32(Key.key, ctx, buffer.id, offset, value, 15), own)
+  def store64Output {r: Lifetime}{m: Lifetime}{b: Lifetime}{o: Lifetime}{v: Lifetime}(ctx: Ctx(r, m))(buffer: OutputHandle(r, b))(own: OutputOwn(r, b))(offset: Val64(r, o))(value: Val64(r, v))
+      : Pair(Ctx(r, m), OutputOwn(r, b)) := (store64(Key.key, ctx, buffer.id, offset, value), own)
+
+  def store8Scratch {r: Lifetime}{m: Lifetime}{b: Lifetime}{o: Lifetime}{v: Lifetime}(ctx: Ctx(r, m))(buffer: ScratchHandle(r, b))(own: ScratchOwn(r, b))(offset: Val64(r, o))(value: Val32(r, v))
+      : Pair(Ctx(r, m), ScratchOwn(r, b)) := (store32(Key.key, ctx, buffer.id, offset, value, 13), own)
+  def store16Scratch {r: Lifetime}{m: Lifetime}{b: Lifetime}{o: Lifetime}{v: Lifetime}(ctx: Ctx(r, m))(buffer: ScratchHandle(r, b))(own: ScratchOwn(r, b))(offset: Val64(r, o))(value: Val32(r, v))
+      : Pair(Ctx(r, m), ScratchOwn(r, b)) := (store32(Key.key, ctx, buffer.id, offset, value, 14), own)
+  def store32Scratch {r: Lifetime}{m: Lifetime}{b: Lifetime}{o: Lifetime}{v: Lifetime}(ctx: Ctx(r, m))(buffer: ScratchHandle(r, b))(own: ScratchOwn(r, b))(offset: Val64(r, o))(value: Val32(r, v))
+      : Pair(Ctx(r, m), ScratchOwn(r, b)) := (store32(Key.key, ctx, buffer.id, offset, value, 15), own)
+  def store64Scratch {r: Lifetime}{m: Lifetime}{b: Lifetime}{o: Lifetime}{v: Lifetime}(ctx: Ctx(r, m))(buffer: ScratchHandle(r, b))(own: ScratchOwn(r, b))(offset: Val64(r, o))(value: Val64(r, v))
+      : Pair(Ctx(r, m), ScratchOwn(r, b)) := (store64(Key.key, ctx, buffer.id, offset, value), own)
+
+  def ifThenElse {r: Lifetime}{l: Lifetime}{c: Lifetime}{k: Kind}{T: Lifetime}{S: Type { kind = k, scope = T }}
+      {Sf: Lifetime}{Sg: Lifetime}
+      (ctx: Ctx(r, l))(condition: Val32(r, c))(fixed: Fixed(S))(state: S)
+      (yes: { scope = Sf } (m: Lifetime) -> Ctx(r, m) -> S -> Pair(Ctx(r, m), S))
+      (no: { scope = Sg } (m: Lifetime) -> Ctx(r, m) -> S -> Pair(Ctx(r, m), S))
+      : Pair(Ctx(r, l), S) := {
+    let begin := emit(Key.key, ctx, 17, List.cons(condition.id, List.nil(Nat)))
+    scope yesScope => {
+      let (yesCtx, afterYes) := yes(yesScope, rebase(Key.key, yesScope, begin), state)
+      let withElse := emit(Key.key, rebase(Key.key, l, yesCtx), 18, List.nil(Nat))
+      scope noScope => {
+        let (noCtx, afterNo) := no(noScope, rebase(Key.key, noScope, withElse), afterYes)
+        (rebase(Key.key, l, emit(Key.key, rebase(Key.key, l, noCtx), 19, List.nil(Nat))), afterNo)
+      }
+    }
+  }
+
+  def repeat32 {r: Lifetime}{l: Lifetime}{countScope: Lifetime}{k: Kind}{T: Lifetime}{S: Type { kind = k, scope = T }}
+      {Sf: Lifetime}(ctx: Ctx(r, l))(count: Val32(r, countScope))(fixed: Fixed(S))(state: S)
+      (body: { scope = Sf } (m: Lifetime) -> Val32(r, m) -> Ctx(r, m) -> S -> Pair(Ctx(r, m), S))
+      : Pair(Ctx(r, l), S) := {
+    let (withIndex, indexSlot) := fresh32(Key.key, ctx)
+    let begin := emit(Key.key, withIndex, 20, List.cons(count.id, List.cons(indexSlot.id, List.nil(Nat))))
+    scope m => {
+      let index := Val32.mk(r, m, indexSlot.id)
+      let (bodyCtx, nextState) := body(m, index, rebase(Key.key, m, begin), state)
+      (rebase(Key.key, l, emit(Key.key, rebase(Key.key, l, bodyCtx), 22, List.nil(Nat))), nextState)
+    }
+  }
+
+  def repeat64 {r: Lifetime}{l: Lifetime}{countScope: Lifetime}{k: Kind}{T: Lifetime}{S: Type { kind = k, scope = T }}
+      {Sf: Lifetime}(ctx: Ctx(r, l))(count: Val64(r, countScope))(fixed: Fixed(S))(state: S)
+      (body: { scope = Sf } (m: Lifetime) -> Val64(r, m) -> Ctx(r, m) -> S -> Pair(Ctx(r, m), S))
+      : Pair(Ctx(r, l), S) := {
+    let (withIndex, indexSlot) := fresh64(Key.key, ctx)
+    let begin := emit(Key.key, withIndex, 21, List.cons(count.id, List.cons(indexSlot.id, List.nil(Nat))))
+    scope m => {
+      let index := Val64.mk(r, m, indexSlot.id)
+      let (bodyCtx, nextState) := body(m, index, rebase(Key.key, m, begin), state)
+      (rebase(Key.key, l, emit(Key.key, rebase(Key.key, l, bodyCtx), 22, List.nil(Nat))), nextState)
+    }
+  }
+
+  // Outputs are returned in allocation order. Failure codes: 1 malformed, 3 bounds, 4 arithmetic, 5 resource,
+  // 6 invalid input/shape. Inputs must match their Input allocations in the same order.
+  def run(program: Program)(inputs: List(List(Nat))): Result := {
+    match Buffer.Native.executeEncoded(program.words, inputs) returning Result with
+    | Pair.mk status outputs => {
+      match Nat.beq(status, 0) returning Result with
+      | Bool.true => Result.success(outputs)
+      | Bool.false => Result.failure(status)
+    }
+  }
+}

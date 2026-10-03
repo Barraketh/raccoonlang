@@ -1,0 +1,25 @@
+import buffer.Program
+
+def invalid: Buffer.Program := {
+  let (program, _) := Buffer.build(Nat, fun (r: Lifetime)(ctx: Buffer.Ctx(r, r)): Pair(Buffer.Ctx(r, r), Nat) => {
+    let (afterScratch, _) := Buffer.withScratch(ctx, 1, Nat,
+        fun (b: Lifetime)(scratch: Buffer.ScratchHandle(r, b))(owner: Buffer.ScratchOwn(r, b))(inside: Buffer.Ctx(r, b))
+            : Pair(Buffer.Ctx(r, b), Nat) => {
+      let (withCount, count) := Buffer.const32(inside, 1)
+      let body := fun (m: Lifetime)(index: Buffer.Val32(r, m))(bodyCtx: Buffer.Ctx(r, m))(state: Unit)
+          : Pair(Buffer.Ctx(r, m), Unit) => {
+        let (withOffset, offset) := Buffer.const64(bodyCtx, 0)
+        let (withValue, value) := Buffer.const32(withOffset, 1)
+        let (written, returnedOwner) := Buffer.store8Scratch(withValue, scratch, owner, offset, value)
+        let released := Buffer.releaseScratch(written, scratch, returnedOwner)
+        (released, state)
+      }
+      let (afterLoop, _) := Buffer.repeat32(withCount, count, Buffer.fixedUnit, Unit.unit, body)
+      (afterLoop, Nat.zero)
+    })
+    (afterScratch, Nat.zero)
+  })
+  program
+}
+
+{ invalid }

@@ -1,0 +1,6 @@
+import buffer.Program
+
+def forged (r: Lifetime): Buffer.Fixed(Buffer.Reg32(r)) :=
+  Buffer.Fixed.mk(Buffer.Reg32(r))
+
+{ forged(Lifetime.empty) }

@@ -1,0 +1,9 @@
+import buffer.Program
+
+def mismatched {r: Lifetime}{m: Lifetime}{outer: Lifetime}{inner: Lifetime}{o: Lifetime}{v: Lifetime}
+    (ctx: Buffer.Ctx(r, m))(handle: Buffer.OutputHandle(r, inner))(owner: Buffer.OutputOwn(r, outer))
+    (offset: Buffer.Val64(r, o))(value: Buffer.Val32(r, v))
+    : Pair(Buffer.Ctx(r, m), Buffer.OutputOwn(r, inner)) :=
+  Buffer.store8Output(ctx, handle, owner, offset, value)
+
+{ Unit.unit }

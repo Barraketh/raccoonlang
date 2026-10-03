@@ -1,0 +1,69 @@
+import buffer.Program
+
+def sumBytesWithCount(countValue: Nat): Buffer.Result := {
+  let (program, _) := Buffer.build(Nat, fun (r: Lifetime)(ctx: Buffer.Ctx(r, r)): Pair(Buffer.Ctx(r, r), Nat) => {
+    let (afterInput, _) := Buffer.withInput(ctx, 3, Nat,
+        fun (inputLife: Lifetime)(input: Buffer.InputHandle(r, inputLife))(inputCtx: Buffer.Ctx(r, inputLife))
+            : Pair(Buffer.Ctx(r, inputLife), Nat) => {
+      let (afterScratch, _) := Buffer.withScratch(inputCtx, 3, Nat,
+          fun (scratchLife: Lifetime)(scratch: Buffer.ScratchHandle(r, scratchLife))
+              (scratchOwner: Buffer.ScratchOwn(r, scratchLife))(scratchCtx: Buffer.Ctx(r, scratchLife))
+              : Pair(Buffer.Ctx(r, scratchLife), Nat) => {
+        let (afterOutput, (returnedScratch, _)) := Buffer.withOutput(scratchCtx, 4,
+            Pair(Buffer.ScratchOwn(r, scratchLife), Nat),
+            fun (outputLife: Lifetime)(output: Buffer.OutputHandle(r, outputLife))(outputOwner: Buffer.OutputOwn(r, outputLife))
+                (outputCtx: Buffer.Ctx(r, outputLife))
+                : Pair(Buffer.Ctx(r, outputLife), Pair(Buffer.ScratchOwn(r, scratchLife), Nat)) => {
+              let (afterOffset, offset) := Buffer.const64(outputCtx, 0)
+              let (afterCount, count) := Buffer.const32(afterOffset, countValue)
+              let (afterZero, zero) := Buffer.const32(afterCount, 0)
+              let (registerCtx, accumulator) := Buffer.newReg32(afterZero)
+              let initialized := Buffer.setReg32(registerCtx, accumulator, zero)
+              let fixedOwners := Buffer.fixedPair(Buffer.fixedScratch(scratch), Buffer.fixedOutput(output))
+              let (loopCtx, loopOwners) := Buffer.repeat32(initialized, count, fixedOwners,
+                  (scratchOwner, outputOwner),
+                  fun (bodyLife: Lifetime)(index: Buffer.Val32(r, bodyLife))(bodyCtx: Buffer.Ctx(r, bodyLife))
+                      (state: Pair(Buffer.ScratchOwn(r, scratchLife), Buffer.OutputOwn(r, outputLife)))
+                      : Pair(Buffer.Ctx(r, bodyLife), Pair(Buffer.ScratchOwn(r, scratchLife), Buffer.OutputOwn(r, outputLife))) => {
+                    let (bodyScratch, bodyOutput) := state
+                    let (wideCtx, wideIndex) := Buffer.extend32To64(bodyCtx, index)
+                    let (loaded, byte) := Buffer.load8Input(wideCtx, input, wideIndex)
+                    let (saved, savedScratch) := Buffer.store8Scratch(loaded, scratch, bodyScratch, wideIndex, byte)
+                    let (gotSum, oldSum) := Buffer.getReg32(saved, accumulator)
+                    let (added, newSum) := Buffer.add32(gotSum, oldSum, byte)
+                    let updated := Buffer.setReg32(added, accumulator, newSum)
+                    (updated, (savedScratch, bodyOutput))
+                  })
+              let (checked, isZero) := Buffer.eq32(loopCtx, count, zero)
+              let (branchCtx, branchOwners) := Buffer.ifThenElse(checked, isZero, fixedOwners, loopOwners,
+                  fun (yesScope: Lifetime)(yesCtx: Buffer.Ctx(r, yesScope))
+                      (state: Pair(Buffer.ScratchOwn(r, scratchLife), Buffer.OutputOwn(r, outputLife)))
+                      : Pair(Buffer.Ctx(r, yesScope), Pair(Buffer.ScratchOwn(r, scratchLife), Buffer.OutputOwn(r, outputLife))) => {
+                    let (yesScratch, yesOutput) := state
+                    let reset := Buffer.setReg32(yesCtx, accumulator, zero)
+                    (reset, (yesScratch, yesOutput))
+                  },
+                  fun (noScope: Lifetime)(noCtx: Buffer.Ctx(r, noScope))
+                      (state: Pair(Buffer.ScratchOwn(r, scratchLife), Buffer.OutputOwn(r, outputLife)))
+                      : Pair(Buffer.Ctx(r, noScope), Pair(Buffer.ScratchOwn(r, scratchLife), Buffer.OutputOwn(r, outputLife))) =>
+                    (noCtx, state))
+              let (finalScratchOwner, finalOutputOwner) := branchOwners
+              let (readTotal, total) := Buffer.getReg32(branchCtx, accumulator)
+              let (writeTotal, finalOutput) := Buffer.store32Output(readTotal, output, finalOutputOwner, offset, total)
+              let finishedOutput := Buffer.exportOutput(writeTotal, output, finalOutput)
+              (finishedOutput, (finalScratchOwner, Nat.zero))
+            })
+        let finishedScratch := Buffer.releaseScratch(afterOutput, scratch, returnedScratch)
+        (finishedScratch, Nat.zero)
+      })
+      (afterScratch, Nat.zero)
+    })
+    (afterInput, Nat.zero)
+  })
+  Buffer.run(program, List.cons(List.cons(2, List.cons(3, List.cons(5, List.nil(Nat)))), List.nil(List(Nat))))
+}
+
+def sumBytes: Buffer.Result := sumBytesWithCount(3)
+def sumEmptyBytes: Buffer.Result := sumBytesWithCount(0)
+
+{ Pair.mk(sumBytes, sumEmptyBytes) }
