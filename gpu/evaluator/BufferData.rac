@@ -1,0 +1,892 @@
+import buffer.Program
+
+// A finite, CUDA-independent instruction language lowered through Buffer's public source API.
+namespace BufferData {
+  inductive BufferRef : Type
+   | inputA : BufferRef
+   | inputB : BufferRef
+   | shared : BufferRef
+   | tmem : BufferRef
+   | snapshot : BufferRef
+   | output : BufferRef
+
+  struct Layout : Type
+   | mk (inputABytes: Nat)(inputBBytes: Nat)(sharedBytes: Nat)(tmemBytes: Nat)
+       (snapshotBytes: Nat)(outputBytes: Nat) : Layout
+
+  inductive Bin32 : Type
+   | add : Bin32
+   | sub : Bin32
+   | mul : Bin32
+   | udiv : Bin32
+   | urem : Bin32
+   | and : Bin32
+   | or : Bin32
+   | xor : Bin32
+   | shl : Bin32
+   | lshr : Bin32
+
+  inductive Cmp32 : Type
+   | eq : Cmp32
+   | ult : Cmp32
+
+  inductive Bin64 : Type
+   | add : Bin64
+   | sub : Bin64
+   | mul : Bin64
+   | udiv : Bin64
+   | urem : Bin64
+   | and : Bin64
+   | or : Bin64
+   | xor : Bin64
+   | shl : Bin64
+   | lshr : Bin64
+
+  inductive Expr32 : Type
+   | literal (value: Nat) : Expr32
+   | ref (slot: Nat) : Expr32
+   | binary (operator: Bin32)(left: Expr32)(right: Expr32) : Expr32
+   | compare (operator: Cmp32)(left: Expr32)(right: Expr32) : Expr32
+
+  inductive Expr64 : Type
+   | literal (value: Nat) : Expr64
+   | ref (slot: Nat) : Expr64
+   | extend32 (value: Expr32) : Expr64
+   | binary (operator: Bin64)(left: Expr64)(right: Expr64) : Expr64
+
+  inductive Action : Type
+   | set32 (slot: Nat)(value: Expr32) : Action
+   | set64 (slot: Nat)(value: Expr64) : Action
+   | load16 (target: BufferRef)(offset: Expr64)(dst: Nat) : Action
+   | load32 (target: BufferRef)(offset: Expr64)(dst: Nat) : Action
+   | load64 (target: BufferRef)(offset: Expr64)(dst: Nat) : Action
+   | store16 (target: BufferRef)(offset: Expr64)(value: Expr32) : Action
+   | store32 (target: BufferRef)(offset: Expr64)(value: Expr32) : Action
+   | store64 (target: BufferRef)(offset: Expr64)(value: Expr64) : Action
+   | repeat32 (indexSlot: Nat)(count: Expr32)(body: List(Action)) : Action
+
+  inductive LowerError : Type
+   | slotOutOfRange (width: Nat)(slot: Nat)(count: Nat) : LowerError
+   | slotCountOutOfRange (width: Nat)(count: Nat) : LowerError
+   | literalOutOfRange (width: Nat)(value: Nat) : LowerError
+   | duplicateIndex (slot: Nat) : LowerError
+   | indexOutsideScope (slot: Nat) : LowerError
+   | indexWrite (slot: Nat) : LowerError
+   | inputWrite (target: BufferRef) : LowerError
+
+  inductive LowerResult : Type
+   | program (value: Buffer.Program) : LowerResult
+   | rejected (error: LowerError) : LowerResult
+
+  def contains (xs: List(Nat))(needle: Nat): Bool decreases structural(xs) := {
+    match xs returning Bool with
+    | List.nil => Bool.false
+    | List.cons x rest => {
+      match Nat.beq(x, needle) returning Bool with
+      | Bool.true => Bool.true
+      | Bool.false => BufferData.contains(rest, needle)
+    }
+  }
+
+  def indexSlots (actions: List(Action)): List(Nat) decreases structural(actions) := {
+    match actions returning List(Nat) with
+    | List.nil => List.nil(Nat)
+    | List.cons action rest => {
+      match action returning List(Nat) with
+      | Action.repeat32 slot count body =>
+          List.cons(slot, List.append(BufferData.indexSlots(body), BufferData.indexSlots(rest)))
+      | _ => BufferData.indexSlots(rest)
+    }
+  }
+
+  def duplicateSlot (slots: List(Nat))(seen: List(Nat)): Option(Nat) decreases structural(slots) := {
+    match slots returning Option(Nat) with
+    | List.nil => Option.none(Nat)
+    | List.cons slot rest => {
+      match BufferData.contains(seen, slot) returning Option(Nat) with
+      | Bool.true => Option.some(slot)
+      | Bool.false => BufferData.duplicateSlot(rest, List.cons(slot, seen))
+    }
+  }
+
+  def slotError (width: Nat)(slot: Nat)(count: Nat): Option(LowerError) :=
+    Bool.cond(Nat.ble(Nat.succ(slot), count), Option(LowerError), Option.none(LowerError),
+      Option.some(LowerError.slotOutOfRange(width, slot, count)))
+
+  def slotCountError (width: Nat)(count: Nat): Option(LowerError) :=
+    Bool.cond(Nat.ble(count, 65536), Option(LowerError), Option.none(LowerError),
+      Option.some(LowerError.slotCountOutOfRange(width, count)))
+
+  def literal32Error (value: Nat): Option(LowerError) :=
+    Bool.cond(Nat.ble(value, 4294967295), Option(LowerError), Option.none(LowerError),
+      Option.some(LowerError.literalOutOfRange(32, value)))
+
+  def literal64Error (value: Nat): Option(LowerError) :=
+    Bool.cond(Nat.ble(value, 18446744073709551615), Option(LowerError), Option.none(LowerError),
+      Option.some(LowerError.literalOutOfRange(64, value)))
+
+  def expr32Error (value: Expr32)(slots32: Nat)(allIndexes: List(Nat))(activeIndexes: List(Nat))
+      : Option(LowerError) decreases structural(value) := {
+    match value returning Option(LowerError) with
+    | Expr32.literal number => BufferData.literal32Error(number)
+    | Expr32.ref slot => {
+      match BufferData.slotError(32, slot, slots32) returning Option(LowerError) with
+      | Option.some error => Option.some(error)
+      | Option.none => {
+        match BufferData.contains(allIndexes, slot) returning Option(LowerError) with
+        | Bool.false => Option.none(LowerError)
+        | Bool.true => {
+          match BufferData.contains(activeIndexes, slot) returning Option(LowerError) with
+          | Bool.true => Option.none(LowerError)
+          | Bool.false => Option.some(LowerError.indexOutsideScope(slot))
+        }
+      }
+    }
+    | Expr32.binary operator left right => {
+      match BufferData.expr32Error(left, slots32, allIndexes, activeIndexes) returning Option(LowerError) with
+      | Option.some error => Option.some(error)
+      | Option.none => BufferData.expr32Error(right, slots32, allIndexes, activeIndexes)
+    }
+    | Expr32.compare operator left right => {
+      match BufferData.expr32Error(left, slots32, allIndexes, activeIndexes) returning Option(LowerError) with
+      | Option.some error => Option.some(error)
+      | Option.none => BufferData.expr32Error(right, slots32, allIndexes, activeIndexes)
+    }
+  }
+
+  def expr64Error (value: Expr64)(slots32: Nat)(slots64: Nat)(allIndexes: List(Nat))(activeIndexes: List(Nat))
+      : Option(LowerError) decreases structural(value) := {
+    match value returning Option(LowerError) with
+    | Expr64.literal number => BufferData.literal64Error(number)
+    | Expr64.ref slot => BufferData.slotError(64, slot, slots64)
+    | Expr64.extend32 inner => BufferData.expr32Error(inner, slots32, allIndexes, activeIndexes)
+    | Expr64.binary operator left right => {
+      match BufferData.expr64Error(left, slots32, slots64, allIndexes, activeIndexes) returning Option(LowerError) with
+      | Option.some error => Option.some(error)
+      | Option.none => BufferData.expr64Error(right, slots32, slots64, allIndexes, activeIndexes)
+    }
+  }
+
+  def inputTarget (target: BufferRef): Bool := {
+    match target returning Bool with
+    | BufferRef.inputA => Bool.true
+    | BufferRef.inputB => Bool.true
+    | _ => Bool.false
+  }
+
+  def writableSlotError (width: Nat)(slot: Nat)(count: Nat)(allIndexes: List(Nat)): Option(LowerError) := {
+    match BufferData.slotError(width, slot, count) returning Option(LowerError) with
+    | Option.some error => Option.some(error)
+    | Option.none => {
+      match BufferData.contains(allIndexes, slot) returning Option(LowerError) with
+      | Bool.true => Option.some(LowerError.indexWrite(slot))
+      | Bool.false => Option.none(LowerError)
+    }
+  }
+
+  def targetWriteError (target: BufferRef): Option(LowerError) :=
+    Bool.cond(BufferData.inputTarget(target), Option(LowerError), Option.some(LowerError.inputWrite(target)),
+      Option.none(LowerError))
+
+  mutual {
+  def actionError (action: Action)(slots32: Nat)(slots64: Nat)(allIndexes: List(Nat))(activeIndexes: List(Nat))
+      : Option(LowerError) decreases structural(action) := {
+    match action returning Option(LowerError) with
+    | Action.set32 slot value => {
+      match BufferData.writableSlotError(32, slot, slots32, allIndexes) returning Option(LowerError) with
+      | Option.some error => Option.some(error)
+      | Option.none => BufferData.expr32Error(value, slots32, allIndexes, activeIndexes)
+    }
+    | Action.set64 slot value => {
+      match BufferData.slotError(64, slot, slots64) returning Option(LowerError) with
+      | Option.some error => Option.some(error)
+      | Option.none => BufferData.expr64Error(value, slots32, slots64, allIndexes, activeIndexes)
+    }
+    | Action.load16 target offset dst => {
+      match BufferData.writableSlotError(32, dst, slots32, allIndexes) returning Option(LowerError) with
+      | Option.some error => Option.some(error)
+      | Option.none => BufferData.expr64Error(offset, slots32, slots64, allIndexes, activeIndexes)
+    }
+    | Action.load32 target offset dst => {
+      match BufferData.writableSlotError(32, dst, slots32, allIndexes) returning Option(LowerError) with
+      | Option.some error => Option.some(error)
+      | Option.none => BufferData.expr64Error(offset, slots32, slots64, allIndexes, activeIndexes)
+    }
+    | Action.load64 target offset dst => {
+      match BufferData.slotError(64, dst, slots64) returning Option(LowerError) with
+      | Option.some error => Option.some(error)
+      | Option.none => BufferData.expr64Error(offset, slots32, slots64, allIndexes, activeIndexes)
+    }
+    | Action.store16 target offset value => {
+      match BufferData.targetWriteError(target) returning Option(LowerError) with
+      | Option.some error => Option.some(error)
+      | Option.none => {
+        match BufferData.expr64Error(offset, slots32, slots64, allIndexes, activeIndexes) returning Option(LowerError) with
+        | Option.some error => Option.some(error)
+        | Option.none => BufferData.expr32Error(value, slots32, allIndexes, activeIndexes)
+      }
+    }
+    | Action.store32 target offset value => {
+      match BufferData.targetWriteError(target) returning Option(LowerError) with
+      | Option.some error => Option.some(error)
+      | Option.none => {
+        match BufferData.expr64Error(offset, slots32, slots64, allIndexes, activeIndexes) returning Option(LowerError) with
+        | Option.some error => Option.some(error)
+        | Option.none => BufferData.expr32Error(value, slots32, allIndexes, activeIndexes)
+      }
+    }
+    | Action.store64 target offset value => {
+      match BufferData.targetWriteError(target) returning Option(LowerError) with
+      | Option.some error => Option.some(error)
+      | Option.none => {
+        match BufferData.expr64Error(offset, slots32, slots64, allIndexes, activeIndexes) returning Option(LowerError) with
+        | Option.some error => Option.some(error)
+        | Option.none => BufferData.expr64Error(value, slots32, slots64, allIndexes, activeIndexes)
+      }
+    }
+    | Action.repeat32 indexSlot count body => {
+      match BufferData.slotError(32, indexSlot, slots32) returning Option(LowerError) with
+      | Option.some error => Option.some(error)
+      | Option.none => {
+        match BufferData.expr32Error(count, slots32, allIndexes, activeIndexes) returning Option(LowerError) with
+        | Option.some error => Option.some(error)
+        | Option.none => BufferData.actionsError(body, slots32, slots64, allIndexes, List.cons(indexSlot, activeIndexes))
+      }
+    }
+  }
+
+  def actionsError (actions: List(Action))(slots32: Nat)(slots64: Nat)(allIndexes: List(Nat))(activeIndexes: List(Nat))
+      : Option(LowerError) decreases structural(actions) := {
+    match actions returning Option(LowerError) with
+    | List.nil => Option.none(LowerError)
+    | List.cons action rest => {
+      match BufferData.actionError(action, slots32, slots64, allIndexes, activeIndexes) returning Option(LowerError) with
+      | Option.some error => Option.some(error)
+      | Option.none => BufferData.actionsError(rest, slots32, slots64, allIndexes, activeIndexes)
+    }
+  }
+  }
+
+  def indexBoundsError (indexes: List(Nat))(slots32: Nat): Option(LowerError) decreases structural(indexes) := {
+    match indexes returning Option(LowerError) with
+    | List.nil => Option.none(LowerError)
+    | List.cons slot rest => {
+      match BufferData.slotError(32, slot, slots32) returning Option(LowerError) with
+      | Option.some error => Option.some(error)
+      | Option.none => BufferData.indexBoundsError(rest, slots32)
+    }
+  }
+
+  def validate (slots32: Nat)(slots64: Nat)(actions: List(Action)): Option(LowerError) := {
+    let indexes := BufferData.indexSlots(actions)
+    match BufferData.slotCountError(32, slots32) returning Option(LowerError) with
+    | Option.some error => Option.some(error)
+    | Option.none => {
+      match BufferData.slotCountError(64, slots64) returning Option(LowerError) with
+      | Option.some error => Option.some(error)
+      | Option.none => {
+        match BufferData.duplicateSlot(indexes, List.nil(Nat)) returning Option(LowerError) with
+        | Option.some duplicate => Option.some(LowerError.duplicateIndex(duplicate))
+        | Option.none => {
+          match BufferData.indexBoundsError(indexes, slots32) returning Option(LowerError) with
+          | Option.some error => Option.some(error)
+          | Option.none => BufferData.actionsError(actions, slots32, slots64, indexes, List.nil(Nat))
+        }
+      }
+    }
+  }
+
+  inductive Load32Width : Type
+   | bits16 : Load32Width
+   | bits32 : Load32Width
+
+  inductive Store32Width : Type
+   | bits16 : Store32Width
+   | bits32 : Store32Width
+
+  struct RegBank32 (r: Lifetime) : Type { scope = r }
+   | mk (slots: List(Buffer.Reg32(r)))(fallback: Buffer.Reg32(r)) : RegBank32(r)
+
+  struct RegBank64 (r: Lifetime) : Type { scope = r }
+   | mk (slots: List(Buffer.Reg64(r)))(fallback: Buffer.Reg64(r)) : RegBank64(r)
+
+  def Owners (r: Lifetime)(s: Lifetime)(t: Lifetime)(p: Lifetime)(o: Lifetime)
+      : Type { kind = lin, scope = union(union(r, s), union(union(r, t), union(union(r, p), union(r, o)))) } :=
+    Pair(Buffer.ScratchOwn(r, s), Pair(Buffer.ScratchOwn(r, t), Pair(Buffer.ScratchOwn(r, p), Buffer.OutputOwn(r, o))))
+
+  def allocRegs32 {r: Lifetime}{m: Lifetime}(ctx: Buffer.Ctx(r, m))(count: Nat)
+      : Pair(Buffer.Ctx(r, m), List(Buffer.Reg32(r))) decreases structural(count) := {
+    match count returning Pair(Buffer.Ctx(r, m), List(Buffer.Reg32(r))) with
+    | Nat.zero => (ctx, List.nil(Buffer.Reg32(r)))
+    | Nat.succ rest => {
+      let (next, slot) := Buffer.newReg32(ctx)
+      let (afterRest, slots) := BufferData.allocRegs32(next, rest)
+      (afterRest, List.cons(slot, slots))
+    }
+  }
+
+  def allocRegs64 {r: Lifetime}{m: Lifetime}(ctx: Buffer.Ctx(r, m))(count: Nat)
+      : Pair(Buffer.Ctx(r, m), List(Buffer.Reg64(r))) decreases structural(count) := {
+    match count returning Pair(Buffer.Ctx(r, m), List(Buffer.Reg64(r))) with
+    | Nat.zero => (ctx, List.nil(Buffer.Reg64(r)))
+    | Nat.succ rest => {
+      let (next, slot) := Buffer.newReg64(ctx)
+      let (afterRest, slots) := BufferData.allocRegs64(next, rest)
+      (afterRest, List.cons(slot, slots))
+    }
+  }
+
+  def bankFromSlots32 {r: Lifetime}{m: Lifetime}(ctx: Buffer.Ctx(r, m))(slots: List(Buffer.Reg32(r)))
+      : Pair(Buffer.Ctx(r, m), RegBank32(r)) := {
+    match slots returning Pair(Buffer.Ctx(r, m), RegBank32(r)) with
+    | List.nil => {
+      let (next, fallback) := Buffer.newReg32(ctx)
+      (next, RegBank32.mk(List.nil(Buffer.Reg32(r)), fallback))
+    }
+    | List.cons first rest => (ctx, RegBank32.mk(slots, first))
+  }
+
+  def bankFromSlots64 {r: Lifetime}{m: Lifetime}(ctx: Buffer.Ctx(r, m))(slots: List(Buffer.Reg64(r)))
+      : Pair(Buffer.Ctx(r, m), RegBank64(r)) := {
+    match slots returning Pair(Buffer.Ctx(r, m), RegBank64(r)) with
+    | List.nil => {
+      let (next, fallback) := Buffer.newReg64(ctx)
+      (next, RegBank64.mk(List.nil(Buffer.Reg64(r)), fallback))
+    }
+    | List.cons first rest => (ctx, RegBank64.mk(slots, first))
+  }
+
+  def makeRegBank32 {r: Lifetime}{m: Lifetime}(ctx: Buffer.Ctx(r, m))(count: Nat)
+      : Pair(Buffer.Ctx(r, m), RegBank32(r)) := {
+    let (next, slots) := BufferData.allocRegs32(ctx, count)
+    BufferData.bankFromSlots32(next, slots)
+  }
+
+  def makeRegBank64 {r: Lifetime}{m: Lifetime}(ctx: Buffer.Ctx(r, m))(count: Nat)
+      : Pair(Buffer.Ctx(r, m), RegBank64(r)) := {
+    let (next, slots) := BufferData.allocRegs64(ctx, count)
+    BufferData.bankFromSlots64(next, slots)
+  }
+
+  def reg32At {r: Lifetime}(slots: List(Buffer.Reg32(r)))(fallback: Buffer.Reg32(r))(slot: Nat)
+      : Buffer.Reg32(r) decreases structural(slots) := {
+    match slots returning Buffer.Reg32(r) with
+    | List.nil => fallback
+    | List.cons first rest => {
+      match slot returning Buffer.Reg32(r) with
+      | Nat.zero => first
+      | Nat.succ previous => BufferData.reg32At(rest, fallback, previous)
+    }
+  }
+
+  def reg64At {r: Lifetime}(slots: List(Buffer.Reg64(r)))(fallback: Buffer.Reg64(r))(slot: Nat)
+      : Buffer.Reg64(r) decreases structural(slots) := {
+    match slots returning Buffer.Reg64(r) with
+    | List.nil => fallback
+    | List.cons first rest => {
+      match slot returning Buffer.Reg64(r) with
+      | Nat.zero => first
+      | Nat.succ previous => BufferData.reg64At(rest, fallback, previous)
+    }
+  }
+
+  def bank32At {r: Lifetime}(bank: RegBank32(r))(slot: Nat): Buffer.Reg32(r) := {
+    match bank returning Buffer.Reg32(r) with
+    | RegBank32.mk slots fallback => BufferData.reg32At(slots, fallback, slot)
+  }
+
+  def bank64At {r: Lifetime}(bank: RegBank64(r))(slot: Nat): Buffer.Reg64(r) := {
+    match bank returning Buffer.Reg64(r) with
+    | RegBank64.mk slots fallback => BufferData.reg64At(slots, fallback, slot)
+  }
+
+  def bin32 {r: Lifetime}{m: Lifetime}{a: Lifetime}{b: Lifetime}(ctx: Buffer.Ctx(r, m))(operator: Bin32)
+      (left: Buffer.Val32(r, a))(right: Buffer.Val32(r, b)): Pair(Buffer.Ctx(r, m), Buffer.Val32(r, m)) := {
+    match operator returning Pair(Buffer.Ctx(r, m), Buffer.Val32(r, m)) with
+    | Bin32.add => Buffer.add32(ctx, left, right)
+    | Bin32.sub => Buffer.sub32(ctx, left, right)
+    | Bin32.mul => Buffer.mul32(ctx, left, right)
+    | Bin32.udiv => Buffer.udiv32(ctx, left, right)
+    | Bin32.urem => Buffer.urem32(ctx, left, right)
+    | Bin32.and => Buffer.and32(ctx, left, right)
+    | Bin32.or => Buffer.or32(ctx, left, right)
+    | Bin32.xor => Buffer.xor32(ctx, left, right)
+    | Bin32.shl => Buffer.shl32(ctx, left, right)
+    | Bin32.lshr => Buffer.lshr32(ctx, left, right)
+  }
+
+  def compare32 {r: Lifetime}{m: Lifetime}{a: Lifetime}{b: Lifetime}(ctx: Buffer.Ctx(r, m))(operator: Cmp32)
+      (left: Buffer.Val32(r, a))(right: Buffer.Val32(r, b)): Pair(Buffer.Ctx(r, m), Buffer.Val32(r, m)) := {
+    match operator returning Pair(Buffer.Ctx(r, m), Buffer.Val32(r, m)) with
+    | Cmp32.eq => Buffer.eq32(ctx, left, right)
+    | Cmp32.ult => Buffer.ult32(ctx, left, right)
+  }
+
+  def bin64 {r: Lifetime}{m: Lifetime}{a: Lifetime}{b: Lifetime}(ctx: Buffer.Ctx(r, m))(operator: Bin64)
+      (left: Buffer.Val64(r, a))(right: Buffer.Val64(r, b)): Pair(Buffer.Ctx(r, m), Buffer.Val64(r, m)) := {
+    match operator returning Pair(Buffer.Ctx(r, m), Buffer.Val64(r, m)) with
+    | Bin64.add => Buffer.add64(ctx, left, right)
+    | Bin64.sub => Buffer.sub64(ctx, left, right)
+    | Bin64.mul => Buffer.mul64(ctx, left, right)
+    | Bin64.udiv => Buffer.udiv64(ctx, left, right)
+    | Bin64.urem => Buffer.urem64(ctx, left, right)
+    | Bin64.and => Buffer.and64(ctx, left, right)
+    | Bin64.or => Buffer.or64(ctx, left, right)
+    | Bin64.xor => Buffer.xor64(ctx, left, right)
+    | Bin64.shl => Buffer.shl64(ctx, left, right)
+    | Bin64.lshr => Buffer.lshr64(ctx, left, right)
+  }
+
+  def eval32 {r: Lifetime}{m: Lifetime}(ctx: Buffer.Ctx(r, m))(bank32: RegBank32(r))(bank64: RegBank64(r))(value: Expr32)
+      : Pair(Buffer.Ctx(r, m), Buffer.Val32(r, m)) decreases structural(value) := {
+    match value returning Pair(Buffer.Ctx(r, m), Buffer.Val32(r, m)) with
+    | Expr32.literal number => Buffer.const32(ctx, number)
+    | Expr32.ref slot => Buffer.getReg32(ctx, BufferData.bank32At(bank32, slot))
+    | Expr32.binary operator left right => {
+      let (afterLeft, leftValue) := BufferData.eval32(ctx, bank32, bank64, left)
+      let (afterRight, rightValue) := BufferData.eval32(afterLeft, bank32, bank64, right)
+      BufferData.bin32(afterRight, operator, leftValue, rightValue)
+    }
+    | Expr32.compare operator left right => {
+      let (afterLeft, leftValue) := BufferData.eval32(ctx, bank32, bank64, left)
+      let (afterRight, rightValue) := BufferData.eval32(afterLeft, bank32, bank64, right)
+      BufferData.compare32(afterRight, operator, leftValue, rightValue)
+    }
+  }
+
+  def eval64 {r: Lifetime}{m: Lifetime}(ctx: Buffer.Ctx(r, m))(bank32: RegBank32(r))(bank64: RegBank64(r))(value: Expr64)
+      : Pair(Buffer.Ctx(r, m), Buffer.Val64(r, m)) decreases structural(value) := {
+    match value returning Pair(Buffer.Ctx(r, m), Buffer.Val64(r, m)) with
+    | Expr64.literal number => Buffer.const64(ctx, number)
+    | Expr64.ref slot => Buffer.getReg64(ctx, BufferData.bank64At(bank64, slot))
+    | Expr64.extend32 inner => {
+      let (next, narrow) := BufferData.eval32(ctx, bank32, bank64, inner)
+      Buffer.extend32To64(next, narrow)
+    }
+    | Expr64.binary operator left right => {
+      let (afterLeft, leftValue) := BufferData.eval64(ctx, bank32, bank64, left)
+      let (afterRight, rightValue) := BufferData.eval64(afterLeft, bank32, bank64, right)
+      BufferData.bin64(afterRight, operator, leftValue, rightValue)
+    }
+  }
+
+  def load32At {r: Lifetime}{m: Lifetime}{a: Lifetime}{b: Lifetime}{s: Lifetime}{t: Lifetime}{p: Lifetime}{o: Lifetime}{off: Lifetime}
+      (ctx: Buffer.Ctx(r, m))(owners: Owners(r, s, t, p, o))(target: BufferRef)(width: Load32Width)
+      (inputA: Buffer.InputHandle(r, a))(inputB: Buffer.InputHandle(r, b))
+      (shared: Buffer.ScratchHandle(r, s))(tmem: Buffer.ScratchHandle(r, t))(snapshot: Buffer.ScratchHandle(r, p))
+      (output: Buffer.OutputHandle(r, o))(offset: Buffer.Val64(r, off))
+      : Pair(Buffer.Ctx(r, m), Pair(Owners(r, s, t, p, o), Buffer.Val32(r, m))) := {
+    match target returning Pair(Buffer.Ctx(r, m), Pair(Owners(r, s, t, p, o), Buffer.Val32(r, m))) with
+    | BufferRef.inputA => {
+      match width returning Pair(Buffer.Ctx(r, m), Pair(Owners(r, s, t, p, o), Buffer.Val32(r, m))) with
+      | Load32Width.bits16 => {
+        let (next, value) := Buffer.load16Input(ctx, inputA, offset)
+        (next, (owners, value))
+      }
+      | Load32Width.bits32 => {
+        let (next, value) := Buffer.load32Input(ctx, inputA, offset)
+        (next, (owners, value))
+      }
+    }
+    | BufferRef.inputB => {
+      match width returning Pair(Buffer.Ctx(r, m), Pair(Owners(r, s, t, p, o), Buffer.Val32(r, m))) with
+      | Load32Width.bits16 => {
+        let (next, value) := Buffer.load16Input(ctx, inputB, offset)
+        (next, (owners, value))
+      }
+      | Load32Width.bits32 => {
+        let (next, value) := Buffer.load32Input(ctx, inputB, offset)
+        (next, (owners, value))
+      }
+    }
+    | BufferRef.shared => {
+      match owners returning Pair(Buffer.Ctx(r, m), Pair(Owners(r, s, t, p, o), Buffer.Val32(r, m))) with
+      | Pair.mk sharedOwn rest => {
+        match width returning Pair(Buffer.Ctx(r, m), Pair(Owners(r, s, t, p, o), Buffer.Val32(r, m))) with
+        | Load32Width.bits16 => {
+          let (next, changed) := Buffer.load16Scratch(ctx, shared, sharedOwn, offset)
+          let (nextOwn, value) := changed
+          (next, (Pair.mk(nextOwn, rest), value))
+        }
+        | Load32Width.bits32 => {
+          let (next, changed) := Buffer.load32Scratch(ctx, shared, sharedOwn, offset)
+          let (nextOwn, value) := changed
+          (next, (Pair.mk(nextOwn, rest), value))
+        }
+      }
+    }
+    | BufferRef.tmem => {
+      match owners returning Pair(Buffer.Ctx(r, m), Pair(Owners(r, s, t, p, o), Buffer.Val32(r, m))) with
+      | Pair.mk sharedOwn rest => match rest returning Pair(Buffer.Ctx(r, m), Pair(Owners(r, s, t, p, o), Buffer.Val32(r, m))) with
+        | Pair.mk tmemOwn rest2 => {
+          match width returning Pair(Buffer.Ctx(r, m), Pair(Owners(r, s, t, p, o), Buffer.Val32(r, m))) with
+          | Load32Width.bits16 => {
+            let (next, changed) := Buffer.load16Scratch(ctx, tmem, tmemOwn, offset)
+            let (nextOwn, value) := changed
+            (next, (Pair.mk(sharedOwn, Pair.mk(nextOwn, rest2)), value))
+          }
+          | Load32Width.bits32 => {
+            let (next, changed) := Buffer.load32Scratch(ctx, tmem, tmemOwn, offset)
+            let (nextOwn, value) := changed
+            (next, (Pair.mk(sharedOwn, Pair.mk(nextOwn, rest2)), value))
+          }
+        }
+      }
+    | BufferRef.snapshot => {
+      match owners returning Pair(Buffer.Ctx(r, m), Pair(Owners(r, s, t, p, o), Buffer.Val32(r, m))) with
+      | Pair.mk sharedOwn rest => match rest returning Pair(Buffer.Ctx(r, m), Pair(Owners(r, s, t, p, o), Buffer.Val32(r, m))) with
+        | Pair.mk tmemOwn rest2 => match rest2 returning Pair(Buffer.Ctx(r, m), Pair(Owners(r, s, t, p, o), Buffer.Val32(r, m))) with
+          | Pair.mk snapshotOwn outputOwn => {
+            match width returning Pair(Buffer.Ctx(r, m), Pair(Owners(r, s, t, p, o), Buffer.Val32(r, m))) with
+            | Load32Width.bits16 => {
+              let (next, changed) := Buffer.load16Scratch(ctx, snapshot, snapshotOwn, offset)
+              let (nextOwn, value) := changed
+              (next, (Pair.mk(sharedOwn, Pair.mk(tmemOwn, Pair.mk(nextOwn, outputOwn))), value))
+            }
+            | Load32Width.bits32 => {
+              let (next, changed) := Buffer.load32Scratch(ctx, snapshot, snapshotOwn, offset)
+              let (nextOwn, value) := changed
+              (next, (Pair.mk(sharedOwn, Pair.mk(tmemOwn, Pair.mk(nextOwn, outputOwn))), value))
+            }
+      }
+    }
+    | BufferRef.output => {
+      match owners returning Pair(Buffer.Ctx(r, m), Pair(Owners(r, s, t, p, o), Buffer.Val32(r, m))) with
+      | Pair.mk sharedOwn rest => match rest returning Pair(Buffer.Ctx(r, m), Pair(Owners(r, s, t, p, o), Buffer.Val32(r, m))) with
+        | Pair.mk tmemOwn rest2 => match rest2 returning Pair(Buffer.Ctx(r, m), Pair(Owners(r, s, t, p, o), Buffer.Val32(r, m))) with
+          | Pair.mk snapshotOwn outputOwn => {
+            match width returning Pair(Buffer.Ctx(r, m), Pair(Owners(r, s, t, p, o), Buffer.Val32(r, m))) with
+            | Load32Width.bits16 => {
+              let (next, changed) := Buffer.load16Output(ctx, output, outputOwn, offset)
+              let (nextOwn, value) := changed
+              (next, (Pair.mk(sharedOwn, Pair.mk(tmemOwn, Pair.mk(snapshotOwn, nextOwn))), value))
+            }
+            | Load32Width.bits32 => {
+              let (next, changed) := Buffer.load32Output(ctx, output, outputOwn, offset)
+              let (nextOwn, value) := changed
+              (next, (Pair.mk(sharedOwn, Pair.mk(tmemOwn, Pair.mk(snapshotOwn, nextOwn))), value))
+            }
+          }
+        }
+      }
+
+  def load64At {r: Lifetime}{m: Lifetime}{a: Lifetime}{b: Lifetime}{s: Lifetime}{t: Lifetime}{p: Lifetime}{o: Lifetime}{off: Lifetime}
+      (ctx: Buffer.Ctx(r, m))(owners: Owners(r, s, t, p, o))(target: BufferRef)
+      (inputA: Buffer.InputHandle(r, a))(inputB: Buffer.InputHandle(r, b))
+      (shared: Buffer.ScratchHandle(r, s))(tmem: Buffer.ScratchHandle(r, t))(snapshot: Buffer.ScratchHandle(r, p))
+      (output: Buffer.OutputHandle(r, o))(offset: Buffer.Val64(r, off))
+      : Pair(Buffer.Ctx(r, m), Pair(Owners(r, s, t, p, o), Buffer.Val64(r, m))) := {
+    match target returning Pair(Buffer.Ctx(r, m), Pair(Owners(r, s, t, p, o), Buffer.Val64(r, m))) with
+    | BufferRef.inputA => {
+      let (next, value) := Buffer.load64Input(ctx, inputA, offset)
+      (next, (owners, value))
+    }
+    | BufferRef.inputB => {
+      let (next, value) := Buffer.load64Input(ctx, inputB, offset)
+      (next, (owners, value))
+    }
+    | BufferRef.shared => {
+      match owners returning Pair(Buffer.Ctx(r, m), Pair(Owners(r, s, t, p, o), Buffer.Val64(r, m))) with
+      | Pair.mk sharedOwn rest => {
+        let (next, changed) := Buffer.load64Scratch(ctx, shared, sharedOwn, offset)
+        let (nextOwn, value) := changed
+        (next, (Pair.mk(nextOwn, rest), value))
+      }
+    }
+    | BufferRef.tmem => {
+      match owners returning Pair(Buffer.Ctx(r, m), Pair(Owners(r, s, t, p, o), Buffer.Val64(r, m))) with
+      | Pair.mk sharedOwn rest => match rest returning Pair(Buffer.Ctx(r, m), Pair(Owners(r, s, t, p, o), Buffer.Val64(r, m))) with
+        | Pair.mk tmemOwn rest2 => {
+          let (next, changed) := Buffer.load64Scratch(ctx, tmem, tmemOwn, offset)
+          let (nextOwn, value) := changed
+          (next, (Pair.mk(sharedOwn, Pair.mk(nextOwn, rest2)), value))
+        }
+      }
+    | BufferRef.snapshot => {
+      match owners returning Pair(Buffer.Ctx(r, m), Pair(Owners(r, s, t, p, o), Buffer.Val64(r, m))) with
+      | Pair.mk sharedOwn rest => match rest returning Pair(Buffer.Ctx(r, m), Pair(Owners(r, s, t, p, o), Buffer.Val64(r, m))) with
+        | Pair.mk tmemOwn rest2 => match rest2 returning Pair(Buffer.Ctx(r, m), Pair(Owners(r, s, t, p, o), Buffer.Val64(r, m))) with
+          | Pair.mk snapshotOwn outputOwn => {
+            let (next, changed) := Buffer.load64Scratch(ctx, snapshot, snapshotOwn, offset)
+            let (nextOwn, value) := changed
+            (next, (Pair.mk(sharedOwn, Pair.mk(tmemOwn, Pair.mk(nextOwn, outputOwn))), value))
+          }
+        }
+    | BufferRef.output => {
+      match owners returning Pair(Buffer.Ctx(r, m), Pair(Owners(r, s, t, p, o), Buffer.Val64(r, m))) with
+      | Pair.mk sharedOwn rest => match rest returning Pair(Buffer.Ctx(r, m), Pair(Owners(r, s, t, p, o), Buffer.Val64(r, m))) with
+        | Pair.mk tmemOwn rest2 => match rest2 returning Pair(Buffer.Ctx(r, m), Pair(Owners(r, s, t, p, o), Buffer.Val64(r, m))) with
+          | Pair.mk snapshotOwn outputOwn => {
+            let (next, changed) := Buffer.load64Output(ctx, output, outputOwn, offset)
+            let (nextOwn, value) := changed
+            (next, (Pair.mk(sharedOwn, Pair.mk(tmemOwn, Pair.mk(snapshotOwn, nextOwn))), value))
+          }
+        }
+  }
+
+  def store32At {r: Lifetime}{m: Lifetime}{a: Lifetime}{b: Lifetime}{s: Lifetime}{t: Lifetime}{p: Lifetime}{o: Lifetime}{off: Lifetime}{v: Lifetime}
+      (ctx: Buffer.Ctx(r, m))(owners: Owners(r, s, t, p, o))(target: BufferRef)(width: Store32Width)
+      (inputA: Buffer.InputHandle(r, a))(inputB: Buffer.InputHandle(r, b))
+      (shared: Buffer.ScratchHandle(r, s))(tmem: Buffer.ScratchHandle(r, t))(snapshot: Buffer.ScratchHandle(r, p))
+      (output: Buffer.OutputHandle(r, o))(offset: Buffer.Val64(r, off))(value: Buffer.Val32(r, v))
+      : Pair(Buffer.Ctx(r, m), Owners(r, s, t, p, o)) := {
+    match target returning Pair(Buffer.Ctx(r, m), Owners(r, s, t, p, o)) with
+    | BufferRef.inputA => (ctx, owners)
+    | BufferRef.inputB => (ctx, owners)
+    | BufferRef.shared => {
+      match owners returning Pair(Buffer.Ctx(r, m), Owners(r, s, t, p, o)) with
+      | Pair.mk sharedOwn rest => {
+        match width returning Pair(Buffer.Ctx(r, m), Owners(r, s, t, p, o)) with
+        | Store32Width.bits16 => {
+          let (next, nextOwn) := Buffer.store16Scratch(ctx, shared, sharedOwn, offset, value)
+          (next, Pair.mk(nextOwn, rest))
+        }
+        | Store32Width.bits32 => {
+          let (next, nextOwn) := Buffer.store32Scratch(ctx, shared, sharedOwn, offset, value)
+          (next, Pair.mk(nextOwn, rest))
+        }
+      }
+    }
+    | BufferRef.tmem => {
+      match owners returning Pair(Buffer.Ctx(r, m), Owners(r, s, t, p, o)) with
+      | Pair.mk sharedOwn rest => match rest returning Pair(Buffer.Ctx(r, m), Owners(r, s, t, p, o)) with
+        | Pair.mk tmemOwn rest2 => {
+          match width returning Pair(Buffer.Ctx(r, m), Owners(r, s, t, p, o)) with
+          | Store32Width.bits16 => {
+            let (next, nextOwn) := Buffer.store16Scratch(ctx, tmem, tmemOwn, offset, value)
+            (next, Pair.mk(sharedOwn, Pair.mk(nextOwn, rest2)))
+          }
+          | Store32Width.bits32 => {
+            let (next, nextOwn) := Buffer.store32Scratch(ctx, tmem, tmemOwn, offset, value)
+            (next, Pair.mk(sharedOwn, Pair.mk(nextOwn, rest2)))
+          }
+        }
+    }
+    | BufferRef.snapshot => {
+      match owners returning Pair(Buffer.Ctx(r, m), Owners(r, s, t, p, o)) with
+      | Pair.mk sharedOwn rest => match rest returning Pair(Buffer.Ctx(r, m), Owners(r, s, t, p, o)) with
+        | Pair.mk tmemOwn rest2 => match rest2 returning Pair(Buffer.Ctx(r, m), Owners(r, s, t, p, o)) with
+          | Pair.mk snapshotOwn outputOwn => {
+            match width returning Pair(Buffer.Ctx(r, m), Owners(r, s, t, p, o)) with
+            | Store32Width.bits16 => {
+              let (next, nextOwn) := Buffer.store16Scratch(ctx, snapshot, snapshotOwn, offset, value)
+              (next, Pair.mk(sharedOwn, Pair.mk(tmemOwn, Pair.mk(nextOwn, outputOwn))))
+            }
+            | Store32Width.bits32 => {
+              let (next, nextOwn) := Buffer.store32Scratch(ctx, snapshot, snapshotOwn, offset, value)
+              (next, Pair.mk(sharedOwn, Pair.mk(tmemOwn, Pair.mk(nextOwn, outputOwn))))
+            }
+          }
+        }
+    | BufferRef.output => {
+      match owners returning Pair(Buffer.Ctx(r, m), Owners(r, s, t, p, o)) with
+      | Pair.mk sharedOwn rest => match rest returning Pair(Buffer.Ctx(r, m), Owners(r, s, t, p, o)) with
+        | Pair.mk tmemOwn rest2 => match rest2 returning Pair(Buffer.Ctx(r, m), Owners(r, s, t, p, o)) with
+          | Pair.mk snapshotOwn outputOwn => {
+            match width returning Pair(Buffer.Ctx(r, m), Owners(r, s, t, p, o)) with
+            | Store32Width.bits16 => {
+              let (next, nextOwn) := Buffer.store16Output(ctx, output, outputOwn, offset, value)
+              (next, Pair.mk(sharedOwn, Pair.mk(tmemOwn, Pair.mk(snapshotOwn, nextOwn))))
+            }
+            | Store32Width.bits32 => {
+              let (next, nextOwn) := Buffer.store32Output(ctx, output, outputOwn, offset, value)
+              (next, Pair.mk(sharedOwn, Pair.mk(tmemOwn, Pair.mk(snapshotOwn, nextOwn))))
+            }
+          }
+        }
+  }
+
+  def store64At {r: Lifetime}{m: Lifetime}{a: Lifetime}{b: Lifetime}{s: Lifetime}{t: Lifetime}{p: Lifetime}{o: Lifetime}{off: Lifetime}{v: Lifetime}
+      (ctx: Buffer.Ctx(r, m))(owners: Owners(r, s, t, p, o))(target: BufferRef)
+      (inputA: Buffer.InputHandle(r, a))(inputB: Buffer.InputHandle(r, b))
+      (shared: Buffer.ScratchHandle(r, s))(tmem: Buffer.ScratchHandle(r, t))(snapshot: Buffer.ScratchHandle(r, p))
+      (output: Buffer.OutputHandle(r, o))(offset: Buffer.Val64(r, off))(value: Buffer.Val64(r, v))
+      : Pair(Buffer.Ctx(r, m), Owners(r, s, t, p, o)) := {
+    match target returning Pair(Buffer.Ctx(r, m), Owners(r, s, t, p, o)) with
+    | BufferRef.inputA => (ctx, owners)
+    | BufferRef.inputB => (ctx, owners)
+    | BufferRef.shared => {
+      match owners returning Pair(Buffer.Ctx(r, m), Owners(r, s, t, p, o)) with
+      | Pair.mk sharedOwn rest => {
+        let (next, nextOwn) := Buffer.store64Scratch(ctx, shared, sharedOwn, offset, value)
+        (next, Pair.mk(nextOwn, rest))
+      }
+    }
+    | BufferRef.tmem => {
+      match owners returning Pair(Buffer.Ctx(r, m), Owners(r, s, t, p, o)) with
+      | Pair.mk sharedOwn rest => match rest returning Pair(Buffer.Ctx(r, m), Owners(r, s, t, p, o)) with
+        | Pair.mk tmemOwn rest2 => {
+          let (next, nextOwn) := Buffer.store64Scratch(ctx, tmem, tmemOwn, offset, value)
+            (next, Pair.mk(sharedOwn, Pair.mk(nextOwn, rest2)))
+          }
+        }
+    | BufferRef.snapshot => {
+      match owners returning Pair(Buffer.Ctx(r, m), Owners(r, s, t, p, o)) with
+      | Pair.mk sharedOwn rest => match rest returning Pair(Buffer.Ctx(r, m), Owners(r, s, t, p, o)) with
+        | Pair.mk tmemOwn rest2 => match rest2 returning Pair(Buffer.Ctx(r, m), Owners(r, s, t, p, o)) with
+          | Pair.mk snapshotOwn outputOwn => {
+            let (next, nextOwn) := Buffer.store64Scratch(ctx, snapshot, snapshotOwn, offset, value)
+              (next, Pair.mk(sharedOwn, Pair.mk(tmemOwn, Pair.mk(nextOwn, outputOwn))))
+            }
+          }
+    | BufferRef.output => {
+      match owners returning Pair(Buffer.Ctx(r, m), Owners(r, s, t, p, o)) with
+      | Pair.mk sharedOwn rest => match rest returning Pair(Buffer.Ctx(r, m), Owners(r, s, t, p, o)) with
+        | Pair.mk tmemOwn rest2 => match rest2 returning Pair(Buffer.Ctx(r, m), Owners(r, s, t, p, o)) with
+          | Pair.mk snapshotOwn outputOwn => {
+            let (next, nextOwn) := Buffer.store64Output(ctx, output, outputOwn, offset, value)
+              (next, Pair.mk(sharedOwn, Pair.mk(tmemOwn, Pair.mk(snapshotOwn, nextOwn))))
+            }
+          }
+  }
+
+  def lowerActions {r: Lifetime}{m: Lifetime}{a: Lifetime}{b: Lifetime}{s: Lifetime}{t: Lifetime}{p: Lifetime}{o: Lifetime}
+      (ctx: Buffer.Ctx(r, m))(owners: Owners(r, s, t, p, o))(actions: List(Action))
+      (inputA: Buffer.InputHandle(r, a))(inputB: Buffer.InputHandle(r, b))
+      (shared: Buffer.ScratchHandle(r, s))(tmem: Buffer.ScratchHandle(r, t))(snapshot: Buffer.ScratchHandle(r, p))
+      (output: Buffer.OutputHandle(r, o))(fixed: Buffer.Fixed(Owners(r, s, t, p, o)))
+      (bank32: RegBank32(r))(bank64: RegBank64(r))
+      : Pair(Buffer.Ctx(r, m), Owners(r, s, t, p, o)) decreases structural(actions) := {
+    match actions returning Pair(Buffer.Ctx(r, m), Owners(r, s, t, p, o)) with
+    | List.nil => (ctx, owners)
+    | List.cons action rest => {
+      match action returning Pair(Buffer.Ctx(r, m), Owners(r, s, t, p, o)) with
+      | Action.set32 slot value => {
+        let (evaluated, result) := BufferData.eval32(ctx, bank32, bank64, value)
+        let saved := Buffer.setReg32(evaluated, BufferData.bank32At(bank32, slot), result)
+        BufferData.lowerActions(saved, owners, rest, inputA, inputB, shared, tmem, snapshot, output, fixed, bank32, bank64)
+      }
+      | Action.set64 slot value => {
+        let (evaluated, result) := BufferData.eval64(ctx, bank32, bank64, value)
+        let saved := Buffer.setReg64(evaluated, BufferData.bank64At(bank64, slot), result)
+        BufferData.lowerActions(saved, owners, rest, inputA, inputB, shared, tmem, snapshot, output, fixed, bank32, bank64)
+      }
+      | Action.load16 target offset dst => {
+        let (addressCtx, address) := BufferData.eval64(ctx, bank32, bank64, offset)
+        let (loadedCtx, loaded) := BufferData.load32At(addressCtx, owners, target, Load32Width.bits16,
+          inputA, inputB, shared, tmem, snapshot, output, address)
+        let (nextOwners, value) := loaded
+        let saved := Buffer.setReg32(loadedCtx, BufferData.bank32At(bank32, dst), value)
+        BufferData.lowerActions(saved, nextOwners, rest, inputA, inputB, shared, tmem, snapshot, output, fixed, bank32, bank64)
+      }
+      | Action.load32 target offset dst => {
+        let (addressCtx, address) := BufferData.eval64(ctx, bank32, bank64, offset)
+        let (loadedCtx, loaded) := BufferData.load32At(addressCtx, owners, target, Load32Width.bits32,
+          inputA, inputB, shared, tmem, snapshot, output, address)
+        let (nextOwners, value) := loaded
+        let saved := Buffer.setReg32(loadedCtx, BufferData.bank32At(bank32, dst), value)
+        BufferData.lowerActions(saved, nextOwners, rest, inputA, inputB, shared, tmem, snapshot, output, fixed, bank32, bank64)
+      }
+      | Action.load64 target offset dst => {
+        let (addressCtx, address) := BufferData.eval64(ctx, bank32, bank64, offset)
+        let (loadedCtx, loaded) := BufferData.load64At(addressCtx, owners, target,
+          inputA, inputB, shared, tmem, snapshot, output, address)
+        let (nextOwners, value) := loaded
+        let saved := Buffer.setReg64(loadedCtx, BufferData.bank64At(bank64, dst), value)
+        BufferData.lowerActions(saved, nextOwners, rest, inputA, inputB, shared, tmem, snapshot, output, fixed, bank32, bank64)
+      }
+      | Action.store16 target offset value => {
+        let (addressCtx, address) := BufferData.eval64(ctx, bank32, bank64, offset)
+        let (valueCtx, evaluated) := BufferData.eval32(addressCtx, bank32, bank64, value)
+        let (storedCtx, nextOwners) := BufferData.store32At(valueCtx, owners, target, Store32Width.bits16,
+          inputA, inputB, shared, tmem, snapshot, output, address, evaluated)
+        BufferData.lowerActions(storedCtx, nextOwners, rest, inputA, inputB, shared, tmem, snapshot, output, fixed, bank32, bank64)
+      }
+      | Action.store32 target offset value => {
+        let (addressCtx, address) := BufferData.eval64(ctx, bank32, bank64, offset)
+        let (valueCtx, evaluated) := BufferData.eval32(addressCtx, bank32, bank64, value)
+        let (storedCtx, nextOwners) := BufferData.store32At(valueCtx, owners, target, Store32Width.bits32,
+          inputA, inputB, shared, tmem, snapshot, output, address, evaluated)
+        BufferData.lowerActions(storedCtx, nextOwners, rest, inputA, inputB, shared, tmem, snapshot, output, fixed, bank32, bank64)
+      }
+      | Action.store64 target offset value => {
+        let (addressCtx, address) := BufferData.eval64(ctx, bank32, bank64, offset)
+        let (valueCtx, evaluated) := BufferData.eval64(addressCtx, bank32, bank64, value)
+        let (storedCtx, nextOwners) := BufferData.store64At(valueCtx, owners, target,
+          inputA, inputB, shared, tmem, snapshot, output, address, evaluated)
+        BufferData.lowerActions(storedCtx, nextOwners, rest, inputA, inputB, shared, tmem, snapshot, output, fixed, bank32, bank64)
+      }
+      | Action.repeat32 indexSlot count body => {
+        let (countCtx, countValue) := BufferData.eval32(ctx, bank32, bank64, count)
+        let (loopCtx, loopOwners) := Buffer.repeat32(countCtx, countValue, fixed, owners,
+          fun (bodyLife: Lifetime)(index: Buffer.Val32(r, bodyLife))(bodyCtx: Buffer.Ctx(r, bodyLife))
+              (bodyOwners: Owners(r, s, t, p, o)) : Pair(Buffer.Ctx(r, bodyLife), Owners(r, s, t, p, o)) => {
+            let indexed := Buffer.setReg32(bodyCtx, BufferData.bank32At(bank32, indexSlot), index)
+            BufferData.lowerActions(indexed, bodyOwners, body, inputA, inputB, shared, tmem, snapshot, output, fixed, bank32, bank64)
+          })
+        BufferData.lowerActions(loopCtx, loopOwners, rest, inputA, inputB, shared, tmem, snapshot, output, fixed, bank32, bank64)
+      }
+    }
+  }
+
+  def lowerInBuffers {r: Lifetime}{m: Lifetime}{a: Lifetime}{b: Lifetime}{s: Lifetime}{t: Lifetime}{p: Lifetime}{o: Lifetime}
+      (ctx: Buffer.Ctx(r, m))(slots32: Nat)(slots64: Nat)(actions: List(Action))
+      (inputA: Buffer.InputHandle(r, a))(inputB: Buffer.InputHandle(r, b))
+      (shared: Buffer.ScratchHandle(r, s))(sharedOwn: Buffer.ScratchOwn(r, s))
+      (tmem: Buffer.ScratchHandle(r, t))(tmemOwn: Buffer.ScratchOwn(r, t))
+      (snapshot: Buffer.ScratchHandle(r, p))(snapshotOwn: Buffer.ScratchOwn(r, p))
+      (output: Buffer.OutputHandle(r, o))(outputOwn: Buffer.OutputOwn(r, o))
+      : Pair(Buffer.Ctx(r, m), Unit) := {
+    let (after32, bank32) := BufferData.makeRegBank32(ctx, slots32)
+    let (after64, bank64) := BufferData.makeRegBank64(after32, slots64)
+    let fixed := Buffer.fixedPair(Buffer.fixedScratch(shared),
+      Buffer.fixedPair(Buffer.fixedScratch(tmem),
+        Buffer.fixedPair(Buffer.fixedScratch(snapshot), Buffer.fixedOutput(output))))
+    let owners := Pair.mk(sharedOwn, Pair.mk(tmemOwn, Pair.mk(snapshotOwn, outputOwn)))
+    let (afterActions, finalOwners) := BufferData.lowerActions(after64, owners, actions,
+      inputA, inputB, shared, tmem, snapshot, output, fixed, bank32, bank64)
+    match finalOwners returning Pair(Buffer.Ctx(r, m), Unit) with
+    | Pair.mk finalShared rest => match rest returning Pair(Buffer.Ctx(r, m), Unit) with
+      | Pair.mk finalTmem rest2 => match rest2 returning Pair(Buffer.Ctx(r, m), Unit) with
+        | Pair.mk finalSnapshot finalOutput => {
+          let exported := Buffer.exportOutput(afterActions, output, finalOutput)
+          let releasedSnapshot := Buffer.releaseScratch(exported, snapshot, finalSnapshot)
+          let releasedTmem := Buffer.releaseScratch(releasedSnapshot, tmem, finalTmem)
+          let releasedShared := Buffer.releaseScratch(releasedTmem, shared, finalShared)
+          (releasedShared, Unit.unit)
+        }
+  }
+
+  def lower (layout: Layout)(slots32: Nat)(slots64: Nat)(actions: List(Action)): LowerResult := {
+    match BufferData.validate(slots32, slots64, actions) returning LowerResult with
+    | Option.some error => LowerResult.rejected(error)
+    | Option.none => {
+      let (program, _) := Buffer.build(Unit,
+        fun (r: Lifetime)(ctx: Buffer.Ctx(r, r)): Pair(Buffer.Ctx(r, r), Unit) => {
+          let (afterInputA, _) := Buffer.withInput(ctx, layout.inputABytes, Unit,
+            fun (a: Lifetime)(inputA: Buffer.InputHandle(r, a))(ctxA: Buffer.Ctx(r, a))
+                : Pair(Buffer.Ctx(r, a), Unit) => {
+              let (afterInputB, _) := Buffer.withInput(ctxA, layout.inputBBytes, Unit,
+                fun (b: Lifetime)(inputB: Buffer.InputHandle(r, b))(ctxB: Buffer.Ctx(r, b))
+                    : Pair(Buffer.Ctx(r, b), Unit) => {
+                  let (afterShared, _) := Buffer.withScratch(ctxB, layout.sharedBytes, Unit,
+                    fun (s: Lifetime)(shared: Buffer.ScratchHandle(r, s))(sharedOwn: Buffer.ScratchOwn(r, s))
+                        (ctxS: Buffer.Ctx(r, s)): Pair(Buffer.Ctx(r, s), Unit) => {
+                      let (afterTmem, _) := Buffer.withScratch(ctxS, layout.tmemBytes, Unit,
+                        fun (t: Lifetime)(tmem: Buffer.ScratchHandle(r, t))(tmemOwn: Buffer.ScratchOwn(r, t))
+                            (ctxT: Buffer.Ctx(r, t)): Pair(Buffer.Ctx(r, t), Unit) => {
+                          let (afterSnapshot, _) := Buffer.withScratch(ctxT, layout.snapshotBytes, Unit,
+                            fun (p: Lifetime)(snapshot: Buffer.ScratchHandle(r, p))(snapshotOwn: Buffer.ScratchOwn(r, p))
+                                (ctxP: Buffer.Ctx(r, p)): Pair(Buffer.Ctx(r, p), Unit) => {
+                              let (afterOutput, _) := Buffer.withOutput(ctxP, layout.outputBytes, Unit,
+                                fun (o: Lifetime)(output: Buffer.OutputHandle(r, o))(outputOwn: Buffer.OutputOwn(r, o))
+                                    (ctxO: Buffer.Ctx(r, o)): Pair(Buffer.Ctx(r, o), Unit) =>
+                                  BufferData.lowerInBuffers(ctxO, slots32, slots64, actions,
+                                    inputA, inputB, shared, sharedOwn, tmem, tmemOwn, snapshot, snapshotOwn,
+                                    output, outputOwn))
+                              (afterOutput, Unit.unit)
+                            })
+                          (afterSnapshot, Unit.unit)
+                        })
+                      (afterTmem, Unit.unit)
+                    })
+                  (afterShared, Unit.unit)
+                })
+              (afterInputB, Unit.unit)
+            })
+          (afterInputA, Unit.unit)
+        })
+      LowerResult.program(program)
+    }
+  }
+}
