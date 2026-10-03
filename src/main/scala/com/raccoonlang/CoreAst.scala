@@ -29,7 +29,15 @@ object CoreAst {
     override def toString: String = PrettyPrinter.printTerm(this)
   }
 
-  sealed trait Term extends Ast
+  sealed trait Term extends Ast {
+
+    /** Global references below this immutable node, shared by every closure and family-block query. */
+    private[raccoonlang] lazy val globalNames: Set[String] =
+      this match {
+        case Term.GlobalRef(name, _) => Set(name)
+        case other => children(other).foldLeft(Set.empty[String])((names, child) => names ++ child.globalNames)
+      }
+  }
 
   sealed trait ConstBody {
     def span: Span
@@ -332,12 +340,11 @@ object CoreAst {
   private def childRefs(term: Term): Set[CoreAst.LocalRef] =
     children(term).foldLeft(Set.empty[CoreAst.LocalRef])((acc, child) => acc | mentionedRefs(child))
 
-  /** Whether the term mentions any of `names` as a global, at any depth. */
-  private[raccoonlang] def mentionsGlobal(term: Term, names: Set[String]): Boolean =
-    term match {
-      case Term.GlobalRef(name, _) => names(name)
-      case other                   => children(other).exists(mentionsGlobal(_, names))
-    }
+  /** The set above includes every child kind, including annotations, motives and branches. */
+  private[raccoonlang] def globalNames(term: Term): Set[String] = term.globalNames
+
+  /** Whether the cached global-reference set intersects `names`. */
+  private[raccoonlang] def mentionsGlobal(term: Term, names: Set[String]): Boolean = term.globalNames.exists(names)
 
   /**
    * The term written out again: the same syntax, with a fresh node identity for every node that carries one and a fresh

@@ -124,3 +124,81 @@ are retained locally under ignored `target/performance`. That directory also
 contains the fixtures, measurement driver, JFR recording, compact profile
 summary, stack sample and observation-only agent source. The initial invalid
 conjunction fixture is preserved separately and excluded from all results.
+
+## Intrinsic summaries implementation (October 3)
+
+The implemented [design](../../docs/proposals/POSITIVITY_SUMMARIES.md) gives every
+value lazy occurrence and strict-positivity summaries, including every Pi by
+default. Luna implemented it at max reasoning effort; root specified the rules
+and reviewed their integration. The earlier query-local cache prototype remains
+held aside. This implementation replaces the old occurrence and positivity
+walkers with one authoritative set of rules in `ValueAnalysis`.
+
+Pi domains and rigid codomains are inspected once per value instance. Shared
+closures and Core syntax nodes retain their summaries, so visiting both the
+capture and environment edges reuses the completed child. Ordinary queries read
+set membership. Mutual families retain conditional forbidden-set expressions
+resolved with an identity memo once per positive-parameter fixed-point pass;
+reduction and substitution produce new values with fresh metadata. Native and
+cyclic inspection remain conservative, and uniform parameters and recursive
+indices retain independent checks. Evaluation remains eager.
+
+The focused regressions exercise strict positivity rather than sign cancellation,
+code-only global occurrences, captured locals, guarded cycles, dependent matches,
+partial application, materialization, provisional assumptions and whole-block
+exemptions. They also assert shared graph reuse and one rigid Pi inspection across
+repeated occurrence and positivity queries.
+
+The final `sbt validate graalvmNativeImageClasspath` run passed all 1049 tests and
+format checks. The library-correctness runner passed 71/71 cases and its proof
+mutations; TinyGEMM passed 46/46 cases, three complete-kernel comparisons and its
+target proof mutations. The full client runner checked 35 cases, four A3b
+attention configurations and four pair-GEMM configurations, plus two lowering
+proof mutations. Generated CUDA and launchers remain byte-identical to the
+comparison clients. The host C++ checks passed; PTX and GPU execution were not
+part of this validation.
+
+After all builds and test JVMs finished, the preserved fixtures were measured
+with the same fresh-JVM command, heap and assertions as the baseline. All 36
+runs completed with exit code zero and no diagnostics. Fixture fingerprints
+match the baseline; the manifest also records the exact source and compiled
+class fingerprints of the measured implementation. The synthetic fixtures use
+`--no-prelude`, matching their original measurement setup.
+
+| Case | Baseline wall time | Intrinsic summaries wall time |
+|---|---:|---:|
+| Matched five-obligation conjunction | 2.552 s median | 2.683 s median (2.915, 2.580, 2.683) |
+| Full five-field record | Three runs exceed 60 s | 2.891 s median (2.864, 2.891, 3.049) |
+
+The record improvement is greater than 20.7 times using the baseline timeout as
+a lower bound; its actual old completion time remains unknown. The new record
+is within 0.208 seconds of the new conjunction median. The conjunction control
+itself has a 0.131-second higher median than before (5.1%); these three-run
+whole-CLI measurements include startup and do not isolate a small overhead.
+Median record peak RSS is 845.7 MB, compared with 850.3 MB in the censored
+baseline runs. The new conjunction median peak RSS is 848.0 MB.
+
+| Closure depth | Baseline record, median s | New record, median s | New alias, median s |
+|---|---:|---:|---:|
+| 16 | 0.606 | 0.477 | 0.416 |
+| 20 | 0.877 | 0.482 | 0.468 |
+| 22 | 1.271 | 0.471 | 0.438 |
+| 24 | 2.923 | 0.517 | 0.465 |
+| 26 | 10.055 | 0.499 | 0.473 |
+
+Each cell uses three fresh sequential JVM runs with alternating case and depth
+order. The earlier exponential timing trend is absent over these tested depths;
+depth 26 improves by 20.2 times. This result and the reuse assertions validate
+the shared-graph fix. They do not establish linear complexity for every program:
+initial metadata construction still evaluates dependent codomains, combines
+sets and retains inspected values; provisional expressions require resolution
+under each assumption context. Uniformity checking remains a separate traversal.
+
+Raw [measurements](../../target/performance/positivity-summaries-20261003/results.json),
+[summary](../../target/performance/positivity-summaries-20261003/summary.json),
+[provenance](../../target/performance/positivity-summaries-20261003/manifest.json)
+and [validation](../../target/performance/positivity-summaries-20261003/validation.log)
+are retained locally under ignored `target/performance/positivity-summaries-20261003/`.
+That directory also contains the exact fixtures, measurement driver, individual
+stdout/stderr files and the three integration-runner logs. The baseline evidence
+remains in its original directory.
