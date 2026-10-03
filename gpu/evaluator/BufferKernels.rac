@@ -1,0 +1,540 @@
+// Numerical storage fragments for the supported one-CTA TinyGEMM shape.
+// This module is ordinary source code: it compiles validated AST metadata to BufferData actions and does not execute
+// the GPU model or bake numerical answers into the program. The scheduler/API validates protocol state, initialized
+// TMEM, shared allocation bounds, and output coverage; these fragments validate request metadata and rely on the
+// generic Buffer VM for final dynamic memory bounds.
+
+import Cuda
+import evaluator.BufferData
+import evaluator.DeviceApi
+import evaluator.TinyDevice
+
+namespace Evaluator {
+  namespace BufferKernels {
+    // Slot banks are fixed across sequential fragments. The only growing part of Supply is the globally unique set
+    // of Repeat32 index slots.
+    def accumulatorBase : Nat := 0
+    def aValueBase : Nat := 64
+    def bValueBase : Nat := 72
+    def scratch32 : Nat := 80
+    def fixedSlots32 : Nat := 81
+
+    def aAddressBase : Nat := 0
+    def bAddressBase : Nat := 8
+    def copyAddressScratch64 : Nat := 16
+    def fixedSlots64 : Nat := 17
+
+    struct SlotSupply : Type
+     | mk (next32: Nat)(next64: Nat) : SlotSupply
+
+    struct Fragment : Type
+     | mk (actions: List(BufferData.Action))(supply: SlotSupply) : Fragment
+
+    inductive FragmentResult : Type
+     | emitted (fragment: Fragment) : FragmentResult
+     | unsupported (reason: String) : FragmentResult
+
+    def initialSupply : SlotSupply := SlotSupply.mk(BufferKernels.fixedSlots32, BufferKernels.fixedSlots64)
+
+    def slots32 (supply: SlotSupply): Nat := {
+      match supply returning Nat with
+      | SlotSupply.mk next32 next64 => next32
+    }
+
+    def slots64 (supply: SlotSupply): Nat := {
+      match supply returning Nat with
+      | SlotSupply.mk next32 next64 => next64
+    }
+
+    def snapshotBytesPerLoad : Nat := 1024
+
+    def snapshotBase (ordinal: Nat): Nat := Nat.mul(ordinal, BufferKernels.snapshotBytesPerLoad)
+
+    def snapshotKey (ordinal: Nat)(column: Nat)(lane: Nat): Nat :=
+      Nat.add(BufferKernels.snapshotBase(ordinal), Nat.add(Nat.mul(column, 128), Nat.mul(lane, 4)))
+
+    def supplyReady (supply: SlotSupply)(extraIndexes: Nat): Bool := {
+      match supply returning Bool with
+      | SlotSupply.mk next32 next64 => Bool.and(
+          Nat.ble(BufferKernels.fixedSlots32, next32),
+          Bool.and(Nat.ble(BufferKernels.fixedSlots64, next64),
+            Bool.and(Nat.ble(Nat.add(next32, extraIndexes), 65536), Nat.ble(next64, 65536))))
+    }
+
+    def advanced32 (supply: SlotSupply)(count: Nat): SlotSupply := {
+      match supply returning SlotSupply with
+      | SlotSupply.mk next32 next64 => SlotSupply.mk(Nat.add(next32, count), next64)
+    }
+
+    def add32 (left: BufferData.Expr32)(right: BufferData.Expr32): BufferData.Expr32 :=
+      BufferData.Expr32.binary(BufferData.Bin32.add, left, right)
+
+    def mul32 (left: BufferData.Expr32)(right: BufferData.Expr32): BufferData.Expr32 :=
+      BufferData.Expr32.binary(BufferData.Bin32.mul, left, right)
+
+    def and32 (left: BufferData.Expr32)(right: BufferData.Expr32): BufferData.Expr32 :=
+      BufferData.Expr32.binary(BufferData.Bin32.and, left, right)
+
+    def xor32 (left: BufferData.Expr32)(right: BufferData.Expr32): BufferData.Expr32 :=
+      BufferData.Expr32.binary(BufferData.Bin32.xor, left, right)
+
+    def urem32 (left: BufferData.Expr32)(right: BufferData.Expr32): BufferData.Expr32 :=
+      BufferData.Expr32.binary(BufferData.Bin32.urem, left, right)
+
+    def add64 (left: BufferData.Expr64)(right: BufferData.Expr64): BufferData.Expr64 :=
+      BufferData.Expr64.binary(BufferData.Bin64.add, left, right)
+
+    def mul64 (left: BufferData.Expr64)(right: BufferData.Expr64): BufferData.Expr64 :=
+      BufferData.Expr64.binary(BufferData.Bin64.mul, left, right)
+
+    def extend32 (value: BufferData.Expr32): BufferData.Expr64 := BufferData.Expr64.extend32(value)
+
+    def e32 (value: Nat): BufferData.Expr32 := BufferData.Expr32.literal(value)
+    def e64 (value: Nat): BufferData.Expr64 := BufferData.Expr64.literal(value)
+
+    def repeatIndex (slot: Nat): BufferData.Expr32 := BufferData.Expr32.ref(slot)
+
+    def aligned (value: Nat)(alignment: Nat): Bool := Nat.isZero(Nat.mod(value, alignment))
+
+    def fits64Span (base: Nat)(bytes: Nat): Bool :=
+      Nat.ble(base, Nat.sub(18446744073709551615, bytes))
+
+    def snapshotOrdinalFits (ordinal: Nat): Bool :=
+      BufferKernels.fits64Span(BufferKernels.snapshotBase(ordinal), BufferKernels.snapshotBytesPerLoad)
+
+    def distinctIds (values: List(Nat))(seen: List(Nat)): Bool decreases structural(values) := {
+      match values returning Bool with
+      | List.nil => Bool.true
+      | List.cons value rest => {
+        match BufferData.contains(seen, value) returning Bool with
+        | Bool.true => Bool.false
+        | Bool.false => BufferKernels.distinctIds(rest, List.cons(value, seen))
+      }
+    }
+
+    def mapShape (map: DeviceApi.ResolvedMap)(rows: Nat)(cols: Nat): Bool := {
+      match map returning Bool with
+      | DeviceApi.ResolvedMap.mk encoding resolvedRows resolvedCols =>
+          Bool.and(Nat.beq(resolvedRows, rows), Nat.beq(resolvedCols, cols))
+    }
+
+    def validInputMap (map: DeviceApi.ResolvedMap): Bool := Bool.or(
+      Bool.and(BufferKernels.mapShape(map, 128, 64), {
+        match map returning Bool with
+        | DeviceApi.ResolvedMap.mk encoding rows cols => TinyDevice.mapA(encoding)
+      }),
+      Bool.and(BufferKernels.mapShape(map, 128, 64), {
+        match map returning Bool with
+        | DeviceApi.ResolvedMap.mk encoding rows cols => TinyDevice.mapB(encoding)
+      }))
+
+    def validOutputMap (map: DeviceApi.ResolvedMap): Bool := Bool.and(BufferKernels.mapShape(map, 128, 128), {
+      match map returning Bool with
+      | DeviceApi.ResolvedMap.mk encoding rows cols => TinyDevice.mapC(encoding)
+    })
+
+    def inputTileActions (target: BufferData.BufferRef)(dstByte: Nat)(rowSlot: Nat)(groupSlot: Nat)(wordSlot: Nat)
+        : List(BufferData.Action) := {
+      let row := BufferKernels.repeatIndex(rowSlot)
+      let group := BufferKernels.repeatIndex(groupSlot)
+      let word := BufferKernels.repeatIndex(wordSlot)
+      let rowBytes := BufferKernels.mul64(BufferKernels.e64(128), BufferKernels.extend32(row))
+      let sourceGroup := BufferKernels.mul64(BufferKernels.e64(16), BufferKernels.extend32(group))
+      let sourceWord := BufferKernels.mul64(BufferKernels.e64(8), BufferKernels.extend32(word))
+      let sourceOffset := BufferKernels.add64(rowBytes, BufferKernels.add64(sourceGroup, sourceWord))
+      let physicalGroup := BufferKernels.xor32(group, BufferKernels.and32(row, BufferKernels.e32(7)))
+      let destSwizzle := BufferKernels.mul64(BufferKernels.e64(16), BufferKernels.extend32(physicalGroup))
+      let destOffset := BufferKernels.add64(BufferKernels.e64(dstByte),
+        BufferKernels.add64(rowBytes,
+          BufferKernels.add64(destSwizzle, sourceWord)))
+      let copy := List.cons(BufferData.Action.load64(target, sourceOffset, BufferKernels.copyAddressScratch64),
+        List.cons(BufferData.Action.store64(BufferData.BufferRef.shared, destOffset,
+          BufferData.Expr64.ref(BufferKernels.copyAddressScratch64)), List.nil(BufferData.Action)))
+      let words := List.cons(BufferData.Action.repeat32(wordSlot, BufferKernels.e32(2), copy), List.nil(BufferData.Action))
+      let groups := List.cons(BufferData.Action.repeat32(groupSlot, BufferKernels.e32(8), words), List.nil(BufferData.Action))
+      List.cons(BufferData.Action.repeat32(rowSlot, BufferKernels.e32(128), groups), List.nil(BufferData.Action))
+    }
+
+    def tmaLoad (supply: SlotSupply)(request: DeviceApi.DataRequest): FragmentResult := {
+      match request returning FragmentResult with
+      | DeviceApi.DataRequest.tmaLoad map dstByte x y => {
+        let mapOk := BufferKernels.validInputMap(map)
+        let coordsOk := Bool.and(Nat.isZero(x), Nat.isZero(y))
+        let dstOk := Bool.and(BufferKernels.aligned(dstByte, 1024), BufferKernels.fits64Span(dstByte, 16384))
+        match Bool.and(mapOk, Bool.and(coordsOk, dstOk)) returning FragmentResult with
+        | Bool.false => FragmentResult.unsupported("input TMA request has unsupported map, extent, coordinates, or alignment")
+        | Bool.true => {
+          match BufferKernels.supplyReady(supply, 3) returning FragmentResult with
+          | Bool.false => FragmentResult.unsupported("input TMA fragment exceeds the BufferData slot bank")
+          | Bool.true => {
+            match map returning FragmentResult with
+            | DeviceApi.ResolvedMap.mk encoding rows cols => {
+              let target := Bool.cond(TinyDevice.mapA(encoding), BufferData.BufferRef,
+                BufferData.BufferRef.inputA, BufferData.BufferRef.inputB)
+              match supply returning FragmentResult with
+              | SlotSupply.mk next32 next64 => {
+                let actions := BufferKernels.inputTileActions(target, dstByte, next32,
+                  Nat.succ(next32), Nat.succ(Nat.succ(next32)))
+                FragmentResult.emitted(Fragment.mk(actions, BufferKernels.advanced32(supply, 3)))
+              }
+            }
+          }
+        }
+      }
+      | _ => FragmentResult.unsupported("request is not an input TMA load")
+    }
+
+    def sameGroup (group: Cuda.CtaGroup): Bool := {
+      match group returning Bool with
+      | Cuda.CtaGroup.one => Bool.true
+      | _ => Bool.false
+    }
+
+    def validMmaSource (a: DeviceApi.MmaSource)(b: DeviceApi.OperandDesc)(m: Nat)(n: Nat)
+        (transpose: Bool)(accumulate: Nat): Bool := {
+      match a returning Bool with
+      | DeviceApi.MmaSource.tensorMemory address => Bool.false
+      | DeviceApi.MmaSource.shared aDesc => {
+        match aDesc returning Bool with
+        | DeviceApi.OperandDesc.mk aBase aLbo aStep => {
+          match b returning Bool with
+          | DeviceApi.OperandDesc.mk bBase bLbo bStep => {
+            let ringStart := 33792
+            let ringEnd := 164864
+            let aStageOk := Bool.and(Nat.ble(ringStart, aBase),
+              Bool.and(Nat.isZero(Nat.mod(Nat.sub(aBase, ringStart), 32768)),
+                Nat.ble(Nat.add(aBase, 32768), ringEnd)))
+            let bStageOk := Nat.beq(bBase, Nat.add(aBase, 16384))
+            Bool.and(Nat.beq(m, 128), Bool.and(Nat.beq(n, 128),
+              Bool.and(Bool.not(transpose),
+                Bool.and(Nat.ble(accumulate, 1),
+                  Bool.and(Nat.beq(aLbo, 0), Bool.and(Nat.beq(bLbo, 0),
+                    Bool.and(Nat.beq(aStep, bStep),
+                      Bool.and(Nat.blt(aStep, 4), Bool.and(aStageOk, bStageOk)))))))))
+          }
+        }
+      }
+    }
+
+    def validMma (desc: DeviceApi.MmaDesc): Bool := {
+      match desc returning Bool with
+      | DeviceApi.MmaDesc.mk group accumulator a b idesc accumulate => {
+        match idesc returning Bool with
+        | Cuda.InstrDesc.mk m n transpose => Bool.and(BufferKernels.sameGroup(group),
+            Bool.and(Nat.isZero(accumulator), BufferKernels.validMmaSource(a, b, m, n, transpose, accumulate)))
+      }
+    }
+
+    def rowElement32 (tile: BufferData.Expr32)(within: Nat): BufferData.Expr32 :=
+      BufferKernels.add32(BufferKernels.mul32(tile, BufferKernels.e32(8)), BufferKernels.e32(within))
+
+    def matrixWordOffset64 (row: BufferData.Expr32)(col: BufferData.Expr32): BufferData.Expr64 :=
+      BufferKernels.mul64(BufferKernels.e64(4),
+        BufferKernels.extend32(BufferKernels.add32(BufferKernels.mul32(row, BufferKernels.e32(128)), col)))
+
+    def initCells (accumulate: Nat)(rowSlot: Nat)(colSlot: Nat)(cell: Nat)(remaining: Nat)
+        : List(BufferData.Action) decreases structural(remaining) := {
+      match remaining returning List(BufferData.Action) with
+      | Nat.zero => List.nil(BufferData.Action)
+      | Nat.succ rest => {
+        let i := Nat.div(cell, 8)
+        let j := Nat.mod(cell, 8)
+        let row := BufferKernels.rowElement32(BufferKernels.repeatIndex(rowSlot), i)
+        let col := BufferKernels.rowElement32(BufferKernels.repeatIndex(colSlot), j)
+        let address := BufferKernels.matrixWordOffset64(row, col)
+        let accSlot := Nat.add(BufferKernels.accumulatorBase, cell)
+        let initialize := Bool.cond(Nat.isZero(accumulate), BufferData.Action,
+          BufferData.Action.set32(accSlot, BufferKernels.e32(0)),
+          BufferData.Action.load32(BufferData.BufferRef.tmem, address, accSlot))
+        List.cons(initialize, BufferKernels.initCells(accumulate, rowSlot, colSlot,
+          Nat.succ(cell), rest))
+      }
+    }
+
+    def finishCells (rowSlot: Nat)(colSlot: Nat)(cell: Nat)(remaining: Nat)
+        : List(BufferData.Action) decreases structural(remaining) := {
+      match remaining returning List(BufferData.Action) with
+      | Nat.zero => List.nil(BufferData.Action)
+      | Nat.succ rest => {
+        let i := Nat.div(cell, 8)
+        let j := Nat.mod(cell, 8)
+        let row := BufferKernels.rowElement32(BufferKernels.repeatIndex(rowSlot), i)
+        let col := BufferKernels.rowElement32(BufferKernels.repeatIndex(colSlot), j)
+        let address := BufferKernels.matrixWordOffset64(row, col)
+        let accSlot := Nat.add(BufferKernels.accumulatorBase, cell)
+        let reduce := BufferData.Action.set32(accSlot,
+          BufferKernels.urem32(BufferData.Expr32.ref(accSlot), BufferKernels.e32(257)))
+        let store := BufferData.Action.store32(BufferData.BufferRef.tmem, address,
+          BufferData.Expr32.ref(accSlot))
+        List.cons(reduce, List.cons(store,
+          BufferKernels.finishCells(rowSlot, colSlot, Nat.succ(cell), rest)))
+      }
+    }
+
+    def aBases (aBase: Nat)(step: Nat)(rowSlot: Nat)(groupSlot: Nat)(cell: Nat)(remaining: Nat)
+        : List(BufferData.Action) decreases structural(remaining) := {
+      match remaining returning List(BufferData.Action) with
+      | Nat.zero => List.nil(BufferData.Action)
+      | Nat.succ rest => {
+        let group := BufferKernels.add32(BufferKernels.e32(Nat.mul(2, step)),
+          BufferKernels.repeatIndex(groupSlot))
+        let row := BufferKernels.rowElement32(BufferKernels.repeatIndex(rowSlot), cell)
+        let swizzle := BufferKernels.xor32(group, BufferKernels.e32(cell))
+        let rowBytes := BufferKernels.mul64(BufferKernels.e64(128), BufferKernels.extend32(row))
+        let swizzleBytes := BufferKernels.mul64(BufferKernels.e64(16), BufferKernels.extend32(swizzle))
+        let address := BufferKernels.add64(BufferKernels.e64(aBase),
+          BufferKernels.add64(rowBytes, swizzleBytes))
+        List.cons(BufferData.Action.set64(Nat.add(BufferKernels.aAddressBase, cell), address),
+          BufferKernels.aBases(aBase, step, rowSlot, groupSlot, Nat.succ(cell), rest))
+      }
+    }
+
+    def bBases (bBase: Nat)(step: Nat)(colSlot: Nat)(groupSlot: Nat)(cell: Nat)(remaining: Nat)
+        : List(BufferData.Action) decreases structural(remaining) := {
+      match remaining returning List(BufferData.Action) with
+      | Nat.zero => List.nil(BufferData.Action)
+      | Nat.succ rest => {
+        let group := BufferKernels.add32(BufferKernels.e32(Nat.mul(2, step)),
+          BufferKernels.repeatIndex(groupSlot))
+        let col := BufferKernels.rowElement32(BufferKernels.repeatIndex(colSlot), cell)
+        let swizzle := BufferKernels.xor32(group, BufferKernels.e32(cell))
+        let colBytes := BufferKernels.mul64(BufferKernels.e64(128), BufferKernels.extend32(col))
+        let swizzleBytes := BufferKernels.mul64(BufferKernels.e64(16), BufferKernels.extend32(swizzle))
+        let address := BufferKernels.add64(BufferKernels.e64(bBase),
+          BufferKernels.add64(colBytes, swizzleBytes))
+        List.cons(BufferData.Action.set64(Nat.add(BufferKernels.bAddressBase, cell), address),
+          BufferKernels.bBases(bBase, step, colSlot, groupSlot, Nat.succ(cell), rest))
+      }
+    }
+
+    def operandLoadsA (kSlot: Nat)(index: Nat)(remaining: Nat): List(BufferData.Action)
+        decreases structural(remaining) := {
+      match remaining returning List(BufferData.Action) with
+      | Nat.zero => List.nil(BufferData.Action)
+      | Nat.succ rest => {
+        let kOffset := BufferKernels.mul64(BufferKernels.e64(2),
+          BufferKernels.extend32(BufferKernels.repeatIndex(kSlot)))
+        let address := BufferKernels.add64(BufferData.Expr64.ref(Nat.add(BufferKernels.aAddressBase, index)), kOffset)
+        List.cons(BufferData.Action.load16(BufferData.BufferRef.shared, address,
+          Nat.add(BufferKernels.aValueBase, index)),
+          BufferKernels.operandLoadsA(kSlot, Nat.succ(index), rest))
+      }
+    }
+
+    def operandLoadsB (kSlot: Nat)(index: Nat)(remaining: Nat): List(BufferData.Action)
+        decreases structural(remaining) := {
+      match remaining returning List(BufferData.Action) with
+      | Nat.zero => List.nil(BufferData.Action)
+      | Nat.succ rest => {
+        let kOffset := BufferKernels.mul64(BufferKernels.e64(2),
+          BufferKernels.extend32(BufferKernels.repeatIndex(kSlot)))
+        let address := BufferKernels.add64(BufferData.Expr64.ref(Nat.add(BufferKernels.bAddressBase, index)), kOffset)
+        List.cons(BufferData.Action.load16(BufferData.BufferRef.shared, address,
+          Nat.add(BufferKernels.bValueBase, index)),
+          BufferKernels.operandLoadsB(kSlot, Nat.succ(index), rest))
+      }
+    }
+
+    def macCells (cell: Nat)(remaining: Nat): List(BufferData.Action) decreases structural(remaining) := {
+      match remaining returning List(BufferData.Action) with
+      | Nat.zero => List.nil(BufferData.Action)
+      | Nat.succ rest => {
+        let i := Nat.div(cell, 8)
+        let j := Nat.mod(cell, 8)
+        let accSlot := Nat.add(BufferKernels.accumulatorBase, cell)
+        let aSlot := Nat.add(BufferKernels.aValueBase, i)
+        let bSlot := Nat.add(BufferKernels.bValueBase, j)
+        let product := BufferKernels.mul32(BufferData.Expr32.ref(aSlot), BufferData.Expr32.ref(bSlot))
+        let sum := BufferKernels.add32(BufferData.Expr32.ref(accSlot), product)
+        List.cons(BufferData.Action.set32(accSlot, sum),
+          BufferKernels.macCells(Nat.succ(cell), rest))
+      }
+    }
+
+    def mmaActions (aBase: Nat)(bBase: Nat)(step: Nat)(accumulate: Nat)(rowSlot: Nat)(colSlot: Nat)
+        (groupSlot: Nat)(kSlot: Nat): List(BufferData.Action) := {
+      let tileInit := BufferKernels.initCells(accumulate, rowSlot, colSlot, 0, 64)
+      let aAddressSet := BufferKernels.aBases(aBase, step, rowSlot, groupSlot, 0, 8)
+      let bAddressSet := BufferKernels.bBases(bBase, step, colSlot, groupSlot, 0, 8)
+      let loads := List.append(BufferKernels.operandLoadsA(kSlot, 0, 8),
+        BufferKernels.operandLoadsB(kSlot, 0, 8))
+      let oneK := List.append(loads, BufferKernels.macCells(0, 64))
+      let eachKGroup := List.append(List.append(aAddressSet, bAddressSet),
+        List.cons(BufferData.Action.repeat32(kSlot, BufferKernels.e32(8), oneK), List.nil(BufferData.Action)))
+      let allK := List.cons(BufferData.Action.repeat32(groupSlot, BufferKernels.e32(2), eachKGroup),
+        List.nil(BufferData.Action))
+      let writeTile := BufferKernels.finishCells(rowSlot, colSlot, 0, 64)
+      let tileActions := List.append(List.append(tileInit, allK), writeTile)
+      List.cons(BufferData.Action.repeat32(rowSlot, BufferKernels.e32(16),
+        List.cons(BufferData.Action.repeat32(colSlot, BufferKernels.e32(16), tileActions), List.nil(BufferData.Action))),
+        List.nil(BufferData.Action))
+    }
+
+    def mma (supply: SlotSupply)(desc: DeviceApi.MmaDesc): FragmentResult := {
+      match desc returning FragmentResult with
+      | DeviceApi.MmaDesc.mk group accumulator a b idesc accumulate => {
+        match BufferKernels.validMma(desc) returning FragmentResult with
+        | Bool.false => FragmentResult.unsupported("MMA request has unsupported group, accumulator, descriptor, or shape")
+        | Bool.true => {
+          match BufferKernels.supplyReady(supply, 4) returning FragmentResult with
+          | Bool.false => FragmentResult.unsupported("MMA fragment exceeds the BufferData slot bank")
+          | Bool.true => {
+            match a returning FragmentResult with
+            | DeviceApi.MmaSource.tensorMemory address => FragmentResult.unsupported("tensor-memory A operand is unsupported")
+            | DeviceApi.MmaSource.shared aDesc => {
+              match aDesc returning FragmentResult with
+              | DeviceApi.OperandDesc.mk aBase aLbo aStep => {
+                match b returning FragmentResult with
+                | DeviceApi.OperandDesc.mk bBase bLbo bStep => {
+                  match supply returning FragmentResult with
+                  | SlotSupply.mk next32 next64 => {
+                    let actions := BufferKernels.mmaActions(aBase, bBase, aStep, accumulate,
+                      next32, Nat.succ(next32), Nat.succ(Nat.succ(next32)), Nat.succ(Nat.succ(Nat.succ(next32))))
+                    FragmentResult.emitted(Fragment.mk(actions, BufferKernels.advanced32(supply, 4)))
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+
+    def sameTmemShape (shape: Cuda.TmemShape): Bool := {
+      match shape returning Bool with
+      | Cuda.TmemShape.s32x32b => Bool.true
+    }
+
+    def validTmemLoad (shape: Cuda.TmemShape)(dstIds: List(Nat))(baseAddress: Nat)
+        (warpGroupPosition: Nat)(activeMask: Nat): Bool := {
+      let firstColumn := Nat.mod(baseAddress, 65536)
+      let quadrantOk := Bool.and(Nat.blt(warpGroupPosition, 4),
+        Nat.beq(Nat.div(baseAddress, 65536), Nat.mul(warpGroupPosition, 32)))
+      let columnsOk := Bool.and(BufferKernels.aligned(firstColumn, 8),
+        Bool.and(Nat.blt(firstColumn, 128), Nat.ble(Nat.add(firstColumn, 8), 128)))
+      Bool.and(BufferKernels.sameTmemShape(shape),
+        Bool.and(Nat.beq(List.length(dstIds), 8),
+          Bool.and(BufferKernels.distinctIds(dstIds, List.nil(Nat)),
+            Bool.and(Nat.blt(baseAddress, 4294967296),
+              Bool.and(Nat.beq(activeMask, 4294967295), Bool.and(quadrantOk, columnsOk))))))
+    }
+
+    def tmemColumnActions (firstColumn: Nat)(rowBase: Nat)(ordinal: Nat)(columnSlot: Nat)
+        (laneSlot: Nat): List(BufferData.Action) := {
+      let column := BufferKernels.repeatIndex(columnSlot)
+      let lane := BufferKernels.repeatIndex(laneSlot)
+      let row := BufferKernels.add32(BufferKernels.e32(rowBase), lane)
+      let col := BufferKernels.add32(BufferKernels.e32(firstColumn), column)
+      let source := BufferKernels.matrixWordOffset64(row, col)
+      let snapshotColumn := BufferKernels.mul64(BufferKernels.e64(128), BufferKernels.extend32(column))
+      let snapshotLane := BufferKernels.mul64(BufferKernels.e64(4), BufferKernels.extend32(lane))
+      let snapshotOffset := BufferKernels.add64(BufferKernels.e64(BufferKernels.snapshotBase(ordinal)),
+        BufferKernels.add64(snapshotColumn, snapshotLane))
+      let actions := List.cons(BufferData.Action.load32(BufferData.BufferRef.tmem, source, BufferKernels.scratch32),
+        List.cons(BufferData.Action.store32(BufferData.BufferRef.snapshot, snapshotOffset,
+          BufferData.Expr32.ref(BufferKernels.scratch32)), List.nil(BufferData.Action)))
+      List.cons(BufferData.Action.repeat32(laneSlot, BufferKernels.e32(32), actions), List.nil(BufferData.Action))
+    }
+
+    def tmemSnapshotActions (firstColumn: Nat)(rowBase: Nat)(ordinal: Nat)
+        (columnSlot: Nat)(laneSlot: Nat): List(BufferData.Action) :=
+      List.cons(BufferData.Action.repeat32(columnSlot, BufferKernels.e32(8),
+        BufferKernels.tmemColumnActions(firstColumn, rowBase, ordinal, columnSlot, laneSlot)),
+        List.nil(BufferData.Action))
+
+    def tmemLoad (supply: SlotSupply)(request: DeviceApi.DataRequest)(ordinal: Nat): FragmentResult := {
+      match request returning FragmentResult with
+      | DeviceApi.DataRequest.tmemLoad shape dstIds baseAddress warpGroupPosition activeMask => {
+        match Bool.and(BufferKernels.validTmemLoad(shape, dstIds, baseAddress, warpGroupPosition, activeMask),
+            BufferKernels.snapshotOrdinalFits(ordinal))
+            returning FragmentResult with
+        | Bool.false => FragmentResult.unsupported("TMEM load has unsupported shape, destination IDs, mask, address, or snapshot ordinal")
+        | Bool.true => {
+          match BufferKernels.supplyReady(supply, 2) returning FragmentResult with
+          | Bool.false => FragmentResult.unsupported("TMEM snapshot fragment exceeds the BufferData slot bank")
+          | Bool.true => {
+            match supply returning FragmentResult with
+            | SlotSupply.mk next32 next64 => {
+              let firstColumn := Nat.mod(baseAddress, 65536)
+              let rowBase := Nat.mul(warpGroupPosition, 32)
+              let actions := BufferKernels.tmemSnapshotActions(firstColumn, rowBase, ordinal,
+                next32, Nat.succ(next32))
+              FragmentResult.emitted(Fragment.mk(actions, BufferKernels.advanced32(supply, 2)))
+            }
+          }
+        }
+      }
+      | _ => FragmentResult.unsupported("request is not a TMEM load")
+    }
+
+    def copySnapshotToShared (supply: SlotSupply)(ordinal: Nat)(column: Nat)(lane: Nat)
+        (sharedByte: Nat): FragmentResult := {
+      let keyOk := Bool.and(Nat.blt(column, 8),
+        Bool.and(Nat.blt(lane, 32), BufferKernels.snapshotOrdinalFits(ordinal)))
+      let addressOk := Bool.and(BufferKernels.aligned(sharedByte, 4), BufferKernels.fits64Span(sharedByte, 4))
+      match Bool.and(keyOk, addressOk) returning FragmentResult with
+      | Bool.false => FragmentResult.unsupported("snapshot replay has an invalid key or shared alignment")
+      | Bool.true => {
+        match BufferKernels.supplyReady(supply, 0) returning FragmentResult with
+        | Bool.false => FragmentResult.unsupported("snapshot replay has an invalid BufferData slot supply")
+        | Bool.true => {
+          let load := BufferData.Action.load32(BufferData.BufferRef.snapshot,
+            BufferKernels.e64(BufferKernels.snapshotKey(ordinal, column, lane)), BufferKernels.scratch32)
+          let store := BufferData.Action.store32(BufferData.BufferRef.shared,
+            BufferKernels.e64(sharedByte), BufferData.Expr32.ref(BufferKernels.scratch32))
+          FragmentResult.emitted(Fragment.mk(List.cons(load, List.cons(store, List.nil(BufferData.Action))), supply))
+        }
+      }
+    }
+
+    def tmaStoreActions (srcByte: Nat)(x: Nat)(y: Nat)(rowSlot: Nat)(colSlot: Nat)
+        : List(BufferData.Action) := {
+      let row := BufferKernels.repeatIndex(rowSlot)
+      let col := BufferKernels.repeatIndex(colSlot)
+      let rowBytes := BufferKernels.mul64(BufferKernels.e64(128), BufferKernels.extend32(row))
+      let group := BufferKernels.xor32(
+        BufferData.Expr32.binary(BufferData.Bin32.udiv, col, BufferKernels.e32(4)),
+        BufferKernels.and32(row, BufferKernels.e32(7)))
+      let swizzleBytes := BufferKernels.mul64(BufferKernels.e64(16), BufferKernels.extend32(group))
+      let withinGroup := BufferKernels.mul64(BufferKernels.e64(4),
+        BufferKernels.extend32(BufferKernels.urem32(col, BufferKernels.e32(4))))
+      let sharedOffset := BufferKernels.add64(BufferKernels.e64(srcByte),
+        BufferKernels.add64(rowBytes, BufferKernels.add64(swizzleBytes, withinGroup)))
+      let outputRow := BufferKernels.add32(BufferKernels.e32(y), row)
+      let outputCol := BufferKernels.add32(BufferKernels.e32(x), col)
+      let outputOffset := BufferKernels.mul64(BufferKernels.e64(4),
+        BufferKernels.extend32(BufferKernels.add32(BufferKernels.mul32(outputRow, BufferKernels.e32(128)), outputCol)))
+      let copy := List.cons(BufferData.Action.load32(BufferData.BufferRef.shared, sharedOffset,
+        BufferKernels.scratch32),
+        List.cons(BufferData.Action.store32(BufferData.BufferRef.output, outputOffset,
+          BufferData.Expr32.ref(BufferKernels.scratch32)), List.nil(BufferData.Action)))
+      List.cons(BufferData.Action.repeat32(rowSlot, BufferKernels.e32(32),
+        List.cons(BufferData.Action.repeat32(colSlot, BufferKernels.e32(32), copy), List.nil(BufferData.Action))),
+        List.nil(BufferData.Action))
+    }
+
+    def tmaStore (supply: SlotSupply)(request: DeviceApi.DataRequest): FragmentResult := {
+      match request returning FragmentResult with
+      | DeviceApi.DataRequest.tmaStore map x y srcByte => {
+        let tileOk := Bool.and(Nat.ble(x, 96), Bool.and(Nat.ble(y, 96),
+          Bool.and(BufferKernels.aligned(x, 32), BufferKernels.aligned(y, 32))))
+        let mapOk := BufferKernels.validOutputMap(map)
+        let sourceOk := Bool.and(BufferKernels.aligned(srcByte, 1024), BufferKernels.fits64Span(srcByte, 16384))
+        match Bool.and(mapOk, Bool.and(tileOk, sourceOk)) returning FragmentResult with
+        | Bool.false => FragmentResult.unsupported("output TMA request has unsupported map, tile coordinates, or alignment")
+        | Bool.true => {
+          match BufferKernels.supplyReady(supply, 2) returning FragmentResult with
+          | Bool.false => FragmentResult.unsupported("output TMA fragment exceeds the BufferData slot bank")
+          | Bool.true => {
+            match supply returning FragmentResult with
+            | SlotSupply.mk next32 next64 => {
+              let actions := BufferKernels.tmaStoreActions(srcByte, x, y, next32, Nat.succ(next32))
+              FragmentResult.emitted(Fragment.mk(actions, BufferKernels.advanced32(supply, 2)))
+            }
+          }
+        }
+      }
+      | _ => FragmentResult.unsupported("request is not an output TMA store")
+    }
+  }
+}
