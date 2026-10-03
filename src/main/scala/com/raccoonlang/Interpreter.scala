@@ -258,11 +258,11 @@ object Interpreter {
     })
 
   private[raccoonlang] def evalApply(fn: Value, vArgs: Vector[Value]): Value =
-    PreparedEval.evalApply(fn, vArgs)
+    CoreEvaluator.evalApply(fn, vArgs)
 
   private[raccoonlang] def evalValidatedStringAppend(layout: SourceStringLayout, chars: VPacked): Value = {
     require(chars.codec eq layout.charListCodec, "Validated String.append result has a different CharList codec")
-    PreparedEval.evalValidatedStringAppend(layout, chars)
+    CoreEvaluator.evalValidatedStringAppend(layout, chars)
   }
 
   private def valueName(v: Value): String =
@@ -363,7 +363,7 @@ object Interpreter {
   }
 
   private[raccoonlang] def runLam(lam: VLam, args: Vector[Value]): Value =
-    PreparedEval.evalApply(lam, args)
+    CoreEvaluator.evalApply(lam, args)
 
   private def forceThunk(thunk: NeutralThunk, materializer: ValueOps.Materializer): Value =
     evalTerm(thunk.term, materializer.materializeEnv(thunk.env))
@@ -409,7 +409,7 @@ object Interpreter {
     }
 
   /** Evaluation attaches no source location: reduction can run inside a callee body. */
-  private[raccoonlang] def evalTerm(term: CoreAst.Term, env: Env): Value = PreparedEval.evalTerm(term, env)
+  private[raccoonlang] def evalTerm(term: CoreAst.Term, env: Env): Value = CoreEvaluator.evalTerm(term, env)
 
   private[raccoonlang] def stuckMatchThunk(
       m: CTerm.Match,

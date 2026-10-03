@@ -41,7 +41,7 @@ class ConstructorMetadataTests extends munit.FunSuite with TestSupport {
       binders: Vector[CoreAst.Binder],
       independent: Boolean
   )(run: Env => Value): CheckedPiCodomain =
-    new CheckedPiCodomain(binders, independent) {
+    new CheckedPiCodomain(binders, independent, None, env) {
       override def apply(env: Env): Value = run(env)
     }
 
@@ -181,14 +181,20 @@ class ConstructorMetadataTests extends munit.FunSuite with TestSupport {
   test("only a codomain with no own or nested binder references gets the constructor cache") {
     val constant = evaluatedPi("{ (x: Nat) -> Nat }")
     val unusedFallbacks = new AtomicInteger
-    val first = constant.constructorResultType {
-      unusedFallbacks.incrementAndGet()
-      envWith(constant, VPacked.nat(0, nat))
-    }
-    val second = constant.constructorResultType {
-      unusedFallbacks.incrementAndGet()
-      envWith(constant, VPacked.nat(1, nat))
-    }
+    val zero = VPacked.nat(0, nat)
+    val one = VPacked.nat(1, nat)
+    val first = constant.constructorResultType(
+      Vector(zero), {
+        unusedFallbacks.incrementAndGet()
+        envWith(constant, zero)
+      }
+    )
+    val second = constant.constructorResultType(
+      Vector(one), {
+        unusedFallbacks.incrementAndGet()
+        envWith(constant, one)
+      }
+    )
     assert(first eq second)
     assert(ValueEquivalence.defEq(first, nat))
     assertEquals(unusedFallbacks.get(), 0)
@@ -196,13 +202,13 @@ class ConstructorMetadataTests extends munit.FunSuite with TestSupport {
     val dependent = evaluatedPi("{ (n: Nat) -> Eq(Nat, n, n) }")
     val firstVar = FreshVar.freshVar("first", nat)
     val secondVar = FreshVar.freshVar("second", nat)
-    val firstResult = dependent.constructorResultType(envWith(dependent, firstVar))
-    val secondResult = dependent.constructorResultType(envWith(dependent, secondVar))
+    val firstResult = dependent.constructorResultType(Vector(firstVar), envWith(dependent, firstVar))
+    val secondResult = dependent.constructorResultType(Vector(secondVar), envWith(dependent, secondVar))
     assertNotEquals(firstResult.key, secondResult.key)
 
     val nested = evaluatedPi("{ (x: Nat) -> ((y: Nat) -> Eq(Nat, x, x)) }")
-    val nestedFirst = nested.constructorResultType(envWith(nested, firstVar))
-    val nestedSecond = nested.constructorResultType(envWith(nested, secondVar))
+    val nestedFirst = nested.constructorResultType(Vector(firstVar), envWith(nested, firstVar))
+    val nestedSecond = nested.constructorResultType(Vector(secondVar), envWith(nested, secondVar))
     assertNotEquals(nestedFirst.key, nestedSecond.key)
 
     val solved = EqStore.empty.allow(DepSet(firstVar.id)).addLink(firstVar.id, VPacked.nat(3, nat))
@@ -212,11 +218,16 @@ class ConstructorMetadataTests extends munit.FunSuite with TestSupport {
     val captures = evaluatedPi("{ (n: Nat) -> ((x: Nat) -> Eq(Nat, n, n)) }")
     val capturedVar = FreshVar.freshVar("captured", nat)
     val inner = captures.codomain(envWith(captures, capturedVar)).asInstanceOf[VPi]
-    val innerResult = inner.constructorResultType(envWith(inner, VPacked.nat(0, nat)))
+    val innerArg = VPacked.nat(0, nat)
+    val innerResult = inner.constructorResultType(Vector(innerArg), envWith(inner, innerArg))
     assert(innerResult.synDeps.contains(capturedVar.id))
     val captureStore = EqStore.empty.allow(DepSet(capturedVar.id)).addLink(capturedVar.id, VPacked.nat(4, nat))
     val materializedInner = ValueOps.materialize(inner, captureStore).asInstanceOf[VPi]
-    val materializedResult = materializedInner.constructorResultType(envWith(materializedInner, VPacked.nat(0, nat)))
+    val materializedArg = VPacked.nat(0, nat)
+    val materializedResult = materializedInner.constructorResultType(
+      Vector(materializedArg),
+      envWith(materializedInner, materializedArg)
+    )
     assert(ValueEquivalence.defEq(ValueOps.materialize(innerResult, captureStore), materializedResult))
     assert(!materializedResult.synDeps.contains(capturedVar.id))
   }
@@ -230,14 +241,17 @@ class ConstructorMetadataTests extends munit.FunSuite with TestSupport {
       nat
     }
     val pi = manualPi(binders, codomain)
+    val argument = VPacked.nat(0, nat)
     val skippedFallbacks = new AtomicInteger
     assertEquals(calls.get(), 0)
     val tasks = Vector.fill(16)(
       Future(
-        pi.constructorResultType {
-          skippedFallbacks.incrementAndGet()
-          Env.empty
-        }
+        pi.constructorResultType(
+          Vector(argument), {
+            skippedFallbacks.incrementAndGet()
+            Env.empty
+          }
+        )
       )
     )
     val results = Await.result(Future.sequence(tasks), 10.seconds)
@@ -246,8 +260,8 @@ class ConstructorMetadataTests extends munit.FunSuite with TestSupport {
     assert(results.forall(_ eq results.head))
 
     val copied = pi.copy(env = Env.empty)
-    copied.constructorResultType(Env.empty)
-    copied.constructorResultType(Env.empty)
+    copied.constructorResultType(Vector(argument), Env.empty)
+    copied.constructorResultType(Vector(argument), Env.empty)
     assertEquals(calls.get(), 2)
 
     val fallbackCalls = new AtomicInteger
@@ -255,26 +269,34 @@ class ConstructorMetadataTests extends munit.FunSuite with TestSupport {
       calls.incrementAndGet()
       nat
     })
-    changedCode.constructorResultType {
-      fallbackCalls.incrementAndGet()
-      Env.empty
-    }
-    changedCode.constructorResultType {
-      fallbackCalls.incrementAndGet()
-      Env.empty
-    }
+    changedCode.constructorResultType(
+      Vector(argument), {
+        fallbackCalls.incrementAndGet()
+        Env.empty
+      }
+    )
+    changedCode.constructorResultType(
+      Vector(argument), {
+        fallbackCalls.incrementAndGet()
+        Env.empty
+      }
+    )
     assertEquals(calls.get(), 4)
     assertEquals(fallbackCalls.get(), 2)
 
     val changedBinders = pi.copy(binders = Vector(binder("replacement", 70002, BinderMode.Explicit)))
-    changedBinders.constructorResultType {
-      fallbackCalls.incrementAndGet()
-      Env.empty
-    }
-    changedBinders.constructorResultType {
-      fallbackCalls.incrementAndGet()
-      Env.empty
-    }
+    changedBinders.constructorResultType(
+      Vector(argument), {
+        fallbackCalls.incrementAndGet()
+        Env.empty
+      }
+    )
+    changedBinders.constructorResultType(
+      Vector(argument), {
+        fallbackCalls.incrementAndGet()
+        Env.empty
+      }
+    )
     assertEquals(calls.get(), 6)
     assertEquals(fallbackCalls.get(), 4)
 
@@ -286,14 +308,18 @@ class ConstructorMetadataTests extends munit.FunSuite with TestSupport {
         nat
       }
     )
-    ordinary.constructorResultType {
-      fallbackCalls.incrementAndGet()
-      Env.empty
-    }
-    ordinary.constructorResultType {
-      fallbackCalls.incrementAndGet()
-      Env.empty
-    }
+    ordinary.constructorResultType(
+      Vector(argument), {
+        fallbackCalls.incrementAndGet()
+        Env.empty
+      }
+    )
+    ordinary.constructorResultType(
+      Vector(argument), {
+        fallbackCalls.incrementAndGet()
+        Env.empty
+      }
+    )
     assertEquals(ordinaryCalls.get(), 2)
     assertEquals(fallbackCalls.get(), 6)
   }

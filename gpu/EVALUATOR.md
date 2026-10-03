@@ -573,7 +573,7 @@ comparison. The candidate patch is preserved as
 `2f923a657fd64cd4e6735e33dc583bb57e97207034f70414a43bda30adb46fd6`), and `TinyDevice.rac` was restored byte-for-
 byte to the baseline source before this report update.
 
-### Prepared execution frames for the checked TinyGEMM evaluator (2026-10-02)
+### Historical checkpoint: prepared execution frames for the checked TinyGEMM evaluator (2026-10-02)
 
 An opt-in `PreparedEval.prepare` compiles a checked, data-valued Core lambda into immutable plans. The session uses
 numeric local addresses and reusable value slots for parameters, recursive peers, lets and match fields. Its loop
@@ -610,7 +610,7 @@ below. The
 their hashes and source provenance are in
 [provenance](../target/performance/reusable-eval-frames/provenance.txt).
 
-### Unboxed checked Nat intermediates in prepared frames (2026-10-02)
+### Historical checkpoint: unboxed checked Nat intermediates in prepared frames (2026-10-02)
 
 The prepared evaluator now carries nonnegative Nat values as `Long` or `BigInt` payloads through its reusable slots
 and a local result register. The exact validated Nat type is the slot discriminator; an ordinary `Value` has no Nat
@@ -686,11 +686,11 @@ whole-process-JFR and preliminary representation experiments are superseded for 
 
 ### Unified default Core evaluator (2026-10-02)
 
-`Interpreter.evalTerm`, `evalApply`, `runLam`, thunk forcing and the compatibility `PreparedEval.Prepared.run` now enter
-one frame machine. Its single loop handles application order, lets, scope, matching, calls, returns and tail calls for
+`Interpreter.evalTerm`, `evalApply`, `runLam` and thunk forcing enter the single `CoreEvaluator` frame machine. Its loop
+handles application order, lets, scope, matching, calls, returns and tail calls for
 checked and open Core. Root references and closed nullary sort forms use the same semantic helpers without allocating
-a frame. There is no opt-in switch for execution; the historical `--prepared-frames` benchmark flag remains a
-compatibility control and invokes the same machine in this revision.
+a frame. The compatibility `PreparedEval.prepare`/`Prepared.run` wrapper and the TinyGEMM `--prepared-frames` alternate
+path have been removed; the benchmark now times `Interpreter.evalApply(run, Vector(prepared))`.
 
 Plans contain only syntax and local addresses. Separate bounded thread-local caches distinguish expression and
 function-body plans; a nested call obtains an isolated session, retaining at most eight idle sessions per thread.
@@ -706,6 +706,11 @@ The final `sbt validate` suite passed 996/996, including explicit expected-resul
 lexical restoration, malformed binder metadata, duplicate refs, proof binding, same-thread reentry after a failure,
 neutral/equation matches and deep non-tail calls. The revised `EvaluationTooDeep` tests use genuine checker/helper
 recursion; non-tail Core calls now succeed on a small physical `--stack`.
+
+The preceding prepared-frame and scalar sections are retained as historical measurements, including their old class
+names, commands and source fingerprints. Current TinyGEMM timing always uses `Interpreter.evalApply(run, Vector(prepared))`.
+The renamed `FrameEvaluationTests` and `ScalarEvaluationTests` assert independent values, errors, forcing counts,
+capture identities and neutral shapes against the single evaluator rather than comparing it with a second mode.
 
 The matched TinyGEMM runs used the actual checked source kernel, two warmups and three timed invocations per seed,
 serially, with JFR off. Each invocation passed the full 16,384-cell Z/257 oracle and exact counts of 1,048,576

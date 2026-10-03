@@ -5,7 +5,7 @@ import com.raccoonlang.Value._
 import com.raccoonlang.telescope.BinderOps
 
 /** The Core evaluator. Plans hold syntax and addresses, never live values or environments. */
-private[raccoonlang] object PreparedEval {
+private[raccoonlang] object CoreEvaluator {
   private sealed trait Node {
     def scope: Scope
   }
@@ -183,11 +183,6 @@ private[raccoonlang] object PreparedEval {
     }
   }
 
-  /** Compatibility handle; ordinary and prepared entry points use the same machine. */
-  final class Prepared private[PreparedEval] (val function: VLam) {
-    def run(args: Vector[Value]): Value = evalApply(function, args)
-  }
-
   private final class Runtime {
     // Reentrant helper/native calls get isolated banks; only the usual shallow nesting is retained.
     private val retainedSessions = 8
@@ -264,13 +259,6 @@ private[raccoonlang] object PreparedEval {
   def evalApply(fn: Value, args: Vector[Value]): Value = runtime.get().withSession(_.runApply(fn, args, null))
   def evalValidatedStringAppend(layout: SourceStringLayout, chars: VPacked): Value =
     runtime.get().withSession(_.runApply(layout.stringMk, Vector(chars), layout))
-
-  def prepare(function: Value): Option[Prepared] =
-    function match {
-      case lam: VLam if eligible(lam) =>
-        Some(new Prepared(lam))
-      case _ => None
-    }
 
   private def eligible(lam: VLam): Boolean =
     lam.body match {
@@ -962,7 +950,7 @@ private[raccoonlang] object PreparedEval {
             }
           }
         }
-        wtf("Prepared evaluator loop exited")
+        wtf("Core evaluator loop exited")
       } finally {
         var i = frameDepth
         while (i >= 0) {
