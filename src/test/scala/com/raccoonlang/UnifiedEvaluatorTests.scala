@@ -74,6 +74,64 @@ class UnifiedEvaluatorTests extends munit.FunSuite with TestSupport {
     assertEquals(Interpreter.evalTerm(term, fn.tpe.env).key, expected.key)
   }
 
+  test("match branch slots preserve a closure captured in the scrutinee") {
+    val result = runProgram(
+      """def run : Nat := match {
+        |  let captured := 41
+        |  (fun (ignored: Nat): Nat => captured, 0)
+        |} returning Nat with
+        | | Pair.mk f marker => {
+        |   let first := Nat.add(marker, 10)
+        |   let second := Nat.add(first, 10)
+        |   f(second)
+        | }
+        |{ run }
+        |""".stripMargin
+    )
+    val expected = Value.VPacked.nat(BigInt(41), identity.tpe.env("Nat"))
+    assertEquals(result.key, expected.key)
+  }
+
+  test("a dependent Pi keeps a scrutinee-local binder type after branch slots overwrite it") {
+    val result = runProgram(
+      """def run : Type := match {
+        |  let captured := 41
+        |  ((x: Eq(Nat, captured, captured)) -> Nat, 0)
+        |} returning Type with
+        | | Pair.mk ty marker => {
+        |   let first := Nat.add(marker, 10)
+        |   let second := Nat.add(first, 10)
+        |   ty
+        | }
+        |{ run }
+        |""".stripMargin
+    ).asInstanceOf[Value.VPi]
+    val domain = Interpreter.evalTerm(result.binders.head.ty, result.env)
+    assertEquals(PrettyPrinter.print(domain), "Eq(Nat, 41, 41)")
+  }
+
+  test("nested asymmetric match regions keep the live sibling argument and high-water") {
+    val result = runProgram(
+      """def run (flag: Bool)(inner: Bool)(n: Nat): Nat := Nat.add(
+        |  (match flag returning Nat with
+        |   | Bool.true => {
+        |     let first := Nat.add(n, 1)
+        |     let second := Nat.add(first, 2)
+        |     match inner returning Nat with
+        |     | Bool.true => Nat.add(second, 3)
+        |     | Bool.false => Nat.add(second, 4)
+        |   }
+        |   | Bool.false => Nat.add(n, 5)
+        |  ),
+        |  Nat.add(n, 10)
+        |)
+        |{ run(Bool.true, Bool.true, 7) }
+        |""".stripMargin
+    )
+    val expected = Value.VPacked.nat(BigInt(30), identity.tpe.env("Nat"))
+    assertEquals(result.key, expected.key)
+  }
+
   test("Sort validates the level before evaluating its kind") {
     val fn = identity
     val term = CTerm.Sort(

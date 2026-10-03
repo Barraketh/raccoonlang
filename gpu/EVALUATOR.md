@@ -847,3 +847,76 @@ sample logs, comparison bytes and provenance are preserved under `target/perform
 7. **The scalar domain is a parameter**: concrete f32 and bf16 for tests, an exact ring for proofs.
 8. **Floating point is trusted builtins for now**, checked by the battery. A precise model in Raccoon is on the
    horizon.
+
+## 10. Frame and slot reuse experiment (2026-10-02)
+
+The retained compiler experiment gives each syntax subtree a slot cursor checkpoint and records a separate plan
+high-water mark. Parent-owned operand blocks and lexical binders are allocated before their children and remain pinned
+while those children compile. Child-owned temporary regions rewind after each node. Match cases compile into the same
+region because only one case runs; scrutinee temporaries die before the selected case starts. Escaping closures and Pi
+values retain immutable environment snapshots, so later reuse cannot change captured values. This structural lifetime
+rule needs no runtime liveness analysis and does not release a parent argument or sort/form operand before its last
+child is compiled.
+
+Three expected-value tests exercise a closure and a dependent Pi captured in a match scrutinee and forced after a
+branch overwrites the same region, plus nested asymmetric match branches while sibling application arguments remain
+live. A cheaper branch-only rewind was neutral in the JVM screen; the subtree cursor subsumes it. A Return-fold screen
+was mixed and is dropped: against clean subtree medians, seed 17/83 were 8.4615/8.7895 s versus 8.5480/8.6427 s in
+one order, then 8.7439/8.7323 s versus 8.4936/8.7260 s in reverse order. No native Return-fold image was built.
+
+Counters below came from a separate instrumented diagnostic, never from an accepted timing. On one timed JVM
+TinyGEMM invocation, the sum of reserved function-plan extents fell from 10,299 to 4,258 slots and maximum plan
+extent from 578 to 40. The reference-bank fill count fell from 799.0 million to 458.0 million writes (42.7%),
+required bank extent fell from 540,781 to 344,119 slots (36.4%), and maximum bank-array capacity fell from 1,048,576
+to 524,288 entries. Bank growths fell from 12 to 11; copied elements fell from 4,193,280 to 2,096,128. Activation,
+tail activation, non-tail activation and Return
+counts were unchanged. Each timed `onStack` call creates a fresh session, so the recorded bank growth repeats per
+invocation. These counts describe reserved bank extent and clearing traffic, not Node/AST metadata size or allocated
+objects.
+
+The accepted TinyGEMM runs used the ordinary `Interpreter.evalApply` entry, two warmups and three samples per seed,
+with JFR off. They checked all 16,384 result cells and the exact 1,251 warp steps, 88 async completions, 98,304 TMA
+bytes, 1,048,576 multiplies and adds, 4 MMA instructions, 64 tmem loads and 16 stores. Times are medians in seconds;
+source API load/check and output materialization are outside the timed interval.
+
+| Runtime and process order | b18 seed 17 / 83 | Subtree seed 17 / 83 | Source API load/check, b18 / subtree |
+| --- | ---: | ---: | ---: |
+| JVM, baseline then candidate | 8.493 / 8.499 | 8.602 / 8.819 | 9.478 / 9.578 |
+| JVM, b18 reverse control after branch-only screen | 8.413 / 8.574 | — | 9.533 / — |
+| JVM, subtree clean repeat during Return screen 1 | — | 8.548 / 8.643 | — / 9.676 |
+| JVM, subtree clean repeat during Return screen 2 | — | 8.494 / 8.726 | — / 9.396 |
+| Native, b18 then subtree | 12.678 / 12.771 | 12.623 / 12.444 | 10.821 / 11.392 |
+| Native, subtree then b18 | 12.551 / 12.672 | 12.405 / 12.553 | 11.169 / 11.267 |
+
+The JVM b18 reverse control followed branch-only screening. The later subtree-only runs were captured during
+Return-fold screening, so those rows are independent checks, not paired reverse-order comparisons. The JVM
+evaluator-only samples show no gain and were about 1–4% slower in direct comparisons; the paired native TinyGEMM
+comparisons favored the subtree version by about 0.4–2.6%. Source setup/check is reported separately and varied
+between runs. The same samples do not establish a broad throughput change.
+
+The original attention command was also measured as whole-process `Main`, separately from TinyGEMM `evalApply`. Each
+revision used five independent processes: two warmups and three timed samples. JVM `--json` medians were 7.950 s for
+b18 and 8.014 s for subtree. Native `--raw` medians, with revision order alternated between warmups and samples, were
+7.223 s and 7.178 s. Every JVM JSON process printed exactly `[]` (newline included), and separate `--raw` checks
+produced the expected 696,817-byte CUDA output. Every native invocation produced the same output, SHA-256
+`c7799ca4d1ac07a8190a78d829b12d205f4fc013cf3547bff4f48b6df7feeb0a`, with exit 0 and empty stderr. Whole-process
+attention speed is effectively unchanged; these measurements do not support a general speedup or total-heap claim.
+
+Baseline JFR `ExecutionSample` stacks contained 585 and 579 evaluator-thread samples. Inclusive per-event counts found
+`runLoop` in 583/585 (99.7%) and 575/579 (99.3%) events; `applyApplication` in 278/585 (47.5%) and 279/579 (48.2%); and
+`residualArguments` in 72/585 (12.3%) and 78/579 (13.5%). `Arrays.fill(Object[])` was the top frame in 41/585 (7.0%)
+and 28/579 (4.8%), though inlining makes clear-call attribution approximate.
+Sample-weighted baseline allocation estimates were about 10.6–10.9 GB per invocation, dominated by application,
+constructor and residual-argument/vector scaffolding. CPU inclusive stack categories overlap; allocation owner groups
+are exclusive within each recording, but their weighted estimates vary by seed. Neither is an exact wall-time
+partition or a measurement of candidate allocation savings.
+
+The clean slot candidate passed focused semantic tests and the full `sbt scalafmtAll validate` suite (999 passed,
+0 failed). Exact source and class fingerprints, commands, every sample, counter logs, output digests and the excluded
+aborted instrumented run are
+recorded in [frame/slot experiment provenance](../target/performance/frame-composition-experiments/provenance.txt)
+under ignored `target/performance`. The frozen JVM classes and TinyGEMM native image use the measured source; the
+native Main image was built after the Match comment clarification. The final formatted source differs from the
+measured source only by that comment and scalafmt whitespace; no executable code changed. One early timing attempt
+accidentally retained diagnostic hooks, was stopped, and is marked invalid; it is excluded from every result above.
+Diagnostics were fully stripped before the accepted frozen-class timings.

@@ -71,11 +71,13 @@ private[raccoonlang] object PreparedEval {
 
   private final class Compiler {
     private var size = 0
+    private var highWater = 0
     private var allBindings = Set.empty[CoreAst.LocalRef]
     private var duplicateBindings = false
     private def allocate(): Int = {
       val result = size
       size += 1
+      highWater = math.max(highWater, size)
       result
     }
     def compile(
@@ -90,7 +92,8 @@ private[raccoonlang] object PreparedEval {
       }
       val withBinders = bind(initial, binders)
       val withPeers = bind(withBinders, peers)
-      Plan(node(term, withPeers, tail = true), size, allBindings.toVector, duplicateBindings)
+      val root = node(term, withPeers, tail = true)
+      Plan(root, highWater, allBindings.toVector, duplicateBindings)
     }
 
     private def noteBindings(refs: Vector[CoreAst.LocalRef], scope: Scope): Unit = {
@@ -98,73 +101,86 @@ private[raccoonlang] object PreparedEval {
       allBindings ++= refs
     }
 
-    private def node(term: CTerm, scope: Scope, tail: Boolean): Node =
-      term match {
-        case CTerm.LocalRef(ref, _)   => Ref(ref, scope.addresses.getOrElse(ref, -1), scope)
-        case CTerm.GlobalRef(name, _) => Global(name, scope)
-        case CTerm.NatLit(value, _)   => NatLiteral(value, scope)
-        case CTerm.StrLit(scalars, _) => StringLiteral(scalars, scope)
-        case CTerm.App(fn, args, _, _) =>
-          val fnSlot = allocate()
-          val argStart = size
-          args.foreach(_ => allocate())
-          Application(
-            node(fn, scope, tail = false),
-            args.map(node(_, scope, tail = false)),
-            fnSlot,
-            argStart,
-            tail,
-            scope
-          )
-        case body: CTerm.Body =>
-          def chain(index: Int, active: Scope): Node =
-            if (index == body.lets.length) node(body.res, active, tail)
-            else {
-              val let = body.lets(index)
-              val refs = let.pattern match {
-                case CoreAst.LetPattern.Local(ref)     => Vector(ref)
-                case fields: CoreAst.LetPattern.Fields => fields.vars.map(_.ref)
+    private def node(term: CTerm, scope: Scope, tail: Boolean): Node = {
+      // Parent-owned operand blocks sit below entrySize. Rewind only this subtree's region; lexical binders
+      // remain pinned while their body is compiled, and highWater preserves the plan's maximum address.
+      val entrySize = size
+      try
+        term match {
+          case CTerm.LocalRef(ref, _)   => Ref(ref, scope.addresses.getOrElse(ref, -1), scope)
+          case CTerm.GlobalRef(name, _) => Global(name, scope)
+          case CTerm.NatLit(value, _)   => NatLiteral(value, scope)
+          case CTerm.StrLit(scalars, _) => StringLiteral(scalars, scope)
+          case CTerm.App(fn, args, _, _) =>
+            val fnSlot = allocate()
+            val argStart = size
+            args.foreach(_ => allocate())
+            Application(
+              node(fn, scope, tail = false),
+              args.map(node(_, scope, tail = false)),
+              fnSlot,
+              argStart,
+              tail,
+              scope
+            )
+          case body: CTerm.Body =>
+            def chain(index: Int, active: Scope): Node =
+              if (index == body.lets.length) node(body.res, active, tail)
+              else {
+                val let = body.lets(index)
+                val refs = let.pattern match {
+                  case CoreAst.LetPattern.Local(ref)     => Vector(ref)
+                  case fields: CoreAst.LetPattern.Fields => fields.vars.map(_.ref)
+                }
+                noteBindings(refs, active)
+                val (nextScope, slots) = active.bind(refs, () => allocate())
+                Binding(node(let.value, active, tail = false), let.pattern, slots, chain(index + 1, nextScope), active)
               }
-              noteBindings(refs, active)
-              val (nextScope, slots) = active.bind(refs, () => allocate())
-              Binding(node(let.value, active, tail = false), let.pattern, slots, chain(index + 1, nextScope), active)
-            }
-          chain(0, scope)
-        case m: CTerm.Match =>
-          val branches = m.cases
-            .map { branch =>
-              val refs = branch.argRefs ++ m.equation.map(_.ref).toVector
-              noteBindings(refs, scope)
-              val (branchScope, slots) = scope.bind(refs, () => allocate())
-              branch.ctorName -> Branch(branch, node(branch.body, branchScope, tail), slots)
-            }
-            .reverse
-            .toMap
-          Matching(m, node(m.scrut, scope, tail = false), branches, scope)
-        case pi: CTerm.Pi   => PiValue(pi, scope)
-        case lam: CTerm.Lam => LambdaValue(lam, scope)
-        case s: CTerm.Scope =>
-          noteBindings(Vector(s.ref), scope)
-          val (inner, slots) = scope.bind(Vector(s.ref), () => allocate())
-          Scoped(s, node(s.body, inner, tail), slots.head, scope)
-        case CTerm.Prop(lifetime, _) => Proposition(node(lifetime, scope, tail = false), scope)
-        case CTerm.Sort(level, kind, lifetime, _) =>
-          val levelSlot = allocate()
-          val kindSlot = allocate()
-          SortValue(
-            node(level, scope, tail = false),
-            node(kind, scope, tail = false),
-            node(lifetime, scope, tail = false),
-            levelSlot,
-            kindSlot,
-            scope
-          )
-        case CTerm.FormOp(form, args, _) =>
-          val start = size
-          args.foreach(_ => allocate())
-          FormValue(form, args.map(node(_, scope, tail = false)), start, scope)
-        case CTerm.Select(_, field, _) => UnresolvedSelect(field, scope)
-      }
+            chain(0, scope)
+          case m: CTerm.Match =>
+            // Scrutinee temporaries die before the selected case starts; cases are mutually exclusive.
+            // Environments that escape evaluation copy their values into immutable snapshots.
+            val regionStart = size
+            val branches = m.cases
+              .map { branch =>
+                size = regionStart
+                val refs = branch.argRefs ++ m.equation.map(_.ref).toVector
+                noteBindings(refs, scope)
+                val (branchScope, slots) = scope.bind(refs, () => allocate())
+                val body = node(branch.body, branchScope, tail)
+                branch.ctorName -> Branch(branch, body, slots)
+              }
+              .reverse
+              .toMap
+            size = regionStart
+            val scrut = node(m.scrut, scope, tail = false)
+            Matching(m, scrut, branches, scope)
+          case pi: CTerm.Pi   => PiValue(pi, scope)
+          case lam: CTerm.Lam => LambdaValue(lam, scope)
+          case s: CTerm.Scope =>
+            noteBindings(Vector(s.ref), scope)
+            val (inner, slots) = scope.bind(Vector(s.ref), () => allocate())
+            Scoped(s, node(s.body, inner, tail), slots.head, scope)
+          case CTerm.Prop(lifetime, _) => Proposition(node(lifetime, scope, tail = false), scope)
+          case CTerm.Sort(level, kind, lifetime, _) =>
+            val levelSlot = allocate()
+            val kindSlot = allocate()
+            SortValue(
+              node(level, scope, tail = false),
+              node(kind, scope, tail = false),
+              node(lifetime, scope, tail = false),
+              levelSlot,
+              kindSlot,
+              scope
+            )
+          case CTerm.FormOp(form, args, _) =>
+            val start = size
+            args.foreach(_ => allocate())
+            FormValue(form, args.map(node(_, scope, tail = false)), start, scope)
+          case CTerm.Select(_, field, _) => UnresolvedSelect(field, scope)
+        }
+      finally size = entrySize
+    }
   }
 
   /** Compatibility handle; ordinary and prepared entry points use the same machine. */
