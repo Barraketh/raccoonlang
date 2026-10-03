@@ -542,8 +542,8 @@ object Value {
   private[raccoonlang] abstract class CheckedPiCodomain(
       val ownerBinders: Vector[CoreAst.Binder],
       val independent: Boolean,
-      val dependencyIndices: Option[Vector[Int]] = None,
-      val ownerEnv: Env = null
+      val dependencyIndices: Option[Vector[Int]],
+      val ownerEnv: Env
   ) extends (Env => Value)
 
   case class VPi(
@@ -674,9 +674,6 @@ object Value {
     }
 
     /** Constructor applications cache a checked independent result on this Pi instance; all others instantiate args. */
-    private[raccoonlang] def constructorResultType(instantiatedEnv: => Env): Value =
-      if (hasIndependentConstructorCodomain) independentCodomain else codomain(instantiatedEnv)
-
     private[raccoonlang] def constructorResultType(args: Vector[Value], instantiatedEnv: => Env): Value =
       if (hasIndependentConstructorCodomain) independentCodomain
       else
