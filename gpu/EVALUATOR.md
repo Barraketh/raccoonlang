@@ -926,14 +926,18 @@ measured source only by that comment and scalafmt whitespace; no executable code
 accidentally retained diagnostic hooks, was stopped, and is marked invalid; it is excluded from every result above.
 Diagnostics were fully stripped before the accepted frozen-class timings.
 
-## 11. Opt-in native host-buffer backend (2026-10-02)
+## 11. Historical GPU-aware native host-buffer prototype (removed 2026-10-03)
 
-> **Historical prototype checkpoint.** This section records the earlier Scala prototype that decoded GPU-specific AST
+> **Historical prototype checkpoint, removed from the current branch.** This section records the earlier Scala prototype that decoded GPU-specific AST
 > into a GPU-aware host interpreter. That boundary was rejected: the language runtime should expose only the independent
 > finite `Buffer.Program` API described in [the buffer-program guide](../docs/buffer-program.md), while GPU scheduling,
 > descriptors and lowering remain ordinary GPU-library code. The TinyGEMM migration to that API is not yet complete.
-> The figures and implementation notes below belong only to the old prototype and are not measurements of the generic
-> buffer executor.
+> The GPU-aware Scala classes, execution path and native-only tests were removed from `codex/native-buffer-program`.
+> The figures and commands below belong only to the old prototype on `codex/gpu-native-backend`; they are not a current
+> native backend and are not measurements of the generic buffer executor.
+
+The current TinyGEMM driver is source-only and has no backend selector. Run it from the repository root with
+`sbt 'Compile / runMain com.raccoonlang.TinyGemmSpikeBenchmark --warmups 2 --samples 3'`.
 
 The prototype's `NativeGpuBackend` was a Scala host interpreter for the **same checked `Cuda.Kernel` AST** used by the
 TinyGEMM source path. It decoded and validated the checked `Cuda.Kernel` and `TinyDevice.Inputs` values, including their
@@ -1049,7 +1053,7 @@ Native Image was built with Oracle GraalVM 21.0.12, O2, armv8-a, ML-inferred PGO
 was built from the pre-journal device snapshot and predates the ordering correction; it is not used in the final
 source/native comparison.
 
-Reproduce the JVM screens from the repository root with:
+The following commands reproduce the historical prototype only after checking out `codex/gpu-native-backend`:
 
 ```sh
 sbt 'Compile / runMain com.raccoonlang.TinyGemmSpikeBenchmark --backend source --warmups 2 --samples 3'
@@ -1066,5 +1070,5 @@ target/performance/gpu-native-backend/raccoon-tinygemm-native-overlap-fixed --ba
 
 The complete sample logs, baseline and journal source snapshots, exact per-file fingerprints, commands, setup timings,
 allocation counters and validation records are preserved under ignored
-[`target/performance/gpu-native-backend`](../target/performance/gpu-native-backend). The backend remains a bounded
-experiment; no broad performance claim follows from this one shape.
+[`target/performance/gpu-native-backend`](../target/performance/gpu-native-backend). These records describe a bounded
+historical experiment; the ordinary GPU-library lowering to `Buffer.Program` remains future work.

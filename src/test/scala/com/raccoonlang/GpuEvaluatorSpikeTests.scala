@@ -1,7 +1,7 @@
 package com.raccoonlang
 
-import java.nio.file.{Files, Paths}
 import java.nio.charset.StandardCharsets
+import java.nio.file.{Files, Paths}
 import java.security.MessageDigest
 import scala.concurrent.duration.Duration
 
@@ -12,45 +12,6 @@ class GpuEvaluatorSpikeTests extends munit.FunSuite {
   private val root = Paths.get("").toAbsolutePath.normalize
   private val gpuRoot = root.resolve("gpu")
   private lazy val prelude = Prelude.fromPath(gpuRoot.resolve("Prelude.rac"))
-
-  private val nativeMaps = (
-    NativeGpuAst.MapEncoding(
-      "A_map",
-      NativeGpuAst.MapUse.Load,
-      NativeGpuAst.Param.Input(NativeGpuAst.DType.BF16, "A"),
-      "M",
-      "K",
-      64,
-      128
-    ),
-    NativeGpuAst.MapEncoding(
-      "B_map",
-      NativeGpuAst.MapUse.Load,
-      NativeGpuAst.Param.Input(NativeGpuAst.DType.BF16, "B"),
-      "N",
-      "K",
-      64,
-      128
-    ),
-    NativeGpuAst.MapEncoding(
-      "C_map",
-      NativeGpuAst.MapUse.Store,
-      NativeGpuAst.Param.Output(NativeGpuAst.DType.F32, "C"),
-      "M",
-      "N",
-      32,
-      32
-    )
-  )
-
-  private def nativePlan(body: NativeGpuAst.Block): NativeGpuBackend.Plan = {
-    val (aMap, bMap, cMap) = nativeMaps
-    val metadata = NativeGpuAst.InputMetadata(128, 128, 64, 8, aMap, bMap, cMap)
-    val kernel = NativeGpuAst.Kernel("control-test", Vector.empty, 8, body, None)
-    new NativeGpuBackend.Plan(kernel, metadata)
-  }
-
-  private def nativeInput: NativeGpuBackend.Inputs = NativeGpuBackend.Inputs(Vector.fill(8192)(0), Vector.fill(8192)(0))
 
   private def checked(relative: String): EvaluatorSpikeBenchmark.Prepared =
     Execution.onStack(256L << 20) {
@@ -91,7 +52,7 @@ class GpuEvaluatorSpikeTests extends munit.FunSuite {
     assertEquals(afterOtherInvocation, EvaluatorSpikeBenchmark.expectedResult(2))
   }
 
-  test("TinyGEMM source and native evaluation match every Z/257 output for two asymmetric seeds") {
+  test("TinyGEMM source evaluation matches every Z/257 output for two asymmetric seeds") {
     val stats = TinyGemmSpikeBenchmark.verifySeeds(gpuRoot, prelude, Vector(17, 83))
     assertEquals(stats.length, 2)
     stats.foreach { sample =>
@@ -106,161 +67,7 @@ class GpuEvaluatorSpikeTests extends munit.FunSuite {
     }
   }
 
-  test("native plans validate their launch subset and isolate repeated, changed, and concurrent inputs") {
-    TinyGemmSpikeBenchmark.verifyNativeBoundaryAndOwnership(gpuRoot, prelude)
-  }
-
-  test("native warp control preserves divergent lanes, exclusive bounds, strides, and unreachable AST nodes") {
-    import NativeGpuAst._
-    import NativeGpuAst.BinOp._
-    import NativeGpuAst.Expr._
-    import NativeGpuAst.Stmt._
-
-    val body = Block(
-      Vector(
-        DeclOut(DType.U32, 1),
-        IfElse(
-          Bin(Eq, Special(Builtin.Lane), Lit(0)),
-          Block(Vector(Assign(1, Lit(1)))),
-          Block(Vector(Assign(1, Lit(0))))
-        ),
-        IfElse(
-          Bin(Eq, Var(1), Bin(Eq, Special(Builtin.Lane), Lit(0))),
-          Block(Vector.empty),
-          Block(Vector(Error("branch merge failed")))
-        ),
-        IfElse(Bin(Eq, Lit(0), Lit(1)), Block(Vector(Error("unreachable unsupported node ran"))), Block(Vector.empty)),
-        ForLoop(2, Lit(1), Lit(1), Block(Vector(Error("exclusive stop was ignored")))),
-        Decl(DType.U32, 3, Lit(0), mutable = true),
-        ForStride(4, Lit(0), Lit(5), Lit(2), Block(Vector(Assign(3, Bin(Add, Var(3), Lit(1)))))),
-        IfElse(
-          Bin(Eq, Var(3), Lit(3)),
-          Block(Vector.empty),
-          Block(Vector(Error("stride loop had wrong iteration count")))
-        )
-      )
-    )
-    val result = NativeGpuBackend.run(nativePlan(body), nativeInput)
-    assertEquals(result.failure, Some(NativeGpuBackend.IncompleteOutput))
-    assertEquals(result.stats.warpSteps, BigInt(104))
-    assertEquals(result.outputs, Vector.empty)
-  }
-
-  test("native repeated loop declarations reset lane initialization and negative fuel is rejected") {
-    import NativeGpuAst._
-    import NativeGpuAst.Expr._
-    import NativeGpuAst.Stmt._
-
-    val loop = Block(
-      Vector(
-        IfElse(
-          Bin(BinOp.Lt, Special(Builtin.Lane), Lit(3)),
-          Block(
-            Vector(
-              DeclOut(DType.U32, 3),
-              ForStride(
-                1,
-                Special(Builtin.Lane),
-                Lit(3),
-                Lit(1),
-                Block(Vector(Decl(DType.U32, 2, Lit(1), mutable = false)))
-              ),
-              Assign(3, Var(2))
-            )
-          ),
-          Block(Vector.empty)
-        )
-      )
-    )
-    val loopResult = NativeGpuBackend.run(nativePlan(loop), nativeInput)
-    assertEquals(loopResult.failure.map(_.category), Some("invalid-state"))
-    assert(loopResult.errors.contains("uninitialized active lane"), loopResult.errors)
-    val noOpPlan = nativePlan(Block(Vector.empty))
-    assertEquals(NativeGpuBackend.run(noOpPlan, nativeInput, BigInt(-1)).failure.map(_.category), Some("invalid-state"))
-  }
-
-  test("native shared stores evaluate later words through earlier writes and preserve bf16/u32 aliasing") {
-    import NativeGpuAst._
-    import NativeGpuAst.BinOp._
-    import NativeGpuAst.Expr._
-    import NativeGpuAst.Instr._
-    import NativeGpuAst.Scope._
-    import NativeGpuAst.Stmt._
-
-    val aliasBody = Block(
-      Vector(
-        Instruction(StShared(SharedAddr(0), Vector(Lit(7), Index(SharedPtr(DType.F32, 0), Lit(0))))),
-        Instruction(LdRelaxed(Cta, 1, SharedAddr(4))),
-        IfElse(Bin(Eq, Var(1), Lit(7)), Block(Vector.empty), Block(Vector(Error("shared alias read failed"))))
-      )
-    )
-    val aliasResult = NativeGpuBackend.run(nativePlan(aliasBody), nativeInput)
-    assertEquals(aliasResult.failure, Some(NativeGpuBackend.IncompleteOutput))
-
-    val malformedValue = Block(Vector(Instruction(StShared(SharedAddr(0), Vector(Lit(7), Var(999))))))
-    val failedStore = NativeGpuBackend.run(nativePlan(malformedValue), nativeInput)
-    assertEquals(failedStore.failure.map(_.category), Some("device-fault"))
-    assert(failedStore.errors.contains("st.shared vector access is outside dynamic shared memory"), failedStore.errors)
-
-    val device = new NativeGpuDevice(nativePlan(Block(Vector.empty)), nativeInput)
-    val fullMask = (BigInt(1) << 32) - 1
-    assert(device.writeSharedLanes(Vector.fill(32)(BigInt(0)), Vector.fill(32)(BigInt(0x1234)), fullMask, DType.BF16))
-    assert(device.writeSharedLanes(Vector.fill(32)(BigInt(2)), Vector.fill(32)(BigInt(0xabcd)), fullMask, DType.BF16))
-    val originalWord = BigInt(0xabcd1234L)
-    assertEquals(device.readShared(BigInt(0), DType.U32), Some(originalWord))
-    val bf16Rollback = device.beginSharedTransaction(1)
-    assert(
-      device.writeSharedLanes(
-        Vector.fill(32)(BigInt(2)),
-        Vector.fill(32)(BigInt(0x5678)),
-        BigInt(1),
-        DType.BF16,
-        bf16Rollback
-      )
-    )
-    assertEquals(device.readShared(BigInt(0), DType.U32), Some(BigInt(0x56781234L)))
-    device.rollbackSharedTransaction(bf16Rollback)
-    assertEquals(device.readShared(BigInt(0), DType.U32), Some(originalWord))
-
-    val rollback = device.beginSharedTransaction(1)
-    assert(
-      device.writeSharedLanes(
-        Vector.fill(32)(BigInt(0)),
-        Vector.tabulate(32)(lane => BigInt(lane + 1)),
-        fullMask,
-        DType.U32,
-        rollback
-      )
-    )
-    assertEquals(device.readShared(BigInt(0), DType.U32), Some(BigInt(32)))
-    assert(
-      device.writeSharedLanes(
-        Vector.fill(32)(BigInt(0)),
-        Vector.tabulate(32)(lane => BigInt(lane + 100)),
-        fullMask,
-        DType.U32,
-        rollback
-      )
-    )
-    assertEquals(device.readShared(BigInt(0), DType.U32), Some(BigInt(131)))
-    device.rollbackSharedTransaction(rollback)
-    assertEquals(device.readShared(BigInt(0), DType.U32), Some(originalWord))
-
-    val commit = device.beginSharedTransaction(1)
-    assert(
-      device.writeSharedLanes(
-        Vector.fill(32)(BigInt(0)),
-        Vector.fill(32)(BigInt(55)),
-        BigInt(1),
-        DType.U32,
-        commit
-      )
-    )
-    device.commitSharedTransaction(commit)
-    assertEquals(device.readShared(BigInt(0), DType.U32), Some(BigInt(55)))
-  }
-
-  test("TinyGEMM source AST mutations expose matching native K-slice and failure-category behavior") {
+  test("TinyGEMM source AST mutations retain their expected outputs, counters, and failure categories") {
     val cases = TinyGemmSpikeBenchmark.verifyMutants(gpuRoot, prelude)
     assertEquals(
       cases.map(result => result.name -> result.category).toMap,

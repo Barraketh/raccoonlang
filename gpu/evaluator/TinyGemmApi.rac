@@ -341,4 +341,4 @@ namespace Evaluator {
 { (Evaluator.TinyGemmApi.kernel, (Evaluator.TinyGemmApi.prepare, (Evaluator.TinyGemmApi.run,
     (Evaluator.TinyGemmApi.inputs, (Evaluator.TinyGemmApi.outputs, (Evaluator.TinyGemmApi.stats,
       (Evaluator.TinyGemmApi.errors, (Evaluator.TinyGemmApi.mutantNames,
-        (Evaluator.TinyGemmApi.chooseMutant, Evaluator.TinyGemmApi.runMutant))))))))) }
+        Evaluator.TinyGemmApi.runMutant)))))))) }
