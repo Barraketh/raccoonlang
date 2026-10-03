@@ -3,9 +3,12 @@ package com.raccoonlang
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
+import java.lang.management.ManagementFactory
 
 import jdk.jfr.Configuration
 import jdk.jfr.Recording
+import scala.concurrent.{Await, ExecutionContext, Future}
+import scala.concurrent.duration.DurationInt
 
 /**
  * Opt-in host driver for the source TinyGEMM evaluator spike. All source setup and result checking are outside the
@@ -29,6 +32,7 @@ object TinyGemmSpikeBenchmark {
   private val Seeds = Vector(17, 83)
 
   private final case class Options(
+      backend: String,
       warmups: Int,
       samples: Int,
       jfrDirectory: Option[Path],
@@ -43,11 +47,12 @@ object TinyGemmSpikeBenchmark {
       stats: Value,
       errors: Value,
       mutantNames: Value,
+      chooseMutant: Value,
       runMutant: Value,
       strings: Option[Value.ValidatedStringLayout]
   )
   private final case class InputPair(a: Vector[Int], b: Vector[Int])
-  private final case class PhaseTimes(prepareNs: Long, inputExtractionNs: Long, oracleNs: Long)
+  private final case class PhaseTimes(prepareNs: Long, inputExtractionNs: Long, nativeDecodeNs: Long, oracleNs: Long)
   private[raccoonlang] final case class Stats(
       warpSteps: Long,
       asyncCompletions: Long,
@@ -63,6 +68,9 @@ object TinyGemmSpikeBenchmark {
   private[raccoonlang] final case class MutantCheck(name: String, category: String, stats: Stats)
   private final case class Sample(
       elapsedNs: Long,
+      outputMaterializationNs: Long,
+      allocatedBytes: Option[Long],
+      outputAllocationBytes: Option[Long],
       stats: Stats,
       postRunValidationNs: Long,
       profileControlNs: Option[Long],
@@ -73,15 +81,32 @@ object TinyGemmSpikeBenchmark {
       prepared: Value,
       input: InputPair,
       expected: Vector[Int],
+      nativePlan: NativeGpuBackend.Plan,
+      nativeInputs: NativeGpuBackend.Inputs,
       phaseTimes: Option[PhaseTimes]
   )
   private final case class JfrProfile(directory: Path, configuration: Configuration, settingsLoadNs: Long)
   private final case class TimedInvocation(
       elapsedNs: Long,
       result: Value,
+      allocatedBytes: Option[Long],
       profileControlNs: Option[Long],
       profileThread: Option[(String, Long)]
   )
+  private final case class NativeSample(elapsedNs: Long, allocatedBytes: Option[Long], result: NativeGpuBackend.Result)
+  private final case class OutputMaterialization(elapsedNs: Long, allocatedBytes: Option[Long], values: Vector[Int])
+
+  private lazy val allocationBean: Option[com.sun.management.ThreadMXBean] =
+    ManagementFactory.getThreadMXBean match {
+      case bean: com.sun.management.ThreadMXBean if bean.isThreadAllocatedMemorySupported =>
+        try {
+          if (!bean.isThreadAllocatedMemoryEnabled) bean.setThreadAllocatedMemoryEnabled(true)
+          if (bean.isThreadAllocatedMemoryEnabled) Some(bean) else None
+        } catch {
+          case _: SecurityException | _: UnsupportedOperationException => None
+        }
+      case _ => None
+    }
 
   def main(args: Array[String]): Unit = {
     val options = parseArgs(args)
@@ -101,9 +126,12 @@ object TinyGemmSpikeBenchmark {
       val configuration = Configuration.create(settingsPath)
       JfrProfile(directory, configuration, System.nanoTime() - settingsStart)
     }
+    require(options.backend == "source" || profile.isEmpty, "JFR profiling currently supports only --backend source")
     val root = Paths.get(sys.props.getOrElse("raccoon.repoRoot", ".")).toAbsolutePath.normalize
     val gpuRoot = root.resolve("gpu")
+    val preludeStart = System.nanoTime()
     val prelude = Prelude.fromPath(gpuRoot.resolve("Prelude.rac"))
+    val preludeLoadNs = System.nanoTime() - preludeStart
 
     val setupStart = System.nanoTime()
     val entry = Execution.onStack(StackBytes) {
@@ -114,10 +142,12 @@ object TinyGemmSpikeBenchmark {
     val apiLoadNs = System.nanoTime() - setupStart
 
     val natType = prelude.checkedEnv("Nat")
-    val works = prepareWorks(api, natType, Seeds, measurePhases = profile.nonEmpty)
+    val works = prepareWorks(api, natType, Seeds, measurePhases = true)
 
     val mmaCount = ExpectedScalarOpsPerKind
     println("evaluator_spike=tinygemm-z257")
+    println(s"backend=${options.backend}")
+    println(s"prelude_config_load_ns=$preludeLoadNs")
     println(s"source_api_load_check_ns=$apiLoadNs")
     println(s"shape=M$M-N$N-K$K")
     println(s"ring_modulus=$RingModulus")
@@ -126,10 +156,20 @@ object TinyGemmSpikeBenchmark {
     println(s"expected_scalar_adds=$mmaCount")
     println(s"warmups=${options.warmups}")
     println(s"timed_samples=${options.samples}")
-    println(
-      "timed_region=Interpreter.evalApply(run, Vector(prepared)); includes one-element argument-vector construction"
-    )
-    println("output_materialization=outside timed region")
+    println(s"allocation_measurement=${if (allocationBean.nonEmpty) "threadMXBean" else "unavailable"}")
+    if (options.backend == "source") {
+      println(
+        "timed_region=Interpreter.evalApply(run, Vector(prepared)); includes one-element argument-vector construction"
+      )
+      println(
+        "matched_boundary=source run plus output API evaluation/list decoding, measured as separate worker-thread regions"
+      )
+    } else {
+      println(
+        "timed_region=NativeGpuBackend.run(plan, inputs); includes fresh buffers and immutable output Vector freeze"
+      )
+      println("plan/input decoding=outside timed region; private device buffers including A/B copies=inside")
+    }
     profile.foreach { jfr =>
       println(s"jfr_settings_load_ns=${jfr.settingsLoadNs}")
       println(s"jfr_settings=${options.jfrSettings.get.toAbsolutePath.normalize}")
@@ -137,91 +177,224 @@ object TinyGemmSpikeBenchmark {
       println("jfr_recording_region=per-seed reported timed region only; recording control remains outside timer")
     }
 
+    if (options.backend == "native") runNativeBenchmark(works, options)
+    else {
+      works.foreach { work =>
+        work.phaseTimes.foreach { phases =>
+          println(s"seed_${work.seed}_prepare_ns=${phases.prepareNs}")
+          println(s"seed_${work.seed}_input_extraction_ns=${phases.inputExtractionNs}")
+          println(s"seed_${work.seed}_native_plan_and_input_decode_ns=${phases.nativeDecodeNs}")
+          println(s"seed_${work.seed}_host_oracle_ns=${phases.oracleNs}")
+        }
+        var firstStats: Option[Stats] = None
+
+        def checkedRun(phase: String, recordTo: Option[Path] = None): Sample = {
+          val runProfile = recordTo.flatMap(path => profile.map(jfr => jfr.configuration -> path))
+          val invocation = timedRun(api.run, work.prepared, runProfile)
+          val validationStart = if (profile.nonEmpty) System.nanoTime() else 0L
+          val result = invocation.result
+          val stats = decodeStats(applyOnStack(api.stats, result))
+          val output = timedOutputMaterialization(api.outputs, result, work.seed, phase)
+          validateSuccess(api, result, stats, output.values, work.expected, work.seed, phase)
+          val validationNs = if (profile.nonEmpty) System.nanoTime() - validationStart else 0L
+          firstStats match {
+            case Some(reference) =>
+              require(
+                stats == reference,
+                s"seed=${work.seed} $phase counters changed when reusing Prepared: $reference vs $stats"
+              )
+            case None => firstStats = Some(stats)
+          }
+          Sample(
+            invocation.elapsedNs,
+            output.elapsedNs,
+            invocation.allocatedBytes,
+            output.allocatedBytes,
+            stats,
+            validationNs,
+            invocation.profileControlNs,
+            invocation.profileThread
+          )
+        }
+
+        (0 until options.warmups).foreach { index =>
+          val warmupStart = if (profile.nonEmpty) System.nanoTime() else 0L
+          val warmup = checkedRun("warmup")
+          if (profile.nonEmpty) {
+            println(s"seed_${work.seed}_warmup_${index + 1}_eval_ns=${warmup.elapsedNs}")
+            println(s"seed_${work.seed}_warmup_${index + 1}_post_run_validation_ns=${warmup.postRunValidationNs}")
+            println(s"seed_${work.seed}_warmup_${index + 1}_phase_wall_ns=${System.nanoTime() - warmupStart}")
+          }
+        }
+
+        val samples = Vector.tabulate(options.samples) { index =>
+          val recordTo = profile.map(_.directory.resolve(s"tinygemm-seed-${work.seed}-sample-${index + 1}.jfr"))
+          val sample = checkedRun(s"sample ${index + 1}", recordTo)
+          println(s"seed_${work.seed}_sample_${index + 1}_invocation_ns=${sample.elapsedNs}")
+          println(s"seed_${work.seed}_sample_${index + 1}_output_materialization_ns=${sample.outputMaterializationNs}")
+          println(
+            s"seed_${work.seed}_sample_${index + 1}_run_plus_output_ns=${sample.elapsedNs + sample.outputMaterializationNs}"
+          )
+          println(
+            s"seed_${work.seed}_sample_${index + 1}_run_allocated_bytes=${sample.allocatedBytes.fold("unavailable")(_.toString)}"
+          )
+          sample.outputAllocationBytes.foreach(bytes =>
+            println(s"seed_${work.seed}_sample_${index + 1}_output_allocated_bytes=$bytes")
+          )
+          if (profile.nonEmpty) {
+            println(s"seed_${work.seed}_sample_${index + 1}_post_run_validation_ns=${sample.postRunValidationNs}")
+            println(
+              s"seed_${work.seed}_sample_${index + 1}_profile_control_outside_timer_ns=${sample.profileControlNs.getOrElse(0L)}"
+            )
+            sample.profileThread.foreach { case (name, id) =>
+              println(s"seed_${work.seed}_sample_${index + 1}_jfr_run_thread_name=$name")
+              println(s"seed_${work.seed}_sample_${index + 1}_jfr_run_thread_id=$id")
+            }
+            println(s"seed_${work.seed}_sample_${index + 1}_jfr_path=${recordTo.get.toAbsolutePath.normalize}")
+          }
+          sample
+        }
+
+        val sortedSamples = samples.sortBy(_.elapsedNs)
+        val medianNs = median(sortedSamples.map(_.elapsedNs))
+        val matchedMedianNs = median(samples.map(sample => sample.elapsedNs + sample.outputMaterializationNs))
+        val representativeStats = sortedSamples(sortedSamples.length / 2).stats
+        val warpStepsPerSecond = rate(representativeStats.warpSteps, medianNs)
+        val scalarOpsPerSecond = rate(representativeStats.scalarOps, medianNs)
+        val tenMillionStepNs =
+          if (warpStepsPerSecond == 0.0) Double.PositiveInfinity else 1.0e7 * 1.0e9 / warpStepsPerSecond
+
+        println(s"seed_${work.seed}_checked_outputs=${work.expected.length}")
+        println(s"seed_${work.seed}_coverage=16384_of_16384_no_257_sentinel")
+        println(s"seed_${work.seed}_median_invocation_ns=$medianNs")
+        println(s"seed_${work.seed}_median_run_plus_output_ns=$matchedMedianNs")
+        println(s"seed_${work.seed}_warp_steps=${representativeStats.warpSteps}")
+        println(s"seed_${work.seed}_async_event_completions=${representativeStats.asyncCompletions}")
+        println(s"seed_${work.seed}_tma_bytes=${representativeStats.tmaBytes}")
+        println(s"seed_${work.seed}_scalar_muls=${representativeStats.scalarMuls}")
+        println(s"seed_${work.seed}_scalar_adds=${representativeStats.scalarAdds}")
+        println(s"seed_${work.seed}_mma_instructions=${representativeStats.mmaInstructions}")
+        println(s"seed_${work.seed}_tmem_loads=${representativeStats.tmemLoads}")
+        println(s"seed_${work.seed}_tma_stores=${representativeStats.tmaStores}")
+        println(f"seed_${work.seed}_warp_steps_per_second=$warpStepsPerSecond%.2f")
+        println(f"seed_${work.seed}_scalar_ops_per_second=$scalarOpsPerSecond%.2f")
+        println(
+          f"seed_${work.seed}_ten_million_step_extrapolation_seconds=${tenMillionStepNs / 1.0e9}%.3f (MMA-heavy mix)"
+        )
+      }
+    }
+
+    println("scope_caveat=TinyGEMM MMA-heavy exact-ring spike; not FP, broad hardware, or v0 race-coverage evidence")
+  }
+
+  private def runNativeBenchmark(works: Vector[Work], options: Options): Unit = {
+    val expectedStats = Stats(
+      ExpectedWarpSteps,
+      ExpectedAsyncCompletions,
+      ExpectedTmaBytes,
+      ExpectedScalarOpsPerKind,
+      ExpectedScalarOpsPerKind,
+      ExpectedMmaInstructions,
+      ExpectedTmemLoads,
+      ExpectedTmaStores
+    )
     works.foreach { work =>
       work.phaseTimes.foreach { phases =>
         println(s"seed_${work.seed}_prepare_ns=${phases.prepareNs}")
         println(s"seed_${work.seed}_input_extraction_ns=${phases.inputExtractionNs}")
+        println(s"seed_${work.seed}_native_plan_and_input_decode_ns=${phases.nativeDecodeNs}")
         println(s"seed_${work.seed}_host_oracle_ns=${phases.oracleNs}")
       }
-      var firstStats: Option[Stats] = None
-
-      def checkedRun(phase: String, recordTo: Option[Path] = None): Sample = {
-        val runProfile = recordTo.flatMap(path => profile.map(jfr => jfr.configuration -> path))
-        val invocation = timedRun(api.run, work.prepared, runProfile)
-        val validationStart = if (profile.nonEmpty) System.nanoTime() else 0L
-        val result = invocation.result
-        val stats = decodeStats(applyOnStack(api.stats, result))
-        validateSuccess(api, result, stats, work.expected, work.seed, phase)
-        val validationNs = if (profile.nonEmpty) System.nanoTime() - validationStart else 0L
-        firstStats match {
+      var first: Option[NativeGpuBackend.Result] = None
+      def checkedRun(phase: String): NativeSample = {
+        val sample = timedNativeRun(work)
+        validateNativeSuccess(sample.result, work.expected, expectedStats, work.seed, phase)
+        first match {
           case Some(reference) =>
             require(
-              stats == reference,
-              s"seed=${work.seed} $phase counters changed when reusing Prepared: $reference vs $stats"
+              sample.result == reference,
+              s"seed=${work.seed} $phase native outputs/counters changed across fresh invocations"
             )
-          case None => firstStats = Some(stats)
-        }
-        Sample(invocation.elapsedNs, stats, validationNs, invocation.profileControlNs, invocation.profileThread)
-      }
-
-      (0 until options.warmups).foreach { index =>
-        val warmupStart = if (profile.nonEmpty) System.nanoTime() else 0L
-        val warmup = checkedRun("warmup")
-        if (profile.nonEmpty) {
-          println(s"seed_${work.seed}_warmup_${index + 1}_eval_ns=${warmup.elapsedNs}")
-          println(s"seed_${work.seed}_warmup_${index + 1}_post_run_validation_ns=${warmup.postRunValidationNs}")
-          println(s"seed_${work.seed}_warmup_${index + 1}_phase_wall_ns=${System.nanoTime() - warmupStart}")
-        }
-      }
-
-      val samples = Vector.tabulate(options.samples) { index =>
-        val recordTo = profile.map(_.directory.resolve(s"tinygemm-seed-${work.seed}-sample-${index + 1}.jfr"))
-        val sample = checkedRun(s"sample ${index + 1}", recordTo)
-        println(s"seed_${work.seed}_sample_${index + 1}_invocation_ns=${sample.elapsedNs}")
-        if (profile.nonEmpty) {
-          println(s"seed_${work.seed}_sample_${index + 1}_post_run_validation_ns=${sample.postRunValidationNs}")
-          println(
-            s"seed_${work.seed}_sample_${index + 1}_profile_control_outside_timer_ns=${sample.profileControlNs.getOrElse(0L)}"
-          )
-          sample.profileThread.foreach { case (name, id) =>
-            println(s"seed_${work.seed}_sample_${index + 1}_jfr_run_thread_name=$name")
-            println(s"seed_${work.seed}_sample_${index + 1}_jfr_run_thread_id=$id")
-          }
-          println(s"seed_${work.seed}_sample_${index + 1}_jfr_path=${recordTo.get.toAbsolutePath.normalize}")
+          case None => first = Some(sample.result)
         }
         sample
       }
-
-      val sortedSamples = samples.sortBy(_.elapsedNs)
-      val medianNs = median(sortedSamples.map(_.elapsedNs))
-      val representativeStats = sortedSamples(sortedSamples.length / 2).stats
-      val warpStepsPerSecond = rate(representativeStats.warpSteps, medianNs)
-      val scalarOpsPerSecond = rate(representativeStats.scalarOps, medianNs)
+      (0 until options.warmups).foreach(index => checkedRun(s"warmup ${index + 1}"))
+      val samples = Vector.tabulate(options.samples) { index =>
+        val sample = checkedRun(s"sample ${index + 1}")
+        println(s"seed_${work.seed}_sample_${index + 1}_run_including_output_freeze_ns=${sample.elapsedNs}")
+        println(
+          s"seed_${work.seed}_sample_${index + 1}_run_allocated_bytes=${sample.allocatedBytes.fold("unavailable")(_.toString)}"
+        )
+        sample
+      }
+      val medianNs = median(samples.map(_.elapsedNs))
+      val stats = nativeStats(samples(samples.length / 2).result.stats)
+      val warpStepsPerSecond = rate(stats.warpSteps, medianNs)
+      val scalarOpsPerSecond = rate(stats.scalarOps, medianNs)
       val tenMillionStepNs =
-        if (warpStepsPerSecond == 0.0) Double.PositiveInfinity else 1.0e7 * 1.0e9 / warpStepsPerSecond
-
+        if (warpStepsPerSecond == 0.0) Double.PositiveInfinity
+        else 1.0e7 * 1.0e9 / warpStepsPerSecond
       println(s"seed_${work.seed}_checked_outputs=${work.expected.length}")
       println(s"seed_${work.seed}_coverage=16384_of_16384_no_257_sentinel")
-      println(s"seed_${work.seed}_median_invocation_ns=$medianNs")
-      println(s"seed_${work.seed}_warp_steps=${representativeStats.warpSteps}")
-      println(s"seed_${work.seed}_async_event_completions=${representativeStats.asyncCompletions}")
-      println(s"seed_${work.seed}_tma_bytes=${representativeStats.tmaBytes}")
-      println(s"seed_${work.seed}_scalar_muls=${representativeStats.scalarMuls}")
-      println(s"seed_${work.seed}_scalar_adds=${representativeStats.scalarAdds}")
-      println(s"seed_${work.seed}_mma_instructions=${representativeStats.mmaInstructions}")
-      println(s"seed_${work.seed}_tmem_loads=${representativeStats.tmemLoads}")
-      println(s"seed_${work.seed}_tma_stores=${representativeStats.tmaStores}")
+      println(s"seed_${work.seed}_median_run_including_output_freeze_ns=$medianNs")
+      println(s"seed_${work.seed}_warp_steps=${stats.warpSteps}")
+      println(s"seed_${work.seed}_async_event_completions=${stats.asyncCompletions}")
+      println(s"seed_${work.seed}_tma_bytes=${stats.tmaBytes}")
+      println(s"seed_${work.seed}_scalar_muls=${stats.scalarMuls}")
+      println(s"seed_${work.seed}_scalar_adds=${stats.scalarAdds}")
+      println(s"seed_${work.seed}_mma_instructions=${stats.mmaInstructions}")
+      println(s"seed_${work.seed}_tmem_loads=${stats.tmemLoads}")
+      println(s"seed_${work.seed}_tma_stores=${stats.tmaStores}")
       println(f"seed_${work.seed}_warp_steps_per_second=$warpStepsPerSecond%.2f")
       println(f"seed_${work.seed}_scalar_ops_per_second=$scalarOpsPerSecond%.2f")
       println(
         f"seed_${work.seed}_ten_million_step_extrapolation_seconds=${tenMillionStepNs / 1.0e9}%.3f (MMA-heavy mix)"
       )
     }
-
-    println("scope_caveat=TinyGEMM MMA-heavy exact-ring spike; not FP, broad hardware, or v0 race-coverage evidence")
   }
 
+  private def timedNativeRun(work: Work): NativeSample = {
+    val before = threadAllocatedBytes()
+    val start = System.nanoTime()
+    val result = NativeGpuBackend.run(work.nativePlan, work.nativeInputs)
+    val elapsed = System.nanoTime() - start
+    val after = threadAllocatedBytes()
+    NativeSample(elapsed, allocatedDelta(before, after), result)
+  }
+
+  private def timedOutputMaterialization(
+      outputs: Value,
+      result: Value,
+      seed: Int,
+      phase: String
+  ): OutputMaterialization = Execution.onStack(StackBytes) {
+    val allocatedBefore = threadAllocatedBytes()
+    val start = System.nanoTime()
+    val outputValue = Interpreter.evalApply(outputs, Vector(result))
+    val values = decodeNatList(outputValue, s"C(seed=$seed,$phase)")
+    val elapsed = System.nanoTime() - start
+    val allocatedAfter = threadAllocatedBytes()
+    OutputMaterialization(elapsed, allocatedDelta(allocatedBefore, allocatedAfter), values)
+  }
+
+  private def threadAllocatedBytes(): Option[Long] = allocationBean.flatMap { bean =>
+    try {
+      val value = bean.getThreadAllocatedBytes(Thread.currentThread().threadId())
+      if (value >= 0L) Some(value) else None
+    } catch {
+      case _: SecurityException | _: UnsupportedOperationException => None
+    }
+  }
+
+  private def allocatedDelta(before: Option[Long], after: Option[Long]): Option[Long] =
+    for {
+      start <- before
+      end <- after if end >= start
+    } yield end - start
+
   private def parseArgs(args: Array[String]): Options = {
+    var backend = "source"
     var warmups = DefaultWarmups
     var samples = DefaultSamples
     var jfrDirectory: Option[Path] = None
@@ -231,6 +404,9 @@ object TinyGemmSpikeBenchmark {
       val flag = args(index)
       if (index + 1 >= args.length) usage(s"missing value after $flag")
       flag match {
+        case "--backend" =>
+          backend = args(index + 1)
+          if (backend != "source" && backend != "native") usage("--backend must be source or native")
         case "--warmups" | "--samples" =>
           val value = args(index + 1).toIntOption.getOrElse(usage(s"invalid integer for $flag: ${args(index + 1)}"))
           if (flag == "--warmups") warmups = value else samples = value
@@ -242,12 +418,12 @@ object TinyGemmSpikeBenchmark {
     }
     if (warmups < 0) usage("--warmups must be non-negative")
     if (samples < 1) usage("--samples must be positive")
-    Options(warmups, samples, jfrDirectory, jfrSettings)
+    Options(backend, warmups, samples, jfrDirectory, jfrSettings)
   }
 
   private def usage(message: String): Nothing =
     throw new IllegalArgumentException(
-      s"$message\nUsage: TinyGemmSpikeBenchmark [--warmups N] [--samples N] [--jfr-dir DIR --jfr-settings FILE]"
+      s"$message\nUsage: TinyGemmSpikeBenchmark [--backend source|native] [--warmups N] [--samples N] [--jfr-dir DIR --jfr-settings FILE]"
     )
 
   private def decodeApi(value: Value, strings: Option[Value.ValidatedStringLayout]): Api = {
@@ -258,8 +434,9 @@ object TinyGemmSpikeBenchmark {
     val (outputs, rest4) = pair(rest3, "TinyGemmApi function bundle")
     val (stats, rest5) = pair(rest4, "TinyGemmApi function bundle")
     val (errors, rest6) = pair(rest5, "TinyGemmApi function bundle")
-    val (mutantNames, runMutant) = pair(rest6, "TinyGemmApi malformed-case bundle")
-    Api(kernel, prepare, run, inputs, outputs, stats, errors, mutantNames, runMutant, strings)
+    val (mutantNames, mutantFunctions) = pair(rest6, "TinyGemmApi malformed-case bundle")
+    val (chooseMutant, runMutant) = pair(mutantFunctions, "TinyGemmApi mutant function bundle")
+    Api(kernel, prepare, run, inputs, outputs, stats, errors, mutantNames, chooseMutant, runMutant, strings)
   }
 
   private def pair(value: Value, label: String): (Value, Value) =
@@ -296,11 +473,21 @@ object TinyGemmSpikeBenchmark {
       requireCoordinateDependent("B", seed, b)
       val inputExtractionNs = if (measurePhases) System.nanoTime() - inputExtractionStart else 0L
       val input = InputPair(a, b)
+      val nativeDecodeStart = if (measurePhases) System.nanoTime() else 0L
+      val (preparedKernel, nativeMetadata) = decodePrepared(prepared)
+      val nativePlan = NativeGpuBackend
+        .decodePlan(preparedKernel, nativeMetadata, api.strings)
+        .fold(error => throw new IllegalArgumentException(error.message), identity)
+      val nativeInputs = NativeGpuBackend
+        .decodeInputs(aValues, bValues)
+        .fold(error => throw new IllegalArgumentException(error.message), identity)
+      val nativeDecodeNs = if (measurePhases) System.nanoTime() - nativeDecodeStart else 0L
       val oracleStart = if (measurePhases) System.nanoTime() else 0L
       val expected = exactMatmul(input)
       val oracleNs = if (measurePhases) System.nanoTime() - oracleStart else 0L
-      val phaseTimes = if (measurePhases) Some(PhaseTimes(prepareNs, inputExtractionNs, oracleNs)) else None
-      Work(seed, prepared, input, expected, phaseTimes)
+      val phaseTimes =
+        if (measurePhases) Some(PhaseTimes(prepareNs, inputExtractionNs, nativeDecodeNs, oracleNs)) else None
+      Work(seed, prepared, input, expected, nativePlan, nativeInputs, phaseTimes)
     }
     require(works.map(_.seed).distinct.length >= 2, "TinyGEMM spike requires at least two distinct input seeds")
     require(works.map(_.input.a).distinct.length == works.length, "different seeds produced identical A inputs")
@@ -318,7 +505,47 @@ object TinyGemmSpikeBenchmark {
     works
   }
 
-  /** One untimed, fully checked source run per seed for the focused Scala integration suite. */
+  private def decodePrepared(value: Value): (Value, Value) = value match {
+    case Value.VCtor(head, fields, tpe)
+        if head.name == "Evaluator.TinyGemmApi.Prepared.mk" && fields.length == 2 &&
+          Value.InductiveFamilyValue.unapply(tpe).exists(_.head.name == "Evaluator.TinyGemmApi.Prepared") =>
+      fields(0) -> fields(1)
+    case other => throw new IllegalArgumentException(s"Expected checked TinyGemmApi.Prepared, got $other")
+  }
+
+  private def replaceConstructorField(value: Value, index: Int, replacement: Value): Value = value match {
+    case Value.VCtor(head, fields, tpe) if index >= 0 && index < fields.length =>
+      Value.VCtor(head, fields.updated(index, replacement), tpe)
+    case other => throw new IllegalArgumentException(s"Expected constructor with field $index, got $other")
+  }
+
+  private def constructorFields(value: Value, label: String): Vector[Value] = value match {
+    case Value.VCtor(_, fields, _) => fields
+    case other                     => throw new IllegalArgumentException(s"Expected constructor for $label, got $other")
+  }
+
+  private def withMultiCtaGrid(kernel: Value, natType: Value): Value = {
+    val kernelFields = constructorFields(kernel, "kernel")
+    val someFields = constructorFields(kernelFields(4), "kernel launcher option")
+    require(someFields.length == 1, "TinyGEMM checked kernel has no launcher")
+    val launcher = someFields.head
+    val launcherFields = constructorFields(launcher, "launcher")
+    val grid = launcherFields(3)
+    val gridFields = constructorFields(grid, "grid")
+    require(gridFields.length == 2, "TinyGEMM checked grid is not a pair of dimensions")
+    val xFields = constructorFields(gridFields(0), "grid x expression")
+    val addExpression = xFields(1)
+    val addFields = constructorFields(addExpression, "grid x addition")
+    val changedPadding = replaceConstructorField(addFields(2), 0, Value.VPacked.nat(255, natType))
+    val twoCtaAddition = replaceConstructorField(addExpression, 2, changedPadding)
+    val twoCtaX = replaceConstructorField(gridFields(0), 1, twoCtaAddition)
+    val multiCtaGrid = replaceConstructorField(grid, 0, twoCtaX)
+    val wrongLauncher = replaceConstructorField(launcher, 3, multiCtaGrid)
+    val wrongOption = replaceConstructorField(kernelFields(4), 0, wrongLauncher)
+    replaceConstructorField(kernel, 4, wrongOption)
+  }
+
+  /** Compare each checked source result with the native backend and independent oracle, then reuse the source input. */
   private[raccoonlang] def verifySeeds(
       gpuRoot: java.nio.file.Path,
       prelude: Prelude.Config,
@@ -334,17 +561,119 @@ object TinyGemmSpikeBenchmark {
       def runOnce(phase: String): Stats = {
         val result = applyOnStack(api.run, work.prepared)
         val stats = decodeStats(applyOnStack(api.stats, result))
-        validateSuccess(api, result, stats, work.expected, work.seed, phase)
+        val outputs = decodeNatList(applyOnStack(api.outputs, result), s"C(seed=${work.seed},$phase)")
+        validateSuccess(api, result, stats, outputs, work.expected, work.seed, phase)
         stats
       }
       val first = runOnce("integration test first run")
+      val firstNative = NativeGpuBackend.run(work.nativePlan, work.nativeInputs)
+      validateNativeSuccess(firstNative, work.expected, first, work.seed, "integration test native first run")
       val second = runOnce("integration test prepared reuse")
       require(first == second, s"seed=${work.seed} counters changed when reusing Prepared: $first vs $second")
       first
     }
   }
 
-  /** Exercise source-owned malformed ASTs through WarpMachine, not through a host-side evaluator model. */
+  /** Reuse, input ownership, concurrent isolation, and checked-subset rejection without a second source run. */
+  private[raccoonlang] def verifyNativeBoundaryAndOwnership(
+      gpuRoot: java.nio.file.Path,
+      prelude: Prelude.Config
+  ): Unit = {
+    val entry = Execution.onStack(StackBytes) {
+      EvaluatorSpikeBenchmark.checkedEntry(gpuRoot.resolve("evaluator/TinyGemmApi.rac"), gpuRoot, prelude)
+    }
+    val api = decodeApi(entry.value, entry.strings)
+    EvaluatorSpikeBenchmark.requireTinyKernel(api.kernel)
+    val works = prepareWorks(api, prelude.checkedEnv("Nat"), Seeds, measurePhases = false)
+    val first = works.head
+    val other = works(1)
+    val expectedStats = Stats(
+      ExpectedWarpSteps,
+      ExpectedAsyncCompletions,
+      ExpectedTmaBytes,
+      ExpectedScalarOpsPerKind,
+      ExpectedScalarOpsPerKind,
+      ExpectedMmaInstructions,
+      ExpectedTmemLoads,
+      ExpectedTmaStores
+    )
+
+    val firstResult = NativeGpuBackend.run(first.nativePlan, first.nativeInputs)
+    validateNativeSuccess(firstResult, first.expected, expectedStats, first.seed, "ownership baseline")
+    val failedRun = NativeGpuBackend.run(first.nativePlan, first.nativeInputs, BigInt(1))
+    require(
+      failedRun.failure.contains(NativeGpuBackend.FuelExhausted),
+      s"low-fuel native invocation unexpectedly returned ${failedRun.errors}"
+    )
+    require(firstResult.outputs == first.expected, "failed invocation changed an earlier frozen output")
+    val otherResult = NativeGpuBackend.run(other.nativePlan, other.nativeInputs)
+    validateNativeSuccess(otherResult, other.expected, expectedStats, other.seed, "interleaved other input")
+    val repeated = NativeGpuBackend.run(first.nativePlan, first.nativeInputs)
+    require(repeated == firstResult, "repeated native invocation changed output or counters")
+    require(firstResult.outputs == first.expected, "later native invocation changed an earlier frozen output")
+    require(
+      first.nativeInputs.a == first.input.a && first.nativeInputs.b == first.input.b,
+      "native execution changed immutable caller inputs"
+    )
+
+    val changedA = first.nativeInputs.a.updated(0, (first.nativeInputs.a.head + 1) % RingModulus)
+    val changedInputs = first.nativeInputs.copy(a = changedA)
+    val changedExpected = exactMatmul(InputPair(changedA, first.nativeInputs.b))
+    val changedResult = NativeGpuBackend.run(first.nativePlan, changedInputs)
+    validateNativeSuccess(changedResult, changedExpected, expectedStats, first.seed, "changed host input")
+    require(changedResult.outputs != first.expected, "native execution ignored a changed A input cell")
+    require(first.nativeInputs.a == first.input.a, "changed-run setup mutated the original immutable input vector")
+
+    implicit val executionContext: ExecutionContext = ExecutionContext.global
+    val concurrent = Await.result(
+      Future.sequence(
+        Vector(
+          Future(NativeGpuBackend.run(first.nativePlan, first.nativeInputs)),
+          Future(NativeGpuBackend.run(other.nativePlan, other.nativeInputs))
+        )
+      ),
+      2.minutes
+    )
+    require(
+      concurrent(0) == firstResult && concurrent(1) == otherResult,
+      "concurrent native invocations shared writable device state"
+    )
+    require(firstResult.outputs == first.expected, "concurrent invocation changed an earlier frozen output")
+
+    val device = new NativeGpuDevice(first.nativePlan, first.nativeInputs)
+    val fullMask = (BigInt(1) << 32) - 1
+    require(
+      device.allocate(NativeGpuAst.Group.One, BigInt(4), BigInt(128), fullMask).isEmpty,
+      "valid nonzero shared handle slot was rejected"
+    )
+    require(
+      device.readShared(BigInt(4), NativeGpuAst.DType.U32).contains(BigInt(0)),
+      "TMEM allocation did not write its handle into the requested shared slot"
+    )
+    val preinitializedLoad = device.tmemLoad(
+      NativeGpuAst.TmemShape.S32x32b,
+      Vector.tabulate(8)(index => BigInt(index)),
+      BigInt(0),
+      BigInt(0),
+      fullMask
+    )
+    require(preinitializedLoad.isLeft, "TMEM load accepted an allocated but uninitialized tensor-memory buffer")
+
+    val (kernelValue, metadataValue) = decodePrepared(first.prepared)
+    val natType = prelude.checkedEnv("Nat")
+    val wrongDimensions = replaceConstructorField(metadataValue, 0, Value.VPacked.nat(256, natType))
+    require(
+      NativeGpuBackend.decodePlan(kernelValue, wrongDimensions, api.strings).isLeft,
+      "native plan accepted metadata outside its fixed output bounds"
+    )
+    val multiCtaKernel = withMultiCtaGrid(kernelValue, natType)
+    require(
+      NativeGpuBackend.decodePlan(multiCtaKernel, metadataValue, api.strings).isLeft,
+      "native plan accepted a multi-CTA launcher grid"
+    )
+  }
+
+  /** Exercise source-owned malformed ASTs through WarpMachine and compare categories/counters with native execution. */
   private[raccoonlang] def verifyMutants(
       gpuRoot: java.nio.file.Path,
       prelude: Prelude.Config
@@ -367,7 +696,8 @@ object TinyGemmSpikeBenchmark {
       "missing-commit" -> "deadlocked",
       "missing-tma-completion" -> "deadlocked",
       "fuel" -> "fuel-exhausted",
-      "not-quiescent" -> "not-quiescent"
+      "not-quiescent" -> "not-quiescent",
+      "overlapping-tmem-load" -> "complete-match"
     )
     require(
       namedMutants
@@ -397,13 +727,26 @@ object TinyGemmSpikeBenchmark {
     requireCoordinateDependent("A", oracleSeed, oracleInput.a)
     requireCoordinateDependent("B", oracleSeed, oracleInput.b)
     val expectedOracle = exactMatmul(oracleInput)
+    val (oracleKernel, oracleMetadata) = decodePrepared(oraclePrepared)
+    val nativeInputs = NativeGpuBackend
+      .decodeInputs(oracleA, oracleB)
+      .fold(error => throw new IllegalArgumentException(error.message), identity)
 
     namedMutants.map { case (name, sourceName) =>
       val fuel = if (name == "fuel") Value.VPacked.nat(BigInt(1), natType) else generousFuel
       val result = applyOnStack(api.runMutant, sourceName, fuel)
+      val mutantKernel = applyOnStack(api.chooseMutant, api.kernel, sourceName)
+      val mutantPlan = NativeGpuBackend
+        .decodePlan(mutantKernel, oracleMetadata, api.strings)
+        .fold(error => throw new IllegalArgumentException(error.message), identity)
+      val nativeFuel = if (name == "fuel") BigInt(1) else BigInt(10000000)
+      val nativeResult = NativeGpuBackend.run(mutantPlan, nativeInputs, nativeFuel)
       result match {
         case Value.VCtor(head, _, _) if head.name == "Evaluator.WarpMachine.MachineResult.complete" =>
-          require(name == "wrong-k-slice", s"mutant $name unexpectedly completed")
+          require(
+            name == "wrong-k-slice" || name == "overlapping-tmem-load",
+            s"mutant $name unexpectedly completed"
+          )
           val values = decodeNatList(applyOnStack(api.outputs, result), s"mutant $name outputs")
           require(values.length == M * N, s"mutant $name produced ${values.length} outputs, expected ${M * N}")
           require(
@@ -411,15 +754,35 @@ object TinyGemmSpikeBenchmark {
             s"mutant $name produced a value outside Z/$RingModulus"
           )
           require(!values.contains(RingModulus), s"mutant $name retained output sentinel $RingModulus")
-          require(values != expectedOracle, "valid K-slice mutant unexpectedly matched the seed-17 independent oracle")
+          val sourceMatchesOracle = name == "overlapping-tmem-load"
+          if (sourceMatchesOracle) {
+            require(
+              values == expectedOracle,
+              "source appendRegisterWrites ordering did not preserve the earlier overlapping TMEM load"
+            )
+            val adjacentValuesDiffer = (0 until M).exists(row =>
+              (0 until 8).exists(column => expectedOracle(row * N + column) != expectedOracle(row * N + column + 8))
+            )
+            require(
+              adjacentValuesDiffer,
+              "overlapping-load fixture did not select visibly different adjacent TMEM columns"
+            )
+          } else {
+            require(
+              values != expectedOracle,
+              "valid K-slice mutant unexpectedly matched the seed-17 independent oracle"
+            )
+          }
           val counts = decodeStats(applyOnStack(api.stats, result))
+          validateNativeCompleteResult(nativeResult, values, expectedOracle, counts, name, sourceMatchesOracle)
+          val extraLoads = if (sourceMatchesOracle) 16L else 0L
           require(
-            counts.warpSteps == ExpectedWarpSteps,
-            s"valid K-slice mutant counted ${counts.warpSteps} warp statements, expected $ExpectedWarpSteps"
+            counts.warpSteps == ExpectedWarpSteps + extraLoads,
+            s"mutant $name counted ${counts.warpSteps} warp statements, expected ${ExpectedWarpSteps + extraLoads}"
           )
           require(
-            counts.asyncCompletions == ExpectedAsyncCompletions,
-            "valid K-slice mutant did not complete the expected event count"
+            counts.asyncCompletions == ExpectedAsyncCompletions + extraLoads,
+            s"mutant $name completed ${counts.asyncCompletions} events, expected ${ExpectedAsyncCompletions + extraLoads}"
           )
           require(counts.tmaBytes == ExpectedTmaBytes, "valid K-slice mutant transferred an unexpected byte count")
           require(
@@ -432,11 +795,11 @@ object TinyGemmSpikeBenchmark {
             "valid K-slice mutant completed an unexpected MMA count"
           )
           require(
-            counts.tmemLoads == ExpectedTmemLoads,
-            "valid K-slice mutant counted an unexpected tensor-memory load count"
+            counts.tmemLoads == ExpectedTmemLoads + extraLoads,
+            s"mutant $name counted ${counts.tmemLoads} tensor-memory loads, expected ${ExpectedTmemLoads + extraLoads}"
           )
           require(counts.tmaStores == ExpectedTmaStores, "valid K-slice mutant counted an unexpected TMA store count")
-          MutantCheck(name, "complete-mismatch", counts)
+          MutantCheck(name, if (sourceMatchesOracle) "complete-match" else "complete-mismatch", counts)
         case Value.VCtor(head, _, _) if head.name == "Evaluator.WarpMachine.MachineResult.failed" =>
           require(
             name != "wrong-k-slice",
@@ -463,6 +826,14 @@ object TinyGemmSpikeBenchmark {
             )
           }
           val counts = decodeStats(applyOnStack(api.stats, result))
+          require(
+            nativeResult.failure.exists(_.category == expectedCategory),
+            s"native mutant $name reported '${nativeResult.errors}', expected category '$expectedCategory'"
+          )
+          require(
+            nativeStats(nativeResult.stats) == counts,
+            s"native mutant $name counters differed: ${nativeResult.stats} vs $counts"
+          )
           if (name == "missing-tma-completion") {
             require(
               counts.asyncCompletions < ExpectedAsyncCompletions,
@@ -559,9 +930,12 @@ object TinyGemmSpikeBenchmark {
     Execution.onStack(StackBytes) {
       profile match {
         case None =>
+          val allocatedBefore = threadAllocatedBytes()
           val start = System.nanoTime()
           val result = Interpreter.evalApply(run, Vector(prepared))
-          TimedInvocation(System.nanoTime() - start, result, None, None)
+          val elapsed = System.nanoTime() - start
+          val allocatedAfter = threadAllocatedBytes()
+          TimedInvocation(elapsed, result, allocatedDelta(allocatedBefore, allocatedAfter), None, None)
         case Some((configuration, path)) =>
           val recording = new Recording(configuration)
           recording.setName(path.getFileName.toString)
@@ -577,12 +951,15 @@ object TinyGemmSpikeBenchmark {
           val recordingStarted = System.nanoTime()
           val runThread = Thread.currentThread()
           val runThreadIdentity = (runThread.getName, runThread.threadId())
+          val allocatedBefore = threadAllocatedBytes()
           val runStart = System.nanoTime()
           var result: Value = null
           var runFailure: Throwable = null
           try result = Interpreter.evalApply(run, Vector(prepared))
           catch { case thrown: Throwable => runFailure = thrown }
           val elapsedNs = System.nanoTime() - runStart
+          val allocatedAfter = threadAllocatedBytes()
+          val allocated = allocatedDelta(allocatedBefore, allocatedAfter)
           val runEnd = System.nanoTime()
           var recordingFailure: Throwable = null
           try {
@@ -596,7 +973,7 @@ object TinyGemmSpikeBenchmark {
             throw runFailure
           }
           if (recordingFailure != null) throw recordingFailure
-          TimedInvocation(elapsedNs, result, Some(controlNs), Some(runThreadIdentity))
+          TimedInvocation(elapsedNs, result, allocated, Some(controlNs), Some(runThreadIdentity))
       }
     }
 
@@ -604,6 +981,7 @@ object TinyGemmSpikeBenchmark {
       api: Api,
       result: Value,
       stats: Stats,
+      values: Vector[Int],
       expected: Vector[Int],
       seed: Int,
       phase: String
@@ -620,7 +998,6 @@ object TinyGemmSpikeBenchmark {
         )
     }
 
-    val values = decodeNatList(applyOnStack(api.outputs, result), s"C(seed=$seed,$phase)")
     require(values.length == M * N, s"seed=$seed $phase produced ${values.length} outputs, expected ${M * N}")
     require(values.forall(x => x >= 0 && x < RingModulus), s"seed=$seed $phase produced a value outside Z/$RingModulus")
     require(!values.contains(RingModulus), s"seed=$seed $phase retained the uninitialized output sentinel $RingModulus")
@@ -662,6 +1039,79 @@ object TinyGemmSpikeBenchmark {
     require(
       stats.tmaStores == ExpectedTmaStores,
       s"seed=$seed $phase counted ${stats.tmaStores} TMA stores, expected $ExpectedTmaStores"
+    )
+  }
+
+  private def validateNativeSuccess(
+      result: NativeGpuBackend.Result,
+      expected: Vector[Int],
+      sourceStats: Stats,
+      seed: Int,
+      phase: String
+  ): Unit = {
+    require(result.completed, s"seed=$seed $phase failed: ${result.errors}; counters=${result.stats}")
+    require(result.outputs.length == M * N, s"seed=$seed $phase produced ${result.outputs.length} outputs")
+    require(
+      result.outputs.forall(value => value >= 0 && value < RingModulus),
+      s"seed=$seed $phase produced a non-ring output"
+    )
+    val mismatch = expected.indices.find(index => result.outputs(index) != expected(index))
+    require(
+      mismatch.isEmpty,
+      mismatch.fold("")(index =>
+        s"seed=$seed $phase C[${index / N},${index % N}] mismatch: expected ${expected(index)}, got ${result.outputs(index)}"
+      )
+    )
+    require(
+      nativeStats(result.stats) == sourceStats,
+      s"seed=$seed $phase native counters differed: ${result.stats} vs $sourceStats"
+    )
+  }
+
+  private def validateNativeCompleteResult(
+      result: NativeGpuBackend.Result,
+      sourceOutputs: Vector[Int],
+      expected: Vector[Int],
+      sourceStats: Stats,
+      name: String,
+      sourceMatchesOracle: Boolean
+  ): Unit = {
+    require(result.completed, s"native mutant $name failed: ${result.errors}")
+    require(result.outputs.length == expected.length, s"native mutant $name returned ${result.outputs.length} cells")
+    require(result.outputs == sourceOutputs, s"native mutant $name outputs differed from source mutant")
+    require(
+      (result.outputs == expected) == sourceMatchesOracle,
+      s"native mutant $name had unexpected agreement with the independent host oracle"
+    )
+    require(
+      nativeStats(result.stats) == sourceStats,
+      s"native mutant $name counters differed: ${result.stats} vs $sourceStats"
+    )
+  }
+
+  private def nativeStats(stats: NativeGpuBackend.Stats): Stats = {
+    val values = Vector(
+      stats.warpSteps,
+      stats.asyncCompletions,
+      stats.tmaBytes,
+      stats.scalarMuls,
+      stats.scalarAdds,
+      stats.mmaInstructions,
+      stats.tmemLoads,
+      stats.tmaStores
+    )
+    values.zipWithIndex.foreach { case (value, index) =>
+      require(value.isValidLong, s"native Stats field $index=$value does not fit a Long")
+    }
+    Stats(
+      values(0).toLong,
+      values(1).toLong,
+      values(2).toLong,
+      values(3).toLong,
+      values(4).toLong,
+      values(5).toLong,
+      values(6).toLong,
+      values(7).toLong
     )
   }
 

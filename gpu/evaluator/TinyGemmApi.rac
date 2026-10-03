@@ -35,7 +35,8 @@ namespace Evaluator {
         List.cons("partial-aligned", List.cons("partial-wait", List.cons("unsupported",
           List.cons("unsupported-regpool",
           List.cons("missing-commit", List.cons("missing-tma-completion",
-            List.cons("fuel", List.cons("not-quiescent", List.nil(String)))))))))))))
+            List.cons("fuel", List.cons("not-quiescent",
+              List.cons("overlapping-tmem-load", List.nil(String))))))))))))))
     def kernelWithBody (actual: Cuda.Kernel)(body: Cuda.Block): Cuda.Kernel := {
       match actual returning Cuda.Kernel with
       | Cuda.Kernel.mk name params dynamicShared oldBody launcher =>
@@ -150,6 +151,86 @@ namespace Evaluator {
         | Pair.mk rewritten removed => Cuda.Kernel.mk(name, params, dynamicShared, rewritten, launcher)
       }
     }
+
+    // Core.chunkLoad's first syntactic load is chunk column zero. Its runtime chunk bases are 0, 32, 64 and 96,
+    // so a second load at +8 stays within the 128-column allocation while writing the same destination registers.
+    mutual {
+      def duplicateFirstTmemBlock(astBlock: Cuda.Block): Pair(Cuda.Block, Bool) decreases structural(astBlock) := {
+        match astBlock returning Pair(Cuda.Block, Bool) with
+        | Cuda.Block.done => (Cuda.Block.done, Bool.false)
+        | Cuda.Block.seq statement rest => {
+          match statement returning Pair(Cuda.Block, Bool) with
+          | Cuda.Stmt.instr instruction => {
+            match instruction returning Pair(Cuda.Block, Bool) with
+            | Cuda.Instr.tmemLoad shape dst address => {
+              let duplicateAddress := Cuda.Expr.bin(Cuda.BinOp.add, address, Cuda.Expr.lit(8))
+              let duplicate := Cuda.Stmt.instr(Cuda.Instr.tmemLoad(shape, dst, duplicateAddress))
+              (Cuda.Block.seq(statement, Cuda.Block.seq(duplicate, rest)), Bool.true)
+            }
+            | _ => {
+              let changedRest := TinyGemmApi.duplicateFirstTmemBlock(rest)
+              match changedRest returning Pair(Cuda.Block, Bool) with
+              | Pair.mk nextRest inserted => (Cuda.Block.seq(statement, nextRest), inserted)
+            }
+          }
+          | _ => {
+            let changedStatement := TinyGemmApi.duplicateFirstTmemStmt(statement)
+            match changedStatement returning Pair(Cuda.Block, Bool) with
+            | Pair.mk nextStatement didInsert => {
+              match didInsert returning Pair(Cuda.Block, Bool) with
+              | Bool.true => (Cuda.Block.seq(nextStatement, rest), Bool.true)
+              | Bool.false => {
+                let changedRest := TinyGemmApi.duplicateFirstTmemBlock(rest)
+                match changedRest returning Pair(Cuda.Block, Bool) with
+                | Pair.mk nextRest inserted => (Cuda.Block.seq(nextStatement, nextRest), inserted)
+              }
+            }
+          }
+        }
+      }
+
+      def duplicateFirstTmemStmt(statement: Cuda.Stmt): Pair(Cuda.Stmt, Bool) decreases structural(statement) := {
+        match statement returning Pair(Cuda.Stmt, Bool) with
+        | Cuda.Stmt.scoped body => {
+          let changed := TinyGemmApi.duplicateFirstTmemBlock(body)
+          match changed returning Pair(Cuda.Stmt, Bool) with
+          | Pair.mk newBody didInsert => (Cuda.Stmt.scoped(newBody), didInsert)
+        }
+        | Cuda.Stmt.forLoop id start stop body => {
+          let changed := TinyGemmApi.duplicateFirstTmemBlock(body)
+          match changed returning Pair(Cuda.Stmt, Bool) with
+          | Pair.mk newBody didInsert => (Cuda.Stmt.forLoop(id, start, stop, newBody), didInsert)
+        }
+        | Cuda.Stmt.forStride id start stop step body => {
+          let changed := TinyGemmApi.duplicateFirstTmemBlock(body)
+          match changed returning Pair(Cuda.Stmt, Bool) with
+          | Pair.mk newBody didInsert => (Cuda.Stmt.forStride(id, start, stop, step, newBody), didInsert)
+        }
+        | Cuda.Stmt.ifElse condition yes no => {
+          let changedYes := TinyGemmApi.duplicateFirstTmemBlock(yes)
+          match changedYes returning Pair(Cuda.Stmt, Bool) with
+          | Pair.mk newYes didInsert => {
+            match didInsert returning Pair(Cuda.Stmt, Bool) with
+            | Bool.true => (Cuda.Stmt.ifElse(condition, newYes, no), Bool.true)
+            | Bool.false => {
+              let changedNo := TinyGemmApi.duplicateFirstTmemBlock(no)
+              match changedNo returning Pair(Cuda.Stmt, Bool) with
+              | Pair.mk newNo inserted => (Cuda.Stmt.ifElse(condition, newYes, newNo), inserted)
+            }
+          }
+        }
+        | _ => (statement, Bool.false)
+      }
+    }
+
+    def duplicateFirstTmemLoad (actual: Cuda.Kernel): Cuda.Kernel := {
+      match actual returning Cuda.Kernel with
+      | Cuda.Kernel.mk name params dynamicShared body launcher => {
+        let changed := TinyGemmApi.duplicateFirstTmemBlock(body)
+        match changed returning Cuda.Kernel with
+        | Pair.mk rewritten inserted => Cuda.Kernel.mk(name, params, dynamicShared, rewritten, launcher)
+      }
+    }
     def instruction (instruction: Cuda.Instr)(rest: Cuda.Block): Cuda.Block :=
       Cuda.Block.seq(Cuda.Stmt.instr(instruction), rest)
     def onlyWarpZero (body: Cuda.Block): Cuda.Block := Cuda.Block.seq(
@@ -228,7 +309,11 @@ namespace Evaluator {
                           | Bool.false => {
                             match Check.same(name, "not-quiescent") returning Cuda.Kernel with
                             | Bool.true => TinyGemmApi.kernelWithBody(actual, TinyGemmApi.notQuiescentBody)
-                            | Bool.false => TinyGemmApi.kernelWithBody(actual, TinyGemmApi.unknownBody)
+                            | Bool.false => {
+                              match Check.same(name, "overlapping-tmem-load") returning Cuda.Kernel with
+                              | Bool.true => TinyGemmApi.duplicateFirstTmemLoad(actual)
+                              | Bool.false => TinyGemmApi.kernelWithBody(actual, TinyGemmApi.unknownBody)
+                            }
                           }
                         }
                       }
@@ -255,4 +340,5 @@ namespace Evaluator {
 
 { (Evaluator.TinyGemmApi.kernel, (Evaluator.TinyGemmApi.prepare, (Evaluator.TinyGemmApi.run,
     (Evaluator.TinyGemmApi.inputs, (Evaluator.TinyGemmApi.outputs, (Evaluator.TinyGemmApi.stats,
-      (Evaluator.TinyGemmApi.errors, (Evaluator.TinyGemmApi.mutantNames, Evaluator.TinyGemmApi.runMutant)))))))) }
+      (Evaluator.TinyGemmApi.errors, (Evaluator.TinyGemmApi.mutantNames,
+        (Evaluator.TinyGemmApi.chooseMutant, Evaluator.TinyGemmApi.runMutant))))))))) }

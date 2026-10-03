@@ -1,6 +1,6 @@
 # An evaluator for generated kernels
 
-Status: **proposal** (updated 2026-10-02; originally 2026-10-01). Step 1, typed instructions, is built (§3). The bounded one-tile TinyGEMM evaluator spike is complete, including integrated validation, native timing and first-pass JVM/native profiles. JVM samples point to interpreter binding/application and proof handling; native JFR samples identify polling sites rather than exclusive method costs. A source-only ring-helper fusion A/B did not establish a reliable speedup. The evidence still supports interpreter performance work (C1) before expanding evaluator v0, but does not quantify broad redesign savings. It follows the first B200 session (`gpu/encoding/NOTES.md`,
+Status: **proposal with bounded execution experiments** (updated 2026-10-02; originally 2026-10-01). Step 1, typed instructions, is built (§3). The one-tile TinyGEMM evaluator spike and its opt-in Scala host-buffer backend are complete for the checked 128×128×64 Z/257 workload, with source/native AST and all 13 mutation checks, full validation and a successful Native Image screen. JVM samples point to interpreter binding/application and proof handling; native JFR samples identify polling sites rather than exclusive method costs. A source-only ring-helper fusion A/B did not establish a reliable speedup. The current evidence supports C1 performance work on Raccoon's own evaluator and the bounded host-buffer boundary in §11; it does not quantify broad redesign savings or make the proposed evaluator v0 complete. It follows the first B200 session (`gpu/encoding/NOTES.md`,
 "Hardware session"), whose failures and the hostile reviews before it share one shape: the generated code did
 something other than what was meant.
 
@@ -925,3 +925,139 @@ native Main image was built after the Match comment clarification. The final for
 measured source only by that comment and scalafmt whitespace; no executable code changed. One early timing attempt
 accidentally retained diagnostic hooks, was stopped, and is marked invalid; it is excluded from every result above.
 Diagnostics were fully stripped before the accepted frozen-class timings.
+
+## 11. Opt-in native host-buffer backend (2026-10-02)
+
+`NativeGpuBackend` is a Scala host interpreter for the **same checked `Cuda.Kernel` AST** used by the TinyGEMM source
+path. It decodes and validates the checked `Cuda.Kernel` and `TinyDevice.Inputs` values, including their exact 128×128×64
+dimensions, launcher parameters, tensor maps, grid, and requirement expressions. It does not substitute a kernel body or
+key execution on its name. Unsupported constructors may remain in an AST when unreachable; a reached unsupported
+operation returns an explicit failure category.
+
+This is an opt-in host-buffer experiment, not a GPU driver, a new Raccoon primitive, or evaluator v0. It supports the
+current one-CTA TinyGEMM subset. `--backend source` remains the default; `--backend native` runs the decoded AST through
+the host backend. The mathematical data domain is exact `Z/257`: BF16 and F32 determine typed widths, aliases, and
+addressing, but this run does not implement BF16 rounding or IEEE floating-point arithmetic. Scheduling is one
+deterministic round-robin order with FIFO async completion; there is no race detector, alternative schedule or
+weak-memory model. As in the source evaluator, issuing `tmemLoad` into an already initialized register leaves its old
+value readable until a successful `wait::ld` publishes the pending load. This is a bounded shared-model behavior, not
+a general GPU memory-hazard or race model.
+
+The decoded plan contains immutable AST and checked launch metadata. Immutable input vectors are separate run
+arguments. Each invocation makes private primitive A/B, shared, tensor-memory, coverage and output arrays, and freezes
+the returned output into an immutable `Vector[Int]`. A later, failed, changed-input, or concurrent run cannot mutate an
+earlier result or the caller's inputs.
+
+Each TinyGEMM run matched all 16,384 source outputs against the independent indexed Z/257 oracle, and matched source
+outputs and counters for all 13 source-owned AST mutations. The wrong-K-slice mutation completes with the source
+mutant's exact output and counters but differs from the independent canonical result. The load-order mutation issues
+two writes to the same destination IDs from adjacent TMEM columns before one wait; source ordering preserves the
+original column values, which match the independent oracle. Its extra load adds 16 retired steps, 16 completions and
+16 tensor-memory loads (1,267 / 104 / 80 total). Expected unmutated counters remain 1,251 retired warp steps, 88 async
+completions, 98,304 TMA bytes, 1,048,576 multiplies, 1,048,576 additions, four MMAs, 64 tensor-memory loads and 16
+stores. Focused native-only tests also cover lane masks, exclusive loop bounds/stride, declaration reset, unreachable
+unsupported nodes, input/output ownership, address validation, sequential `st.shared` aliases, transactional rollback
+and commit, and BF16/U32 half-word aliasing.
+
+The source and host-buffer timers have explicit boundaries. Source `Interpreter.evalApply(run, Vector(prepared))` and
+source output API evaluation plus Nat-list decoding are timed in separate worker-thread regions; the matched source
+metric is the median of each sample's two-region sum, excluding worker creation/join. `NativeGpuBackend.run(plan,
+inputs)` includes private buffer allocation, A/B array copies, and immutable output-vector freezing. Checked-module
+load/check, per-seed preparation, input extraction, native AST/input decoding and the host oracle are outside the run
+timers and printed separately. Per-run JVM allocations come from `ThreadMXBean` for the executing thread; this is an
+allocation counter, not an RSS or total-live-heap measurement. Allocated-byte figures are medians over their own
+per-sample counters, independently of the sample that supplies the timing median.
+
+The first JVM screens below predate the deferred-register-batch ordering fix described above; keep them as historical
+allocation and timing controls, not as measurements of the final executable. Allocation values are independent sample
+medians.
+
+| Earlier JVM snapshot | Seed 17 median / allocated bytes | Seed 83 median / allocated bytes |
+| --- | ---: | ---: |
+| Source evaluator, 2 warmups / 3 samples; run + output decode | 8.600 s / 11.344 GB run + 0.308 GB output | 8.498 s / 11.344 GB run + 0.306 GB output |
+| Host-buffer, before journal, first control; 10 warmups / 5 samples | 27.430 ms / 46,989,152 B | 21.287 ms / 45,915,296 B |
+| Host-buffer, undo journal; 10 warmups / 5 samples | 18.921 ms / 15,639,216 B | 12.508 ms / 13,171,856 B |
+| Host-buffer, before journal, reverse control; 10 warmups / 5 samples | 19.259 ms / 48,342,800 B | 12.958 ms / 46,477,896 B |
+
+The source/native figures are from warmed JVM runs on this host, not a comparison with GPU execution. Native seed 83 had
+large late outliers in the first control; the reverse control is the closer timing comparison. Its medians are only
+about 2–4% above the journal candidate and the sample ranges overlap, so the evidence supports near-neutral to modestly
+lower run time, not a robust speedup. The allocation reduction is clearer and repeatable: the source epilogue stages
+128 `st.shared` instructions, and the pre-journal rollback path cloned the full 256 KiB shared bank for each one,
+copying 32 MiB per invocation before array/object overhead. The journal records only touched 32-bit words and restores
+them in reverse order on failure. The journal used about 32.7 MB and 33.3 MB fewer allocated bytes than the reverse
+control for seeds 17 and 83; this removes the known snapshot traffic, not total backend or evaluator allocation.
+
+Before the deferred-register-batch ordering fix, the journal candidate was compared against a no-journal snapshot with
+the same decoder, map guards and runtime. These 10-warmup/5-sample JVM runs are historical executable-snapshot data;
+they do not measure the final source fingerprint. The timing was inconclusive: seed 17 was effectively equal and seed
+83 favored the journal, while sample-to-sample variance was material.
+
+| Earlier JVM execution snapshot | Seed 17 median / allocated bytes | Seed 83 median / allocated bytes |
+| --- | ---: | ---: |
+| No-journal control | 17.594 ms / 48,124,064 B | 14.052 ms / 46,758,640 B |
+| Undo journal | 17.608 ms / 14,263,432 B | 12.761 ms / 13,029,560 B |
+
+An earlier frozen Graal Native Image, built before the deferred-register-batch ordering fix, was run through both
+backends. These results are retained as historical evidence and are superseded by the corrected same-image screen
+below.
+
+| Earlier Native Image, backend | Warmups / samples | Seed 17 median / allocated bytes | Seed 83 median / allocated bytes |
+| --- | ---: | ---: | ---: |
+| Source evaluator + output decode | 2 / 3 | 12.135 s / 14.594 GB run + 0.390 GB output | 12.202 s / 14.594 GB run + 0.390 GB output |
+| Host-buffer AST interpreter | 10 / 5 | 12.228 ms / 14,310,280 B | 12.299 ms / 14,309,672 B |
+
+The earlier Native Image candidate has SHA-256
+`79e257aff5705ec11ec586e048d7698229ce545dc98ac31a186b2ec51c1ee2bf` and is not the final executable.
+
+After the overlapping-load ordering correction, the final implementation was rebuilt and both backends were measured
+in that same Native Image. The source path used two warmups and three samples; the host-buffer path used ten warmups
+and five samples. Source timing is the per-sample sum of source invocation and output API/list decoding in separate
+worker-local regions. Native timing includes fresh buffers, input copies and immutable output-vector freezing. Both
+timers exclude Prelude configuration loading, source API load/check, per-seed preparation, input extraction, plan
+decoding and the host oracle; the logs report those separately. The source screen measured API load/check at 10.012 s
+and Prelude loading at 18.1 ms. The native-backend screen measured API load/check at 10.101 s and Prelude loading at
+13.3 ms.
+
+| Corrected Native Image, backend | Warmups / samples | Seed 17 median / allocated bytes | Seed 83 median / allocated bytes |
+| --- | ---: | ---: | ---: |
+| Source evaluator + output decode | 2 / 3 | 12.278743 s / 14,593,703,656 B run + 389,837,272 B output | 12.315316 s / 14,593,691,744 B run + 389,836,744 B output |
+| Host-buffer AST interpreter | 10 / 5 | 12.032 ms / 14,310,216 B | 11.936 ms / 14,309,608 B |
+
+Within this bounded workload and these different warmup counts, the host-buffer timed region is about 1,021 times
+shorter than the source run-plus-output region for seed 17 and 1,032 times shorter for seed 83. This compares two
+host execution paths for one exact-ring kernel; it is not GPU throughput, general CUDA support or broad Raccoon
+evaluator performance.
+
+The final JVM native-backend screen used 20 warmups and seven samples because an earlier 10/5 run still showed JIT
+settling. Its reported medians were 14.212 ms (seed 17) and 9.872 ms (seed 83); per-sample allocation medians were
+14,251,728 B and 12,899,512 B. Seed 17's last two samples were lower than its first five, with fewer allocated
+bytes, so treat its JVM median as indicative rather than settled. This is a standalone current-candidate result, not
+a paired no-journal comparison.
+
+The final overlap-fixed `sbt validate` passed 1,003/1,003 tests. `sbt scalafmtAll` also passed. The final candidate
+Native Image was built with Oracle GraalVM 21.0.12, O2, armv8-a, ML-inferred PGO and SerialGC using
+`--parallelism=4 -J-Xmx3g --enable-monitoring=jfr -ea`; JFR was off during timing. Its SHA-256 is
+`37425435f1812027ae78553aa52df414e75e3089e47c4f56fd43f5a6e3608091`. The optional no-journal Native Image control
+was built from the pre-journal device snapshot and predates the ordering correction; it is not used in the final
+source/native comparison.
+
+Reproduce the JVM screens from the repository root with:
+
+```sh
+sbt 'Compile / runMain com.raccoonlang.TinyGemmSpikeBenchmark --backend source --warmups 2 --samples 3'
+sbt 'Compile / runMain com.raccoonlang.TinyGemmSpikeBenchmark --backend native --warmups 20 --samples 7'
+```
+
+Build and run the same Native Image for both backends with:
+
+```sh
+MAIN_CLASS=com.raccoonlang.TinyGemmSpikeBenchmark OUTPUT_DIR=target/performance/gpu-native-backend OUTPUT_NAME=raccoon-tinygemm-native-overlap-fixed scripts/build-graal-native.sh --parallelism=4 -J-Xmx3g --enable-monitoring=jfr -ea
+target/performance/gpu-native-backend/raccoon-tinygemm-native-overlap-fixed --backend source --warmups 2 --samples 3
+target/performance/gpu-native-backend/raccoon-tinygemm-native-overlap-fixed --backend native --warmups 10 --samples 5
+```
+
+The complete sample logs, baseline and journal source snapshots, exact per-file fingerprints, commands, setup timings,
+allocation counters and validation records are preserved under ignored
+[`target/performance/gpu-native-backend`](../target/performance/gpu-native-backend). The backend remains a bounded
+experiment; no broad performance claim follows from this one shape.
