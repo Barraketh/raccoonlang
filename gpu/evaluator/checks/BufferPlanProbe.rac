@@ -1,0 +1,67 @@
+import Cuda
+import evaluator.BufferPlan
+
+def fullMask : Nat := Nat.sub(Nat.pow(2, 32), 1)
+def oneLane : Nat := 1
+def twoLanes : Nat := 3
+def fallback : Nat := 999
+
+def score (actual: Option(Nat))(expected: Nat): Nat :=
+  Bool.cond(Nat.beq(Option.getD(actual, fallback), expected), Nat, 1, 0)
+
+def warpValue: Option(Nat) :=
+  Evaluator.BufferPlan.evalUniformKnown(3, fullMask, List.nil(Evaluator.BufferPlan.Register),
+    128, 128, 64,
+    Cuda.Expr.bin(Cuda.BinOp.eq, Cuda.Expr.special(Cuda.Builtin.warp), Cuda.Expr.lit(3)))
+
+def shortCircuitZero: Option(Nat) :=
+  Evaluator.BufferPlan.evalUniformKnown(0, fullMask, List.nil(Evaluator.BufferPlan.Register),
+    128, 128, 64,
+    Cuda.Expr.bin(Cuda.BinOp.land, Cuda.Expr.lit(0), Cuda.Expr.var(999)))
+
+def logicalAndTrue: Option(Nat) :=
+  Evaluator.BufferPlan.evalUniformKnown(0, fullMask, List.nil(Evaluator.BufferPlan.Register),
+    128, 128, 64,
+    Cuda.Expr.bin(Cuda.BinOp.land, Cuda.Expr.lit(1), Cuda.Expr.lit(1)))
+
+def selectedYes: Option(Nat) :=
+  Evaluator.BufferPlan.evalUniformKnown(0, fullMask, List.nil(Evaluator.BufferPlan.Register),
+    128, 128, 64, Cuda.Expr.select(Cuda.Expr.lit(1), Cuda.Expr.lit(7), Cuda.Expr.var(999)))
+
+def inactivePayloads: List(Evaluator.BufferPlan.Scalar) :=
+  List.cons(Evaluator.BufferPlan.Scalar.known(1),
+    Evaluator.BufferPlan.repeated(Evaluator.BufferPlan.Scalar.payload(6), 31))
+
+def activeLaneSelect: Option(Nat) :=
+  Evaluator.BufferPlan.evalUniformKnown(0, oneLane,
+    List.cons(Evaluator.BufferPlan.Register.mk(1, inactivePayloads, oneLane),
+      List.nil(Evaluator.BufferPlan.Register)),
+    128, 128, 64, Cuda.Expr.select(Cuda.Expr.var(1), Cuda.Expr.lit(7), Cuda.Expr.var(999)))
+
+def malformedWidth: Option(Nat) :=
+  Evaluator.BufferPlan.evalUniformKnown(0, oneLane,
+    List.cons(Evaluator.BufferPlan.Register.mk(2,
+      List.cons(Evaluator.BufferPlan.Scalar.known(1), List.nil(Evaluator.BufferPlan.Scalar)), oneLane),
+      List.nil(Evaluator.BufferPlan.Register)),
+    128, 128, 64, Cuda.Expr.var(2))
+
+def malformedMask: Option(Nat) :=
+  Evaluator.BufferPlan.evalUniformKnown(0, oneLane,
+    List.cons(Evaluator.BufferPlan.Register.mk(2,
+      Evaluator.BufferPlan.repeated(Evaluator.BufferPlan.Scalar.known(1), 32),
+      Nat.add(Nat.pow(2, 32), 1)), List.nil(Evaluator.BufferPlan.Register)),
+    128, 128, 64, Cuda.Expr.var(2))
+
+def uninitializedActiveLane: Option(Nat) :=
+  Evaluator.BufferPlan.evalUniformKnown(0, twoLanes,
+    List.cons(Evaluator.BufferPlan.Register.mk(2,
+      Evaluator.BufferPlan.repeated(Evaluator.BufferPlan.Scalar.known(1), 32), oneLane),
+      List.nil(Evaluator.BufferPlan.Register)),
+    128, 128, 64, Cuda.Expr.var(2))
+
+def result: Nat := Nat.add(score(warpValue, 1), Nat.add(score(shortCircuitZero, 0),
+  Nat.add(score(logicalAndTrue, 1), Nat.add(score(selectedYes, 7),
+    Nat.add(score(activeLaneSelect, 7), Nat.add(score(malformedWidth, fallback),
+      Nat.add(score(malformedMask, fallback), score(uninitializedActiveLane, fallback))))))))
+
+{ result }

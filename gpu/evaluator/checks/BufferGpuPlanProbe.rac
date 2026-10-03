@@ -1,0 +1,16 @@
+import Cuda
+import encoding.Core
+import encoding.TinyGemm
+import evaluator.BufferControl
+
+def checkedBody : Cuda.Block := {
+  match Core.checkedKernel(Tiny.kernel) returning Cuda.Block with
+  | Cuda.Kernel.mk name params shared body launcher => body
+}
+
+def checkedExpansion : Evaluator.BufferControl.Result :=
+  Evaluator.BufferControl.expandCta(128, 128, 64, checkedBody)
+
+def result : Nat := Evaluator.BufferControl.summary(checkedExpansion)
+
+{ result }
