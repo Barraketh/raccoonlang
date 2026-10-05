@@ -1,7 +1,12 @@
 # Prop outside the universe hierarchy
 
-Status: **draft for review** (2026-09-30). First of three specs for a safer kernel, with `docs/proposals/NOMINAL_FAMILIES.md`
-(which builds on it) and `docs/proposals/REFINEMENT_CERTIFICATES.md` (which builds on both).
+Status: **implemented** (2026-10-01, commit `01f9817`). Steps P1 and P2 (§10) landed together: `imax`, `LinearProp`,
+`Level.isNeverZero`, `typeCollapseDeps` and the `s1-prop-clash` guard are gone. Decisions (§11): eliminators take a `P`
+suffix (`False.elimP`, `Eq.substP`); `Sort` is removed as a keyword; data levels start at zero; the `ef799a0` stopgap was
+not merged, since P1 superseded it. `docs/language.md` and `docs/kernel.md` state the rules. The rest of this document is
+the design as reviewed: where it says "today", read "before this change". First of three specs for a safer kernel, with
+`docs/implemented/NOMINAL_FAMILIES.md` (which builds on it) and `docs/implemented/REFINEMENT_CERTIFICATES.md` (which builds
+on both).
 
 Today `Prop` is `Sort { level = Level.zero }`, the bottom of the universe hierarchy. A level variable may later be
 instantiated to zero, so whether a type is a proposition is not always known when it is checked: `Option(A)` at
