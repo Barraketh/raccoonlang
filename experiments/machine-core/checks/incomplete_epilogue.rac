@@ -1,5 +1,0 @@
-// expect: TypeMismatch
-import Tiny
-namespace Rejected {
-  def bad (l: Lifetime)(r: Commands.Resource(l, Native.world(4, 2))): Commands.Cmd(l, Native.world(4, 2), Protocol.Role.store, Protocol.State.storing, Protocol.State.done) := Commands.chunks(r, fun (i: Lifetime)(index: Commands.Index(i)): Commands.ChunkBody(l, Native.world(4, 2), index) => Commands.then(Commands.load(r, index), Commands.then(Commands.acquireStage(r, index), Commands.then(Commands.writeStage(r, index), Commands.fenceStage(r, index)))))
-}

@@ -1,5 +1,0 @@
-// expect: TypeMismatch
-import Tiny
-namespace Rejected {
-  def bad (l: Lifetime)(i: Lifetime)(j: Lifetime)(r: Commands.Resource(l, Native.world(4, 2)))(index: Commands.Index(i))(other: Commands.Index(j)): Commands.Cmd(Lifetime.union(l, Lifetime.union(i, j)), Native.world(4, 2), Protocol.Role.store, Protocol.State.written(Commands.coordinate(index)), Protocol.State.stored(Commands.coordinate(index))) := Commands.then(Commands.fenceStage(r, index), Commands.store(r, other))
-}

@@ -1,5 +1,0 @@
-// expect: TypeMismatch
-import Ring
-namespace Rejected {
-  def bad: Ring.ProducerStep := Ring.read
-}

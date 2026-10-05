@@ -1,8 +1,0 @@
-// expect: EvidenceNotDischarged
-import Machine
-namespace Rejected {
- open Core
- open Cuda
- open GpuMachine.{Machine, Ticket}
- def bad {l:Lifetime}{x:Lifetime}{m:Lifetime}(row:Machine(l,Group.diverged(128),Rescaling(x,m,8)))(buffer:ScoreBuffer(x,Rescaler.correction))(alpha:Val(l,Grain.thread,DType.f32)):Machine(l,Group.diverged(128),Rescaling(x,m,8)) := GpuMachine.rescaleQuadrant(row,buffer,alpha)
-}

@@ -1,5 +1,0 @@
-// expect: SealedConstructor
-import Tiny
-namespace Rejected {
-  def bad: Commands.Key := Commands.Key.key
-}

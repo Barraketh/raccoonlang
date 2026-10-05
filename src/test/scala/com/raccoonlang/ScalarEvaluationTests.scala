@@ -4,7 +4,8 @@ import com.raccoonlang.Value.{NatCodec, VPacked, VLam}
 import java.nio.file.Paths
 
 class ScalarEvaluationTests extends munit.FunSuite with TestSupport {
-  override protected val suitePrelude: Prelude.Config = Prelude.fromPath(Paths.get("gpu/Prelude.rac"))
+  override protected val suitePrelude: Prelude.Config =
+    Prelude.fromPath(Paths.get("src/test/resources/NativeScalarPrelude.rac"))
 
   private def nat(value: BigInt, fn: VLam): VPacked = VPacked.nat(value, fn.tpe.env("Nat"))
 

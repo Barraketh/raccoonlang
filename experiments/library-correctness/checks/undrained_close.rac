@@ -1,5 +1,0 @@
-// expect: TypeMismatch
-import Dependent
-namespace Rejected {
-  def bad: Dependent.Program := Dependent.allocate(Dependent.issue)
-}

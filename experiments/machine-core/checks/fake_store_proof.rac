@@ -1,5 +1,0 @@
-// expect: TypeMismatch
-import Tiny
-namespace Rejected {
-  def bad (index: Cuda.Expr): Protocol.Step(Protocol.Role.store, Protocol.State.written(index), Protocol.State.stored(index), Native.Op.store(index)) := Protocol.Step.store(index)
-}

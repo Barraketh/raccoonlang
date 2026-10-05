@@ -1,5 +1,0 @@
-// expect: TypeMismatch
-import Bridge
-namespace Rejected {
-  def bad: Eq(Cuda.Block,Bridge.actual.body,Cuda.Block.done) := Bridge.productionMatches
-}

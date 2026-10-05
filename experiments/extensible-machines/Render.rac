@@ -1,2 +1,0 @@
-import CorePilot
-Core.render(CorePilot.program)

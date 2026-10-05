@@ -1,5 +1,0 @@
-// expect: TypeMismatch
-import Client
-import Roles
-import Gpu
-namespace Rejected { def bad: Gpu.Program := Client.construct(Roles.right, Roles.left) }

@@ -1,8 +1,0 @@
-// expect: ImplicitReconstructionFailed
-import Machine
-namespace Rejected {
- open Core
- open Cuda
- open GpuMachine.{Machine, Ticket}
- def bad {l:Lifetime}{x:Lifetime}{m:Lifetime}(row:Machine(l,Group.warpwise(8,4),Rescaling(x,m,8)))(buffer:ScoreBuffer(x,Rescaler.correction)):Machine(l,Group.warpwise(8,4),CorrectAt(x,m,8,OState.held)) := GpuMachine.publishRescaled(row,buffer)
-}

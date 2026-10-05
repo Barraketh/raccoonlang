@@ -1,5 +1,0 @@
-// expect: SealedConstructor
-import Tiny
-namespace Rejected {
-  def bad (l: Lifetime): Commands.Index(l) := Commands.Index.mk(l, Cuda.Expr.lit(0))
-}

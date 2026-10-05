@@ -1,8 +1,0 @@
-// expect: SealedConstructor
-// Authority cannot be made outside the Core module.
-import encoding.Core
-namespace T {
-  def forged (a: Lifetime) : Core.Tile(a, Cuda.DType.f32, 256, Core.TileState.ready) :=
-    Core.Tile.mk(a, Cuda.DType.f32, 256, Core.TileState.ready)
-}
-{ 0 }

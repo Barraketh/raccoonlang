@@ -1,5 +1,0 @@
-// expect: SealedConstructor
-import Allocation
-namespace Rejected {
-  def bad (root: Lifetime): Allocation.Cursor(root,0) := Allocation.Cursor.mk(root,0,List.nil(Cuda.Stmt))
-}

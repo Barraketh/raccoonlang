@@ -1,5 +1,0 @@
-// expect: TypeMismatch
-import HappensBefore
-namespace Rejected {
-  def bad: HappensBefore.Allowed(HappensBefore.Action.access(1, Bool.true), HappensBefore.initial(0)) := Eq.refl(1)
-}

@@ -1,5 +1,0 @@
-// expect: SealedConstructor
-import Tiny
-namespace Rejected {
-  def bad (l: Lifetime): Commands.Resource(l, Native.world(4, 2)) := Commands.Resource.mk(l, Native.world(4, 2))
-}

@@ -1,2 +1,0 @@
-import PairClient
-{ Core.render(LunaPair.build("gemm_pair", 6, 2, 8)) }

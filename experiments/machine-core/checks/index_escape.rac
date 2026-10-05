@@ -1,5 +1,0 @@
-// expect: TypeMismatch
-import Tiny
-namespace Rejected {
-  def bad (l: Lifetime)(i: Lifetime)(r: Commands.Resource(l, Native.world(4, 2)))(index: Commands.Index(i)): Commands.Cmd(l, Native.world(4, 2), Protocol.Role.producer, Protocol.State.slot, Protocol.State.producing) := Commands.fill(r, index)
-}

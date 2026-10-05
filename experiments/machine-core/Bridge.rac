@@ -1,9 +1,0 @@
-import Tiny
-import Baseline
-
-namespace TinyBridge {
-  // This equality covers the whole kernel: instructions, bindings, shared
-  // layout, map encodings, host requirements, grid and block size.
-  def sameKernel: Eq(Cuda.Kernel, Commands.syntax(MachineTiny.kernel), Core.kernelSyntax(CoreTiny.kernel)) :=
-    Eq.refl(Core.kernelSyntax(CoreTiny.kernel))
-}

@@ -1,5 +1,0 @@
-// expect: TypeMismatch
-import Outputs
-namespace Rejected {
-  def bad: Outputs.Unique(List.cons(0, List.cons(0, List.nil(Nat)))) := Outputs.rangeUnique(0, 2)
-}

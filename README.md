@@ -173,6 +173,11 @@ classpath under `target/graalvm`.
 
 ## Repository guide
 
+The GPU libraries and their integration tests live in
+[lemur-raccoon](https://github.com/Barraketh/lemur-raccoon). The Lean GPU library
+and proof experiment live in [Lemur](https://github.com/Barraketh/lemur).
+Raccoon's compiler validation runs independently of both library checkouts.
+
 - `src/main/scala/com/raccoonlang`: parser, elaborator, checker, and evaluator;
 - `src/main/resources/Init/Prelude.rac`: bundled source prelude;
 - `src/test/scala/com/raccoonlang`: semantic and regression tests;

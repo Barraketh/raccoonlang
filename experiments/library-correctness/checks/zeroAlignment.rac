@@ -1,5 +1,0 @@
-// expect: TypeMismatch
-import Regions
-namespace Rejected {
-  def bad: Regions.Placement(0, 64, 16, 0) := Regions.Placement.mk(0, 64, 16, 0, 0, Eq.refl(Bool.true), Eq.refl(Bool.true), Eq.refl(0), Eq.refl(Bool.true))
-}

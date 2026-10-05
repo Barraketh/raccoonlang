@@ -1,5 +1,0 @@
-// expect: TypeMismatch
-import RingBackend
-namespace Rejected {
-  def bad: RingBackend.NoCollectives(Cuda.Block.seq(Cuda.Stmt.sync, Cuda.Block.done)) := And.intro(True.intro, True.intro)
-}

@@ -1,7 +1,0 @@
-// expect: TypeMismatch
-import Emission
-import BufferModel
-namespace Rejected {
-  def bad: Emission.Local(BufferModel.Code.atom(0, 0, BufferModel.Op.read), Option.some(4), 5,
-      Emission.atom(1, BufferModel.Op.read, Option.some(4)), 5) := Emission.Local.atom(0, 0, BufferModel.Op.read, Option.some(4), 5)
-}

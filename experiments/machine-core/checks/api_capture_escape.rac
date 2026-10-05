@@ -1,7 +1,0 @@
-// expect: TypeMismatch
-import Api
-namespace Rejected {
-  def bad {l: Lifetime}{w: Gpu.Layout}{s: Lifetime}(producer: Gpu.Producer(l, w))
-      (body: { scope = s } (i: Lifetime) -> Gpu.Slice(l, i, w) -> Gpu.ProduceStep(l, i, w))
-      : Gpu.ProducerBody(l, w) := producer.eachSlice(body)
-}

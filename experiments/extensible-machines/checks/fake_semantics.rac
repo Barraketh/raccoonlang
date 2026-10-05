@@ -1,5 +1,0 @@
-// expect: TypeMismatch
-import Pipeline
-namespace Rejected {
-  def bad: Machine.Meaning(Pipeline.State,Pipeline.Op,Pipeline.spec(0),Machine.Code.atom(Pipeline.Op.recycle),Contracts.identityRun(Pipeline.State)) := Machine.Meaning.skip(Pipeline.spec(0))
-}

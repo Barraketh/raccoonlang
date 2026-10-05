@@ -3,25 +3,25 @@
 Status: **candidate implementation plan** (2026-10-02). Proposed direction for problem 1 of
 [Safety problems](SAFETY_PROBLEMS.md). No part of this feature is implemented by this document.
 
-The subsequent [state-machine experiment](../../experiments/state-machines/README.md) tests a smaller proof
+The subsequent [state-machine experiment](https://github.com/Barraketh/lemur-raccoon/blob/main/experiments/state-machines/README.md) tests a smaller proof
 interface before committing to this architecture. Its protocol histories, backlinks and invariant proofs check
 in the existing core without full typing reflection. It also exposes the separate obligations for live authority,
 captured scope dependencies and emission correspondence. This plan remains a candidate for broader theorems
 about arbitrary checked client code; it is not the selected implementation direction.
 
-The [compositional follow-up](../../experiments/compositional-machines/README.md) now checks opaque callbacks,
+The [compositional follow-up](https://github.com/Barraketh/lemur-raccoon/blob/main/experiments/compositional-machines/README.md) now checks opaque callbacks,
 scoped loans, actor footprints, runtime loop invariants with changing payloads, and proof-producing AST lowering
 in ordinary Raccoon. That supplies ingredients for elaborating machine contracts before adding a native judgement for this
 fragment. It also records an indexed-elimination limitation and the remaining gap to CUDA semantic refinement.
 
-The [extensible experiment](../../experiments/extensible-machines/README.md) adds generic machine families,
+The [extensible experiment](https://github.com/Barraketh/lemur-raccoon/blob/main/experiments/extensible-machines/README.md) adds generic machine families,
 fresh allocation identities, generation-indexed loop progress, and equality with an actual Core-generated body.
-Its [source-interface proposal](../../experiments/extensible-machines/SURFACE.md) recommends elaboration to
+Its [source-interface proposal](https://github.com/Barraketh/lemur-raccoon/blob/main/experiments/extensible-machines/SURFACE.md) recommends elaboration to
 ordinary core terms for this fragment. A small exclusion-checking improvement now permits the earlier footprint
 derivation. Broader typing reflection remains an option for arbitrary existing clients and effects outside the
 certified command interface; hardware refinement and asynchronous completion remain separate obligations.
 
-The [TinyGEMM comparison](../../experiments/machine-core/README.md) now ports a real client to an independent
+The [TinyGEMM comparison](https://github.com/Barraketh/lemur-raccoon/blob/main/experiments/machine-core/README.md) now ports a real client to an independent
 library, with a complete kernel equality and local/composite protocol theorems. It also records Core's full
 guarantee set and the missing features for A3b attention and persistent pair GEMM. Those ports and a broader
 semantic argument are still required before claiming the command interface replaces Core or simplifies all

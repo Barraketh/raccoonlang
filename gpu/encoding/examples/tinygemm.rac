@@ -1,8 +1,0 @@
-// TinyGEMM on sm_100a: C (f32) = A · Bᵀ with A (M×K) and B (N×K) in bf16; one 128×128 block of C per CTA.
-//
-// Run: gpu/gen.sh gpu/encoding/examples/tinygemm.rac
-
-import encoding.Core
-import encoding.TinyGemm
-
-{ Core.render(Tiny.kernel) }

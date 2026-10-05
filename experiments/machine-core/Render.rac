@@ -1,8 +1,0 @@
-import Tiny
-import Check
-
-namespace MachineRender {
-  def render (p: Commands.Program)[valid: Check.WellFormed(Commands.syntax(p))]: String :=
-    Cuda.boundedKernel(Option.some((256, 1)), Commands.syntax(p))
-}
-MachineRender.render(MachineTiny.kernel)

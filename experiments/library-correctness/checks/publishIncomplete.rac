@@ -1,5 +1,0 @@
-// expect: TypeMismatch
-import Publication
-namespace Rejected {
-  def bad: Publication.Writes(0, List.nil(Nat), Outputs.range(0, 16), List.nil(Nat)) := Publication.Writes.skip(Outputs.range(0, 16))
-}

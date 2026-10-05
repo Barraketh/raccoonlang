@@ -1,4 +1,0 @@
-import Artifact
-import Examples
-
-Artifact.render(Examples.program)

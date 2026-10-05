@@ -1,8 +1,0 @@
-// expect: LinearReused
-import Allocation
-namespace Rejected {
-  def bad (root: Lifetime)(cursor: Allocation.Cursor(root,0)): Cuda.Block := {
-    let first := Allocation.finish(cursor)
-    Allocation.finish(cursor)
-  }
-}

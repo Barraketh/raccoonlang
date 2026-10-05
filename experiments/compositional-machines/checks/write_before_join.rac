@@ -1,7 +1,0 @@
-// expect: TypeMismatch
-import Gpu
-import BufferModel
-import WholeModel
-namespace Rejected {
-  def bad (l: Lifetime): Gpu.Whole(l, WholeModel.at(BufferModel.Phase.ready), WholeModel.at(BufferModel.Phase.ready)) := Gpu.writeBoth(l, 2)
-}

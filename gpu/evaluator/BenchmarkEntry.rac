@@ -1,5 +1,0 @@
-// The Scala driver loads and checks this entry once, then repeatedly applies the resulting closure.
-
-import evaluator.Benchmark
-
-{ Evaluator.Benchmark.run }

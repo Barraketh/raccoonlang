@@ -1,9 +1,0 @@
-// expect: TypeMismatch
-import Gpu
-namespace Rejected {
-  def bad (root: Lifetime)(loan: Lifetime)(a: Gpu.Buffer(root, 0, 0))(lease: Gpu.Lease(root, loan, 0, 0)): Unit -> Nat :=
-    fun (u: Unit): Nat => {
-      let command := Gpu.read(a, lease)
-      0
-    }
-}

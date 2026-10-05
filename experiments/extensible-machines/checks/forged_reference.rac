@@ -1,5 +1,0 @@
-// expect: SealedConstructor
-import Allocation
-namespace Rejected {
-  def bad (root: Lifetime)(a: Lifetime): Allocation.Ref(root,a,0,64) := Allocation.Ref.mk(root,a,0,64)
-}

@@ -1,6 +1,0 @@
-// expect: TypeMismatch
-import Dependent
-namespace Rejected {
-  def bad: Dependent.Cmd(Retirement.Mode.all, Retirement.Phase.live, Retirement.Phase.finished) :=
-    Dependent.leader(Retirement.Mode.all, Retirement.Phase.live, Dependent.finish)
-}

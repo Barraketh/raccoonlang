@@ -4,7 +4,7 @@ import com.raccoonlang.Value._
 import java.nio.file.Paths
 
 class ScalarCapabilityTests extends munit.FunSuite {
-  private val env = Prelude.fromPath(Paths.get("gpu/Prelude.rac")).checkedEnv
+  private val env = Prelude.fromPath(Paths.get("src/test/resources/NativeScalarPrelude.rac")).checkedEnv
 
   test("only the exact validated native Nat lambda receives a scalar capability") {
     val expected = Vector(
@@ -28,7 +28,7 @@ class ScalarCapabilityTests extends munit.FunSuite {
     val other = env("Nat.pow").asInstanceOf[VLam]
     assertEquals(Packed.scalarNatCapability(other, env), None)
 
-    val separateContext = Prelude.fromPath(Paths.get("gpu/Prelude.rac")).checkedEnv
+    val separateContext = Prelude.fromPath(Paths.get("src/test/resources/NativeScalarPrelude.rac")).checkedEnv
     val add = env("Nat.add").asInstanceOf[VLam]
     assertEquals(Packed.scalarNatCapability(add, separateContext), None)
     val lookalike = add.copy(body = LamBody.Native((args, _) => args.head, Env.empty, isRawRecursive = false))

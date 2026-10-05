@@ -1,8 +1,0 @@
-// expect: TypeMismatch
-import Machine
-namespace Rejected {
- open Core
- open Cuda
- open GpuMachine.{Machine, Ticket}
- def bad {l:Lifetime}{s:Lifetime}{m:Lifetime}(machine:Machine(l,Group.warps(4,4),Unit))(ticket:Ticket(StoreAt(s,m,4)))(staging:Staging(s))(cond:Val(l,Grain.uniform,DType.bool)):Machine(l,Group.warps(4,4),Unit) := GpuMachine.when(machine,cond,fun (n:Lifetime)(inner:Machine(n,Group.warps(4,4),Unit)):Machine(n,Group.warps(4,4),Unit) => GpuMachine.finishStores(GpuMachine.use(inner,ticket),staging))
-}

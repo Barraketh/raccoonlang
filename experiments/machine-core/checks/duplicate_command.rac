@@ -1,5 +1,0 @@
-// expect: LinearReused
-import Tiny
-namespace Rejected {
-  def bad (l: Lifetime)(cmd: Commands.Cmd(l, Native.world(4, 2), Protocol.Role.producer, Protocol.State.producing, Protocol.State.producing)): Commands.Cmd(l, Native.world(4, 2), Protocol.Role.producer, Protocol.State.producing, Protocol.State.producing) := Commands.then(cmd, cmd)
-}

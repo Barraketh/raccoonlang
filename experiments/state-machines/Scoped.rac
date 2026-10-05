@@ -1,9 +1,0 @@
-namespace Scoped {
-  sealed inductive Lease (l: Lifetime) : Type { scope = l }
-   | mk : Lease(l)
-
-  def read {l: Lifetime}(lease: Lease(l)): Nat := 7
-
-  def withLease (A: Type)(body: (l: Lifetime) -> Lease(l) -> A): A :=
-    scope l => body(l, Lease.mk(l))
-}

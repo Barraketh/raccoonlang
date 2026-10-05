@@ -1,5 +1,0 @@
-// expect: EvidenceNotDischarged
-import Budgets
-namespace Rejected {
-  def bad: Budgets.Split(512, 1) := Budgets.split(1, Budgets.Counts.mk(256, 256, 256, 256))
-}

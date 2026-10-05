@@ -1,5 +1,0 @@
-// expect: TypeMismatch
-import Source
-namespace Rejected {
-  def bad (root: Lifetime)(a: Lifetime)(id: Nat)(buffer: Allocation.Ref(root,a,id,64)): Allocation.Ref(root,root,id,64) := buffer
-}

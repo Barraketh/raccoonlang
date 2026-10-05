@@ -1,5 +1,0 @@
-// expect: TypeMismatch
-import RegisterMachine
-namespace Rejected {
-  def bad: Eq(Bool,WholeModel.fits(WholeModel.Counts.mk(256,256,256,256)),Bool.true) := Eq.refl(Bool.true)
-}

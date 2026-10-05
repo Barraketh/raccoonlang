@@ -1,8 +1,0 @@
-// expect: TypeMismatch
-import Gpu
-import Roles
-import BufferModel
-namespace Rejected {
-  def bad (l: Lifetime)(buffer: Gpu.Buffer(l, 0, 0))
-      : Gpu.Local(l, 0, 0, BufferModel.at(BufferModel.Phase.ready), BufferModel.at(BufferModel.Phase.ready)) := Gpu.loop(Roles.left(l, buffer))
-}

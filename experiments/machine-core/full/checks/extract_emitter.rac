@@ -1,8 +1,0 @@
-// expect: SealedConstructor
-import Machine
-namespace Rejected {
- open Core
- open Cuda
- open GpuMachine.{Machine, Ticket}
- def bad {l:Lifetime}(machine:Machine(l,Group.lane,Unit)):Ctx(l,Group.lane) := GpuMachine.finish(GpuMachine.Key.key,machine)
-}

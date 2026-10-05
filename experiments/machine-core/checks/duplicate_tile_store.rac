@@ -1,5 +1,0 @@
-// expect: TypeMismatch
-import Tiny
-namespace Rejected {
-  def bad (l: Lifetime)(r: Commands.Resource(l, Native.world(4, 2))): Commands.Cmd(l, Native.world(4, 2), Protocol.Role.store, Protocol.State.storing, Protocol.State.done) := Commands.then(MachineTiny.epilogue(r), MachineTiny.epilogue(r))
-}

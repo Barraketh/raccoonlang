@@ -1,6 +1,0 @@
-// expect: TypeMismatch
-import Pipeline
-namespace Rejected {
-  def bad (g: Nat): Machine.Cmd(Pipeline.State,Pipeline.Op,Pipeline.spec(0),Pipeline.atGeneration(Pipeline.before(Pipeline.Op.read0),Nat.succ(g)),Pipeline.atGeneration(Pipeline.after(Pipeline.Op.read0),Nat.succ(g))) :=
-    Pipeline.precise(0,Pipeline.Op.read0,g)
-}

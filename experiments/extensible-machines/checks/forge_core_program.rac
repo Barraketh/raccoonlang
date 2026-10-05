@@ -1,5 +1,0 @@
-// expect: SealedConstructor
-import Bridge
-namespace Rejected {
-  def bad: Core.Program := Core.Program.mk(Bridge.actual,64,1)
-}

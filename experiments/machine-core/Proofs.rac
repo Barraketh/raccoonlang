@@ -1,8 +1,0 @@
-import Tiny
-
-namespace MachineProofs {
-  // Quantifies over any Program built through the public API, including
-  // unknown user callbacks. Its result concerns that program's actual AST.
-  def everyProgram (p: Commands.Program): Protocol.KernelFlow(Commands.world(p), Commands.syntax(p)) := Commands.certified(p)
-  def tiny: Protocol.KernelFlow(Native.world(4, 2), Commands.syntax(MachineTiny.kernel)) := Commands.certified(MachineTiny.kernel)
-}

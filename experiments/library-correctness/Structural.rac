@@ -1,9 +1,0 @@
-import encoding.Lowering
-import proofs.WellFormed
-
-// The actual existing library already admits this kernel-independent theorem.
-// It covers exactly Spec.WellFormed, including its documented omissions.
-namespace Structural {
-  def everyRenderedProgram (program: Core.Program)(checked: Core.WellFormed(program))
-      : Spec.WellFormed(Core.kernelSyntax(program)) := WellFormed.sound(Core.kernelSyntax(program), checked)
-}

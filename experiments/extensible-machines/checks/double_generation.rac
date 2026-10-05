@@ -1,6 +1,0 @@
-// expect: TypeMismatch
-import Source
-namespace Rejected {
-  def bad (root: Lifetime)(a: Lifetime)(buffer: Allocation.Ref(root,a,0,64)): Source.Body(root,a,0) :=
-    Source.certify(buffer,Machine.sequence(Pipeline.cycle(0),Pipeline.cycle(0)),Pipeline.advances(0))
-}

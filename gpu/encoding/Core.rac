@@ -1,3 +1,0 @@
-// The existing Core interface uses the shared checked lowering implementation.
-// Machine clients import encoding.Lowering directly.
-import encoding.Lowering
