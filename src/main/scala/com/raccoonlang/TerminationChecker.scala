@@ -109,7 +109,9 @@ object TerminationChecker {
           Value.canonicalizeProof(VApp(VConst(name, Symbol, calleePi), callArgs, resultTy))
         },
         callerBodyEnv,
-        isRawRecursive = true
+        isRawRecursive = true,
+        scalarCapability = None,
+        equation = None
       )
     )
 
@@ -169,6 +171,12 @@ object TerminationChecker {
         candidate match {
           case packed: VPacked if packed.codec == root.codec => root.codec.strictlyLess(packed, root)
           case _                                             => false
+        }
+      case root: VNatPrefix =>
+        candidate match {
+          case prefix: VNatPrefix if ValueEquivalence.defEq(prefix.base, root.base) =>
+            prefix.offset < root.offset
+          case _ => ValueEquivalence.defEq(candidate, root.base) || isStrictSubterm(candidate, root.base)
         }
       case ConstructorForm(_, fields) =>
         descendsInto(candidate, fields)

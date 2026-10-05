@@ -57,13 +57,11 @@ class PackedConversionTests extends munit.FunSuite with TestSupport {
     }
   }
 
-  test("a failing conversion of a successor chain against a Nat literal is prompt however long the chain") {
-    // Up to the unfolding limit, `Nat.add(n, k)` is `k` successors of `n`. Its key decides the equation, and the
-    // key-coherence assertion, on in every test, checks that verdict by the rules, which decode the literal one layer
-    // per successor.
-    Vector(24, 100, 256).foreach { k =>
-      val (mismatch, millis) =
-        timedMismatch(s"def wrong (n: Nat) : Eq(Nat, Nat.add(n, $k), ${k + 1}) := Eq.refl(${k + 1})")
+  test("a failing conversion of a compact successor prefix against a Nat literal is prompt") {
+    Vector(BigInt(24), BigInt(100), BigInt(256), (BigInt(1) << 80) + 3).foreach { k =>
+      val (mismatch, millis) = timedMismatch(
+        s"def wrong (n: Nat) : Eq(Nat, Nat.add(n, $k), ${k + 1}) := Eq.refl(${k + 1})"
+      )
       assert(millis < 10000, s"$k successors took $millis ms")
       assert(!mismatch.detail.exists(_.apart))
     }

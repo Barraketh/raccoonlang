@@ -212,16 +212,16 @@ block's result or the program's, as a pair or a parenthesized term, so `f (a, b)
 quietly meant `f` and then a pair. The printer prints `Pair.mk(a, b)` as that
 application; printing it as `(a, b)` is left open.
 
-## 5. Native Nat operations on a non-literal argument
+## 5. Former native Nat cutoff policy (superseded)
 
-**5.1 The defect.** A native operation applied to two literals uses its host
+**5.1 Historical defect.** A native operation applied to two literals uses its host
 equation. Applied to anything else, it runs its declared body, which unfolds
 one layer per unit of its recursion argument. With a large literal that is
 billions of layers: checking `let v := Nat.mod(n, 4294967296)` for a variable
 `n` unfolds `Nat.mul(…, 4294967296)` and overflows the host stack. That is a
 host exception, which is a defect whatever the program.
 
-**5.2 Rule.** Applied to anything but two literals, a native operation runs its
+**5.2 Former rule.** Applied to anything but two literals, a native operation runs its
 body only when every literal argument is at most the unfolding limit, `2^8`.
 Otherwise the application is a neutral:
 
@@ -233,7 +233,7 @@ Otherwise the application is a neutral:
 - two such applications are equal when they apply the same operation to
   convertible arguments.
 
-**5.3 Consequences.** Conversion no longer unfolds an application with a
+**5.3 Former consequences.** Conversion no longer unfolds an application with a
 literal above the limit: `Nat.add(x, 2000)` is not definitionally
 `Nat.succ(Nat.add(x, 1999))`. This loses definitional equations and adds none,
 so it cannot make a program unsound, only reject one that relied on such an
@@ -242,9 +242,10 @@ unfold. The limit stays below the recursion depth at which the host overflows:
 checking `Nat.mul(n, 1024)` exhausts a default 2MB stack, and `Nat.mul(n, 512)`
 a 1MB one.
 
-The limit bounds every literal argument, not just the recursion argument:
-declared bodies are checked but not semantically recognized, so the kernel
-does not know which argument a body recurses on.
+The limit bounded every literal argument, not just the recursion argument.
+This section records the policy that originally addressed the stack overflow;
+it is superseded by the compact Nat representation and uniform native reduction
+documented in [the kernel reference](../kernel.md#natural-numbers).
 
 ## 6. Blank and comment lines
 
@@ -290,8 +291,8 @@ those:
 - the golden inventory of §1.4, with a prelude declaring a linear or
   kind-polymorphic family and a sealed family now loading, and each appearing
   in the inventory only if it is trusted surface;
-- §5: `Nat.mod(n, 4294967296)` checks for a variable `n`, evaluates natively
-  once `n` is a literal, and `Nat.add(n, 1)` still converts with `Nat.succ(n)`;
+- §5 (historical): the former cutoff behavior is superseded by compact mixed
+  Nat reductions; see the kernel reference for current conversion behavior;
 - §6: a program with a blank and a comment line at each separator of §6.1
   parses;
 - the GPU spike as an end-to-end client: `gpu/Prelude.rac` drops `LPair`, the
@@ -313,7 +314,7 @@ those:
 3. **Arity.** No flattening in patterns (§3.3) and only binary pair
    expressions (§4.2). Right-nested n-tuples could be added later without
    changing what any program written under these rules means.
-4. **The unfolding limit.** `2^8` (§5.2). Review chose `2^10`; implementation
+4. **Former unfolding limit.** `2^8` (§5.2). Review chose `2^10`; implementation
    showed that checking `Nat.mul(n, 1024)` overflows a default 2MB host stack,
    so the limit was lowered to keep §5's purpose.
 5. **Inventory, not a flag.** §1.4 makes the trusted surface visible in review.

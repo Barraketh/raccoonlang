@@ -34,6 +34,36 @@ object Packed {
   ) {
     private[Packed] def belongsTo(lam: VLam): Boolean =
       owner().asInstanceOf[AnyRef] eq lam.asInstanceOf[AnyRef]
+
+  }
+
+  /** Exact checked source body retained for constructor equations of one published native operation. */
+  private[raccoonlang] final class NativeEquation private[Packed] (
+      val source: VLam,
+      private val owner: () => VLam
+  ) {
+    private[Packed] def belongsTo(lam: VLam): Boolean =
+      owner().asInstanceOf[AnyRef] eq lam.asInstanceOf[AnyRef]
+
+    private[raccoonlang] def inspect(nativeHead: VLam, args: Vector[Value]): Option[Value] =
+      if (!belongsTo(nativeHead)) None
+      else
+        source.body match {
+          case LamBody.Core(term, env) =>
+            val selfName = source.id match {
+              case ValueId.Const(name) => Some(name)
+              case _                   => None
+            }
+            val peers = term.recursivePeers.map { case (_, name) =>
+              if (selfName.contains(name)) nativeHead
+              else env.globals.get(name).map(_.value(env)).getOrElse(wtf(s"Missing checked recursive peer $name"))
+            }
+            val nativePeers = peers.collect { case lam: VLam => lam }
+            Some(withResidualNativeHeads(nativePeers) {
+              Interpreter.runLamWithRecursivePeers(source, args, peers)
+            })
+          case _ => None
+        }
   }
 
   /** Never identifies an operation by its printed name or an unvalidated lookalike lambda. */
@@ -41,7 +71,8 @@ object Packed {
     lam.body match {
       case native: LamBody.Native =>
         native.scalarCapability match {
-          case present @ Some(capability) if opsEnabled.value && capability.belongsTo(lam) =>
+          case present @ Some(capability)
+              if opsEnabled.value && !isResidualNativeHead(lam) && capability.belongsTo(lam) =>
             env.nativeLiterals.natLayout match {
               case Some(layout) if layout.natTpe.asInstanceOf[AnyRef] eq capability.natTpe.asInstanceOf[AnyRef] =>
                 present
@@ -75,14 +106,6 @@ object Packed {
 
   private[raccoonlang] val MaxPowExponent: BigInt = BigInt(1) << 24
   private[raccoonlang] val MaxShiftLeft: BigInt = BigInt(1) << 24
-
-  /**
-   * The largest literal on which a native operation not applied to two literals runs its declared body (spec §5.2). A
-   * body unfolds one layer per unit of its recursion argument, and the kernel does not know which argument that is, so
-   * the limit bounds every literal argument. Checking `Nat.mul(n, 2^9)` already overflows a 1MB host stack, so the
-   * limit is `2^8`.
-   */
-  private[raccoonlang] val MaxUnfoldedLiteral: BigInt = BigInt(1) << 8
 
   private def natSpec(name: String, scalarKind: Option[ScalarNatKind] = None)(
       run: (BigInt, BigInt) => BigInt
@@ -128,7 +151,21 @@ object Packed {
   private[raccoonlang] val opNames: Set[String] = opsByName.keySet
 
   private val opsEnabled = new DynamicVariable[Boolean](true)
+  private val residualNativeHeads = new DynamicVariable[Vector[VLam]](Vector.empty)
   private[raccoonlang] def withOpsDisabled[A](body: => A): A = opsEnabled.withValue(false)(body)
+
+  private def withResidualNativeHeads[A](heads: Vector[VLam])(body: => A): A = {
+    val combined = residualNativeHeads.value ++ heads.filterNot(head => residualNativeHeads.value.exists(_ eq head))
+    residualNativeHeads.withValue(combined)(body)
+  }
+
+  private[raccoonlang] def isResidualNativeHead(lam: VLam): Boolean = residualNativeHeads.value.exists(_ eq lam)
+
+  private[raccoonlang] def nativeEquation(lam: VLam): Option[NativeEquation] =
+    lam.body match {
+      case LamBody.Native(_, _, false, _, Some(equation)) if equation.belongsTo(lam) => Some(equation)
+      case _                                                                         => None
+    }
 
   private val StringAppendName = "String.append"
   private val StringDataName = "String.data"
@@ -145,11 +182,47 @@ object Packed {
   private[raccoonlang] def construct(head: ConstructorHead, storedArgs: Vector[Value], tpe: Value): Value =
     Value.canonicalizeProof(foldCtor(head, storedArgs, tpe).getOrElse(VCtor(head, storedArgs, tpe)))
 
+  /** Canonical Nat successor-prefix construction shared by evaluation and materialization. */
+  private[raccoonlang] def natPrefix(base: Value, offset: BigInt, tpe: Value): Value = {
+    require(offset >= 0, s"Nat successor-prefix offset must be non-negative: $offset")
+    if (offset == 0) base
+    else {
+      require(tpe.synDeps.isEmpty, s"Nat successor-prefix type must be closed, got ${tpe.synDeps}")
+      require(!Sorts.isProposition(tpe), s"Nat successor-prefix type must be data, got $tpe")
+      require(ValueEquivalence.defEq(base.tpe, tpe), s"Nat successor-prefix base has type ${base.tpe}, expected $tpe")
+      base match {
+        case packed: VPacked if (packed.codec eq NatCodec) && ValueEquivalence.defEq(packed.tpe, tpe) =>
+          VPacked.nat(packed.natValue.get + offset, tpe)
+        case prefix: VNatPrefix if ValueEquivalence.defEq(prefix.tpe, tpe) =>
+          natPrefix(prefix.base, prefix.offset + offset, tpe)
+        case _ => Value.VNatPrefix.node(base, offset, tpe)
+      }
+    }
+  }
+
+  /** One successor layer of a compact prefix, with its predecessor kept compact. */
+  private[raccoonlang] def natPrefixHead(prefix: VNatPrefix): (String, Vector[Value]) =
+    (NatCodec.succName, Vector(natPrefix(prefix.base, prefix.offset - 1, prefix.tpe)))
+
+  /** A shared compact count/base view of packed and ordinary Nat constructors. */
+  private[raccoonlang] def natConstructorParts(value: Value): Option[(BigInt, Value)] =
+    value match {
+      case packed: VPacked if packed.codec eq NatCodec =>
+        Some(packed.natValue.get -> VPacked.nat(0, packed.tpe))
+      case prefix: VNatPrefix => Some(prefix.offset -> prefix.base)
+      case _ =>
+        ConstructorForm.Stored.unapply(value).flatMap {
+          case (NatCodec.zeroName, Vector())            => Some(BigInt(0) -> VPacked.nat(0, value.tpe))
+          case (NatCodec.succName, Vector(predecessor)) => Some(BigInt(1) -> predecessor)
+          case _                                        => None
+        }
+    }
+
   private[raccoonlang] def foldCtor(
       head: ConstructorHead,
       storedArgs: Vector[Value],
       tpe: Value
-  ): Option[VPacked] =
+  ): Option[Value] =
     head.name match {
       case NatCodec.zeroName
           if head.totalArity == 0 && storedArgs.isEmpty && head.noConfusion &&
@@ -159,9 +232,8 @@ object Packed {
           if head.totalArity == 1 && head.numErasedFamilyArgs == 0 && head.noConfusion &&
             !Sorts.isProposition(tpe) && tpe.synDeps.isEmpty =>
         storedArgs match {
-          case Vector(p: VPacked) if p.codec == NatCodec && ValueEquivalence.defEq(p.tpe, tpe) =>
-            p.natValue.map(value => VPacked.nat(value + 1, tpe))
-          case _ => None
+          case Vector(base) if ValueEquivalence.defEq(base.tpe, tpe) => Some(natPrefix(base, 1, tpe))
+          case _                                                     => None
         }
       case _ => None
     }
@@ -198,41 +270,96 @@ object Packed {
       case boolOp: BoolOpSpec =>
         boolOp.scalarKind.map(kind => new ScalarNatCapability(kind, nat, boolYes, boolNo, () => self))
     }
+    lazy val equation = new NativeEquation(source, () => self)
+    def residual(args: Vector[Value]): Value = {
+      val blockedOn = args.foldLeft(DepSet.empty) {
+        case (deps, Blocker(argDeps)) => deps ++ argDeps
+        case (deps, _)                => deps
+      }
+      Value.canonicalizeProof(VApp(self, args, resultTy, blockedOn))
+    }
+
+    def exactZero(value: Value): Boolean =
+      ValueEquivalence.defEq(value.tpe, nat) && natConstructorParts(value).exists(_._1 == 0)
+
+    /** A known successor prefix, represented as its numeric offset and the value below it. */
+    def prefixParts(value: Value): Option[(BigInt, Value)] =
+      Option.when(ValueEquivalence.defEq(value.tpe, nat))(natConstructorParts(value)).flatten
+
+    lazy val validatedBle: Option[VLam] =
+      env.globals.get("Nat.ble").map(_.value(env)).collect {
+        case lam: VLam
+            if scalarNatCapability(lam, env).exists(capability =>
+              capability.kind == ScalarNatKind.Ble &&
+                (capability.natTpe.asInstanceOf[AnyRef] eq nat.asInstanceOf[AnyRef])
+            ) =>
+          lam
+      }
+
+    def compare(beq: Boolean, left: Value, right: Value): Option[Value] = {
+      if (!beq && exactZero(left)) Some(boolYes)
+      else if (beq && exactZero(left) && exactZero(right)) Some(boolYes)
+      else if (exactZero(left) && prefixParts(right).exists(_._1 > 0)) Some(boolNo)
+      else if (exactZero(right) && prefixParts(left).exists(_._1 > 0)) Some(boolNo)
+      else
+        (prefixParts(left), prefixParts(right)) match {
+          case (Some((leftCount, leftBase)), Some((rightCount, rightBase))) =>
+            val common = leftCount.min(rightCount)
+            if (common > 0) {
+              val leftRest = natPrefix(leftBase, leftCount - common, nat)
+              val rightRest = natPrefix(rightBase, rightCount - common, nat)
+              compact(Vector(leftRest, rightRest))
+            } else None
+          case _ => None
+        }
+    }
+
+    def compact(args: Vector[Value]): Option[Value] =
+      args match {
+        case Vector(left, right) =>
+          (left, right) match {
+            case (packedLeft: VPacked, packedRight: VPacked)
+                if opsEnabled.value && (packedLeft.codec eq NatCodec) && (packedRight.codec eq NatCodec) &&
+                  ValueEquivalence.defEq(packedLeft.tpe, nat) && ValueEquivalence.defEq(packedRight.tpe, nat) =>
+              Some(compute(packedLeft.natValue.get, packedRight.natValue.get))
+            case _ =>
+              spec.name match {
+                case "Nat.add" =>
+                  prefixParts(right).map { case (count, suffix) =>
+                    if (count == 0) left
+                    else if (exactZero(suffix)) natPrefix(left, count, nat)
+                    else residual(Vector(natPrefix(left, count, nat), suffix))
+                  }
+
+                case "Nat.sub" => Option.when(exactZero(right))(left)
+                case "Nat.mul" => Option.when(exactZero(right))(VPacked.nat(0, nat))
+                case "Nat.pow" => Option.when(exactZero(right))(VPacked.nat(1, nat))
+                case "Nat.beq" => compare(beq = true, left, right)
+                case "Nat.ble" => compare(beq = false, left, right)
+                case "Nat.blt" =>
+                  validatedBle.map(le => Interpreter.evalApply(le, Vector(natPrefix(left, 1, nat), right)))
+                case _ => None
+              }
+          }
+        case _ => wtf(s"Validated native Nat operation $name was applied to ${args.length} arguments")
+      }
+
     lazy val self: VLam =
       VLam(
         source.tpe,
         source.id,
         LamBody.Native(
           (args, _) =>
-            args match {
-              case Vector(NatLiteral(a), NatLiteral(b)) =>
-                if (opsEnabled.value) compute(a, b) else Interpreter.runLam(source, args)
-              case _ if args.forall { case NatLiteral(n) => n <= MaxUnfoldedLiteral; case _ => true } =>
-                Interpreter.runLam(source, args)
-              // A neutral headed by this operation, which reruns once what blocks its arguments is solved, and is rigid
-              // when nothing does (spec §5.2).
-              case _ =>
-                val blockedOn = args.foldLeft(DepSet.empty) {
-                  case (deps, Blocker(argDeps)) => deps ++ argDeps
-                  case (deps, _)                => deps
-                }
-                VApp(self, args, resultTy, blockedOn)
-            },
+            if (isResidualNativeHead(self)) compact(args).getOrElse(residual(args))
+            else if (!opsEnabled.value) Interpreter.runLam(source, args)
+            else compact(args).getOrElse(residual(args)),
           Env.empty,
           isRawRecursive = false,
-          scalarCapability = scalarCapability
+          scalarCapability = scalarCapability,
+          equation = Some(equation)
         )
       )
     self
-  }
-
-  /** A packed Nat literal's value. */
-  private object NatLiteral {
-    def unapply(value: Value): Option[BigInt] =
-      value match {
-        case p: VPacked => p.natValue
-        case _          => None
-      }
   }
 
   private[raccoonlang] def validateNatFamily(env: Env): ValidatedNatLayout = {
@@ -586,7 +713,9 @@ object Packed {
             case _ => Interpreter.runLam(source, args)
           },
         Env.empty,
-        isRawRecursive = false
+        isRawRecursive = false,
+        scalarCapability = None,
+        equation = None
       )
     )
 

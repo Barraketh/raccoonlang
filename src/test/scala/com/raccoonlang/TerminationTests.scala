@@ -59,6 +59,18 @@ class TerminationTests extends munit.FunSuite with TestSupport {
     assertEquals(toShape(runProgramOption(p).get), succS(succS(zeroS)))
   }
 
+  test("compact Nat prefixes expose strict predecessor and base descent") {
+    val nat = Prelude.default.checkedEnv("Nat")
+    val base = FreshVar.freshVar("base", nat)
+    val other = FreshVar.freshVar("other", nat)
+    val offset = (BigInt(1) << 90) + 17
+    val root = Packed.natPrefix(base, offset, nat)
+
+    assert(TerminationChecker.isStrictSubterm(Packed.natPrefix(base, offset - 1, nat), root))
+    assert(TerminationChecker.isStrictSubterm(base, root))
+    assert(!TerminationChecker.isStrictSubterm(Packed.natPrefix(other, offset - 1, nat), root))
+  }
+
   test("structural recursion searches through transitive constructor fields") {
     val p =
       natDecls +

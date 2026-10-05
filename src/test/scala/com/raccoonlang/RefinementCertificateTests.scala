@@ -14,6 +14,16 @@ class RefinementCertificateTests extends munit.FunSuite with TestSupport {
                              |def absurd(n:P)(h:Eq(D,D.mk(P,P.z),D.mk(P,P.s(n)))):P := match h returning P with
                              |""".stripMargin)
   }
+  test("Nat-prefix index certificates quote successor and larger compact offsets") {
+    typecheckDecls(
+      """inductive At indices (n:Nat):Prop
+        | | zero:At(0)
+        |def impossibleOne(k:Nat)(h:At(Nat.succ(k))):False := match h returning False with
+        |def impossibleMany(k:Nat)(h:At(Nat.add(Nat.succ(k), 2))):False := match h returning False with
+        |""".stripMargin,
+      Prelude.default
+    )
+  }
   test("bootstrap needs neither a source Eq nor a source bottom") {
     typecheckDecls(peano + "def pick:P := match P.z returning P with\n | P.z => P.z\n", Prelude.none)
   }

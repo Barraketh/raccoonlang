@@ -7,105 +7,284 @@ import com.raccoonlang.telescope.BinderOps
 import scala.collection.immutable.BitSet
 
 object InductiveChecks {
-  private val activeUniformityLambdas = new ThreadLocal[java.util.IdentityHashMap[VLam, java.lang.Boolean]] {
-    override def initialValue(): java.util.IdentityHashMap[VLam, java.lang.Boolean] =
-      new java.util.IdentityHashMap[VLam, java.lang.Boolean]()
-  }
-
   // ------------ Occurrence and Positivity ------------
 
-  private sealed trait PositivityTarget {}
-
-  private object PositivityTarget {
-    final case class InductiveBlock(key: InductiveBlockKey) extends PositivityTarget
-    final case class LocalVar(id: VarId) extends PositivityTarget {}
+  private sealed trait PositivityTarget {
+    def isDirect(value: Value): Boolean
   }
 
-  private def doesNotOccur(target: PositivityTarget, value: Value): Boolean =
-    target match {
-      case PositivityTarget.InductiveBlock(key) => !value.occurrences.containsBlock(key)
-      case PositivityTarget.LocalVar(id)        => !value.occurrences.containsLocal(id)
+  private object PositivityTarget {
+    final case class InductiveBlock(key: InductiveBlockKey) extends PositivityTarget {
+      override def isDirect(value: Value): Boolean =
+        value match {
+          case VConst(name, Inductive(_), _) => key.members.contains(name)
+          case _                             => false
+        }
+
     }
 
-  private def occursPositively(
-      target: PositivityTarget,
-      value: Value,
-      context: ValueAnalysis.ResolutionContext
-  ): Boolean =
-    target match {
-      case PositivityTarget.InductiveBlock(key) => !value.positivity.forbidsBlock(key, context)
-      case PositivityTarget.LocalVar(id)        => !value.positivity.forbidsLocal(id, context)
-    }
+    final case class LocalVar(id: VarId) extends PositivityTarget {
+      override def isDirect(value: Value): Boolean =
+        value match {
+          case Var(_, valueId, _) => valueId == id
+          case _                  => false
+        }
 
-  /** Share the kernel's one rigid lambda inspection while keeping a guard around each full uniformity recursion. */
-  private def inspectLambda(lambda: VLam)(body: (Vector[Value], Value) => Boolean): Boolean = {
-    if (lambda.body.isInstanceOf[LamBody.Native]) return false
-    val active = activeUniformityLambdas.get()
-    if (active.containsKey(lambda)) false
-    else {
-      active.put(lambda, java.lang.Boolean.TRUE)
-      try {
-        val inspection = lambda.analysisResult
-        !inspection.isUnknown && body(inspection.domains, inspection.knownResult)
-      } finally {
-        active.remove(lambda)
-        if (active.isEmpty) activeUniformityLambdas.remove()
+    }
+  }
+
+  private final class RelationMemo {
+    private val completed = new java.util.IdentityHashMap[Value, java.lang.Boolean]()
+    private val active = new java.util.IdentityHashMap[Value, java.lang.Boolean]()
+
+    def apply(value: Value)(compute: => Boolean): Boolean = {
+      val known = completed.get(value)
+      if (known ne null) known.booleanValue
+      else if (active.containsKey(value)) false
+      else {
+        active.put(value, java.lang.Boolean.TRUE)
+        try {
+          val result = compute
+          completed.put(value, java.lang.Boolean.valueOf(result))
+          result
+        } finally active.remove(value)
       }
     }
   }
 
-  /** Requires every block-family occurrence to be fully applied at the common parameters and nonrecursive indices. */
-  private def blockFamilyApplicationsAreUniform(
-      blockNames: Set[String],
-      target: PositivityTarget,
-      expectedParams: Vector[Value],
-      value: Value
-  ): Boolean =
-    value match {
-      case _: NeutralThunk => false
+  private def rigidArguments(pi: VPi): (Vector[Value], Env) = {
+    val fresh = BinderOps.freshen(pi)
+    (pi.binders.map(binder => fresh(binder.localRef)), fresh)
+  }
 
-      case InductiveFamilyValue(instance) =>
-        if (blockNames(instance.head.name))
-          instance.args.length >= expectedParams.length &&
-          instance.args.take(expectedParams.length).zip(expectedParams).forall { case (actual, expected) =>
-            ValueEquivalence.defEq(actual, expected)
-          } &&
-          instance.args.drop(expectedParams.length).forall(arg => doesNotOccur(target, arg))
-        else
-          instance.args.forall(arg => blockFamilyApplicationsAreUniform(blockNames, target, expectedParams, arg))
+  /** The scans share no state: each relation memo is valid for one declaration-time target and override. */
+  private final class BlockScan(key: InductiveBlockKey) {
+    private val target: PositivityTarget = PositivityTarget.InductiveBlock(key)
+    private val blockNames: Set[String] = key.members.toSet
+    private val absentMemo = new RelationMemo
+    private val positiveMemo = new RelationMemo
 
-      case app: VApp =>
-        doesNotOccur(target, app.head) &&
-        app.args.forall(arg => blockFamilyApplicationsAreUniform(blockNames, target, expectedParams, arg)) &&
-        blockFamilyApplicationsAreUniform(blockNames, target, expectedParams, app.tpe)
+    def absent(value: Value): Boolean = absentMemo(value) {
+      if (target.isDirect(value)) false
+      else
+        value match {
+          case thunk: NeutralThunk =>
+            absent(thunk.tpe) && thunk.id.captures.forall(absent) && thunk.env.localValuesIterator.forall(absent) &&
+            !CoreAst.mentionsGlobal(thunk.term, blockNames)
 
-      case pi: VPi =>
-        val telescope = pi.analysisTelescope
-        !telescope.isUnknown &&
-        telescope.domains.forall(domain =>
-          blockFamilyApplicationsAreUniform(blockNames, target, expectedParams, domain)
-        ) &&
-        blockFamilyApplicationsAreUniform(blockNames, target, expectedParams, telescope.knownResult)
+          case InductiveFamilyValue(instance) =>
+            !target.isDirect(instance.head) && instance.args.forall(absent)
 
-      case p: VProof => blockFamilyApplicationsAreUniform(blockNames, target, expectedParams, p.tpe)
+          case app: VApp => absent(app.head) && app.args.forall(absent) && absent(app.tpe)
 
-      case p: VPacked => blockFamilyApplicationsAreUniform(blockNames, target, expectedParams, p.tpe)
+          case pi: VPi =>
+            val (args, fresh) = rigidArguments(pi)
+            args.forall(arg => absent(arg.tpe)) && absent(pi.codomain(fresh))
 
-      case lam: VLam =>
-        inspectLambda(lam) { (domains, result) =>
-          domains.forall(domain =>
-            blockFamilyApplicationsAreUniform(blockNames, target, expectedParams, domain)
-          ) && blockFamilyApplicationsAreUniform(blockNames, target, expectedParams, result)
+          case proof: VProof => absent(proof.tpe)
+
+          case packed: VPacked => absent(packed.tpe)
+
+          case prefix: VNatPrefix => absent(prefix.base) && absent(prefix.tpe)
+
+          case lam: VLam =>
+            val captures = lam.id match {
+              case ValueId.Const(_)           => Vector.empty
+              case ValueId.LocalId(_, values) => values
+            }
+            absent(lam.tpe) && captures.forall(absent) &&
+            (lam.body match {
+              case LamBody.Core(term, env) =>
+                env.localValuesIterator.forall(absent) && !CoreAst.mentionsGlobal(term, blockNames)
+              case LamBody.Native(_, env, _, _, _) => env.localValuesIterator.forall(absent)
+              case LamBody.ProofEta                => true
+            })
+
+          case _: ConstructorHead | _: Level | _: Kind | _: Lifetime | _: ParameterTpe | SortParameter | Large |
+              _: VSort | _: Var | _: VConst =>
+            true
+
+          case deferred: DeferredEvidence => deferred.escaped
         }
-
-      case VConst(name, Inductive(_), _) if blockNames(name) => false
-
-      case _: ConstructorHead | _: Level | _: Kind | _: Lifetime | _: ParameterTpe | SortParameter | Large | _: VSort |
-          _: Var | _: VConst =>
-        true
-
-      case deferred: DeferredEvidence => deferred.escaped
     }
+
+    def positive(value: Value): Boolean = positiveMemo(value) {
+      if (absent(value)) true
+      else if (target.isDirect(value)) true
+      else
+        value match {
+          case _: NeutralThunk => false
+
+          case InductiveFamilyValue(instance) =>
+            target.isDirect(instance.head) || instance.args.zipWithIndex.forall { case (arg, index) =>
+              if (instance.meta.block.isPositiveCoreArgument(index)) positive(arg) else absent(arg)
+            }
+
+          case app: VApp =>
+            (target.isDirect(app.head) || absent(app.head)) && app.args.forall(absent) && positive(app.tpe)
+
+          case pi: VPi =>
+            val (args, fresh) = rigidArguments(pi)
+            args.forall(arg => absent(arg.tpe)) && positive(pi.codomain(fresh))
+
+          case proof: VProof => absent(proof.tpe)
+
+          case packed: VPacked => absent(packed.tpe)
+
+          case prefix: VNatPrefix => absent(prefix.base) && positive(prefix.tpe)
+
+          case lam: VLam =>
+            lam.body match {
+              case _: LamBody.Native => false
+              case LamBody.Core(_, _) | LamBody.ProofEta =>
+                val (args, _) = rigidArguments(lam.tpe)
+                args.forall(arg => absent(arg.tpe)) && positive(Interpreter.evalApply(lam, args))
+            }
+
+          case _: ConstructorHead | _: Level | _: Kind | _: Lifetime | _: ParameterTpe | SortParameter | Large |
+              _: VSort | _: Var | _: VConst =>
+            true
+
+          case deferred: DeferredEvidence => deferred.escaped
+        }
+    }
+  }
+
+  private final class LocalScan(id: VarId, overrideInfo: PositiveParamOverride) {
+    private val target: PositivityTarget = PositivityTarget.LocalVar(id)
+    private val absentMemo = new RelationMemo
+    private val positiveMemo = new RelationMemo
+
+    def absent(value: Value): Boolean = absentMemo(value) {
+      if (!value.synDeps.contains(id)) true
+      else if (target.isDirect(value)) false
+      else
+        value match {
+          case _: NeutralThunk | _: VLam => !value.synDeps.contains(id)
+
+          case InductiveFamilyValue(instance) =>
+            !target.isDirect(instance.head) && instance.args.forall(absent)
+
+          case app: VApp => absent(app.head) && app.args.forall(absent) && absent(app.tpe)
+
+          case pi: VPi =>
+            val (args, fresh) = rigidArguments(pi)
+            args.forall(arg => absent(arg.tpe)) && absent(pi.codomain(fresh))
+
+          case proof: VProof => absent(proof.tpe)
+
+          case packed: VPacked => absent(packed.tpe)
+
+          case prefix: VNatPrefix => absent(prefix.base) && absent(prefix.tpe)
+
+          case _: ConstructorHead | _: Level | _: Kind | _: Lifetime | _: ParameterTpe | SortParameter | Large |
+              _: VSort | _: Var | _: VConst =>
+            !value.synDeps.contains(id)
+
+          case deferred: DeferredEvidence => deferred.escaped
+        }
+    }
+
+    def positive(value: Value): Boolean = positiveMemo(value) {
+      if (absent(value)) true
+      else if (target.isDirect(value)) true
+      else
+        value match {
+          case _: NeutralThunk => false
+
+          case InductiveFamilyValue(instance) =>
+            !target.isDirect(instance.head) && instance.args.zipWithIndex.forall { case (arg, index) =>
+              if (overrideInfo.isPositiveArgument(instance.meta, index)) positive(arg) else absent(arg)
+            }
+
+          case app: VApp =>
+            (target.isDirect(app.head) || absent(app.head)) && app.args.forall(absent) && positive(app.tpe)
+
+          case pi: VPi =>
+            val (args, fresh) = rigidArguments(pi)
+            args.forall(arg => absent(arg.tpe)) && positive(pi.codomain(fresh))
+
+          case proof: VProof => absent(proof.tpe)
+
+          case packed: VPacked => absent(packed.tpe)
+
+          case prefix: VNatPrefix => absent(prefix.base) && positive(prefix.tpe)
+
+          case lam: VLam =>
+            lam.body match {
+              case _: LamBody.Native => false
+              case LamBody.Core(_, _) | LamBody.ProofEta =>
+                val (args, _) = rigidArguments(lam.tpe)
+                args.forall(arg => absent(arg.tpe)) && positive(Interpreter.evalApply(lam, args))
+            }
+
+          case _: ConstructorHead | _: Level | _: Kind | _: Lifetime | _: ParameterTpe | SortParameter | Large |
+              _: VSort | _: Var | _: VConst =>
+            true
+
+          case deferred: DeferredEvidence => deferred.escaped
+        }
+    }
+  }
+
+  private final class UniformScan(
+      blockScan: BlockScan,
+      blockNames: Set[String],
+      expectedParams: Vector[Value]
+  ) {
+    private val memo = new RelationMemo
+
+    def uniform(value: Value): Boolean = memo(value) {
+      if (blockScan.absent(value)) true
+      else
+        value match {
+          case _: NeutralThunk => false
+
+          case InductiveFamilyValue(instance) =>
+            if (blockNames(instance.head.name))
+              instance.args.length >= expectedParams.length &&
+              instance.args.take(expectedParams.length).zip(expectedParams).forall { case (actual, expected) =>
+                ValueEquivalence.defEq(actual, expected)
+              } && instance.args.drop(expectedParams.length).forall(blockScan.absent)
+            else instance.args.forall(uniform)
+
+          case app: VApp =>
+            blockScan.absent(app.head) && app.args.forall(uniform) && uniform(app.tpe)
+
+          case pi: VPi =>
+            val (args, fresh) = rigidArguments(pi)
+            args.forall(arg => uniform(arg.tpe)) && uniform(pi.codomain(fresh))
+
+          case proof: VProof => uniform(proof.tpe)
+
+          case packed: VPacked => uniform(packed.tpe)
+
+          case prefix: VNatPrefix => uniform(prefix.base) && uniform(prefix.tpe)
+
+          case lam: VLam =>
+            lam.body match {
+              case _: LamBody.Native => false
+              case LamBody.Core(_, _) | LamBody.ProofEta =>
+                val (args, _) = rigidArguments(lam.tpe)
+                args.forall(arg => uniform(arg.tpe)) && uniform(Interpreter.evalApply(lam, args))
+            }
+
+          case VConst(name, Inductive(_), _) if blockNames(name) => false
+
+          case _: ConstructorHead | _: Level | _: Kind | _: Lifetime | _: ParameterTpe | SortParameter | Large |
+              _: VSort | _: Var | _: VConst =>
+            true
+
+          case deferred: DeferredEvidence => deferred.escaped
+        }
+    }
+  }
+
+  private final case class PositiveParamOverride(key: InductiveBlockKey, positiveParams: DepSet) {
+    def isPositiveArgument(meta: InductiveMeta, index: Int): Boolean =
+      if (meta.block.key == key) positiveParams.contains(index)
+      else meta.block.isPositiveCoreArgument(index)
+  }
 
   private def constructorFamilyParams(header: InductiveHeader): Vector[Binder] =
     header.params.map(_.copy(mode = BinderMode.Implicit))
@@ -200,8 +379,8 @@ object InductiveChecks {
   private final case class PositiveParamInputs(
       contexts: Vector[PositiveParamContext]
   ) {
-    def accepts(sourceIndex: Int, context: ValueAnalysis.ResolutionContext): Boolean =
-      contexts.forall(_.accepts(sourceIndex, context))
+    def accepts(sourceIndex: Int, overrideInfo: PositiveParamOverride): Boolean =
+      contexts.forall(_.accepts(sourceIndex, overrideInfo))
   }
 
   private final case class PositiveParamContext(
@@ -209,12 +388,11 @@ object InductiveChecks {
       forbiddenValues: Vector[Value],
       positiveValues: Vector[Value]
   ) {
-    def accepts(sourceIndex: Int, context: ValueAnalysis.ResolutionContext): Boolean =
+    def accepts(sourceIndex: Int, overrideInfo: PositiveParamOverride): Boolean =
       sourceParams(sourceIndex) match {
         case Var(_, id, _) =>
-          val target = PositivityTarget.LocalVar(id)
-          forbiddenValues.forall(doesNotOccur(target, _)) &&
-          positiveValues.forall(occursPositively(target, _, context))
+          val scan = new LocalScan(id, overrideInfo)
+          forbiddenValues.forall(scan.absent) && positiveValues.forall(scan.positive)
         case _ => false
       }
   }
@@ -380,8 +558,7 @@ object InductiveChecks {
       provisionalEnv: Env,
       block: Decl.InductiveBlock,
       blockNames: Set[String],
-      blockKey: InductiveBlockKey,
-      positivityContext: ValueAnalysis.ResolutionContext
+      blockScan: BlockScan
   ): CheckedFamily = {
     // All direct Value matches in this function and its private helpers rely on EqStore.empty:
     // no Vars are solved while an inductive block is checked.
@@ -389,7 +566,6 @@ object InductiveChecks {
 
     val header = decl.header
     val name = header.name
-    val recursiveTarget = PositivityTarget.InductiveBlock(blockKey)
     val sourcePrefixCount = block.numParams
     val sourceParams = signature.familyArgs.take(sourcePrefixCount)
     val positivityContexts = Vector.newBuilder[PositiveParamContext]
@@ -440,7 +616,7 @@ object InductiveChecks {
             )
           )
         }
-      if (outputArgs.drop(sourceParamValues.length).exists(arg => !doesNotOccur(recursiveTarget, arg)))
+      if (outputArgs.drop(sourceParamValues.length).exists(arg => !blockScan.absent(arg)))
         at(ctor.resultTy.span) {
           fail(
             NonStrictlyPositive(
@@ -485,6 +661,7 @@ object InductiveChecks {
         outputArgs.drop(sourceParamValues.length),
         constructorArgTypes
       )
+      val uniformScan = new UniformScan(blockScan, blockNames, sourceParamValues)
 
       constructorArgs.zipWithIndex.foreach { case ((binder, field), sourceFieldIndex) =>
         def fieldName = s"${ctor.canonicalName}.${binder.name}"
@@ -509,13 +686,12 @@ object InductiveChecks {
           binder.span
         )
 
-        if (!doesNotOccur(recursiveTarget, field.tpe)) hasRecursiveField = true
+        if (syntacticallyRecursive(sourceFieldIndex) && !blockScan.absent(field.tpe)) hasRecursiveField = true
 
         // 3) Every true source field type must be strictly positive in every block family.
         if (
           syntacticallyRecursive(sourceFieldIndex) &&
-          (!occursPositively(recursiveTarget, field.tpe, positivityContext) ||
-            !blockFamilyApplicationsAreUniform(blockNames, recursiveTarget, sourceParamValues, field.tpe))
+          (!blockScan.positive(field.tpe) || !uniformScan.uniform(field.tpe))
         )
           at(binder.span) {
             fail(
@@ -554,10 +730,10 @@ object InductiveChecks {
     var current = DepSet.from(0 until block.numParams)
     var stable = false
     while (!stable) {
-      val context = ValueAnalysis.resolutionContext(Some(blockKey), current)
+      val overrideInfo = PositiveParamOverride(blockKey, current)
       val next = DepSet.newBuilder
       current.foreach { sourceIndex =>
-        if (checked.forall(_.positivityInputs.accepts(sourceIndex, context))) next.add(sourceIndex)
+        if (checked.forall(_.positivityInputs.accepts(sourceIndex, overrideInfo))) next.add(sourceIndex)
       }
       val result = next.result()
       stable = result == current
@@ -638,9 +814,9 @@ object InductiveChecks {
       curEnv.putGlobal(head.name, head)
     }
     val blockNames = block.families.iterator.map(_.header.name).toSet
-    val positivityContext = ValueAnalysis.defaultResolutionContext
+    val blockScan = new BlockScan(blockKey)
     val checked = provisional.map { case (signature, meta, _) =>
-      checkFamilyConstructors(signature, meta, provisionalEnv, block, blockNames, blockKey, positivityContext)
+      checkFamilyConstructors(signature, meta, provisionalEnv, block, blockNames, blockScan)
     }
     val blockHasRecursiveField = checked.exists(_.hasRecursiveField)
     val positiveParams = computePositiveParams(block, blockKey, checked)

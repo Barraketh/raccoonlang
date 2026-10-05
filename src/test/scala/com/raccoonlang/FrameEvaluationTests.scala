@@ -284,7 +284,9 @@ class FrameEvaluationTests extends munit.FunSuite with TestSupport {
         args.head
       },
       callback.body.asInstanceOf[Value.LamBody.Core].env,
-      isRawRecursive = false
+      isRawRecursive = false,
+      scalarCapability = None,
+      equation = None
     )
     val native = callback.copy(body = callbackBody)
     val modifiedEnv = originalCore.env.copy(

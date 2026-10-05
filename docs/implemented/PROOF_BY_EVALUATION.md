@@ -216,7 +216,11 @@ pipeline's global state (fresh-name counters, the linear-subterm table) is not s
 - **A full explicit-continuation (CEK) machine.** The evaluator is re-entered from the checker, the unifier, native
   bodies and Pi codomains, and deep values are a second source of depth (§2.3), so a CEK evaluator alone would not
   suffice. §2.2–2.5 remove each measured source directly.
-- **Raising `MaxUnfoldedLiteral`.** It concerns only symbolic arguments.
+- **Former native Nat cutoff.** The old `MaxUnfoldedLiteral` policy capped
+  source unfolding for mixed Nat arguments. It has been replaced by compact
+  symbolic successor prefixes, uniform mixed reducers, and one-layer demand
+  inspection for existing constructor equations; current behavior is specified
+  in [kernel.md](../kernel.md#natural-numbers).
 - **Native list operations.** That would add trusted surface with T5-like obligations.
 
 ## 3. In use

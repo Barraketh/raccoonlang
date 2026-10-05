@@ -4,6 +4,8 @@ import com.raccoonlang.CoreAst.{Term => CTerm}
 import com.raccoonlang.Value._
 import com.raccoonlang.telescope.BinderOps
 
+import scala.util.DynamicVariable
+
 /** The Core evaluator. Plans hold syntax and addresses, never live values or environments. */
 private[raccoonlang] object CoreEvaluator {
   private sealed trait Node {
@@ -68,6 +70,31 @@ private[raccoonlang] object CoreEvaluator {
 
   private final case class Plan(root: Node, slots: Int, boundRefs: Vector[CoreAst.LocalRef], duplicateBindings: Boolean)
   private val emptyPlan = Plan(null, 0, Vector.empty, duplicateBindings = false)
+
+  private final case class NativeEquationRun(root: VLam, recursivePeers: Vector[Value])
+  private val nativeEquationRun = new DynamicVariable[Option[NativeEquationRun]](None)
+
+  private def shouldResidualizeRecursiveSource(lam: VLam): Boolean =
+    nativeEquationRun.value.exists { run =>
+      (run.root ne lam) &&
+      (lam.body match {
+        case LamBody.Core(term, _) => term.recursivePeers.nonEmpty
+        case _                     => false
+      })
+    }
+
+  private def recursivePeerOverride(lam: VLam): Option[Vector[Value]] =
+    nativeEquationRun.value.collect { case run if run.root eq lam => run.recursivePeers }
+
+  private def residualRecursiveApplication(lam: VLam, args: Vector[Value]): Value = {
+    val storedArgs = Interpreter.residualArguments(lam, args)
+    val env = BinderOps.instantiateFullRuntime(lam.tpe.binders, lam.tpe.runtimeSlotLayout, lam.tpe.env, storedArgs)
+    val blockedOn = storedArgs.foldLeft(DepSet.empty) {
+      case (deps, Blocker(argDeps)) => deps ++ argDeps
+      case (deps, _)                => deps
+    }
+    Value.canonicalizeProof(VApp(lam, storedArgs, lam.tpe.codomain(env), blockedOn))
+  }
 
   private final class Compiler {
     private var size = 0
@@ -257,6 +284,15 @@ private[raccoonlang] object CoreEvaluator {
       case _ => runtime.get().withSession(_.runTerm(term, env))
     }
   def evalApply(fn: Value, args: Vector[Value]): Value = runtime.get().withSession(_.runApply(fn, args, null))
+  private[raccoonlang] def evalApplyWithRecursivePeers(
+      fn: VLam,
+      args: Vector[Value],
+      peers: Vector[Value]
+  ): Value =
+    nativeEquationRun.withValue(Some(NativeEquationRun(fn, peers))) {
+      evalApply(fn, args)
+    }
+
   def evalValidatedStringAppend(layout: SourceStringLayout, chars: VPacked): Value =
     runtime.get().withSession(_.runApply(layout.stringMk, Vector(chars), layout))
 
@@ -499,13 +535,21 @@ private[raccoonlang] object CoreEvaluator {
     }
 
     private def peerValues(lam: VLam, core: LamBody.Core): Vector[Value] =
-      core.term.recursivePeers.map { case (_, name) =>
-        if (core.term.recursivePeers.length == 1 && core.term.name.contains(name)) lam
-        else
-          core.env.globals
-            .get(name)
-            .map(_.value(core.env))
-            .getOrElse(wtf(s"Checked recursive peer $name is absent from its group"))
+      recursivePeerOverride(lam) match {
+        case Some(values) if values.length == core.term.recursivePeers.length => values
+        case Some(values) =>
+          wtf(
+            s"Native equation inspection supplied ${values.length} peers for ${core.term.recursivePeers.length} slots"
+          )
+        case None =>
+          core.term.recursivePeers.map { case (_, name) =>
+            if (core.term.recursivePeers.length == 1 && core.term.name.contains(name)) lam
+            else
+              core.env.globals
+                .get(name)
+                .map(_.value(core.env))
+                .getOrElse(wtf(s"Checked recursive peer $name is absent from its group"))
+          }
       }
 
     private def overlaps(env: Env, refs: Vector[CoreAst.LocalRef]): Boolean = {
@@ -980,12 +1024,15 @@ private[raccoonlang] object CoreEvaluator {
           if (args.length != pi.binders.length)
             fail(ArityMismatch(pi.binders.length, args.length, ArityMismatch.Arguments))
           fn match {
+            case lam: VLam if shouldResidualizeRecursiveSource(lam) =>
+              appliedNode = null
+              setValueResult(residualRecursiveApplication(lam, args))
             case lam: VLam =>
               lam.body match {
                 case _: LamBody.Core =>
                   appliedNode = enter(lam, args, tail)
                   clearResult()
-                case LamBody.Native(run, nativeEnv, _, _) =>
+                case LamBody.Native(run, nativeEnv, _, _, _) =>
                   appliedNode = null
                   setValueResult(run(args, nativeEnv))
                 case LamBody.ProofEta =>
@@ -1017,7 +1064,7 @@ private[raccoonlang] object CoreEvaluator {
 
     private def applyApplication(fn: Value, app: Application, caller: Frame): Unit = {
       val corePlan = fn match {
-        case lam: VLam if lam.tpe.numExplicit == lam.tpe.binders.length =>
+        case lam: VLam if lam.tpe.numExplicit == lam.tpe.binders.length && !shouldResidualizeRecursiveSource(lam) =>
           lam.body match {
             case core: LamBody.Core =>
               if (app.args.length != lam.tpe.binders.length)
@@ -1100,16 +1147,9 @@ private[raccoonlang] object CoreEvaluator {
         else copySlot(caller.base + app.argStart + i, target)
         i += 1
       }
-      while (i < count + core.term.recursivePeers.length) {
-        val (_, name) = core.term.recursivePeers(i - count)
-        val peer =
-          if (core.term.recursivePeers.length == 1 && core.term.name.contains(name)) lam
-          else
-            core.env.globals
-              .get(name)
-              .map(_.value(core.env))
-              .getOrElse(wtf(s"Checked recursive peer $name is absent from its group"))
-        bind(frame.base + i, peer)
+      val peers = peerValues(lam, core)
+      while (i < count + peers.length) {
+        bind(frame.base + i, peers(i - count))
         i += 1
       }
       plan.root

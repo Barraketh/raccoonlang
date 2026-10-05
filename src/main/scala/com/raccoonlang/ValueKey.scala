@@ -50,7 +50,8 @@ object ValueKey {
     val LifetimeTpe = 24
     val Kind = 25
     val Lifetime = 26
-    val Count = 27
+    val NatPrefix = 27
+    val Count = 28
   }
 
   private val SeedHi = -7046029254386353131L
@@ -259,6 +260,12 @@ object ValueKey {
       case _: Value.CharListCodec => 2L
     }
     mixKey(codec.mixPayloadKey(mixLong(tag(Tag.Packed), codecId), payload), tpe.key)
+  }
+
+  /** The canonical symbolic successor-prefix form of Nat. */
+  def natPrefix(base: Value, offset: BigInt, tpe: Value): Key = {
+    require(offset > 0, "A symbolic Nat prefix key requires a positive offset")
+    mixKey(mixBytes(mixKey(tag(Tag.NatPrefix), base.key), offset.toByteArray), tpe.key)
   }
 
   /** All erased proofs of defEq propositions share a key; VProof contains only its proposition. */

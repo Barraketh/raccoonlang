@@ -24,17 +24,6 @@ sealed trait Value {
   def key: ValueKey.Key
   def needsStructuralDefEq: Boolean
 
-  private[this] lazy val occurrenceSummary0: ValueAnalysis.OccurrenceSummary = ValueAnalysis.buildOccurrences(this)
-  private[this] lazy val positivitySummary0: ValueAnalysis.ForbiddenExpr = ValueAnalysis.buildPositivity(this)
-
-  /** Kernel-owned target occurrence metadata, computed once for this immutable value. */
-  private[raccoonlang] final def occurrences: ValueAnalysis.OccurrenceSummary =
-    ValueAnalysis.withOccurrenceGuard(this)(occurrenceSummary0)
-
-  /** Kernel-owned strict-positivity metadata, computed once for this immutable value. */
-  private[raccoonlang] final def positivity: ValueAnalysis.ForbiddenExpr =
-    ValueAnalysis.withPositivityGuard(this)(positivitySummary0)
-
   override def toString: String = PrettyPrinter.print(this)
 }
 
@@ -70,9 +59,9 @@ object Value {
       // A Pi's own type is a classifier, never a proposition — skip without forcing it.
       // Metas remain linkable, constructor heads remain applicable, and the raw recursive lambda
       // remains executable until checking has validated every recursive call.
-      case _: VPi | _: Var | _: ConstructorHead      => value
-      case VLam(_, _, LamBody.Native(_, _, true, _)) => value
-      case _ if !Sorts.isProposition(value.tpe)      => value
+      case _: VPi | _: Var | _: ConstructorHead         => value
+      case VLam(_, _, LamBody.Native(_, _, true, _, _)) => value
+      case _ if !Sorts.isProposition(value.tpe)         => value
       // A constructor application already in canonical form keeps it.
       case ConstructorApp(head) if ProofReconstruction.isCanonicalConstructor(value.tpe, head) => value
       case _ =>
@@ -142,8 +131,8 @@ object Value {
   /** Whether `ConstructorForm` answers for a value, decided without reading its fields or decoding a packed one. */
   private def isConstructorForm(value: Value): Boolean =
     value match {
-      case ConstructorApp(_) | _: VPacked => true
-      case _                              => false
+      case ConstructorApp(_) | _: VPacked | _: VNatPrefix => true
+      case _                                              => false
     }
 
   /**
@@ -165,8 +154,9 @@ object Value {
       case app: VApp =>
         app.head.needsStructuralDefEq || app.determiningArgs.exists(_.needsStructuralDefEq) ||
         app.tpe.needsStructuralDefEq
-      case p: VPacked => !p.codec.canonical
-      case _          => false
+      case p: VPacked    => !p.codec.canonical
+      case _: VNatPrefix => true
+      case _             => false
     }
 
   type VarId = Int
@@ -223,14 +213,19 @@ object Value {
           walkEnv(env)
           id.captures.foreach(walk)
           walk(tpe)
+        case prefix: VNatPrefix =>
+          walk(prefix.base)
+          walk(prefix.tpe)
         case pi: VPi =>
           walkEnv(pi.env)
         case lam: VLam =>
           walk(lam.tpe)
           lam.body match {
-            case LamBody.Core(_, env)         => walkEnv(env)
-            case LamBody.Native(_, env, _, _) => walkEnv(env)
-            case LamBody.ProofEta             =>
+            case LamBody.Core(_, env) => walkEnv(env)
+            case LamBody.Native(_, env, _, _, equation) =>
+              walkEnv(env)
+              equation.foreach(value => walk(value.source))
+            case LamBody.ProofEta =>
           }
           lam.id match {
             case ValueId.Const(_)           =>
@@ -259,9 +254,11 @@ object Value {
         run: (Vector[Value], Env) => Value,
         env: Env,
         isRawRecursive: Boolean,
-        scalarCapability: Option[Packed.ScalarNatCapability] = None
+        scalarCapability: Option[Packed.ScalarNatCapability],
+        equation: Option[Packed.NativeEquation]
     ) extends LamBody {
-      override val synDeps: DepSet = envDeps(env)
+      // Host code obtains values only through its arguments, this environment, and values that existed before it was built.
+      override val synDeps: DepSet = envDeps(env) ++ equation.fold(DepSet.empty)(_.source.synDeps)
     }
 
     /** Type-directed eta expansion of a proof of Pi; its result is reconstructed from the instantiated codomain. */
@@ -571,12 +568,6 @@ object Value {
       isPropValued: Boolean
   ) extends Value {
     require(binders.nonEmpty, "VPi requires at least one binder")
-
-    private[this] lazy val analysisTelescope0: ValueAnalysis.RigidTelescope = ValueAnalysis.buildPiTelescope(this)
-
-    /** One fresh rigid telescope shared by occurrence and positivity metadata. */
-    private[raccoonlang] def analysisTelescope: ValueAnalysis.RigidTelescope =
-      ValueAnalysis.withInspectionGuard(this, ValueAnalysis.RigidTelescope.unknown)(analysisTelescope0)
 
     private[raccoonlang] lazy val runtimeSlotLayout: RuntimeSlotLayout =
       RuntimeSlotLayout(binders.map(_.localRef))
@@ -921,12 +912,6 @@ object Value {
       id: ValueId,
       body: LamBody
   ) extends Value {
-    private[this] lazy val analysisResult0: ValueAnalysis.RigidTelescope = ValueAnalysis.buildLambdaResult(this)
-
-    /** One fresh rigid inspection shared by strict-positivity queries. */
-    private[raccoonlang] def analysisResult: ValueAnalysis.RigidTelescope =
-      ValueAnalysis.withInspectionGuard(this, ValueAnalysis.RigidTelescope.unknown)(analysisResult0)
-
     override val synDeps: DepSet = id match {
       case ValueId.Const(_) => DepSet.unionAll(Iterator(tpe.synDeps, body.synDeps))
       case ValueId.LocalId(_, params) =>
@@ -1264,6 +1249,28 @@ object Value {
 
   }
 
+  /** A compact positive run of validated Nat successors around a symbolic base. */
+  final class VNatPrefix private (
+      val base: Value,
+      val offset: BigInt,
+      val tpe: Value
+  ) extends Value {
+    require(offset > 0, "A symbolic Nat prefix must contain at least one successor")
+    require(tpe.synDeps.isEmpty, s"A symbolic Nat prefix requires a closed type, got ${tpe.synDeps}")
+    require(!Sorts.isProposition(tpe), s"A symbolic Nat prefix requires data type Nat, got $tpe")
+
+    override val synDeps: DepSet = base.synDeps ++ tpe.synDeps
+    override val key: ValueKey.Key = ValueKey.natPrefix(base, offset, tpe)
+    override val needsStructuralDefEq: Boolean = true
+  }
+
+  object VNatPrefix {
+
+    /** The only raw node constructor; callers must normalize through Packed.natPrefix first. */
+    private[raccoonlang] def node(base: Value, offset: BigInt, tpe: Value): VNatPrefix =
+      new VNatPrefix(base, offset, tpe)
+  }
+
   /**
    * `noConfusion`: whether unification may assume injectivity and disjointness for this head. True for constructors of
    * genuine inductive types. False for quotient constructors: Quot.sound identifies distinct Quot.mk applications, so
@@ -1553,6 +1560,7 @@ object Value {
       value match {
         case VCtor(head, storedArgs, _) => Some((head.name, storedArgs))
         case p: VPacked                 => Some(p.codec.decodeHead(p))
+        case p: VNatPrefix              => Some(Packed.natPrefixHead(p))
         case _                          => None
       }
 
@@ -1564,9 +1572,10 @@ object Value {
     object Stored {
       def unapply(value: Value): Option[(String, Vector[Value])] =
         value match {
-          case app: VApp  => ConstructorApp.unapply(app).map(head => (head.name, app.storedArgs))
-          case p: VPacked => Some(p.codec.decodeHead(p))
-          case _          => None
+          case app: VApp     => ConstructorApp.unapply(app).map(head => (head.name, app.storedArgs))
+          case p: VPacked    => Some(p.codec.decodeHead(p))
+          case p: VNatPrefix => Some(Packed.natPrefixHead(p))
+          case _             => None
         }
     }
   }
@@ -1577,6 +1586,7 @@ object Value {
       value match {
         case Var(_, id, _)                                             => Some(DepSet(id))
         case app: VApp if app.blockedOn.nonEmpty                       => Some(app.blockedOn)
+        case prefix: VNatPrefix if prefix.synDeps.nonEmpty             => Some(prefix.synDeps)
         case NeutralThunk(_, _, _, _, blockedOn) if blockedOn.nonEmpty => Some(blockedOn)
         case _                                                         => None
       }
@@ -1586,6 +1596,7 @@ object Value {
     def unapply(value: Value): Option[DepSet] =
       value match {
         case app: VApp if app.blockedOn.nonEmpty                       => Some(app.blockedOn)
+        case prefix: VNatPrefix if prefix.synDeps.nonEmpty             => Some(prefix.synDeps)
         case NeutralThunk(_, _, _, _, blockedOn) if blockedOn.nonEmpty => Some(blockedOn)
         case _                                                         => None
       }
