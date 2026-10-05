@@ -513,6 +513,9 @@ object PrettyPrinter {
           .orElse(p.charScalars.map(scalars => s"proj[String,0](${printString(scalars)})"))
           .getOrElse(wtf("Unknown packed payload"))
         Vector(Text(printed))
+      case p: Value.VNatPrefix =>
+        if (p.offset == 1) Vector(Text("Nat.succ("), Val(p.base), Text(")"))
+        else Vector(Text("Nat.add("), Val(p.base), Text(s", ${p.offset})"))
       case Value.LevelTpe      => Vector(Text(CoreAst.Parameter.Level.name))
       case Value.KindTpe       => Vector(Text(CoreAst.Parameter.Kind.name))
       case Value.LifetimeTpe   => Vector(Text(CoreAst.Parameter.Lifetime.name))

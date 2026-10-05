@@ -19,7 +19,13 @@ private object Builtins {
             VLam(
               pi,
               ValueId.Const(name),
-              LamBody.Native((args, _) => run(self, args), Env.empty, isRawRecursive = false)
+              LamBody.Native(
+                (args, _) => run(self, args),
+                Env.empty,
+                isRawRecursive = false,
+                scalarCapability = None,
+                equation = None
+              )
             )
           self
         case other => fail(CannotApplyNonFunction(other))

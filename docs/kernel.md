@@ -547,6 +547,10 @@ sibling's field is read by the sibling's. Where siblings hold each other, the
 field bounds force compatible sorts. All provisional family heads are visible while
 constructors are checked, but the block publishes only after every family
 succeeds. Positivity and recursion metadata are computed for the whole block.
+An occurrence of a family being declared can start only at one of its
+provisional heads; earlier declarations and native host code cannot name that
+block. These checks run once when the block is declared, using identity-memoized
+scans of the values built from those heads.
 
 Constructor values erase family parameters and retain ordinary constructor
 fields. Each family records only its own constructors for match
@@ -1166,21 +1170,35 @@ returns the dividend, and `pow(a, 0)` returns one. `pow` and nonzero
 `shiftLeft` reject exponents or counts above `2^24`; sufficiently large
 `shiftRight` returns zero without allocating an enormous intermediate value.
 
-Applied to anything but two literals, an operation runs its declared body only
-when every literal argument is at most the unfolding limit, `2^8`. A body
-unfolds one layer per unit of its recursion argument, and the kernel does not
-know which argument that is, so the limit bounds each literal argument.
-Otherwise the application is a neutral headed by the operation itself. It is
-blocked on what its non-literal arguments are blocked on, and rigid when they
-are not blocked; it reruns when they are solved, and uses the host equation
-once its arguments are literals. Two such neutrals are equal when they apply
-the same operation to convertible arguments. Conversion therefore never
-unfolds an application on a literal above the limit: `Nat.add(x, 2000)` is not
-definitionally `Nat.succ(Nat.add(x, 1999))`. This loses definitional equations
-and adds none, so it can only reject a program that relied on one. Small
-offsets such as `Nat.add(n, 1)` still unfold. The limit stays below the depth
-at which the host stack overflows: checking `Nat.mul(n, 512)` already exhausts
-a 1MB stack.
+Ground Nats remain arbitrary-precision packed integers. Symbolic successor
+runs use a compact prefix `succ^k(base)` with an exact `BigInt` count; zero
+offsets, nested prefixes, and packed bases are normalized by one smart
+constructor. Matching and structural descent expose one constructor at a
+time without allocating the run. This representation is internal: source
+programs still use `Nat.zero`, `Nat.succ`, and ordinary Nat literals.
+
+Mixed applications use the same size-independent policy for every literal.
+They take safe constructor equations such as `add(a, k) = succ^k(a)` and
+`mul(a, 0) = 0` in compact form; other results stay as residual applications
+of the exact native operation. Residuals retain their blockers and rerun the
+same reducer after refinement. Ground operations retain the validated host
+equations and the explicit resource limits above. The evaluator's unboxed
+`Long` path and overflow fallback remain in use for small ground operations.
+
+Conversion can demand one layer of the exact checked source body when an
+existing constructor equation is needed, such as
+`mul(a, succ(b)) = add(a, mul(a, b))`. Recursive peers in that inspection are
+the published native heads, so this inspection does not perform source
+recursion. Inspection is guarded by the operation identity and canonical
+argument spine; failed comparisons stay stuck and discard any tentative
+refinements. Arithmetic is not generally injective: failed mixed equations
+never establish apartness or solve a variable by guessing an inverse.
+
+Two native residuals for the same operation compare through convertible
+arguments. Compact prefixes also cancel equal successor counts in one
+arithmetic step for Nat constructor comparison. No literal magnitude selects
+source unfolding versus opacity, and the kernel does not normalize arbitrary
+arithmetic expressions.
 
 The bundled prelude defines and accelerates `add`, `sub`, `mul`, `pow`, `beq`,
 `ble`, and `blt`. Other table entries become available only if the selected

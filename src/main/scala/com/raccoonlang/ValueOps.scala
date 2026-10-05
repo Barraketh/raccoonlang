@@ -111,6 +111,7 @@ object ValueOps {
         // A packed literal's type is closed (VPacked requires it), so it never reaches here:
         // `mayNeedMaterialization` has already returned false for anything with no dependencies.
         case p: VPacked                 => p
+        case p: VNatPrefix              => Packed.natPrefix(materialize(p.base), p.offset, materialize(p.tpe))
         case deferred: DeferredEvidence => deferred.escaped
       }
       // A type meta may resolve to a proposition; the proof policy applies after materializing it
@@ -188,10 +189,16 @@ object ValueOps {
 
     private def materializeLamBody(body: LamBody): LamBody =
       body match {
-        case LamBody.Core(term, env)                     => LamBody.Core(term, materializeEnv(env))
-        case LamBody.Native(run, env, isRawRecursive, _) =>
-          // Materialization creates a different lambda owner; its scalar capability cannot be transferred.
-          LamBody.Native(run, materializeEnv(env), isRawRecursive)
+        case LamBody.Core(term, env)                        => LamBody.Core(term, materializeEnv(env))
+        case LamBody.Native(run, env, isRawRecursive, _, _) =>
+          // Materialization creates a different lambda owner; native capabilities stay with the original value.
+          LamBody.Native(
+            run,
+            materializeEnv(env),
+            isRawRecursive,
+            scalarCapability = None,
+            equation = None
+          )
         case LamBody.ProofEta => LamBody.ProofEta
       }
 

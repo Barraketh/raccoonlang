@@ -1,5 +1,7 @@
 package com.raccoonlang
 
+import com.raccoonlang.Value._
+
 class InductiveCheckTest extends munit.FunSuite with DiagnosticAssertions {
 
   private def elab(src: String, prelude: Prelude.Config): CoreAst.Program =
@@ -22,6 +24,30 @@ class InductiveCheckTest extends munit.FunSuite with DiagnosticAssertions {
   /** The test prelude followed by `assumptions`, which may declare axioms. */
   private def assuming(assumptions: String): Prelude.Config =
     TestSupport.preludeAssuming(TestSupport.testPreludeSource, assumptions)
+
+  private def assumingBundled(assumptions: String): Prelude.Config =
+    Prelude.fromSource("inductive-check-assumptions", TestSupport.bundledPreludeSource + "\n" + assumptions)
+
+  private def neutralNatChainSource(depth: Int, finalDeclaration: String): String = {
+    val chainDefinitions =
+      (1 to depth).map(index => s"  def chain$index (n: N): N := pop(chain${index - 1}(n))").mkString("\n")
+    val declarations = """
+                         |namespace DeclarationMemo {
+                         |  inductive N : Type
+                         |   | zero : N
+                         |   | succ (prior: N) : N
+                         |
+                         |  inductive Truth (n: N): Prop
+                         |   | mk: Truth(n)
+                         |
+                         |  def pop (n: N): N := match n returning N with
+                         |   | N.zero => N.zero
+                         |   | N.succ prior => prior
+                         |
+                         |  def chain0 (n: N): N := n
+                         |""".stripMargin
+    s"$declarations$chainDefinitions\n$finalDeclaration\n}"
+  }
 
   private def boxDecl: CoreAst.Decl.InductiveDecl =
     elab(
@@ -760,5 +786,260 @@ class InductiveCheckTest extends munit.FunSuite with DiagnosticAssertions {
         |""".stripMargin
 
     interceptError[NonStrictlyPositive] { elabAndTypecheck(p, assuming(assumptions)) }
+  }
+
+  test("a native Nat operation does not invent occurrences in a result index") {
+    val source =
+      """
+        |namespace NativeNatOccurrence {
+        |  inductive Layout indices (top: Nat): Prop
+        |   | empty: Layout(0)
+        |   | reserve (top: Nat)(bytes: Nat)(previous: Layout(top))
+        |       : Layout(Nat.add(top, bytes))
+        |}
+        |""".stripMargin
+    val program = elab(source, Prelude.default)
+    val env = program.decls.foldLeft(Prelude.default.checkedEnv) { case (current, decl) =>
+      Interpreter.evalDecl(decl, current)
+    }
+    val add = env("Nat.add")
+    assert(add.isInstanceOf[VLam])
+    assert(add.asInstanceOf[VLam].body.isInstanceOf[LamBody.Native])
+    env("NativeNatOccurrence.Layout.reserve") match {
+      case head: ConstructorHead =>
+        val pi = head.pi.getOrElse(fail("Expected reserve constructor telescope"))
+        val fresh = com.raccoonlang.telescope.BinderOps.freshen(pi)
+        pi.codomain(fresh) match {
+          case InductiveFamilyValue(instance) =>
+            assertEquals(instance.args.length, 1)
+            instance.args.head match {
+              case app: VApp => assert(app.head eq add)
+              case other     => fail(s"Expected result index to retain native Nat.add, got $other")
+            }
+          case other => fail(s"Expected reserve result to be a Layout instance, got $other")
+        }
+      case other => fail(s"Expected reserve constructor head, got $other")
+    }
+  }
+
+  test("a recursive family hidden in a compact Nat prefix base is rejected in a result index") {
+    val prelude = assumingBundled("axiom size (T: Type): Nat")
+    val source =
+      """
+        |inductive Bad indices (n: Nat): Type
+        | | mk: Bad(Nat.add(size(Bad(0)), 1000))
+        |""".stripMargin
+
+    interceptError[NonStrictlyPositive] { elabAndTypecheck(source, prelude) }
+  }
+
+  test("a depth-40 neutral Nat chain is memoized while checking a result index") {
+    val deepFamily =
+      """
+        |  inductive Deep indices (m: N): Prop
+        |   | mk (n: N): Deep(chain40(n))
+        |""".stripMargin
+
+    elabAndTypecheck(neutralNatChainSource(40, deepFamily), Prelude.test)
+  }
+
+  test("a depth-40 neutral Nat chain in a non-recursive field is accepted") {
+    val witness =
+      """
+        |  struct Witness (n: N): Prop
+        |   | mk (check: Truth(chain40(n)) -> Truth(n)): Witness(n)
+        |""".stripMargin
+
+    elabAndTypecheck(neutralNatChainSource(40, witness), Prelude.test)
+  }
+
+  test("a stuck match exposing a block family in a field domain is rejected") {
+    val source =
+      """
+        |inductive N : Type
+        | | zero : N
+        | | succ (prior: N): N
+        |
+        |inductive B : Type
+        | | yes : B
+        | | no : B
+        |
+        |def select (b: B)(T: Type): Type := match b returning Type with
+        | | B.yes => T
+        | | B.no => N
+        |
+        |inductive W indices (n: N): Type
+        | | mk (n: N)(b: B)(x: select(b, W(n))): W(n)
+        |""".stripMargin
+
+    interceptError[NonStrictlyPositive] { elabAndTypecheck(source, Prelude.test) }
+  }
+
+  test("a stuck match unrelated to the block is accepted in a recursive field domain") {
+    val source =
+      """
+        |inductive N : Type
+        | | zero : N
+        | | succ (prior: N): N
+        |
+        |inductive B : Type
+        | | yes : B
+        | | no : B
+        |
+        |def pop (n: N): N := match n returning N with
+        | | N.zero => N.zero
+        | | N.succ prior => prior
+        |
+        |inductive Truth (n: N): Prop
+        | | mk: Truth(n)
+        |
+        |inductive W indices (n: N): Type
+        | | mk (n: N)(f: Truth(pop(n)) -> W(n)): W(n)
+        |""".stripMargin
+
+    elabAndTypecheck(source, Prelude.test)
+  }
+
+  test("declaration scanning rejects double-negative family domains and accepts positive codomains") {
+    val negative =
+      """
+        |inductive N : Type
+        | | zero : N
+        |
+        |inductive Bad : Type
+        | | mk (f: (g: Bad -> N) -> N): Bad
+        |""".stripMargin
+    interceptError[NonStrictlyPositive] { elabAndTypecheck(negative, Prelude.test) }
+
+    val positive =
+      """
+        |inductive N : Type
+        | | zero : N
+        |
+        |inductive Good : Type
+        | | mk (f: N -> Good): Good
+        |""".stripMargin
+    elabAndTypecheck(positive, Prelude.test)
+  }
+
+  test("a curried type-level match is inspected after it selects a negative family domain") {
+    val source =
+      """
+        |inductive N : Type
+        | | zero : N
+        |
+        |inductive B : Type
+        | | yes : B
+        | | no : B
+        |
+        |def choose (b: B): (A: Type) -> Type := fun (A: Type): Type =>
+        |  match b returning Type with
+        |  | B.yes => A
+        |  | B.no => (x: A) -> N
+        |
+        |inductive Bad : Type
+        | | mk (x: choose(B.no)(Bad)): Bad
+        |""".stripMargin
+
+    interceptError[NonStrictlyPositive] { elabAndTypecheck(source, Prelude.test) }
+  }
+
+  test("a Core lambda's code annotations are checked when its family argument is inspected") {
+    val env = elabAndRun(
+      """
+        |inductive N : Type
+        | | zero : N
+        | | succ (prior: N): N
+        |""".stripMargin
+    )
+    val functionBinder = CoreAst.Binder(
+      CoreAst.LocalRef(1070, "A"),
+      typeSort,
+      blockSpan,
+      CoreAst.BinderSite.Function,
+      BinderMode.Explicit
+    )
+    val functionType = CoreAst.Term.Pi(
+      Vector(functionBinder),
+      typeSort,
+      CoreAst.Closure.unrestricted(blockSpan),
+      blockSpan,
+      NodeId.fresh()
+    )
+    val familyIndex = CoreAst.Binder(
+      CoreAst.LocalRef(1071, "F"),
+      functionType,
+      blockSpan,
+      CoreAst.BinderSite.Field,
+      BinderMode.Explicit
+    )
+    val familyAtIndex = CoreAst.Term.App(
+      global("Bad"),
+      Vector(CoreAst.Term.LocalRef(CoreAst.LocalRef(1074, "f"), blockSpan)),
+      Vector.empty,
+      blockSpan
+    )
+    val nestedBinder = CoreAst.Binder(
+      CoreAst.LocalRef(1072, "x"),
+      familyAtIndex,
+      blockSpan,
+      CoreAst.BinderSite.Function,
+      BinderMode.Explicit
+    )
+    val nestedType = CoreAst.Term.Pi(
+      Vector(nestedBinder),
+      global("N"),
+      CoreAst.Closure.unrestricted(blockSpan),
+      blockSpan,
+      NodeId.fresh()
+    )
+    val ignored = CoreAst.LocalRef(1073, "ignored")
+    val nestedLambda = CoreAst.Term.Lam(
+      nestedType,
+      global("N.zero"),
+      blockSpan,
+      NodeId.fresh(),
+      None,
+      None,
+      Vector.empty
+    )
+    val lambdaBody = CoreAst.Term.Body(
+      Vector(CoreAst.Let(CoreAst.LetPattern.Local(ignored), None, nestedLambda, blockSpan)),
+      global("N"),
+      blockSpan
+    )
+    val lambda = CoreAst.Term.Lam(
+      functionType,
+      lambdaBody,
+      blockSpan,
+      NodeId.fresh(),
+      None,
+      None,
+      Vector.empty
+    )
+    val declaration = CoreAst.Decl.InductiveDecl(
+      CoreAst.InductiveHeader("Bad", Vector.empty, Vector(familyIndex), propSort, blockSpan),
+      Vector(
+        CoreAst.ConstructorDecl(
+          "Bad.mk",
+          "mk",
+          Vector(
+            CoreAst.Binder(
+              CoreAst.LocalRef(1074, "f"),
+              functionType,
+              blockSpan,
+              CoreAst.BinderSite.Field,
+              BinderMode.Explicit
+            )
+          ),
+          CoreAst.Term.App(global("Bad"), Vector(lambda), Vector.empty, blockSpan),
+          blockSpan
+        )
+      ),
+      seal = None,
+      blockSpan
+    )
+
+    interceptError[NonStrictlyPositive] { Interpreter.evalDecl(declaration, env) }
   }
 }

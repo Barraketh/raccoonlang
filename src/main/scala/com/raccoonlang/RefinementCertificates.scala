@@ -159,6 +159,40 @@ private[raccoonlang] object RefinementCertificates {
       }
       .getOrElse(throw Unsupported())
 
+    private def prefix(prefix: VNatPrefix): CA.Term = {
+      if (prefix.offset == 1)
+        env.globals.get(NatCodec.succName).map(_.value(env)) match {
+          case Some(head: ConstructorHead)
+              if head.name == NatCodec.succName && head.totalArity == 1 && head.numErasedFamilyArgs == 0 &&
+                head.noConfusion =>
+            call(head, Vector(prefix.base))
+          case _ => throw Unsupported()
+        }
+      else {
+        val natType = env.nativeLiterals.natLayout match {
+          case Some(layout) if layout.natTpe.asInstanceOf[AnyRef] eq prefix.tpe.asInstanceOf[AnyRef] => layout.natTpe
+          case _ => throw Unsupported()
+        }
+        env.globals.get("Nat.add").map(_.value(env)) match {
+          case Some(head: VLam) =>
+            val capability = Packed.scalarNatCapability(head, env)
+            if (
+              !capability.exists(value =>
+                value.kind == Packed.ScalarNatKind.Add && (value.natTpe.asInstanceOf[AnyRef] eq natType
+                  .asInstanceOf[AnyRef])
+              )
+            ) throw Unsupported()
+            CA.Term.App(
+              global("Nat.add"),
+              Vector(apply(prefix.base), CA.Term.NatLit(prefix.offset, span)),
+              Vector.empty,
+              span
+            )
+          case _ => throw Unsupported()
+        }
+      }
+    }
+
     def apply(value: Value): CA.Term = {
       // Preserve rigid nominal/constructor forms when closing helper signatures. Abstracting an alias of a
       // materialized family instance into an arbitrary Type would turn N2 into an invalid universal theorem.
@@ -181,6 +215,7 @@ private[raccoonlang] object RefinementCertificates {
             )
           case p: VPacked if p.natValue.nonEmpty && env.nativeLiterals.natLayout.nonEmpty =>
             CA.Term.NatLit(p.natValue.get, span)
+          case p: VNatPrefix => prefix(p)
           case ConstructorForm(name, fields) =>
             val head = env(name).asInstanceOf[ConstructorHead]
             val family = value.tpe match { case InductiveFamilyValue(f) => f; case _ => throw Unsupported() }

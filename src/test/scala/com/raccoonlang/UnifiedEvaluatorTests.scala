@@ -248,7 +248,15 @@ class UnifiedEvaluatorTests extends munit.FunSuite with TestSupport {
     val proposition = core.env("True")
     val noncanonical = Value.VProof(proposition)
     assert(!(Value.canonicalizeProof(noncanonical) eq noncanonical))
-    val native = callback.copy(body = Value.LamBody.Native((_, _) => noncanonical, core.env, isRawRecursive = false))
+    val native = callback.copy(
+      body = Value.LamBody.Native(
+        (_, _) => noncanonical,
+        core.env,
+        isRawRecursive = false,
+        scalarCapability = None,
+        equation = None
+      )
+    )
     val modifiedEnv = core.env.copy(globals = core.env.globals.updated("callback", GlobalBinding.Strict(native)))
     val modified = fn.copy(body = core.copy(env = modifiedEnv))
     val error = intercept[InternalError](Interpreter.evalApply(modified, Vector(zero)))
@@ -280,7 +288,9 @@ class UnifiedEvaluatorTests extends munit.FunSuite with TestSupport {
           } else args.head
         },
         core.env,
-        isRawRecursive = false
+        isRawRecursive = false,
+        scalarCapability = None,
+        equation = None
       )
     )
     val modifiedEnv = core.env.copy(globals = core.env.globals.updated("callback", GlobalBinding.Strict(native)))

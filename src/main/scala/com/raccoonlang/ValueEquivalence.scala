@@ -3,6 +3,7 @@ package com.raccoonlang
 import com.raccoonlang.Value._
 import com.raccoonlang.telescope.BinderOps
 
+import scala.collection.mutable
 import scala.util.control.NonFatal
 
 object ValueEquivalence {
@@ -73,6 +74,57 @@ object ValueEquivalence {
     // particular) rely on this — a mutable-store optimization would silently break it.
     private type Result = Either[UnifyFailure, EqStore]
     private final case class PiUnification(eqStore: EqStore, vars: Vector[Value], watermark: Value.VarId)
+
+    /** Identity of a demanded native equation at its canonical checked argument spine. */
+    private final class NativeEquationKey(val head: VLam, val args: Vector[ValueKey.Key]) {
+      override def equals(other: Any): Boolean =
+        other match {
+          case that: NativeEquationKey => (head eq that.head) && args == that.args
+          case _                       => false
+        }
+      override def hashCode(): Int = 31 * System.identityHashCode(head) + args.hashCode()
+    }
+
+    /** One top-level unification shares source inspections across the key-coherence audit and structural walk. */
+    private final class NativeEquationDemand {
+      private val active = mutable.HashSet.empty[NativeEquationKey]
+      private val inspected = mutable.HashMap.empty[NativeEquationKey, Option[Value]]
+
+      def compare(app: VApp, other: Value, meta: EqStore, ctx: Ctx): Option[Result] =
+        app.head match {
+          case head: VLam =>
+            Packed.nativeEquation(head).flatMap { equation =>
+              val key = new NativeEquationKey(head, app.args.map(_.key))
+              if (active.contains(key)) None
+              else {
+                active += key
+                try {
+                  val expanded = inspected.get(key) match {
+                    case Some(result) => result
+                    case None =>
+                      val result = equation.inspect(head, app.args)
+                      inspected.put(key, result)
+                      result
+                  }
+                  expanded.map(value => tryUnify(value, other, meta, ctx.enterNonInvertibleFrame))
+                } finally active -= key
+              }
+            }
+          case _ => None
+        }
+    }
+
+    private val nativeEquationDemand = new ThreadLocal[NativeEquationDemand]
+
+    private def withNativeEquationDemand[A](body: => A): A = {
+      val current = nativeEquationDemand.get()
+      if (current ne null) body
+      else {
+        nativeEquationDemand.set(new NativeEquationDemand)
+        try body
+        finally nativeEquationDemand.remove()
+      }
+    }
 
     /**
      * An application's argument equation `v1 ~ v2` that failed stuck under `store`, postponed until the rest of the
@@ -531,7 +583,10 @@ object ValueEquivalence {
         case other                                   => other
       }
 
-    def tryUnify(v1: Value, v2: Value, meta: EqStore, ctx: Ctx): Result = {
+    def tryUnify(v1: Value, v2: Value, meta: EqStore, ctx: Ctx): Result =
+      withNativeEquationDemand(tryUnifyWithDemand(v1, v2, meta, ctx))
+
+    private def tryUnifyWithDemand(v1: Value, v2: Value, meta: EqStore, ctx: Ctx): Result = {
       val a = constructorForm(ValueOps.materialize(v1, meta))
       val b = constructorForm(ValueOps.materialize(v2, meta))
 
@@ -619,6 +674,40 @@ object ValueEquivalence {
 
     /** The rules below the key fast path: decomposition, whose leaves are decided by the fast path again. */
     private def structurally(a: Value, b: Value, meta: EqStore, rootCtx: Ctx): Result = {
+      if (differentNativeOperationHeads(a, b))
+        tryNativeSourceEquation(a, b, meta, rootCtx.enterNonInvertibleFrame) match {
+          case Some(Right(store)) => return Right(store)
+          case Some(Left(failed)) => return Left(failed.asStuck)
+          case None               =>
+        }
+      val result = structurallyDirect(a, b, meta, rootCtx)
+      result match {
+        case Right(store) => Right(store)
+        case Left(failed) =>
+          tryNativeSourceEquation(a, b, meta, rootCtx.enterNonInvertibleFrame) match {
+            case Some(Right(next))         => Right(next)
+            case Some(Left(demandFailure)) => Left(demandFailure.asStuck)
+            case None                      => Left(failed)
+          }
+      }
+    }
+
+    private def differentNativeOperationHeads(a: Value, b: Value): Boolean =
+      (a, b) match {
+        case (left: VApp, right: VApp) if !(left.head eq right.head) =>
+          val leftNative = left.head match {
+            case lam: VLam => Packed.nativeEquation(lam).nonEmpty
+            case _         => false
+          }
+          val rightNative = right.head match {
+            case lam: VLam => Packed.nativeEquation(lam).nonEmpty
+            case _         => false
+          }
+          leftNative || rightNative
+        case _ => false
+      }
+
+    private def structurallyDirect(a: Value, b: Value, meta: EqStore, rootCtx: Ctx): Result = {
       val ctx = rootCtx.nested
       (a, b) match {
         // Proof structure supplies neither links nor apartness. Reduce to the proposition equation
@@ -674,6 +763,14 @@ object ValueEquivalence {
           unifyPeeled(p, head, other, meta, ctx, packedOnLeft = true)
         case (other @ ConstructorApp(head), p: VPacked) =>
           unifyPeeled(p, head, other, meta, ctx, packedOnLeft = false)
+
+        // A symbolic successor prefix is an actual Nat constructor spine, but its offset is a
+        // BigInt. Cancel matching counts arithmetically instead of allocating or recursing through
+        // one VNatPrefix per successor.
+        case (prefix: VNatPrefix, other) if natPrefixShape(other).nonEmpty =>
+          unifyNatPrefixes(prefix, other, meta, ctx)
+        case (other, prefix: VNatPrefix) if natPrefixShape(other).nonEmpty =>
+          unifyNatPrefixes(other, prefix, meta, ctx)
 
         // Evidence arguments are not compared: each is a proof of a proposition its head and earlier
         // arguments determine, so heads and determining arguments that unify make them equal too.
@@ -811,9 +908,43 @@ object ValueEquivalence {
             case _ => stuck(a, b)
           }
 
-        // No no-confusion evidence: unsolvable, but not refutable.
         case _ => stuck(a, b)
       }
+    }
+
+    private def natPrefixShape(value: Value): Option[(BigInt, Value)] = Packed.natConstructorParts(value)
+
+    private def unifyNatPrefixes(a: Value, b: Value, meta: EqStore, ctx: Ctx): Result =
+      (natPrefixShape(a), natPrefixShape(b)) match {
+        case (Some((countA, baseA)), Some((countB, baseB))) =>
+          tryUnify(a.tpe, b.tpe, meta, ctx) match {
+            case Left(failed) => Left(failed.asStuck)
+            case Right(typed) =>
+              if (countA == 0 && countB == 0) tryUnify(baseA, baseB, typed, ctx)
+              else if (countA == 0 || countB == 0) apart(a, b)
+              else {
+                val common = countA.min(countB)
+                val left = Packed.natPrefix(baseA, countA - common, a.tpe)
+                val right = Packed.natPrefix(baseB, countB - common, b.tpe)
+                tryUnify(left, right, typed, ctx)
+              }
+          }
+        case _ => stuck(a, b)
+      }
+
+    private def tryNativeSourceEquation(a: Value, b: Value, meta: EqStore, ctx: Ctx): Option[Result] = {
+      val demand = nativeEquationDemand.get()
+      if (demand eq null) return None
+      def inspect(value: Value, other: Value): Option[Result] =
+        value match {
+          case app: VApp => demand.compare(app, other, meta, ctx)
+          case _         => None
+        }
+      val fromLeft = inspect(a, b)
+      if (fromLeft.exists(_.isRight)) return fromLeft
+      val fromRight = inspect(b, a)
+      if (fromRight.exists(_.isRight)) return fromRight
+      if (fromLeft.nonEmpty || fromRight.nonEmpty) Some(stuck(a, b)) else None
     }
   }
 }

@@ -31,7 +31,15 @@ class ScalarCapabilityTests extends munit.FunSuite {
     val separateContext = Prelude.fromPath(Paths.get("src/test/resources/NativeScalarPrelude.rac")).checkedEnv
     val add = env("Nat.add").asInstanceOf[VLam]
     assertEquals(Packed.scalarNatCapability(add, separateContext), None)
-    val lookalike = add.copy(body = LamBody.Native((args, _) => args.head, Env.empty, isRawRecursive = false))
+    val lookalike = add.copy(
+      body = LamBody.Native(
+        (args, _) => args.head,
+        Env.empty,
+        isRawRecursive = false,
+        scalarCapability = None,
+        equation = None
+      )
+    )
     assertEquals(Packed.scalarNatCapability(lookalike, env), None)
   }
 }

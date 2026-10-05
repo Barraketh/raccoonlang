@@ -606,6 +606,15 @@ values, but it is available only when the active trusted prelude provides the
 validated `String`, `List Char`, and `Char.ofNat` layout. The bundled prelude
 does not currently provide that string layout.
 
+Nat literals and symbolic successor runs share the same eager Nat equations at
+every magnitude. The evaluator keeps a symbolic run such as `Nat.succ` applied
+many times compact internally, while matching still exposes one ordinary
+`Nat.succ` layer and binds its predecessor. Mixed native arithmetic uses
+compact constructor reductions when available and otherwise remains a
+residual application that can rerun after refinement. This changes no source
+syntax; see [Natural numbers](kernel.md#natural-numbers) for the conversion
+and residual rules.
+
 ### Destructuring
 
 `let (a, b) := e` takes apart a value of a one-constructor family without

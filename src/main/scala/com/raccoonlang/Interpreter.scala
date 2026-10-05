@@ -95,6 +95,12 @@ object Interpreter {
               case other =>
                 resolveInEqStore(evalApply(other, materializedArgs), materializer)
             }
+          case prefix: VNatPrefix =>
+            Packed.natPrefix(
+              materializer.materialize(prefix.base),
+              prefix.offset,
+              materializer.materialize(prefix.tpe)
+            )
           case vm: NeutralThunk => resolveInEqStore(forceThunk(vm, materializer), materializer)
           case _                => wtf(s"Blocked extractor matched unexpected value $v0")
         }
@@ -364,6 +370,13 @@ object Interpreter {
 
   private[raccoonlang] def runLam(lam: VLam, args: Vector[Value]): Value =
     CoreEvaluator.evalApply(lam, args)
+
+  private[raccoonlang] def runLamWithRecursivePeers(
+      lam: VLam,
+      args: Vector[Value],
+      peers: Vector[Value]
+  ): Value =
+    CoreEvaluator.evalApplyWithRecursivePeers(lam, args, peers)
 
   private def forceThunk(thunk: NeutralThunk, materializer: ValueOps.Materializer): Value =
     evalTerm(thunk.term, materializer.materializeEnv(thunk.env))

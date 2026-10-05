@@ -199,7 +199,7 @@ class NativeLiteralTests extends munit.FunSuite with TestSupport {
     }
   }
 
-  /** `2^32`, far above the unfolding limit: a declared body unfolding on it would overflow the host stack. */
+  /** `2^32`, a large packed Nat used by mixed-reduction tests. */
   private val two32 = BigInt(1) << 32
 
   /** The full profile with a `mod` whose body multiplies by its divisor, as a real definition would. */
@@ -211,7 +211,7 @@ class NativeLiteralTests extends munit.FunSuite with TestSupport {
     )
   )
 
-  test("a native operation on a literal above the unfolding limit is a neutral that resumes on literals") {
+  test("mixed native residuals resume after blockers become literals") {
     typecheckDecls(s"def f (n: Nat): Nat := Nat.mul(n, $two32)")
     assertEquals(payload(runProgram(s"def f (n: Nat): Nat := Nat.mul(n, $two32)\n{ f(3) }")), 3 * two32)
 
@@ -245,11 +245,11 @@ class NativeLiteralTests extends munit.FunSuite with TestSupport {
 
     val k = Value.VConst("k", Value.Symbol, env("Nat"))
     Interpreter.evalApply(env("Nat.add"), Vector(k, big)) match {
-      case rigid @ Value.VApp(head, Vector(`k`, `big`), _, blockedOn) =>
-        assert(head eq env("Nat.add"))
-        assert(blockedOn.isEmpty)
-        assert(ValueEquivalence.defEq(rigid, Interpreter.evalApply(env("Nat.add"), Vector(k, big))))
-      case other => fail(s"Expected a rigid native application, got $other")
+      case prefix: Value.VNatPrefix =>
+        assert(prefix.base eq k)
+        assertEquals(prefix.offset, two32)
+        assertEquals(PrettyPrinter.print(prefix), s"Nat.add(k, $two32)")
+      case other => fail(s"Expected a compact Nat prefix, got $other")
     }
     solved(k) match {
       case Value.VApp(head, Vector(`k`, `big`), _, blockedOn) =>
@@ -289,8 +289,8 @@ class NativeLiteralTests extends munit.FunSuite with TestSupport {
     )
   }
 
-  test("checking a native operation on a variable and a literal above the limit unfolds nothing") {
-    // 1024 layers of `mul` or `sub` overflow the default stack of the forked test JVM; above the limit none unfold.
+  test("mixed operations do not unfold source recursion in proportion to a literal") {
+    // These mixed applications stay residual or use a compact rule; none performs source recursion proportional to 1024.
     typecheckDecls("def f (n: Nat): Nat := Nat.sub(Nat.mul(n, 1024), Nat.sub(n, 1024))\n")
     assertEquals(
       payload(runProgram("def f (n: Nat): Nat := Nat.sub(Nat.mul(n, 1024), Nat.sub(n, 1024))\n{ f(3) }")),
@@ -298,32 +298,85 @@ class NativeLiteralTests extends munit.FunSuite with TestSupport {
     )
   }
 
-  test("native operations unfold on literals up to the limit and no further") {
+  test("compact Nat prefixes and demanded equations are independent of literal magnitude") {
     typecheckDecls(
       """
         |def one (n: Nat): Eq(Nat, Nat.add(n, 1), Nat.succ(n)) := Eq.refl(Nat.succ(n))
         |def two (n: Nat): Eq(Nat, Nat.mul(n, 2), Nat.add(n, n)) := Eq.refl(Nat.add(n, n))
+        |def mulZero (a: Nat): Eq(Nat, Nat.mul(a, 0), 0) := Eq.refl(0)
+        |def mulOne (a: Nat): Eq(Nat, Nat.mul(a, 1), a) := Eq.refl(a)
+        |def mulSucc (a: Nat)(b: Nat): Eq(Nat, Nat.mul(a, Nat.succ(b)), Nat.add(a, Nat.mul(a, b))) :=
+        |  Eq.refl(Nat.add(a, Nat.mul(a, b)))
+        |def beqSucc (a: Nat)(b: Nat): Eq(Bool, Nat.beq(Nat.succ(a), Nat.succ(b)), Nat.beq(a, b)) :=
+        |  Eq.refl(Nat.beq(a, b))
+        |def bleSucc (a: Nat)(b: Nat): Eq(Bool, Nat.ble(Nat.succ(a), Nat.succ(b)), Nat.ble(a, b)) :=
+        |  Eq.refl(Nat.ble(a, b))
+        |def bleZero (b: Nat): Eq(Bool, Nat.ble(0, b), Bool.true) := Eq.refl(Bool.true)
+        |def bltSucc (a: Nat)(b: Nat): Eq(Bool, Nat.blt(Nat.succ(a), Nat.succ(b)), Nat.ble(Nat.succ(a), b)) :=
+        |  Eq.refl(Nat.ble(Nat.succ(a), b))
         |""".stripMargin
     )
 
-    // The limit bounds every literal argument, so `add`'s first argument, on which its body does not recurse, shows it
-    // without unfolding a layer per unit: at the limit the body runs and is stuck on `n`, and above it does not run.
     val env = Prelude.default.checkedEnv
-    val limit = Packed.MaxUnfoldedLiteral
-    val n = FreshVar.freshVar("n", env("Nat"))
-    def add(a: Value, b: Value): Value = Interpreter.evalApply(env("Nat.add"), Vector(a, b))
-    assert(add(runProgram(s"{ $limit }"), n).isInstanceOf[Value.NeutralThunk])
-    Vector(add(runProgram(s"{ ${limit + 1} }"), n), add(n, runProgram(s"{ ${limit + 1} }"))).foreach {
-      case Value.VBlockedApp(head, _, _, _) => assert(head eq env("Nat.add"))
-      case other                            => fail(s"Expected a blocked native application, got $other")
-    }
+    val nat = env("Nat")
+    val n = FreshVar.freshVar("n", nat)
+    val huge = (BigInt(1) << 100) + 37
+    val nested = Packed.natPrefix(Packed.natPrefix(n, 11, nat), huge, nat).asInstanceOf[Value.VNatPrefix]
+    assertEquals(nested.offset, huge + 11)
+    assert(nested.base eq n)
 
-    // Spec §5.3: the equation lost above the limit, which a program relying on it no longer checks.
-    val lost = expectTypeError[TypeMismatch](
-      "def lost (x: Nat): Eq(Nat, Nat.add(x, 2000), Nat.succ(Nat.add(x, 1999))) := Eq.refl(Nat.add(x, 2000))",
-      Prelude.default
+    val added = Interpreter.evalApply(env("Nat.add"), Vector(n, VPacked.nat(huge, nat)))
+    assert(added.isInstanceOf[Value.VNatPrefix])
+    assertEquals(added.key, Packed.natPrefix(n, huge, nat).key)
+    assertEquals(PrettyPrinter.print(added), s"Nat.add(n, $huge)")
+
+    val prefix = Packed.natPrefix(n, huge, nat).asInstanceOf[Value.VNatPrefix]
+    val (head, fields) = Value.ConstructorForm.Stored.unapply(prefix).get
+    assertEquals(head, NatCodec.succName)
+    assertEquals(fields.length, 1)
+    assertEquals(fields.head.asInstanceOf[Value.VNatPrefix].offset, huge - 1)
+
+    val store = EqStore.empty.allow(DepSet(n.id)).addLink(n.id, VPacked.nat(4, nat))
+    assertEquals(payload(ValueOps.materialize(prefix, store)), huge + 4)
+  }
+
+  test("failed arithmetic conversion stays stuck and cannot link through multiplication") {
+    val env = Prelude.default.checkedEnv
+    val nat = env("Nat")
+    val n = FreshVar.freshVar("n", nat)
+    val one = VPacked.nat(1, nat)
+    val product = Interpreter.evalApply(env("Nat.mul"), Vector(n, one))
+    val successor = Interpreter.evalApply(env("Nat.add"), Vector(n, one))
+    val store = EqStore.empty.allow(DepSet(n.id))
+
+    ValueEquivalence.tryUnify(product, successor, store) match {
+      case Left(failure) => assert(!failure.apart)
+      case Right(_)      => fail("Expected the false arithmetic equality to remain unsolved")
+    }
+    assertEquals(store.subst, Map.empty[Value.VarId, Value])
+    assert(store.isRefinable(n.id))
+  }
+
+  test("blt delegates mixed successors to validated ble and converts after grounding") {
+    val env = Prelude.default.checkedEnv
+    val nat = env("Nat")
+    val a = FreshVar.freshVar("a", nat)
+    val b = FreshVar.freshVar("b", nat)
+    val left = Interpreter.evalApply(
+      env("Nat.blt"),
+      Vector(Packed.natPrefix(a, 1, nat), Packed.natPrefix(b, 1, nat))
     )
-    assertEquals(PrettyPrinter.print(lost.actual), "Eq(Nat, Nat.add(x, 2000), Nat.add(x, 2000))")
+    val right = Interpreter.evalApply(env("Nat.ble"), Vector(Packed.natPrefix(a, 1, nat), b))
+    assert(ValueEquivalence.defEq(left, right))
+
+    val store = EqStore.empty
+      .allow(DepSet(a.id, b.id))
+      .addLink(a.id, VPacked.nat(2, nat))
+      .addLink(b.id, VPacked.nat(3, nat))
+    val groundedLeft = ValueOps.materialize(left, store)
+    val groundedRight = ValueOps.materialize(right, store)
+    assert(ValueEquivalence.defEq(groundedLeft, groundedRight))
+    assertEquals(ctorName(groundedLeft), "Bool.true")
   }
 
   test("packed literals refine constructor equations and prove apartness") {
@@ -348,6 +401,59 @@ class NativeLiteralTests extends munit.FunSuite with TestSupport {
         |{ predecessor(Eq.refl(5)) }
         |""".stripMargin
     assertEquals(payload(runProgram(src)), BigInt(4))
+  }
+
+  test("forced implicits read compact Nat prefixes with BigInt predecessor runs") {
+    val offset = BigInt("18446744073709551616001")
+    val src =
+      s"""
+         |def predecessor {n: Nat}(h: Eq(Nat, Nat.add(n, $offset), Nat.add(5, $offset))): Nat := n
+         |{ predecessor(Eq.refl(Nat.add(5, $offset))) }
+         |""".stripMargin
+    assertEquals(payload(runProgram(src)), BigInt(5))
+  }
+
+  test("dependent Bool bounds retain proof projection across compact Nat conversion") {
+    val definitions =
+      """
+        |namespace NatBoundConversionRegression {
+        |  def endpoint (stage: Bool)(k: Nat): Nat := {
+        |    match stage returning Nat with
+        |    | Bool.false => 1
+        |    | Bool.true => k
+        |  }
+        |  def bound (k: Nat)(limit: Nat)(small: Nat.le(1, limit))(large: Nat.le(k, limit))(stage: Bool)
+        |      : Nat.le(endpoint(stage, k), limit) := {
+        |    match stage returning Nat.le(endpoint(stage, k), limit) with
+        |    | Bool.false => small
+        |    | Bool.true => large
+        |  }
+        |}
+        |""".stripMargin
+    typecheckDecls(definitions, Prelude.default)
+
+    val values = Vector(BigInt(256), BigInt(257), BigInt(9216), BigInt("18446744073709551616001"))
+    values.foreach { k =>
+      val falseEndpoint = runProgram(
+        definitions + s"\n{ NatBoundConversionRegression.endpoint(Bool.false, $k) }",
+        Prelude.default
+      )
+      val trueEndpoint = runProgram(
+        definitions + s"\n{ NatBoundConversionRegression.endpoint(Bool.true, $k) }",
+        Prelude.default
+      )
+      assertEquals(payload(falseEndpoint), BigInt(1))
+      assertEquals(payload(trueEndpoint), k)
+
+      Vector("Bool.false", "Bool.true").foreach { stage =>
+        val proof = runProgram(
+          definitions +
+            s"\n{ NatBoundConversionRegression.bound($k, $k, Eq.refl(Bool.true), Eq.refl(Bool.true), $stage) }",
+          Prelude.default
+        )
+        assert(Sorts.isProposition(proof.tpe), s"Expected a Nat.le proof for k=$k at $stage, got $proof")
+      }
+    }
   }
 
   test("packed versus a blocked neutral is stuck, never apart") {

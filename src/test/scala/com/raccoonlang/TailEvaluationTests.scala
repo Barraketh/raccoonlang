@@ -272,7 +272,7 @@ class TailEvaluationTests extends munit.FunSuite with TestSupport {
     assertEquals(ctorName(result), "Eq.refl")
   }
 
-  test("a native operation in tail position computes, unfolds, or stays neutral as before") {
+  test("a native operation in tail position computes or keeps a compact Nat prefix") {
     val program = parse(
       """
         |def small (n: Nat): Nat := Nat.add(n, 2)
@@ -294,11 +294,11 @@ class TailEvaluationTests extends munit.FunSuite with TestSupport {
     )
     val big = runProgram("{ 1000 }")
     Interpreter.evalApply(env("large"), Vector(k)) match {
-      case Value.VApp(head, Vector(`k`, arg), _, blockedOn) =>
-        assert(head eq env("Nat.add"))
-        assertEquals(payload(arg), payload(big))
-        assert(blockedOn.isEmpty)
-      case other => fail(s"Expected a rigid native application, got $other")
+      case prefix: Value.VNatPrefix =>
+        assert(prefix.base eq k)
+        assertEquals(prefix.offset, payload(big))
+        assert(ValueEquivalence.defEq(prefix.tpe, env("Nat")))
+      case other => fail(s"Expected a compact Nat prefix, got $other")
     }
   }
 }

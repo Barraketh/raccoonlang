@@ -41,6 +41,11 @@ object Projection {
     /** No-confusion constructor value -> stored field (family args are erased from storage). */
     final case class CtorField(ctor: String, idx: Int) extends Step
 
+    /** A compact path equivalent to `count` repeated `CtorField(Nat.succ, 0)` projections. */
+    final case class NatSuccRun(count: BigInt) extends Step {
+      require(count > 0, "A Nat successor projection run must be positive")
+    }
+
     /** VSort -> its level. */
     case object SortLevel extends Step
 
@@ -249,6 +254,13 @@ object Projection {
                   // Erased family args live only in the constructor value's type.
                   queue.append((root, steps :+ Step.Tpe, tpe))
 
+                case prefix: VNatPrefix if accessibleNatPrefix(prefix, site) =>
+                  Packed.natConstructorParts(prefix) match {
+                    case Some((count, base)) if count > 0 =>
+                      queue.append((root, steps :+ Step.NatSuccRun(count), base))
+                    case _ => ()
+                  }
+
                 case ConstSpine(head, args) if args.nonEmpty && rigidHead(head) =>
                   args.zipWithIndex.foreach { case (arg, idx) =>
                     queue.append((root, steps :+ Step.SpineArg(head.name, idx), arg))
@@ -334,6 +346,17 @@ object Projection {
     ctorTpe match {
       case InductiveFamilyValue(instance) => instance.meta.seal
       case other => wtf(s"A constructor value has the type $other, which is no family instance")
+    }
+
+  /** A compact prefix may be projected only through an accessible checked Nat family with its real successor. */
+  private def accessibleNatPrefix(prefix: VNatPrefix, site: Span): Boolean =
+    prefix.tpe match {
+      case InductiveFamilyValue(instance) =>
+        instance.head.name == NatCodec.familyName && instance.meta.familyArity == 0 && instance.args.isEmpty &&
+        instance.meta.constructorNames.contains(NatCodec.zeroName) &&
+        instance.meta.constructorNames.contains(NatCodec.succName) &&
+        Sealing.accessible(instance.meta.seal, site)
+      case _ => false
     }
 
   /**
@@ -435,6 +458,20 @@ object Projection {
                 Right(Value.forced(stored(idx)))
               case other => Left(Failure.NotAConstructor(ctor, other))
             }
+
+          case Step.NatSuccRun(count) =>
+            var remaining = count
+            var current = v
+            while (remaining > 0) {
+              Packed.natConstructorParts(current) match {
+                case Some((known, base)) if known > 0 =>
+                  val consumed = known.min(remaining)
+                  current = Packed.natPrefix(base, known - consumed, current.tpe)
+                  remaining -= consumed
+                case _ => return Left(Failure.NotAConstructor(NatCodec.succName, current))
+              }
+            }
+            Right(current)
 
           case Step.SortLevel =>
             v match {

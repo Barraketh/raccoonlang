@@ -35,7 +35,13 @@ private[raccoonlang] object NativeBufferBuiltins {
       VLam(
         pi,
         ValueId.Const(name),
-        LamBody.Native((args, _) => run(self, args, layout), Env.empty, isRawRecursive = false)
+        LamBody.Native(
+          (args, _) => run(self, args, layout),
+          Env.empty,
+          isRawRecursive = false,
+          scalarCapability = None,
+          equation = None
+        )
       )
     self
   }
