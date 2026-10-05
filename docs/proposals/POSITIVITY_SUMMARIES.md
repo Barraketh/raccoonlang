@@ -261,4 +261,4 @@ remains conservative. This change does not add reflected typing propositions or
 simplify equality transport in proofs.
 
 Measured results and validation are recorded in
-[the library friction report](../../experiments/library-correctness/RING_DESIGN_FRICTION.md).
+[the library friction report](https://github.com/Barraketh/lemur-raccoon/blob/main/experiments/library-correctness/RING_DESIGN_FRICTION.md).

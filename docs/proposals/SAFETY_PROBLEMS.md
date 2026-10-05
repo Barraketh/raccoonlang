@@ -11,20 +11,20 @@ Related problems that are written up elsewhere:
 
 Implementation direction for problem 1: [Reflected typing and library safety](REFLECTED_TYPING.md), a staged plan for
 internal typing propositions, declaration reflection, and semantic library composition.
-The [compositional machine experiment](../../experiments/compositional-machines/README.md) tests a narrower
+The [compositional machine experiment](https://github.com/Barraketh/lemur-raccoon/blob/main/experiments/compositional-machines/README.md) tests a narrower
 alternative: explicit contracts and structured emission certificates in the existing core.
-The [extensible follow-up](../../experiments/extensible-machines/README.md) tests fresh identity, indexed loop
-progress and an actual Core AST connection; its [source interface](../../experiments/extensible-machines/SURFACE.md)
+The [extensible follow-up](https://github.com/Barraketh/lemur-raccoon/blob/main/experiments/extensible-machines/README.md) tests fresh identity, indexed loop
+progress and an actual Core AST connection; its [source interface](https://github.com/Barraketh/lemur-raccoon/blob/main/experiments/extensible-machines/SURFACE.md)
 sets out the proposed language functionality and remaining proof obligations.
-The [TinyGEMM comparison](../../experiments/machine-core/README.md) and
-[A3b/pair client ports](../../experiments/machine-core/full/RESULTS.md) test an alternative interface and exact
+The [TinyGEMM comparison](https://github.com/Barraketh/lemur-raccoon/blob/main/experiments/machine-core/README.md) and
+[A3b/pair client ports](https://github.com/Barraketh/lemur-raccoon/blob/main/experiments/machine-core/full/RESULTS.md) test an alternative interface and exact
 Core lowering equivalence. They do not prove the library-wide safety claim.
-The [kernel-independent proof experiment](../../experiments/library-correctness/README.md) checks universal
+The [kernel-independent proof experiment](https://github.com/Barraketh/lemur-raccoon/blob/main/experiments/library-correctness/README.md) checks universal
 retirement/coverage and peer-frame theorems, compares the evidence needed by the three language routes, and
 records the remaining obligations. It does not establish a complete replacement for Core.
-Its [primitive copy-ring continuation](../../experiments/library-correctness/RING_DESIGN.md) now emits CUDA and
+Its [primitive copy-ring continuation](https://github.com/Barraketh/lemur-raccoon/blob/main/experiments/library-correctness/RING_DESIGN.md) now emits CUDA and
 proves arbitrary-client primitive protocols, exact kernel assembly and phase parity for a single-stage slice.
-The [friction log](../../experiments/library-correctness/RING_DESIGN_FRICTION.md) records actual proof costs and tooling issues.
+The [friction log](https://github.com/Barraketh/lemur-raccoon/blob/main/experiments/library-correctness/RING_DESIGN_FRICTION.md) records actual proof costs and tooling issues.
 
 ## 0. Background for a new reader
 
