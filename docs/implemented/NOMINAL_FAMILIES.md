@@ -1,8 +1,8 @@
 # Nominal Type families
 
 Status: **implemented** (2026-10-01); [kernel rules](../kernel.md#nominal-type-families) and the
-[reviewed informal model](../nominal-model.md) are authoritative. Second of three specs, after `docs/proposals/PROP_SEPARATION.md` (which it assumes:
-every family is declared either in `Prop` or in a `Type`) and before `docs/proposals/REFINEMENT_CERTIFICATES.md` (which uses the
+[reviewed informal model](../nominal-model.md) are authoritative. Second of three specs, after `docs/implemented/PROP_SEPARATION.md` (which it assumes:
+every family is declared either in `Prop` or in a `Type`) and before `docs/implemented/REFINEMENT_CERTIFICATES.md` (which uses the
 principles stated here).
 
 Before this change, match refinement treated every inductive family head as injective: from `w : W(List(y))`, where `W`'s only
@@ -28,7 +28,7 @@ Their scope is exact:
   application that is stuck: `axiom T : Type` may be `Nat`. A type that evaluates to a family instance is compared by
   its head after evaluation, as conversion already does.
 - **Not `Prop` families.** A `Prop` family head is neither injective nor generative. Refinement decomposes it only at the
-  root of the scrutinee's own type, where the eliminator justifies it (`docs/proposals/REFINEMENT_CERTIFICATES.md` §2). Two
+  root of the scrutinee's own type, where the eliminator justifies it (`docs/implemented/REFINEMENT_CERTIFICATES.md` §2). Two
   reasons, the first sufficient on its own:
   - With an impredicative `Prop` and proof irrelevance, a proposition carries no more than a truth value. So an
     injective `Prop` family is an injection of a large type into a tiny one. Miquel's observation, reported by Hur on
@@ -135,7 +135,7 @@ the existing finite-hash equality shortcut and coverage/refinement implementatio
 - **Documentation.** `docs/kernel.md` gets a section "Nominal families" stating N1–N3, their scope and the size rule,
   beside quotient soundness as the kernel's stated principles. "Apartness" and "Refinement unification" cite it.
 
-`docs/proposals/REFINEMENT_CERTIFICATES.md` then turns these from unifier behaviour into principles a proof term may use: its
+`docs/implemented/REFINEMENT_CERTIFICATES.md` then turns these from unifier behaviour into principles a proof term may use: its
 exclusion certificates invoke narrowly trusted private N1–N3 theorem premises with independently checked signatures
 and typed family/form assumptions. Constructor pruning now requires an ordinary checked refutation; successful
 unifier links and their classification remain unchanged and trusted. No link certificates are implemented.

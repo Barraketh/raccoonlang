@@ -613,7 +613,7 @@ Unsupported quotation, blocked applications, heterogeneous fields and value-only
 linear contradictions conservatively retain cases. In particular, a known linear
 constructor does not alone justify omitting its alternatives. Quotation is
 ordinarily checked and preserves rigid Type structure; it does not introduce
-assumed aliases. See [the implementation specification](proposals/REFINEMENT_CERTIFICATES.md)
+assumed aliases. See [the implementation specification](implemented/REFINEMENT_CERTIFICATES.md)
 for the proof construction and tested fault boundaries.
 
 A match's last case may be a wildcard, `| _ => e`. Before any case is checked,
