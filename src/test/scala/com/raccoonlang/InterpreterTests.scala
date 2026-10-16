@@ -80,7 +80,7 @@ class InterpreterTests extends munit.FunSuite {
         | | zero : Peano
         | | succ (_: Peano) : Peano
         |
-        |inductive Vec (A: Type) indices (n: Peano) : Sort { level = one }
+        |inductive Vec (A: Type) indices (n: Peano) : Type { level = one }
         | | nil : Vec(A, Peano.zero)
         | | cons (n: Peano) (xs: Vec(A, n)) (x: A): Vec(A, Peano.succ(n))
         |
@@ -110,7 +110,7 @@ class InterpreterTests extends munit.FunSuite {
         | | true : Bool
         | | false : Bool
         |
-        |opaque def b : Bool := Bool.true
+        |axiom b : Bool
         |def choose : Peano -> Peano := {
         |  match b returning Peano -> Peano with
         |  | Bool.true => fun (n: Peano): Peano => n

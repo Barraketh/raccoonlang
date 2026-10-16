@@ -24,7 +24,7 @@ class ConsistencyTests extends munit.FunSuite with TestSupport {
     }
   }
 
-  // Quotient values provide no constructor no-confusion or injectivity (docs/kernel.md#axioms-opacity-and-quotients).
+  // Quotient values provide no constructor no-confusion or injectivity (docs/kernel.md#axioms-and-quotients).
   test("Quot.mk is not disjoint: refl stays reachable for equalities between distinct representatives") {
     val err = expectTypeError[MissingCase](
       """
@@ -38,7 +38,7 @@ class ConsistencyTests extends munit.FunSuite with TestSupport {
     assertEquals(err.ctor, "Eq.refl")
   }
 
-  // Quotient values provide no constructor no-confusion or injectivity (docs/kernel.md#axioms-opacity-and-quotients).
+  // Quotient values provide no constructor no-confusion or injectivity (docs/kernel.md#axioms-and-quotients).
   test("Quot.mk is not injective: match refinement cannot derive representative equality") {
     expectTypeError[TypeMismatch](
       """
@@ -52,15 +52,15 @@ class ConsistencyTests extends munit.FunSuite with TestSupport {
     )
   }
 
-  // Quotient values provide no constructor no-confusion or injectivity (docs/kernel.md#axioms-opacity-and-quotients).
-  test("congruence failures under opaque heads are not refutations") {
+  // Quotient values provide no constructor no-confusion or injectivity (docs/kernel.md#axioms-and-quotients).
+  test("congruence failures under neutral non-injective heads are not refutations") {
     // Eq(g(mk true), g(mk false)) is provable via congrArg over Quot.sound, so unification failing
     // on the arguments of the non-injective head g must not prune the refl case.
     val err = expectTypeError[MissingCase](
       """
         |def TrivRel (a: Bool)(b: Bool): Prop := True
         |
-        |opaque def g (q: Quot(Bool, TrivRel)): Nat := 0
+        |axiom g (q: Quot(Bool, TrivRel)): Nat
         |
         |def gEq : Eq(Nat, g(Quot.mk(TrivRel, Bool.true)), g(Quot.mk(TrivRel, Bool.false))) :=
         |  congrArg(Quot.sound(Bool.true, Bool.false, TrivRel, True.intro), Nat, g)
@@ -73,17 +73,17 @@ class ConsistencyTests extends munit.FunSuite with TestSupport {
     assertEquals(err.ctor, "Eq.refl")
   }
 
-  // Opaque applications are not invertible refinement frames (docs/kernel.md#refinement-unification).
-  test("match refinement negative: opaque function applications do not refine their arguments") {
+  // Neutral applications are not invertible refinement frames (docs/kernel.md#refinement-unification).
+  test("match refinement negative: neutral function applications do not refine their arguments") {
     // Eq(f(x), f(y)) does not force x = y for a non-injective head: unification must not
-    // link x := y beneath the opaque frame f, so the refl branch stays unrefined.
+    // link x := y beneath the neutral frame f, so the refl branch stays unrefined.
     val p =
       """
         |inductive Peano : Type
         | | zero : Peano
         | | succ (_: Peano) : Peano
         |
-        |opaque def f (n: Peano): Peano := n
+        |axiom f (n: Peano): Peano
         |
         |def injF (x: Peano)(y: Peano)(h: Eq(Peano, f(x), f(y))): Eq(Peano, x, y) := {
         |  match h returning Eq(Peano, x, y) with
@@ -94,8 +94,24 @@ class ConsistencyTests extends munit.FunSuite with TestSupport {
     interceptError[TypeMismatch] { typecheckDecls(p, Prelude.test) }
   }
 
-  // Opaque applications are not invertible refinement frames (docs/kernel.md#refinement-unification).
-  test("match refinement negative: stuck opaque-head equations keep the refl case required") {
+  test("match refinement negative: an arbitrary function parameter does not refine its arguments") {
+    val p =
+      """
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (_: Peano) : Peano
+        |
+        |def injF (f: (n: Peano) -> Peano)(x: Peano)(y: Peano)(h: Eq(Peano, f(x), f(y))): Eq(Peano, x, y) := {
+        |  match h returning Eq(Peano, x, y) with
+        |  | Eq.refl z => Eq.refl(x)
+        |}
+        |""".stripMargin
+
+    interceptError[TypeMismatch] { typecheckDecls(p, Prelude.test) }
+  }
+
+  // Neutral applications are not invertible refinement frames (docs/kernel.md#refinement-unification).
+  test("match refinement negative: stuck neutral-head equations keep the refl case required") {
     // The same equation is stuck, not apart: a no-cases match must not prune refl.
     val p =
       """
@@ -105,7 +121,7 @@ class ConsistencyTests extends munit.FunSuite with TestSupport {
         |
         |inductive MyFalse : Prop
         |
-        |opaque def f (n: Peano): Peano := n
+        |axiom f (n: Peano): Peano
         |
         |def boom (x: Peano)(y: Peano)(h: Eq(Peano, f(x), f(y))): MyFalse := {
         |  match h returning MyFalse with
@@ -116,8 +132,8 @@ class ConsistencyTests extends munit.FunSuite with TestSupport {
   }
 
   // Proof constructors provide no apartness evidence (docs/kernel.md#proofs-and-elimination).
-  test("Constructor apartness does not apply to proofs (irrelevance makes inl/inr proofs equal)") {
-    // Eq(Or(p,p), inl hp, inr hq) is provable by proof irrelevance (getH's body), so match
+  test("Constructor apartness does not apply to neutral proof equalities") {
+    // A neutral proof of EqProof(p, inl hp, inr hq) must remain stuck at runtime; match
     // reachability must not prune the refl case on the inl/inr constructor clash.
     val p =
       """
@@ -127,7 +143,10 @@ class ConsistencyTests extends munit.FunSuite with TestSupport {
         | | inl (left: a) : Or(a, b)
         | | inr (right: b) : Or(a, b)
         |
-        |opaque def getH {p: Prop}(hp: p)(hq: p): Eq(Or(p, p), Or.inl(p, hp), Or.inr(p, hq)) := Eq.refl(Or.inl(p, hp))
+        |inductive EqProof (p: Prop) indices (x: Or(p, p))(y: Or(p, p)) : Prop
+        | | refl (x: Or(p, p)) : EqProof(p, x, x)
+        |
+        |axiom getH {p: Prop}(hp: p)(hq: p): EqProof(p, Or.inl(p, hp), Or.inr(p, hq))
         |
         |def boom {p: Prop}(hp: p)(hq: p): False := {
         |  match getH(hp, hq) returning False with
@@ -171,6 +190,86 @@ class ConsistencyTests extends munit.FunSuite with TestSupport {
       case err: Failure =>
         fail(s"Failed to parse: $err, ${p.substring(err.curIdx)}")
     }
+  }
+
+  test("the closed Russell proof cannot derive False without axioms") {
+    val russell =
+      """
+        |def encode (F: (x: Prop) -> Prop): Prop := { Eq((x: Prop) -> Prop, F, F) }
+        |
+        |def inject (F: (x: Prop) -> Prop)(G: (x: Prop) -> Prop)(h: Eq(Prop, encode(F), encode(G))):
+        |  Eq((x: Prop) -> Prop, F, G) := {
+        |  match h returning Eq((x: Prop) -> Prop, F, G) with
+        |  | Eq.refl z => Eq.refl(F)
+        |}
+        |
+        |def member (x: Prop): (F: (p: Prop) -> Prop) -> Prop :=
+        |  fun (F: (p: Prop) -> Prop): Prop => And(Eq(Prop, x, encode(F)), Not(F(x)))
+        |def Russell (x: Prop): Prop := { Exists((p: Prop) -> Prop, member(x)) }
+        |
+        |def selfNot (r: Russell(encode(Russell))): False := {
+        |  match r returning False with
+        |  | Exists.intro F evidence => {
+        |    match evidence returning False with
+        |    | And.intro same negative => {
+        |      let equal: Eq((x: Prop) -> Prop, F, Russell) := inject(F, Russell, Eq.symm(same))
+        |      let atSelf: Eq(Prop, F(encode(Russell)), Russell(encode(Russell))) :=
+        |        congrFun(Prop, Prop, F, Russell, equal, encode(Russell))
+        |      negative(Eq.mpr(atSelf, r))
+        |    }
+        |  }
+        |}
+        |
+        |def selfMember : Russell(encode(Russell)) :=
+        |  Exists.intro(member(encode(Russell)), Russell, And.intro(Eq.refl(encode(Russell)), selfNot))
+        |def boom : False := selfNot(selfMember)
+        |
+        |{ boom }
+        |""".stripMargin
+
+    expectAnyTypeError(russell)
+  }
+
+  test("heterogeneous constructor indices stay stuck across distinct data types") {
+    val declarations =
+      """
+        |inductive Two : Type
+        | | one : Two
+        |
+        |inductive Tagged indices (A: Type)(a: A) : Type
+        | | mk : Tagged(Bool, Bool.true)
+        |
+        |inductive ListedTag indices (A: Type)(a: A) : Type
+        | | mk : ListedTag(List(Bool), List.nil(Bool))
+        |""".stripMargin
+
+    def matching(tpe: String, cases: String): String =
+      declarations +
+        s"""
+           |def keep (value: $tpe): Nat := {
+           |  match value returning Nat with
+           |$cases
+           |}
+           |""".stripMargin
+
+    Vector(
+      "Tagged(Two, Two.one)",
+      "ListedTag(List(Two), List.cons(Two.one, List.nil(Two)))"
+    ).foreach { tpe =>
+      expectTypeError[MissingCase](matching(tpe, ""))
+      typecheckDecls(matching(tpe, "  | .mk => 0\n"))
+    }
+  }
+
+  test("constructor clashes stay apart within one family at convertible parameters") {
+    typecheckDecls(
+      """
+        |def eliminateListClash
+        |  (h: Eq(List(Bool), List.nil(Bool), List.cons(Bool.true, List.nil(Bool)))): False := {
+        |  match h returning False with
+        |}
+        |""".stripMargin
+    )
   }
 
   // `Prop` is a sort, not a proposition (docs/kernel.md#universes-and-function-types).
@@ -250,15 +349,15 @@ class ConsistencyTests extends munit.FunSuite with TestSupport {
     }
   }
 
-  // NOT a rejection yet: current refinement rules admit type-former injectivity; this is
-  // intentionally retained as a consistency probe until those rules change.
-  test("currently allowed: inductive family head injectivity via match refinement") {
+  // A data family may use a type-constructor parameter when its result universe is large enough.
+  test("data family injectivity remains for a well-sized family parameter") {
     runProgram(
       """
-        |inductive I (P: Type -> Type) : Type
+        |inductive I (P: Type -> Type) : Type { level = one }
         | | mk : I(P)
         |
-        |def injI (P: Type -> Type)(Q: Type -> Type)(h: Eq(Type, I(P), I(Q))): Eq((T: Type) -> Type, P, Q) := {
+        |def injI (P: Type -> Type)(Q: Type -> Type)
+        |  (h: Eq(Type { level = one }, I(P), I(Q))): Eq((T: Type) -> Type, P, Q) := {
         |  match h returning Eq((T: Type) -> Type, P, Q) with
         |  | Eq.refl z => Eq.refl(P)
         |}

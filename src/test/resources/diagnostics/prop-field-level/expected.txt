@@ -1,0 +1,4 @@
+
+<root>/main.rac:1:16: error: Failed to parse module <root>/main.rac: Prop does not accept fields
+def f (A: Prop { level = Level.one })(x: A): A := x
+               ^

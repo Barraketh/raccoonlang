@@ -1,0 +1,3 @@
+def f (A: Prop { level = Level.one })(x: A): A := x
+
+{ True.intro }

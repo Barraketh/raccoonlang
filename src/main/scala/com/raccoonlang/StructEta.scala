@@ -22,9 +22,9 @@ object StructEta {
       case _                          => None
     }
 
-  /** The eta-eligible family instance behind `tpe`, excluding proposition-valued instances. */
+  /** The eta-eligible family instance behind `tpe`; proposition families are excluded at declaration checking. */
   def eligibleInstance(tpe: Value): Option[(InductiveFamilyInstance, ProjectionInfo)] =
-    anyInstance(tpe).filter(_ => !Sorts.isProposition(tpe))
+    anyInstance(tpe)
 
   /**
    * The eta view of a value at an eta-eligible structure type: the constructor's stored fields when it is already in
@@ -72,7 +72,7 @@ object StructEta {
           .putGlobal(info.ctorHead.name, info.ctorHead)
           .putLocalUnchecked(program.self, base)
           .putLocal(program.motive, motive)
-        val blockedOn = Blocker.unapply(base).getOrElse(DepSet.empty) ++ Interpreter.typeCollapseDeps(base.tpe)
+        val blockedOn = Blocker.unapply(base).getOrElse(DepSet.empty)
         // The thunk a stuck evaluation of the same term would build, so re-sticking it keeps its identity.
         Value.canonicalizeProof(Interpreter.stuckMatchThunk(program.term, env, motive, blockedOn))
     }

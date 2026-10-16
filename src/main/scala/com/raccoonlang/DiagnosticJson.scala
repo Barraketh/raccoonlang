@@ -23,7 +23,7 @@ object DiagnosticJson {
       fields += field("endColumn", at.endColumn.toString)
     }
     fields += field("severity", string("error"))
-    fields += field("kind", string(diagnostic.error.getClass.getSimpleName))
+    fields += field("kind", string(diagnostic.error.getClass.getSimpleName.stripSuffix("$")))
     fields += field("message", string(diagnostic.getMessage))
     fields += field(
       "notes",

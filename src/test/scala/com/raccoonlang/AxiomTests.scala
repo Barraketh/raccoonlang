@@ -15,13 +15,13 @@ class AxiomTests extends munit.FunSuite with TestSupport {
       peano + "\naxiom magicNat : Peano\n\naxiom choose (A: Type)(x: A): A\n"
     )
 
-  test("an axiom in the trusted prelude declares an opaque constant") {
+  test("an axiom declares a neutral constant") {
     val res = runProgram("{ magicNat }", assumptions)
     assertEquals(PrettyPrinter.print(res), "magicNat")
     assertEquals(PrettyPrinter.print(res.tpe), "Peano")
   }
 
-  test("a parameterized axiom in the trusted prelude can be applied") {
+  test("a parameterized axiom can be applied") {
     val res = runProgram("{ choose(Peano, Peano.zero) }", assumptions)
     assertEquals(PrettyPrinter.print(res), "choose(Peano, Peano.zero)")
     assertEquals(PrettyPrinter.print(res.tpe), "Peano")

@@ -92,7 +92,8 @@ object BinderOps {
   }
 
   def instantiateFull(binders: Vector[CoreAst.Binder], baseEnv: Env, args: Vector[Value]): Env = {
-    if (binders.length != args.length) fail(ArityMismatch(binders.length, args.length))
+    if (binders.length != args.length)
+      fail(ArityMismatch(binders.length, args.length, ArityMismatch.Arguments))
 
     binders.zip(args).foldLeft(baseEnv) { case (curEnv, (binder, value)) =>
       bindValue(curEnv, binder, value)

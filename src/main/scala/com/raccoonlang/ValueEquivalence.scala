@@ -25,7 +25,7 @@ object ValueEquivalence {
    * `Unify.tryUnify`.
    */
   def defEq(v1: Value, v2: Value): Boolean =
-    Unify.tryUnify(v1, v2, EqStore.empty, Unify.Ctx()).isRight
+    Unify.tryUnify(v1, v2, EqStore.empty, Unify.Ctx(invertibleFrame = true, scrutineeTypeRoot = false)).isRight
 
   /**
    * Proof irrelevance reduces every equation between proof values to the equation between their propositions
@@ -53,7 +53,14 @@ object ValueEquivalence {
       v2: Value,
       meta: EqStore
   ): Either[UnifyFailure, EqStore] =
-    Unify.tryUnify(v1, v2, meta, Unify.Ctx())
+    Unify.tryUnify(v1, v2, meta, Unify.Ctx(invertibleFrame = true, scrutineeTypeRoot = false))
+
+  /**
+   * Unify a constructor result type with the type of its match scrutinee. The eliminator justifies inversion of a Prop
+   * family at this root equation; all structural descent clears that permission.
+   */
+  def tryUnifyMatchTypes(v1: Value, v2: Value, meta: EqStore): Either[UnifyFailure, EqStore] =
+    Unify.tryUnify(v1, v2, meta, Unify.Ctx(invertibleFrame = true, scrutineeTypeRoot = true))
 
   /**
    * Key-coherence assertions (docs/kernel.md#value-identity): wherever the fast path decides an equation by key alone,
@@ -70,17 +77,29 @@ object ValueEquivalence {
     private type Result = Either[UnifyFailure, EqStore]
     private final case class PiUnification(eqStore: EqStore, vars: Vector[Value], watermark: Value.VarId)
 
+    /** A stuck equation and the original store needed to tell whether later links can make retry useful. */
+    private final case class Postponed(v1: Value, v2: Value, store: EqStore, failure: UnifyFailure) {
+      def reachesLinksOf(later: EqStore): Boolean = {
+        val linkedSince = later.solvedIds -- store.solvedIds
+        linkedSince.nonEmpty &&
+        (store.reachable(v1).intersects(linkedSince) || store.reachable(v2).intersects(linkedSince))
+      }
+    }
+
     /**
-     * Unification context: whether every frame descended through so far is invertible.
+     * Unification context: whether every frame descended through so far is invertible, and whether this is the match's
+     * root type equation. Structural descent clears the root-only permission before calling any helper.
      *
      * A link records exactly the equation presented at the point of linking (or its unique forced solution) — the store
      * never invents values. Since links are consumed as consequences of the root equation, linking is legal only while
      * every enclosing frame is invertible: descending through a non-invertible frame produces sub-equations that are
      * sufficient but not necessary, so links beneath one are refused.
      */
-    final case class Ctx(invertibleFrame: Boolean = true) {
+    final case class Ctx(invertibleFrame: Boolean, scrutineeTypeRoot: Boolean) {
       def canLinkForced: Boolean = invertibleFrame
-      def enterNonInvertibleFrame: Ctx = if (invertibleFrame) copy(invertibleFrame = false) else this
+      def enterNonInvertibleFrame: Ctx =
+        if (invertibleFrame || scrutineeTypeRoot) copy(invertibleFrame = false, scrutineeTypeRoot = false) else this
+      def nested: Ctx = if (scrutineeTypeRoot) copy(scrutineeTypeRoot = false) else this
     }
 
     private def sameValueObject(v1: Value, v2: Value): Boolean =
@@ -107,28 +126,48 @@ object ValueEquivalence {
     // Provably unequal: rooted in no-confusion evidence, safe to prune a match case on.
     private def apart(v1: Value, v2: Value): Result = Left(UnifyFailure(v1, v2, apart = true))
 
-    /**
-     * Heads whose applications may be decomposed invertibly: the equation `H as ~ H bs` forces the argument equations
-     * definitionally. True for constructors of genuine inductives (no-confusion) and for inductive family heads
-     * (definitional injectivity of type formers). Everything else — opaque constants, axioms, quotient constructors,
-     * blocked heads — is an arbitrary function: decomposition is only a solving heuristic, and its failures prove
-     * nothing.
-     *
-     * Note this is about invertibility (links and failure pass-through), not apartness: head *clashes* are refutations
-     * only for data constructors (see the VCtor case). Family-head clashes prove nothing propositionally — under
-     * propositional extensionality distinct Prop-valued families can be equal (And T T = Or T T), and type-former
-     * generativity is not derivable even for Type-valued families.
-     *
-     * TODO(propext): once propositional extensionality is added, invertible decomposition of Prop-sorted family
-     * instances appearing in *index* positions (e.g. the sides of an `Eq Prop` scrutinee) is itself no longer a
-     * consequence; the root instantiation probe in MatchChecker remains eliminator-justified. Distinguishing the two
-     * needs a root-vs-index marker on Ctx.
-     */
-    private def definitionallyInjectiveHead(head: Value): Boolean =
-      head match {
-        case h: ConstructorHead         => h.noConfusion
-        case VConst(_, Inductive(_), _) => true
-        case _                          => false
+    private def constructorClashIsRefutable(a: Value, b: Value, meta: EqStore, noConfusion: Boolean): Boolean = {
+      val sameCheckedFamilyAtCommonParameters = (a.tpe, b.tpe) match {
+        case (InductiveFamilyValue(family1), InductiveFamilyValue(family2)) if family1.head.name == family2.head.name =>
+          val parameterCount = family1.meta.block.key.numParams
+          family1.args.length >= parameterCount && family2.args.length >= parameterCount &&
+          family1.args.take(parameterCount).zip(family2.args.take(parameterCount)).forall { case (p1, p2) =>
+            defEq(ValueOps.materialize(p1, meta), ValueOps.materialize(p2, meta))
+          }
+        case _ => false
+      }
+      noConfusion && sameCheckedFamilyAtCommonParameters
+    }
+
+    /** A key mismatch cannot refute an equation; it only sends a real no-confusion clash to its rule. */
+    private def mismatchRefutableAtHead(a: Value, b: Value, meta: EqStore): Boolean =
+      (a, b) match {
+        case (VCtor(h1, _, _), VCtor(h2, _, _)) if h1.name != h2.name =>
+          constructorClashIsRefutable(a, b, meta, h1.noConfusion && h2.noConfusion)
+        case _ => false
+      }
+
+    /** Data-family N1 inversion holds at every depth; Prop-family inversion is justified only at the match root. */
+    private def familyArgumentsInvertible(value: Value, ctx: Ctx): Boolean =
+      !Sorts.isProposition(value) || ctx.scrutineeTypeRoot
+
+    /** An unequal key may hide a refutable equation between arguments of the same invertible checked family. */
+    private def familyEquationMayRefute(a: Value, b: Value, ctx: Ctx): Boolean =
+      (a, b) match {
+        case (InductiveFamilyValue(f1), InductiveFamilyValue(f2)) if f1.head.name == f2.head.name =>
+          familyArgumentsInvertible(a, ctx) && familyArgumentsInvertible(b, ctx)
+        case _ => false
+      }
+
+    /** Whether this application equation permits forced argument links and propagates apartness. */
+    private def invertibleApplication(value: VApp, ctx: Ctx): Boolean =
+      value match {
+        case InductiveFamilyValue(_) => familyArgumentsInvertible(value, ctx)
+        case _ =>
+          value.head match {
+            case h: ConstructorHead => h.noConfusion
+            case _                  => false
+          }
       }
 
     // Rejects solutions that let scope-local fresh vars escape. This also catches transitive
@@ -363,7 +402,10 @@ object ValueEquivalence {
         if (keyAssertionsEnabled && !keyIsIdentity(a, b)) assertKeyVerdict(a, b, meta, ctx, keysEqual = true)
         return Right(meta)
       }
-      if (meta.refinable.isEmpty && !keysAreInconclusive(a, b)) {
+      if (
+        meta.refinable.isEmpty && !keysAreInconclusive(a, b) && !mismatchRefutableAtHead(a, b, meta) &&
+        !familyEquationMayRefute(a, b, ctx)
+      ) {
         if (keyAssertionsEnabled) assertKeyVerdict(a, b, meta, ctx, keysEqual = false)
         return stuck(a, b)
       }
@@ -380,30 +422,59 @@ object ValueEquivalence {
       override def hashCode(): Int = 31 * System.identityHashCode(a) + System.identityHashCode(b)
     }
 
-    /** The pairs the running outermost assertion has checked so far, or null when no assertion is running. */
-    private val assertedPairs = new ThreadLocal[java.util.HashSet[AssertedPair]]
+    /** An equation decided by a key, together with the frame and store in which it was decided. */
+    private final class KeyVerdict(
+        val a: Value,
+        val b: Value,
+        val meta: EqStore,
+        val ctx: Ctx,
+        val keysEqual: Boolean
+    )
+
+    /** The outermost assertion's iterative work stack and its identity-based de-duplication set. */
+    private final class Assertion {
+      val taken = new java.util.HashSet[AssertedPair]
+      val pending = new java.util.ArrayDeque[KeyVerdict]
+
+      def take(verdict: KeyVerdict): Unit =
+        if (taken.add(new AssertedPair(verdict.a, verdict.b))) pending.push(verdict)
+    }
+
+    /** The running outermost assertion, or null when no key verdict is being checked. */
+    private val runningAssertion = new ThreadLocal[Assertion]
 
     /**
      * The rules beneath a key verdict must reach it too, and each sub-equation the keys decide is asserted in turn.
      * Within one outermost assertion each pair of objects is checked once, so the check costs one structural pass
-     * however much its values share, where rechecking every repeated pair would walk a shared value as a tree. A pair
-     * checked once is skipped even under another store or frame: the verdict under test is its keys', which neither
-     * changes, and the assertion is a debug check.
+     * however much its values share, where rechecking every repeated pair would walk a shared value as a tree. Nested
+     * key verdicts are queued instead of recursively checking their structure, so deeply nested equal values use a heap
+     * work stack rather than the host call stack. A pair checked once is skipped even under another store or frame: the
+     * verdict under test is its keys', which neither changes, and the assertion is a debug check.
      */
     private def assertKeyVerdict(a: Value, b: Value, meta: EqStore, ctx: Ctx, keysEqual: Boolean): Unit = {
-      val outermost = assertedPairs.get() == null
-      if (outermost) assertedPairs.set(new java.util.HashSet[AssertedPair])
-      try {
-        if (assertedPairs.get().add(new AssertedPair(a, b)) && structurally(a, b, meta, ctx).isRight != keysEqual)
-          wtf(
-            s"ValueKey disagrees with conversion: keys ${if (keysEqual) "equal" else "differ"} but the structural " +
-              s"comparison ${if (keysEqual) "fails" else "succeeds"} for $a and $b"
-          )
-      } finally if (outermost) assertedPairs.remove()
+      val verdict = new KeyVerdict(a, b, meta, ctx, keysEqual)
+      val running = runningAssertion.get()
+      if (running != null) running.take(verdict)
+      else {
+        val assertion = new Assertion
+        runningAssertion.set(assertion)
+        try {
+          assertion.take(verdict)
+          while (!assertion.pending.isEmpty) {
+            val next = assertion.pending.pop()
+            if (structurally(next.a, next.b, next.meta, next.ctx).isRight != next.keysEqual)
+              wtf(
+                s"ValueKey disagrees with conversion: keys ${if (next.keysEqual) "equal" else "differ"} but the " +
+                  s"structural comparison ${if (next.keysEqual) "fails" else "succeeds"} for ${next.a} and ${next.b}"
+              )
+          }
+        } finally runningAssertion.remove()
+      }
     }
 
     /** The rules below the key fast path: decomposition, whose leaves are decided by the fast path again. */
-    private def structurally(a: Value, b: Value, meta: EqStore, ctx: Ctx): Result = {
+    private def structurally(a: Value, b: Value, meta: EqStore, rootCtx: Ctx): Result = {
+      val ctx = rootCtx.nested
       (a, b) match {
         // Proof structure supplies neither links nor apartness. Reduce to the proposition equation
         // before lambda extensionality, constructor no-confusion, application decomposition, or
@@ -442,7 +513,7 @@ object ValueEquivalence {
         // were handled by ProofEquation above, whether erased or reconstructed. Heads without
         // no-confusion (e.g. Quot.mk) can still only be identified or separated by their theory.
         case (VCtor(h1, _, _), VCtor(h2, _, _)) if h1.name != h2.name =>
-          if (h1.noConfusion && h2.noConfusion) apart(a, b)
+          if (constructorClashIsRefutable(a, b, meta, h1.noConfusion && h2.noConfusion)) apart(a, b)
           else stuck(a, b)
 
         // Deliberately NOT a refutation: different inductive family heads (bare or applied) are only
@@ -450,12 +521,10 @@ object ValueEquivalence {
         // Prop-valued families (And T T = Or T T), so head clashes fall through to stuck.
 
         case (v1: VApp, v2: VApp) if v1.args.length == v2.args.length =>
-          // Decomposition is invertible only for no-confusion heads. Proof-typed applications were
-          // handled by ProofEquation, so no proof exclusion is needed here. For any other head it is
-          // a solving heuristic: `f a ~ f b` failing on `a ~ b` proves nothing about the applications,
-          // and links made below are choices, not consequences (Invert mode refuses them via argCtx).
-          val invertible =
-            definitionallyInjectiveHead(v1.head) && definitionallyInjectiveHead(v2.head)
+          // Data-family N1 and constructor injectivity hold beneath arbitrary structure. Prop-family
+          // inversion is justified only for this equation when it is the match's root type comparison.
+          // Other heads remain arbitrary functions, so their argument equations cannot produce links or refutations.
+          val invertible = invertibleApplication(v1, rootCtx) && invertibleApplication(v2, rootCtx)
           val argCtx = if (invertible) ctx else ctx.enterNonInvertibleFrame
           def frame(failed: UnifyFailure): UnifyFailure = if (invertible) failed else failed.asStuck
           val headsUnified = (v1.head, v2.head) match {
@@ -472,14 +541,14 @@ object ValueEquivalence {
               // an equation like `max(u, v) ~ 1` has no forced solution on its own, but becomes
               // ground once a later argument solves its atoms. Postponement reorders work without
               // ever inventing values. Apart failures are rigid and fail immediately.
-              val deferred = Vector.newBuilder[(Value, Value, UnifyFailure)]
+              val deferred = Vector.newBuilder[Postponed]
               val args = v1.args.zip(v2.args)
               val iter = args.iterator
               while (iter.hasNext) {
                 val (arg1, arg2) = iter.next()
                 tryUnify(arg1, arg2, curMeta, argCtx) match {
                   case Left(failed) if failed.apart => return Left(frame(failed))
-                  case Left(failed)                 => deferred += ((arg1, arg2, failed))
+                  case Left(failed)                 => deferred += Postponed(arg1, arg2, curMeta, failed)
                   case Right(next)                  => curMeta = next
                 }
               }
@@ -488,15 +557,17 @@ object ValueEquivalence {
               tryUnify(v1.tpe, v2.tpe, curMeta, ctx) match { // Important for constructors
                 // A stuck type follows from the stuck arguments, and the last of them is reported: an implicit
                 // argument is read off a later one, so the last is where the two applications were written apart.
-                case Left(failed) if !failed.apart && postponed.nonEmpty => return Left(frame(postponed.last._3))
-                case Left(failed)                                        => return Left(frame(failed))
-                case Right(next)                                         => curMeta = next
+                case Left(failed) if !failed.apart && postponed.nonEmpty =>
+                  return Left(frame(postponed.last.failure))
+                case Left(failed) => return Left(frame(failed))
+                case Right(next)  => curMeta = next
               }
               val retryIter = postponed.iterator
               while (retryIter.hasNext) {
-                val (arg1, arg2, original) = retryIter.next()
-                tryUnify(arg1, arg2, curMeta, argCtx) match {
-                  case Left(_)     => return Left(frame(original))
+                val equation = retryIter.next()
+                if (!equation.reachesLinksOf(curMeta)) return Left(frame(equation.failure))
+                tryUnify(equation.v1, equation.v2, curMeta, argCtx) match {
+                  case Left(_)     => return Left(frame(equation.failure))
                   case Right(next) => curMeta = next
                 }
               }
@@ -524,7 +595,7 @@ object ValueEquivalence {
             .map(Right(_))
             .getOrElse(stuck(l1, l2))
 
-        case (s1: VSort, s2: VSort) => tryUnify(s1.level, s2.level, meta, ctx)
+        case (s1: VSort, s2: VSort) if s1.isProp == s2.isProp => tryUnify(s1.level, s2.level, meta, ctx)
 
         // Unify FreshVars through ctx. Basic idea: FreshVars can point at things through context
         // unify creates a ctx of pointers. We only create pointers from the top of the chain

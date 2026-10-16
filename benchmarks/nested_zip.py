@@ -43,12 +43,7 @@ def parse_sizes(value: str) -> list[int]:
     return sizes
 
 
-def parse_kinds(value: str) -> list[str]:
-    return [part.strip() for part in value.split(",") if part.strip()]
-
-
-def raccoon_source(size: int, transparent_zip: bool) -> str:
-    unfold = "def" if transparent_zip else "opaque def"
+def raccoon_source(size: int) -> str:
     lets = []
     previous = "v"
     for idx in range(1, size + 1):
@@ -59,14 +54,14 @@ def raccoon_source(size: int, transparent_zip: bool) -> str:
  | zero : Nat
  | succ (m: Nat) : Nat
 
-inductive Vec {{u: Level}}(A: Sort {{ level = u }}) indices (n: Nat) : Sort {{ level = max(one, u) }}
+inductive Vec {{u: Level}}(A: Type {{ level = u }}) indices (n: Nat) : Type {{ level = max(one, u) }}
  | nil : Vec(A, Nat.zero)
  | cons (n: Nat)(tail: Vec(A, n))(head: A) : Vec(A, Nat.succ(n))
 
-inductive Pair {{u1: Level}}{{u2: Level}}(A: Sort {{ level = u1 }})(B: Sort {{ level = u2 }}) : Sort {{ level = max(u1, u2) }}
+inductive Pair {{u1: Level}}{{u2: Level}}(A: Type {{ level = u1 }})(B: Type {{ level = u2 }}) : Type {{ level = max(u1, u2) }}
  | mk (a: A)(b: B) : Pair(A, B)
 
-{unfold} zip {{u1: Level}}{{u2: Level}}{{A: Sort {{ level = u1 }}}}{{B: Sort {{ level = u2 }}}}(n: Nat)(va: Vec(A, n))(vb: Vec(B, n)) : Vec(Pair(A, B), n) decreases structural(n) := {{
+def zip {{u1: Level}}{{u2: Level}}{{A: Type {{ level = u1 }}}}{{B: Type {{ level = u2 }}}}(n: Nat)(va: Vec(A, n))(vb: Vec(B, n)) : Vec(Pair(A, B), n) decreases structural(n) := {{
   let R := Pair(A, B)
   match va returning Vec(R, n) with
   | Vec.nil => Vec.nil(R)
@@ -76,7 +71,7 @@ inductive Pair {{u1: Level}}{{u2: Level}}(A: Sort {{ level = u1 }})(B: Sort {{ l
   }}
 }}
 
-def consume {{u: Level}}{{A: Sort {{ level = u }}}}{{n: Nat}}(w: Vec(A, n)) : Nat := Nat.zero
+def consume {{u: Level}}{{A: Type {{ level = u }}}}{{n: Nat}}(w: Vec(A, n)) : Nat := Nat.zero
 
 def bench (n: Nat)(v: Vec(Nat, n)) : Nat := {{
 {chr(10).join(lets)}
@@ -126,8 +121,7 @@ def write_file(path: Path, contents: str) -> None:
 
 def generate_raccoon(out_dir: Path, sizes: Iterable[int]) -> None:
     for size in sizes:
-        write_file(out_dir / f"nested_zip_opaque_{size}.rac", raccoon_source(size, transparent_zip=False))
-        write_file(out_dir / f"nested_zip_transparent_{size}.rac", raccoon_source(size, transparent_zip=True))
+        write_file(out_dir / f"nested_zip_{size}.rac", raccoon_source(size))
 
 
 def generate_lean(out_dir: Path, sizes: Iterable[int]) -> None:
@@ -262,24 +256,22 @@ def print_summary(summary: RunSummary) -> None:
 
 def run_raccoon_jvm(args: argparse.Namespace, out_dir: Path) -> None:
     classpath = args.classpath or default_classpath()
-    for kind in args.raccoon_kinds:
-        for size in args.raccoon_sizes:
-            reps = reps_for_size(size, args.reps, args.large_reps, args.large_threshold)
-            path = out_dir / f"nested_zip_{kind}_{size}.rac"
-            command = [args.java, "-cp", classpath, "com.raccoonlang.Main", "--prelude", args.prelude, str(path)]
-            print_summary(benchmark_command(f"raccoon-jvm-{kind}", size, command, reps, args.timeout))
+    for size in args.raccoon_sizes:
+        reps = reps_for_size(size, args.reps, args.large_reps, args.large_threshold)
+        path = out_dir / f"nested_zip_{size}.rac"
+        command = [args.java, "-cp", classpath, "com.raccoonlang.Main", "--prelude", args.prelude, str(path)]
+        print_summary(benchmark_command("raccoon-jvm", size, command, reps, args.timeout))
 
 
 def run_raccoon_native(args: argparse.Namespace, out_dir: Path) -> None:
     native_bin = Path(args.native_bin)
     if not native_bin.exists():
         raise FileNotFoundError(f"native binary not found: {native_bin}")
-    for kind in args.raccoon_kinds:
-        for size in args.raccoon_sizes:
-            reps = reps_for_size(size, args.reps, args.large_reps, args.large_threshold)
-            path = out_dir / f"nested_zip_{kind}_{size}.rac"
-            command = [str(native_bin), str(path)]
-            print_summary(benchmark_command(f"raccoon-native-{kind}", size, command, reps, args.timeout))
+    for size in args.raccoon_sizes:
+        reps = reps_for_size(size, args.reps, args.large_reps, args.large_threshold)
+        path = out_dir / f"nested_zip_{size}.rac"
+        command = [str(native_bin), str(path)]
+        print_summary(benchmark_command("raccoon-native", size, command, reps, args.timeout))
 
 
 def run_lean(args: argparse.Namespace, out_dir: Path, raised_limits: bool) -> None:
@@ -309,7 +301,6 @@ def main() -> int:
     parser.add_argument("--out-dir", type=Path, default=Path("/tmp/raccoonlang-benchmarks/nested-zip"))
     parser.add_argument("--raccoon-sizes", type=parse_sizes, default=DEFAULT_RACCOON_SIZES)
     parser.add_argument("--lean-sizes", type=parse_sizes, default=DEFAULT_LEAN_SIZES)
-    parser.add_argument("--raccoon-kinds", type=parse_kinds, default=["opaque", "transparent"])
     parser.add_argument("--reps", type=int, default=5, help="repetitions for sizes below --large-threshold")
     parser.add_argument("--large-reps", type=int, default=3)
     parser.add_argument("--large-threshold", type=int, default=51200)
@@ -322,10 +313,6 @@ def main() -> int:
     args = parser.parse_args()
 
     runners = expand_runners(args.runner or ["generate"])
-    invalid_kinds = sorted(set(args.raccoon_kinds) - {"opaque", "transparent"})
-    if invalid_kinds:
-        raise ValueError(f"unknown raccoon kind(s): {', '.join(invalid_kinds)}")
-
     args.out_dir.mkdir(parents=True, exist_ok=True)
     if any(runner in runners for runner in ["generate", "jvm", "native"]):
         generate_raccoon(args.out_dir, args.raccoon_sizes)

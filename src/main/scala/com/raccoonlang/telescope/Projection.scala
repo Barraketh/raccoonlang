@@ -11,8 +11,8 @@ import scala.collection.mutable
  *
  *   - `compile` pattern-matches the *evaluated* types of the non-implicit binders (as patterns over the implicits'
  *     fresh vars) and produces a per-implicit `Spec` — which provided argument to start from and the path to walk.
- *     Every position used is rigid (irreducible head applications, no-confusion constructor fields, sort fields and
- *     levels, Pi domains), so following the same path on the actual arguments at any later time re-derives the value.
+ *     Every position used is rigid (irreducible head applications, no-confusion constructor fields, data-sort levels,
+ *     Pi domains), so following the same path on the actual arguments at any later time re-derives the value.
  *     Projection is a *choice*, not a proof: application checking re-verifies every argument against its instantiated
  *     binder type, so soundness never rests on injectivity of these positions.
  *   - `project` follows a Spec against actual argument values. It is the single implementation used by check-time
@@ -30,7 +30,7 @@ object Projection {
     /** value -> its type. */
     case object Tpe extends Step
 
-    /** Application of an irreducible constant head (inductive family, axiom, opaque symbol) -> arg. */
+    /** Application of an irreducible constant head (inductive family, axiom) -> arg. */
     final case class SpineArg(head: String, idx: Int) extends Step
 
     /** No-confusion constructor value -> stored field (family args are erased from storage). */
@@ -168,7 +168,7 @@ object Projection {
             case Some(hole) => solveHole(hole, root, steps, v.tpe)
             case None =>
               v match {
-                case sort: VSort =>
+                case sort: VSort if !Sorts.isProp(sort) =>
                   queue.append((root, steps :+ Step.SortLevel, sort.level))
 
                 case VCtor(head, stored, tpe) =>
@@ -220,7 +220,7 @@ object Projection {
     drain()
 
     // Demoting a family param turns it into a root, which can force further implicits (demoting A
-    // in `Option {u}(A)` forces u through `A : Sort { level = u }`), so demote minimally: rightmost unforced
+    // in `Option {u}(A)` forces u through `A : Type { level = u }`), so demote minimally: rightmost unforced
     // param first. Binder types only mention earlier binders, so forcing flows right-to-left and
     // this order never demotes a param a later demotion would have forced. Demotion only adds a
     // root — existing solutions stay valid — so saturation resumes with just the new root.
@@ -342,8 +342,8 @@ object Projection {
 
           case Step.SortLevel =>
             v match {
-              case sort: VSort => Right(sort.level)
-              case other       => Left(s"expected a sort, got $other")
+              case sort: VSort if !Sorts.isProp(sort) => Right(sort.level)
+              case other                              => Left(s"expected a data universe, got $other")
             }
 
           case Step.LevelOffset(k) =>

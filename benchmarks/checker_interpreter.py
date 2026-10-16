@@ -56,7 +56,7 @@ SCENARIO_DESCRIPTIONS = {
     "lambda-binders": "large Pi/lambda binders and full application",
     "match-width": "wide neutral match exhaustiveness and branch checking",
     "dependent-match": "dependent equality-style match refinement",
-    "pattern-capture": "Raccoon type-pattern capture / Lean implicit parameter recovery",
+    "pattern-capture": "implicit parameter recovery from a typed argument",
     "projection-chain": "nested structure projections and selector typing",
     "transparent-chain": "transparent top-level unfolding and runtime evaluation",
     "universe-max": "large universe-parameter and Level.max terms",
@@ -97,14 +97,14 @@ def raccoon_base() -> str:
 
 def raccoon_wrap() -> str:
     return """inductive Wrap (A: Type) : Type
- | mk (x: $A in Type) : Wrap(A)
+ | mk (x: A) : Wrap(A)
 
 """
 
 
 def raccoon_box() -> str:
     return """struct Box (A: Type) : Type
- | mk (value: $A in Type) : Box(A)
+ | mk (value: A) : Box(A)
 
 """
 
@@ -339,8 +339,8 @@ def raccoon_dependent_match(size: int) -> str:
     return (
         raccoon_header()
         + raccoon_nat()
-        + """inductive EqBench (A: Sort($u)) indices (x: A)(y: A) : Prop
- | refl (x: $A in Sort($u)) : EqBench(A, x, x)
+        + """inductive EqBench {u: Level}(A: Type { level = u }) indices (x: A)(y: A) : Prop
+ | refl (x: A) : EqBench(A, x, x)
 
 """
         + "".join(defs)
@@ -375,23 +375,25 @@ def lean_dependent_match(size: int) -> str:
 def raccoon_pattern_capture(size: int) -> str:
     params = [f"A{idx}" for idx in range(size)]
     targets = [f"T{idx}" for idx in range(size)]
-    param_binders = "".join(f" ({param}: Sort($u{idx}))" for idx, param in enumerate(params))
-    ctor_binders = "".join(f" {{{param}: Sort($u{idx})}}" for idx, param in enumerate(params))
+    param_binders = "".join(f" ({param}: Type {{ level = u{idx} }})" for idx, param in enumerate(params))
+    level_binders = "".join(f"{{u{idx}: Level}}" for idx in range(size))
     args = ", ".join(params)
     target_args = ", ".join(targets)
     pack_ty = f"Pack({args})" if args else "Pack"
     target_ty = f"Pack({target_args})" if target_args else "Pack"
-    sort = "Type" if not params else f"Sort({raccoon_level_max([f'u{idx}' for idx in range(size)])})"
+    sort = "Type" if not params else f"Type {{ level = {raccoon_level_max([f'u{idx}' for idx in range(size)])} }}"
     type_decls = "".join(f"inductive {target} : Type\n | mk : {target}\n\n" for target in targets)
     mk_args = [*targets, "BenchUnit.unit"]
     if size == 0:
         capture = "def capture (p: Pack): BenchUnit := BenchUnit.unit\n\n"
     else:
-        capture_args = ", ".join(f"${param}" for param in params)
-        capture = f"def capture (p: Pack({capture_args})): BenchUnit := BenchUnit.unit\n\n"
+        capture_binders = level_binders + "".join(
+            f"{{{param}: Type {{ level = u{idx} }}}}" for idx, param in enumerate(params)
+        )
+        capture = f"def capture {capture_binders} (p: Pack({args})): BenchUnit := BenchUnit.unit\n\n"
     return (
         raccoon_header()
-        + f"struct Pack{param_binders} : {sort}\n | mk{ctor_binders} (val: BenchUnit) : {pack_ty}\n\n"
+        + f"struct Pack {level_binders}{param_binders} : {sort}\n | mk (val: BenchUnit) : {pack_ty}\n\n"
         + type_decls
         + f"def value : {target_ty} := Pack.mk({', '.join(mk_args)})\n"
         + capture
@@ -491,18 +493,18 @@ def lean_transparent_chain(size: int) -> str:
 def raccoon_universe_max(size: int) -> str:
     params = [f"A{idx}" for idx in range(size)]
     targets = [f"T{idx}" for idx in range(size)]
-    param_binders = "".join(f" ({param}: Sort($u{idx}))" for idx, param in enumerate(params))
-    ctor_binders = "".join(f" {{{param}: Sort($u{idx})}}" for idx, param in enumerate(params))
+    param_binders = "".join(f" ({param}: Type {{ level = u{idx} }})" for idx, param in enumerate(params))
+    level_binders = "".join(f"{{u{idx}: Level}}" for idx in range(size))
     args = ", ".join(params)
     target_args = ", ".join(targets)
     u_ty = f"U({args})" if args else "U"
     target_ty = f"U({target_args})" if target_args else "U"
-    sort = "Type" if not params else f"Sort({raccoon_level_max([f'u{idx}' for idx in range(size)])})"
+    sort = "Type" if not params else f"Type {{ level = {raccoon_level_max([f'u{idx}' for idx in range(size)])} }}"
     type_decls = "".join(f"inductive {target} : Type\n | mk : {target}\n\n" for target in targets)
     mk_args = [*targets, "BenchUnit.unit"]
     return (
         raccoon_header()
-        + f"struct U{param_binders} : {sort}\n | mk{ctor_binders} (val: BenchUnit) : {u_ty}\n\n"
+        + f"struct U {level_binders}{param_binders} : {sort}\n | mk (val: BenchUnit) : {u_ty}\n\n"
         + type_decls
         + f"def consume (u: {target_ty}): BenchUnit := BenchUnit.unit\n"
         + f"def bench : BenchUnit := consume(U.mk({', '.join(mk_args)}))\n\n"

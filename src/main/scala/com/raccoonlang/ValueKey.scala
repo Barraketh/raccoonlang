@@ -31,6 +31,7 @@ object ValueKey {
     val LevelTpe = 1
     val Level = 2
     val Sort = 3
+    val PropSort = 4
     val KernelObject = 5
     val Const = 6
     val Var = 7
@@ -43,7 +44,6 @@ object ValueKey {
     val ConstId = 16
     val LocalId = 17
     val LevelParamAtom = 19
-    val LevelIMaxAtom = 20
     val SortParameter = 21
     val Large = 22
   }
@@ -106,10 +106,12 @@ object ValueKey {
       avalanche(key.lo + java.lang.Long.rotateLeft(value.lo, 27))
     )
 
+  def constructorName(name: String): Key = mixString(tag(Tag.ConstructorHead), name)
+
   /** The identity of a constructor head itself, independent of whether it stands alone or heads an application. */
   private def headKey(head: Value): Key =
     head match {
-      case h: Value.ConstructorHead => mixString(tag(Tag.ConstructorHead), h.name)
+      case h: Value.ConstructorHead => constructorName(h.name)
       case other                    => other.key
     }
 
@@ -135,8 +137,6 @@ object ValueKey {
   private[raccoonlang] def levelAtomKey(atom: Value.Level.Atom): Key =
     atom match {
       case Value.Level.ParamAtom(id) => mixLong(tag(Tag.LevelParamAtom), id.toLong)
-      case Value.Level.IMaxAtom(lhs, rhs) =>
-        mixKey(mixKey(tag(Tag.LevelIMaxAtom), lhs.key), rhs.key)
     }
 
   private def levelKey(terms: Map[Value.Level.Atom, Int], c: Int): Key = {
@@ -154,36 +154,59 @@ object ValueKey {
     mixLong(cur, sortedTerms.length.toLong)
   }
 
+  def levelTpe: Key = tag(Tag.LevelTpe)
+
+  def sortParameter: Key = tag(Tag.SortParameter)
+
+  def large: Key = tag(Tag.Large)
+
+  def level(value: Value.Level): Key = levelKey(value.terms, value.c)
+
+  def sort(isProp: Boolean, level: Value.Level): Key =
+    mixKey(tag(if (isProp) Tag.PropSort else Tag.Sort), level.key)
+
+  def constant(name: String): Key = mixString(tag(Tag.Const), name)
+
+  def variable(id: Value.VarId): Key = mixLong(tag(Tag.Var), id.toLong)
+
+  def application(head: Value, args: Vector[Value], tpe: Value): Key = {
+    val appKey = mixValues(mixKey(tag(Tag.App), headKey(head)), args)
+    head match {
+      case _: Value.ConstructorHead => mixKey(appKey, tpe.key)
+      case _                        => appKey
+    }
+  }
+
+  def lambda(id: Value.ValueId): Key = valueIdKey(tag(Tag.Lam), id)
+
+  def neutralThunk(id: Value.ValueId): Key = valueIdKey(tag(Tag.NeutralThunk), id)
+
+  def pi(id: Value.ValueId, binderCount: Int): Key =
+    mixLong(valueIdKey(tag(Tag.Pi), id), binderCount.toLong)
+
+  def constructorHead(head: Value.ConstructorHead): Key =
+    if (head.totalArity == 0) application(head, Vector.empty, head.tpe)
+    else headKey(head)
+
+  def proof(tpe: Value): Key = mixKey(tag(Tag.Proof), tpe.key)
+
   def orderKey(v: Value): Key = v match {
-    case Value.LevelTpe      => tag(Tag.LevelTpe)
-    case Value.SortParameter => tag(Tag.SortParameter)
-    case Value.Large         => tag(Tag.Large)
-    case level: Value.Level  => levelKey(level.terms, level.c)
+    case Value.LevelTpe      => levelTpe
+    case Value.SortParameter => sortParameter
+    case Value.Large         => large
+    case level: Value.Level  => this.level(level)
     case sort: Value.VSort   =>
-      // A sort is determined by its universe level.
-      mixKey(tag(Tag.Sort), sort.level.key)
-    case Value.VConst(n, _, _) => mixString(tag(Tag.Const), n)
-    case Value.Var(_, id, _)   => mixLong(tag(Tag.Var), id.toLong)
+      // Prop and data Type0 have the same level but are distinct sorts.
+      this.sort(sort.isProp, sort.level)
+    case Value.VConst(n, _, _) => constant(n)
+    case Value.Var(_, id, _)   => variable(id)
     case Value.VApp(h, args, tpe, _) =>
-      val appKey = mixValues(mixKey(tag(Tag.App), headKey(h)), args)
-      h match {
-        case _: Value.ConstructorHead => mixKey(appKey, tpe.key)
-        case _                        => appKey
-      }
-    case Value.VLam(_, id, _) =>
-      valueIdKey(tag(Tag.Lam), id)
-    case m: Value.NeutralThunk =>
-      valueIdKey(tag(Tag.NeutralThunk), m.id)
-    case p: Value.VPi => mixLong(valueIdKey(tag(Tag.Pi), p.id), p.binders.length.toLong)
-    // A nullary constructor is already a value in constructor form: a global lookup hands back the
-    // bare head where `evalRef` hands back `VCtor(h, [], tpe)`. Both spellings denote the same
-    // value, so the bare head keys exactly as that application would, or defEq's key fast path
-    // would call one unequal to the other.
-    case head: Value.ConstructorHead if head.totalArity == 0 =>
-      mixKey(mixValues(mixKey(tag(Tag.App), headKey(head)), Vector.empty), head.tpe.key)
-    case head: Value.ConstructorHead => headKey(head)
+      application(h, args, tpe)
+    case Value.VLam(_, id, _)        => lambda(id)
+    case m: Value.NeutralThunk       => neutralThunk(m.id)
+    case p: Value.VPi                => pi(p.id, p.binders.length)
+    case head: Value.ConstructorHead => constructorHead(head)
     // All erased proofs of defEq propositions share a key; VProof contains only its proposition.
-    case p: Value.VProof =>
-      mixKey(tag(Tag.Proof), p.tpe.key)
+    case p: Value.VProof => proof(p.tpe)
   }
 }

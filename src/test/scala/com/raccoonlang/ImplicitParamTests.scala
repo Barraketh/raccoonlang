@@ -27,10 +27,10 @@ class ImplicitParamTests extends munit.FunSuite with TestSupport {
         | | zero : Peano
         | | succ (_: Peano) : Peano
         |
-        |inductive Box {u: Level}(A: Sort { level = u }) : Sort { level = u }
+        |inductive Box {u: Level}(A: Type { level = u }) : Type { level = u }
         | | mk (a: A) : Box(A)
         |
-        |def unbox {u: Level}{A: Sort { level = u }} (b: Box(A)): A := {
+        |def unbox {u: Level}{A: Type { level = u }} (b: Box(A)): A := {
         |  match b returning A with
         |  | Box.mk a => a
         |}
@@ -50,7 +50,7 @@ class ImplicitParamTests extends munit.FunSuite with TestSupport {
         | | zero : Peano
         | | succ (_: Peano) : Peano
         |
-        |inductive Vec {u: Level}(A: Sort { level = u }) indices (n: Peano) : Sort { level = max(one, u) }
+        |inductive Vec {u: Level}(A: Type { level = u }) indices (n: Peano) : Type { level = max(one, u) }
         | | nil : Vec(A, Peano.zero)
         | | cons {n: Peano} (tail: Vec(A, n)) (head: A) : Vec(A, Peano.succ(n))
         |
@@ -170,7 +170,7 @@ class ImplicitParamTests extends munit.FunSuite with TestSupport {
         |inductive Peano : Type
         | | zero : Peano
         |
-        |inductive Pack : Sort { level = succ(one) }
+        |inductive Pack : Type { level = succ(one) }
         | | mk {A: Type} (x: A) : Pack
         |
         |def carrier (p: Pack): Type := {
@@ -338,7 +338,7 @@ class ImplicitParamTests extends munit.FunSuite with TestSupport {
         | | zero : Peano
         | | succ (_: Peano) : Peano
         |
-        |inductive Vec {u: Level}(A: Sort { level = u }) indices (n: Peano) : Sort { level = max(one, u) }
+        |inductive Vec {u: Level}(A: Type { level = u }) indices (n: Peano) : Type { level = max(one, u) }
         | | nil : Vec(A, Peano.zero)
         | | cons {n: Peano} (tail: Vec(A, n)) (head: A) : Vec(A, Peano.succ(n))
         |
@@ -358,7 +358,7 @@ class ImplicitParamTests extends munit.FunSuite with TestSupport {
         |inductive Peano : Type
         | | zero : Peano
         |
-        |inductive Box {u: Level}(A: Sort { level = u }) : Sort { level = u }
+        |inductive Box {u: Level}(A: Type { level = u }) : Type { level = u }
         | | mk (a: A) : Box(A)
         |
         |{
@@ -376,7 +376,7 @@ class ImplicitParamTests extends munit.FunSuite with TestSupport {
         | | zero : Peano
         | | succ (_: Peano) : Peano
         |
-        |inductive Vec {u: Level}(A: Sort { level = u }) indices (n: Peano) : Sort { level = max(one, u) }
+        |inductive Vec {u: Level}(A: Type { level = u }) indices (n: Peano) : Type { level = max(one, u) }
         | | nil : Vec(A, Peano.zero)
         | | cons {n: Peano} (tail: Vec(A, n)) (head: A) : Vec(A, Peano.succ(n))
         |

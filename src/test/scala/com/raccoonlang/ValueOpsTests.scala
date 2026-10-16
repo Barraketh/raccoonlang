@@ -93,7 +93,8 @@ class ValueOpsTests extends munit.FunSuite with DiagnosticAssertions {
       _ => valueType,
       captured.synDeps,
       ValueId.LocalId(NodeId.fresh(), Vector(captured)),
-      () => typeToTypeClassifier
+      () => typeToTypeClassifier,
+      isPropValued = false
     )
     val piTerm = CTerm.Pi(
       Vector(CoreAst.Binder(argRef, typeRef, span, CoreAst.BinderSite.Function)),
@@ -136,7 +137,8 @@ class ValueOpsTests extends munit.FunSuite with DiagnosticAssertions {
       _ => valueType,
       DepSet.empty,
       ValueId.LocalId(NodeId.fresh(), Vector.empty),
-      () => typeToTypeClassifier
+      () => typeToTypeClassifier,
+      isPropValued = false
     )
     val piTerm = CTerm.Pi(
       Vector(CoreAst.Binder(argRef, typeRef, span, CoreAst.BinderSite.Function)),

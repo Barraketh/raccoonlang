@@ -387,7 +387,6 @@ object Elaborator {
         )
 
         SA.Command.Decl.ConstDecl(
-          isOpaque = false,
           selectorHeader,
           decreases = None,
           SA.ConstBody.TermBody(body),
@@ -414,12 +413,8 @@ object Elaborator {
       case _: SA.Term.NatLit          => Vector.empty
       case SA.Term.Select(base, _, _) => free(base)
       case SA.Term.App(fn, args, _)   => (fn +: args).flatMap(free)
-      case SA.Term.Sort(level, _) =>
-        val written = level match {
-          case SA.Term.SortLevel.Written(written)             => Vector(written)
-          case SA.Term.SortLevel.Zero | SA.Term.SortLevel.One => Vector.empty
-        }
-        written.flatMap(free)
+      case SA.Term.Type(level, _)     => level.toVector.flatMap(free)
+      case _: SA.Term.Prop            => Vector.empty
       case SA.Term.Pi(binders, body, _) =>
         val (inBinders, inner) = group(binders)
         inBinders ++ freeIdentifiers(body, inner)
@@ -482,7 +477,7 @@ object Elaborator {
     head match {
       case Right(term)                   => term
       case Left(form) if form.arity == 0 => CA.Term.FormOp(form, Vector.empty, span)
-      case Left(form)                    => at(span) { fail(ArityMismatch(form.arity, 0)) }
+      case Left(form)                    => at(span) { fail(ArityMismatch(form.arity, 0, ArityMismatch.Arguments)) }
     }
 
   private def elabPathTerm(path: SurfacePath, env: ResolveEnv): CA.Term =
@@ -615,19 +610,19 @@ object Elaborator {
       }
       head match {
         case Left(form) if form.arity > 0 =>
-          if (args.length != form.arity) at(sp) { fail(ArityMismatch(form.arity, args.length)) }
+          if (args.length != form.arity)
+            at(sp) { fail(ArityMismatch(form.arity, args.length, ArityMismatch.Arguments)) }
           CA.Term.FormOp(form, args.map(elabTerm(_, env)), sp)
         case _ => CA.Term.App(unapplied(head, fn.span), args.map(elabTerm(_, env)), sp)
       }
-    case SA.Term.Sort(level, sp) =>
-      def fixed(form: CA.Form): CA.Term = CA.Term.FormOp(form, Vector.empty, sp)
+    case SA.Term.Type(level, sp) =>
       val levelTerm = level match {
-        case SA.Term.SortLevel.Zero          => fixed(CA.Form.LevelZero)
-        case SA.Term.SortLevel.One           => fixed(CA.Form.LevelOne)
-        case SA.Term.SortLevel.Written(term) => elabField(term, CA.Parameter.Level, env)
+        case None       => CA.Term.FormOp(CA.Form.LevelZero, Vector.empty, sp)
+        case Some(term) => elabField(term, CA.Parameter.Level, env)
       }
       CA.Term.Sort(levelTerm, sp)
-    case pi: SA.Term.Pi => elabPi(pi, env)
+    case SA.Term.Prop(sp) => CA.Term.Prop(sp)
+    case pi: SA.Term.Pi   => elabPi(pi, env)
     case l: SA.Term.Lam =>
       val header = elabHeader(l.header, CA.BinderSite.Function, env)
       header.ty match {
@@ -695,8 +690,6 @@ object Elaborator {
     // another or with a different member's parameter refs.
     var allocator = reserved
     val headers = defs.zip(names).map { case (defn, name) =>
-      if (defn.isOpaque)
-        at(defn.span) { fail(InvalidRecursiveGroup("mutual definitions cannot be opaque")) }
       defn.body match {
         case SA.ConstBody.TermBody(_) =>
         case SA.ConstBody.Builtin(_) =>
@@ -865,7 +858,7 @@ object Elaborator {
             }
         }
         (
-          CA.Decl.ConstDecl(c.isOpaque, nameText, header.ty, body, c.span),
+          CA.Decl.ConstDecl(nameText, header.ty, body, c.span),
           envWithSelf
         )
       case c: SurfaceAst.Command.Decl.AxiomDecl =>
@@ -928,7 +921,7 @@ object Elaborator {
   private[raccoonlang] def elab(p: SA.Program, prelude: Prelude.Config): CA.Program =
     elabProgram(p, ResolveEnv.empty.copy(root = prelude.names.root))
 
-  /** Elaborate a surface program into the opaque input accepted by [[TypeChecker.check]]. */
+  /** Elaborate a surface program into the abstract input accepted by [[TypeChecker.check]]. */
   def elaborate(p: SA.Program, prelude: Prelude.Config = Prelude.default): Execution.ElaboratedProgram =
     Execution.elaborate(p, prelude)
 

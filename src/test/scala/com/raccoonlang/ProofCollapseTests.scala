@@ -59,9 +59,12 @@ class ProofCollapseTests extends munit.FunSuite with TestSupport {
   test("a proof implicit remains forceable without storing a witness in VProof") {
     typecheckDecls(
       """
-        |def choose {P: Prop}{h: P} (e: Eq(P, h, h)): P := h
+        |inductive ProofWitness {P: Prop} indices (proof: P) : Prop
+        | | intro (proof: P) : ProofWitness(proof)
         |
-        |def chosen : True := choose(Eq.refl(True.intro))
+        |def choose {P: Prop}{h: P} (e: ProofWitness(h)): P := h
+        |
+        |def chosen : True := choose(ProofWitness.intro(True.intro))
         |""".stripMargin
     )
   }
@@ -71,12 +74,15 @@ class ProofCollapseTests extends munit.FunSuite with TestSupport {
     // Projection compilation must retain structural defEq as the fallback after key bucketing.
     typecheckDecls(
       """
-        |opaque def truthFn (_: Nat): True := True.intro
+        |def truthFn (_: Nat): True := True.intro
+        |
+        |inductive ProofWitness {P: Prop} indices (proof: P) : Prop
+        | | intro (proof: P) : ProofWitness(proof)
         |
         |def chooseFn {h: (x: Nat) -> True}
-        |    (e: Eq((x: Nat) -> True, truthFn, truthFn)): (x: Nat) -> True := h
+        |    (e: ProofWitness(h)): (x: Nat) -> True := h
         |
-        |def chosenFn : (x: Nat) -> True := chooseFn(Eq.refl(truthFn))
+        |def chosenFn : (x: Nat) -> True := chooseFn(ProofWitness.intro(truthFn))
         |""".stripMargin
     )
   }
@@ -99,54 +105,38 @@ class ProofCollapseTests extends munit.FunSuite with TestSupport {
     }
   }
 
-  test("generic-universe bodies compare uncollapsed values correctly") {
-    // At generic u, `x : A` with `A : Sort { level = u }` is not known to be a proof and stays an ordinary
-    // value (irrelevance does not hold at generic u); instantiating at a proposition hands the
-    // same body collapsed VProofs. Both must check.
+  test("generic-universe bodies compare data values correctly") {
+    // At generic u, `x : A` with `A : Type { level = u }` is not known to be a proof, so the body
+    // must work for ordinary data values without relying on proof irrelevance.
     typecheckDecls(
       """
-        |def genRefl {u: Level}{A: Sort { level = u }} (x: A): Eq(A, x, id(x)) := Eq.refl(x)
+        |def genRefl {u: Level}{A: Type { level = u }} (x: A): Eq(A, x, id(x)) := Eq.refl(x)
         |
-        |def atProp (P: Prop)(h: P): Eq(P, h, id(h)) := genRefl(h)
+        |def atNat (n: Nat): Eq(Nat, n, id(n)) := genRefl(n)
         |""".stripMargin
     )
   }
 
-  test("large elimination eligibility classifies polymorphic fields at the Prop instance") {
-    val res = runProgram(
+  test("data families reject Prop as a data-universe argument") {
+    expectAnyTypeError(
       """
-        |inductive PolyBox {u: Level}(A: Sort { level = u }) : Sort { level = u }
+        |inductive PolyBox {u: Level}(A: Type { level = u }) : Type { level = u }
         | | mk (value: A) : PolyBox(A)
         |
-        |opaque def boxedTrue : PolyBox(True) := PolyBox.mk(True.intro)
-        |
-        |def observe (P: Prop)(box: PolyBox(P)): Nat := {
-        |  match box returning Nat with
-        |  | PolyBox.mk _ => Nat.zero
-        |}
-        |
-        |{ observe(True, boxedTrue) }
+        |def boxedProp : PolyBox(Prop) := PolyBox.mk(Prop)
         |""".stripMargin
     )
-    assertEquals(PrettyPrinter.print(res), "0")
   }
 
   test("proof irrelevance is unchanged by constructor canonicalization") {
-    typecheckDecls(
-      """
-        |opaque def zeroEq : Eq(Nat, Nat.zero, Nat.zero) := Eq.refl(Nat.zero)
-        |
-        |def mixed : Eq(
-        |  Eq(Nat, Nat.zero, Nat.zero),
-        |  zeroEq,
-        |  Eq.refl(Nat.zero)
-        |) := Eq.refl(zeroEq)
-        |""".stripMargin
-    )
+    val first = runProgram("{ Eq.refl(Nat.zero) }")
+    val second = runProgram("{ Eq.symm(Eq.refl(Nat.zero)) }")
+
+    assert(ValueEquivalence.defEq(first, second))
   }
 
   test("casts along axiom-stuck proofs stay stuck") {
-    val res = runProgram("{ Eq.subst(natIsBool, Level.one, fun (A: Type): Type => A, Nat.zero) }", assumptions)
+    val res = runProgram("{ Eq.subst(natIsBool, Level.zero, fun (A: Type): Type => A, Nat.zero) }", assumptions)
     res match {
       case _: Value.NeutralThunk =>
       case other                 => fail(s"Expected the cast to stay stuck, got $other")
@@ -317,52 +307,21 @@ class ProofCollapseTests extends munit.FunSuite with TestSupport {
     assert(Interpreter.resolveInEqStore(restuck, store) eq restuck)
   }
 
-  test("a rigid-neutral match wakes when its scrutinee sort collapses to Prop") {
-    val program = parse(
+  test("instantiating a data family at universe zero keeps it in Type zero") {
+    val result = runProgram(
       """
         |inductive Peano : Type
         | | zero : Peano
-        | | succ (pred: Peano) : Peano
         |
-        |inductive PolyUnit (u: Level) indices (n: Peano) : Sort { level = u }
-        | | mk : PolyUnit(u, Peano.zero)
+        |inductive PolyUnit (u: Level)(A: Type { level = u }) : Type { level = u }
+        | | mk : PolyUnit(u, A)
         |
-        |opaque def makerType (u: Level): (n: Peano) -> PolyUnit(u, Peano.zero) :=
-        |  fun (n: Peano): PolyUnit(u, Peano.zero) => PolyUnit.mk(u)
-        |
-        |def probe (u: Level)(x: PolyUnit(u, Peano.zero)): Peano := {
-        |  match x returning Peano with
-        |  | PolyUnit.mk => Peano.zero
-        |}
+        |{ PolyUnit(Level.zero, Peano) }
         |""".stripMargin
     )
-    val env = program.decls.foldLeft(Prelude.default.checkedEnv) { case (current, decl) =>
-      Interpreter.evalDecl(decl, current)
-    }
-    // A level variable is its normal form, never a Var.
-    val (uId, u) = FreshVar.freshValue("u", Value.LevelTpe)
-    // Indexed, so structure eta does not apply and the match genuinely sticks on a neutral.
-    val polyUnitAtU = Interpreter.evalApply(env("PolyUnit"), Vector(u, env("Peano.zero")))
-    val x = Value.VConst("x", Value.Symbol, polyUnitAtU)
-    val thunk = Interpreter.evalApply(env("probe"), Vector(u, x)).asInstanceOf[Value.NeutralThunk]
 
-    assertEquals(thunk.blockedOn, DepSet(uId))
-
-    val store = EqStore.empty.allow(DepSet(uId)).addLink(uId, Value.Level.zero)
-    val fired = Interpreter.resolveInEqStore(thunk, store)
-    assertEquals(PrettyPrinter.print(fired), "Peano.zero")
-
-    val makerAtU = Interpreter.evalApply(env("makerType"), Vector(u))
-    val blockedHead = FreshVar.freshVar("blockedHead", makerAtU.tpe)
-    val zero = env("Peano.zero")
-    // Construct the blocked application directly so the scrutinee is a genuine blocked neutral.
-    val blockedScrutinee = Value.VBlockedApp(blockedHead, Vector(zero), polyUnitAtU, DepSet(blockedHead.id))
-    val blockedThunk =
-      Interpreter.evalApply(env("probe"), Vector(u, blockedScrutinee)).asInstanceOf[Value.NeutralThunk]
-
-    assertEquals(blockedThunk.blockedOn, DepSet(blockedHead.id, uId))
-    val firedThroughSortCollapse = Interpreter.resolveInEqStore(blockedThunk, store)
-    assertEquals(PrettyPrinter.print(firedThroughSortCollapse), "Peano.zero")
+    assert(!Sorts.isProposition(result))
+    assert(ValueEquivalence.defEq(result.tpe, Sorts.Type))
   }
 
   test("judgment blocker sets propagate through blocked applications") {
@@ -395,28 +354,12 @@ class ProofCollapseTests extends munit.FunSuite with TestSupport {
     )
   }
 
-  test("an opaque diagonal equality proof canonicalizes to refl and eliminates") {
+  test("a defined diagonal equality proof has the same canonical constructor as refl") {
     // Eq's declaration records that refl can be reconstructed exactly when the two endpoints
-    // coincide. Runtime canonicalization follows that recipe; it does not run unification.
+    // coincide. Publication follows that recipe; it does not run unification.
     val res = runProgram(
       """
-        |opaque def zeroEq : Eq(Nat, Nat.zero, Nat.zero) := Eq.refl(Nat.zero)
-        |
-        |{
-        |  Eq.subst(zeroEq, Level.one, fun (n: Nat): Type => Bool, Bool.true)
-        |}
-        |""".stripMargin
-    )
-    res match {
-      case Value.VCtor(head, _, _) => assertEquals(head.name, "Bool.true")
-      case other                   => fail(s"Expected the diagonal cast to reduce to Bool.true, got $other")
-    }
-  }
-
-  test("an opaque diagonal equality proof has the same canonical constructor as refl") {
-    val res = runProgram(
-      """
-        |opaque def zeroEq : Eq(Nat, Nat.zero, Nat.zero) := Eq.refl(Nat.zero)
+        |def zeroEq : Eq(Nat, Nat.zero, Nat.zero) := Eq.refl(Nat.zero)
         |
         |{ zeroEq }
         |""".stripMargin
@@ -433,10 +376,10 @@ class ProofCollapseTests extends munit.FunSuite with TestSupport {
   test("canonical diagonal proofs preserve congruence of execution") {
     typecheckDecls(
       """
-        |opaque def zeroEq : Eq(Nat, Nat.zero, Nat.zero) := Eq.refl(Nat.zero)
+        |def zeroEq : Eq(Nat, Nat.zero, Nat.zero) := Eq.refl(Nat.zero)
         |
         |def cast (p: Eq(Nat, Nat.zero, Nat.zero)): Bool :=
-        |  Eq.subst(p, Level.one, fun (_: Nat): Type => Bool, Bool.true)
+        |  Eq.subst(p, Level.zero, fun (_: Nat): Type => Bool, Bool.true)
         |
         |def should : Eq(Bool, cast(zeroEq), cast(Eq.refl(Nat.zero))) :=
         |  Eq.refl(cast(zeroEq))
@@ -448,7 +391,7 @@ class ProofCollapseTests extends munit.FunSuite with TestSupport {
     val res = runProgram(
       """
         |{
-        |  Eq.subst(Eq.refl(Nat.zero), Level.one, fun (n: Nat): Type => Bool, Bool.true)
+        |  Eq.subst(Eq.refl(Nat.zero), Level.zero, fun (n: Nat): Type => Bool, Bool.true)
         |}
         |""".stripMargin
     )
@@ -464,7 +407,7 @@ class ProofCollapseTests extends munit.FunSuite with TestSupport {
         |def zeroEq : Eq(Nat, Nat.zero, Nat.zero) := Eq.refl(Nat.zero)
         |
         |{
-        |  Eq.subst(zeroEq, Level.one, fun (n: Nat): Type => Bool, Bool.true)
+        |  Eq.subst(zeroEq, Level.zero, fun (n: Nat): Type => Bool, Bool.true)
         |}
         |""".stripMargin
     )
@@ -480,7 +423,7 @@ class ProofCollapseTests extends munit.FunSuite with TestSupport {
         |def reflFn (n: Nat): Eq(Nat, n, n) := Eq.refl(n)
         |
         |def casted : Bool :=
-        |  Eq.subst(reflFn(Nat.zero), Level.one, fun (_: Nat): Type => Bool, Bool.true)
+        |  Eq.subst(reflFn(Nat.zero), Level.zero, fun (_: Nat): Type => Bool, Bool.true)
         |
         |def shouldReduce : Eq(Bool, casted, Bool.true) := Eq.refl(casted)
         |""".stripMargin
@@ -494,7 +437,7 @@ class ProofCollapseTests extends munit.FunSuite with TestSupport {
         |  fun (n: Nat): Eq(Nat, n, n) => Eq.refl(n)
         |
         |def casted : Bool :=
-        |  Eq.subst(makeRefl(Bool.true)(Nat.zero), Level.one, fun (_: Nat): Type => Bool, Bool.true)
+        |  Eq.subst(makeRefl(Bool.true)(Nat.zero), Level.zero, fun (_: Nat): Type => Bool, Bool.true)
         |
         |def shouldReduce : Eq(Bool, casted, Bool.true) := Eq.refl(casted)
         |""".stripMargin
@@ -539,10 +482,10 @@ class ProofCollapseTests extends munit.FunSuite with TestSupport {
     }
   }
 
-  test("opaque proof functions also canonicalize to eta-lambdas") {
+  test("a proof function definition publishes as an eta-lambda") {
     val function = runProgram(
       """
-        |opaque def reflish (n: Nat): Eq(Nat, n, n) := Eq.refl(n)
+        |def reflish (n: Nat): Eq(Nat, n, n) := Eq.refl(n)
         |
         |{ reflish }
         |""".stripMargin
@@ -554,10 +497,10 @@ class ProofCollapseTests extends munit.FunSuite with TestSupport {
 
     val applied = runProgram(
       """
-        |opaque def reflish (n: Nat): Eq(Nat, n, n) := Eq.refl(n)
+        |def reflish (n: Nat): Eq(Nat, n, n) := Eq.refl(n)
         |
         |{
-        |  Eq.subst(reflish(Nat.zero), Level.one, fun (_: Nat): Type => Bool, Bool.true)
+        |  Eq.subst(reflish(Nat.zero), Level.zero, fun (_: Nat): Type => Bool, Bool.true)
         |}
         |""".stripMargin
     )
@@ -591,11 +534,14 @@ class ProofCollapseTests extends munit.FunSuite with TestSupport {
   test("shallow recovery keeps dependent Pi proof fields applicable") {
     typecheckDecls(
       """
-        |inductive DependentProof : Prop
-        | | mk (h: (n: Nat) -> True) (same: Eq(True, h(Nat.zero), h(Nat.zero))) : DependentProof
+        |inductive ProofWitness {P: Prop} indices (proof: P) : Prop
+        | | intro (proof: P) : ProofWitness(proof)
         |
-        |opaque def recovered : DependentProof :=
-        |  DependentProof.mk(fun (n: Nat): True => True.intro, Eq.refl(True.intro))
+        |inductive DependentProof : Prop
+        | | mk (h: (n: Nat) -> True) (witness: ProofWitness(h(Nat.zero))) : DependentProof
+        |
+        |def recovered : DependentProof :=
+        |  DependentProof.mk(fun (n: Nat): True => True.intro, ProofWitness.intro(True.intro))
         |""".stripMargin
     )
   }

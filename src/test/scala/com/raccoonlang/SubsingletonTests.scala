@@ -2,27 +2,26 @@ package com.raccoonlang
 
 class SubsingletonTests extends munit.FunSuite with TestSupport {
 
-  test("propositions have a Subsingleton witness") {
-    typecheckDecls(
+  test("the data Subsingleton family does not accept a proposition as its carrier") {
+    expectAnyTypeError(
       """
-        |def trueSubsingleton : Subsingleton(True) := propSubsingleton(True)
+        |axiom trueSubsingleton : Subsingleton(True)
         |""".stripMargin
     )
   }
 
-  test("Subsingleton.elim proves equality between proofs of the same proposition") {
-    val res =
-      runProgram(
-        """
-          |{
-          |  Subsingleton.elim(propSubsingleton(True))(True.intro, True.intro)
-          |}
-          |""".stripMargin
-      )
+  test("distinct proofs remain definitionally equal without a Subsingleton witness") {
+    val prelude = TestSupport.preludeAssuming(
+      TestSupport.bundledPreludeSource,
+      """
+        |inductive Amb : Prop
+        | | left : Amb
+        | | right : Amb
+        |""".stripMargin
+    )
+    val left = runProgram("{ Amb.left }", prelude)
+    val right = runProgram("{ Amb.right }", prelude)
 
-    res.tpe match {
-      case Value.VApp(Value.VConst("Eq", _, _), Vector(_, Value.VConst("True", _, _), _, _), _, _) =>
-      case other => fail(s"Expected equality proof over True, got $other")
-    }
+    assert(ValueEquivalence.defEq(left, right))
   }
 }

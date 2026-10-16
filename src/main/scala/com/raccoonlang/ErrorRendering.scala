@@ -6,8 +6,18 @@ object ErrorRendering {
   def render(error: TypeError): String =
     error match {
       case CannotApplyNonFunction(got) => s"Cannot apply non-fn type $got"
-      case ArityMismatch(expected, got) =>
+      case ArityMismatch(expected, got, ArityMismatch.Arguments) =>
         s"Cannot apply function - expected $expected params, got $got"
+      case ArityMismatch(expected, got, ArityMismatch.Call(callee, explicit, implicitFamily)) =>
+        val named = if (explicit.isEmpty) "" else explicit.mkString(" (", ", ", ")")
+        val determined = "implicit, determined by the other arguments"
+        val implicitNote =
+          if (implicitFamily.isEmpty) ""
+          else if (implicitFamily.length == 1) s"; family parameter ${implicitFamily.head} is $determined"
+          else s"; family parameters ${implicitFamily.mkString(", ")} are $determined"
+        s"Cannot apply $callee - expected $expected params$named, got $got$implicitNote"
+      case ArityMismatch(expected, got, ArityMismatch.Fields) =>
+        s"Cannot bind the constructor's fields - expected $expected fields, got $got"
       case UnknownConstructor(ctor, inductive) => s"Constructor $ctor does not belong to $inductive"
       case DuplicateCase(ctor)                 => s"Duplicate case for constructor $ctor"
       case UnreachableCase(ctor)               => s"Unreachable case for constructor $ctor"
@@ -40,9 +50,13 @@ object ErrorRendering {
       case NonUniformInductiveParam(inductive, ctor, param, got) =>
         s"Constructor $ctor of $inductive returns non-uniform parameter $param as $got"
       case InductiveUniverseTooSmall(inductive, where, fieldTy, fieldUniverse, inductiveUniverse) =>
-        s"Inductive $inductive lives in Sort { level = ${PrettyPrinter.print(inductiveUniverse)} }, " +
-          s"but $where has type $fieldTy : Sort { level = ${PrettyPrinter.print(fieldUniverse)} }"
-      case InductiveTypeNotASort(tpe)    => s"Inductive type must be a Sort, got $tpe instead"
+        s"Inductive $inductive lives in Type { level = ${PrettyPrinter.print(inductiveUniverse)} }, " +
+          s"but $where has type $fieldTy : Type { level = ${PrettyPrinter.print(fieldUniverse)} }"
+      case FamilyArgumentTooLarge(family, argument, required) =>
+        s"Family $family argument $argument is too large: declare the family at Type { level = ${PrettyPrinter.print(required)} } or higher"
+      case EvaluationTooDeep =>
+        "Evaluation is too deep: it exhausted the stack, whose size the command line sets with --stack"
+      case InductiveTypeNotASort(tpe)    => s"Inductive type must be Type or Prop, got $tpe instead"
       case InvalidInductiveBlock(reason) => s"Invalid inductive block: $reason"
       case NonStrictlyPositive(inductive, ctor, field, fieldTy) =>
         s"Constructor $ctor of $inductive is not strictly positive in field $field : $fieldTy"

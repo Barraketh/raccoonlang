@@ -34,7 +34,18 @@ final case class Diagnostic(error: TypeError, span: Option[Span], frames: Vector
 
 final case class CannotApplyNonFunction(got: Value) extends TypeError
 
-final case class ArityMismatch(expected: Int, got: Int) extends TypeError
+final case class ArityMismatch(expected: Int, got: Int, counted: ArityMismatch.Counted) extends TypeError
+
+object ArityMismatch {
+  sealed trait Counted
+
+  case object Arguments extends Counted
+
+  /** A checked call's written arguments, with any determined family parameters described separately. */
+  final case class Call(callee: String, explicit: Vector[String], implicitFamily: Vector[String]) extends Counted
+
+  case object Fields extends Counted
+}
 
 final case class UnknownConstructor(ctor: String, inductive: String) extends TypeError
 
@@ -104,6 +115,11 @@ final case class InductiveUniverseTooSmall(
     fieldUniverse: Value.Level,
     inductiveUniverse: Value.Level
 ) extends TypeError
+
+final case class FamilyArgumentTooLarge(family: String, argument: String, required: Value.Level) extends TypeError
+
+/** Checking or evaluation of a declaration or program body exhausted the host stack. */
+case object EvaluationTooDeep extends TypeError
 
 final case class InductiveTypeNotASort(tpe: Value) extends TypeError
 

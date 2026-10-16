@@ -8,10 +8,9 @@ package com.raccoonlang
 class SecondClassLevelTests extends munit.FunSuite with TestSupport {
 
   test("a level binder is admitted in a declaration's header") {
-    typecheckDecls("def f {u: Level}(A: Sort { level = u })(x: A): A := x\n")
-    typecheckDecls("opaque def f (u: Level)(A: Sort { level = u }): Sort { level = u } := A\n")
-    // Only the trusted prelude declares axioms (§7.3).
-    val axiom = "axiom f {u: Level}(A: Sort { level = u }): Sort { level = u }\n"
+    typecheckDecls("def f {u: Level}(A: Type { level = u })(x: A): A := x\n")
+    typecheckDecls("def f (u: Level)(A: Type { level = u }): Type { level = u } := A\n")
+    val axiom = "axiom f {u: Level}(A: Type { level = u }): Type { level = u }\n"
     TestSupport.preludeAssuming(TestSupport.testPreludeSource, axiom).checkedEnv
   }
 
@@ -45,23 +44,23 @@ class SecondClassLevelTests extends munit.FunSuite with TestSupport {
 
   // A header is the binders before a declaration's `:`; a function type written after it is an ordinary one.
   test("a function type written after a declaration's colon is not its header") {
-    typecheckDecls("def f {u: Level}(A: Sort { level = u }): Nat := 0\n")
-    expectOnly[NotAType](typecheckDecls("def f : {u: Level} -> Sort { level = u } -> Nat := 0\n"))
+    typecheckDecls("def f {u: Level}(A: Type { level = u }): Nat := 0\n")
+    expectOnly[NotAType](typecheckDecls("def f : {u: Level} -> Type { level = u } -> Nat := 0\n"))
   }
 
   // The written function type would bind a level that its own codomain's universe escapes.
   test("a definition's written type cannot bind a level for its body") {
-    typecheckDecls("def F (u: Level) : Sort { level = succ(u) } := Sort { level = u }\n")
+    typecheckDecls("def F (u: Level) : Type { level = succ(u) } := Type { level = u }\n")
     expectOnly[NotAType](
       typecheckDecls(
-        "def F : (u: Level) -> Sort { level = succ(succ(u)) } := fun (u: Level): Sort { level = succ(succ(u)) } => " +
-          "Sort { level = succ(u) }\n"
+        "def F : (u: Level) -> Type { level = succ(succ(u)) } := fun (u: Level): Type { level = succ(succ(u)) } => " +
+          "Type { level = succ(u) }\n"
       )
     )
   }
 
   test("Level is not a type") {
-    def program(body: String): String = s"def f {u: Level}(A: Sort { level = u })(x: A): Nat := $body\n"
+    def program(body: String): String = s"def f {u: Level}(A: Type { level = u })(x: A): Nat := $body\n"
 
     typecheckDecls(program("List.length(List.cons(x, List.nil(A)))"))
     expectOnly[NotAType](typecheckDecls(program("List.length(List.nil(Level))")))
@@ -74,9 +73,9 @@ class SecondClassLevelTests extends munit.FunSuite with TestSupport {
   test("a level is an argument only at a level binder") {
     def program(body: String): String =
       s"""
-         |def at (u: Level)(A: Sort { level = u })(x: A): A := x
+         |def at (u: Level)(A: Type { level = u })(x: A): A := x
          |
-         |def f {u: Level}(A: Sort { level = u })(x: A): A := $body
+         |def f {u: Level}(A: Type { level = u })(x: A): A := $body
          |""".stripMargin
 
     typecheckDecls(program("at(u, A, x)"))
@@ -85,7 +84,7 @@ class SecondClassLevelTests extends munit.FunSuite with TestSupport {
   }
 
   test("a level is a sort's level field, and a term of another type there is a type mismatch") {
-    def program(level: String): String = s"def s : Sort { level = succ(one) } := Sort { level = $level }\n"
+    def program(level: String): String = s"def s : Type { level = succ(one) } := Type { level = $level }\n"
 
     typecheckDecls(program("Level.one"))
     expectOnly[TypeMismatch](typecheckDecls(program("Nat.zero")))
@@ -93,7 +92,7 @@ class SecondClassLevelTests extends munit.FunSuite with TestSupport {
   }
 
   test("a level stands nowhere else: not a scrutinee, a block's result, or a let") {
-    def program(body: String): String = s"def f {u: Level}(A: Sort { level = u })(n: Nat)(x: A): Nat := $body\n"
+    def program(body: String): String = s"def f {u: Level}(A: Type { level = u })(n: Nat)(x: A): Nat := $body\n"
     def scrutinee(term: String): String =
       s"match $term returning Nat with\n | Nat.zero => 0\n | Nat.succ k => k"
 
@@ -151,6 +150,31 @@ class SecondClassLevelTests extends munit.FunSuite with TestSupport {
         assertEquals(PrettyPrinter.print(field), "0")
       case other => fail(s"Expected the reconstructed proof Eq.refl(0), got $other")
     }
+  }
+
+  test("an uncached raw level-polymorphic Pi with a proposition codomain is proof-valued") {
+    import CoreAst.{Term => CTerm}
+
+    val span = Span(0, 0)
+    val levelRef = CoreAst.LocalRef(0, "u")
+    val levelBinder = CoreAst.Binder(
+      levelRef,
+      CTerm.GlobalRef("Level", span),
+      span,
+      CoreAst.BinderSite.Function
+    )
+    val pi = CTerm.Pi(
+      Vector(levelBinder),
+      CTerm.GlobalRef("False", span),
+      span,
+      NodeId.fresh()
+    )
+
+    val evaluated = Interpreter.evalPi(pi, Prelude.default.checkedEnv)
+
+    assert(evaluated.tpe eq Value.Large)
+    assert(evaluated.isPropValued)
+    assert(Sorts.isProposition(evaluated))
   }
 
   test("a match's motive is a type") {

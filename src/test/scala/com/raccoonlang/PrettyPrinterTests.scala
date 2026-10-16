@@ -34,19 +34,20 @@ class PrettyPrinterTests extends munit.FunSuite with TestSupport {
   }
 
   test("sorts print as their formers") {
-    val src = "axiom f : {u: Level} -> (A: Sort { level = succ(u) }) -> (P: Prop) -> Sort { level = max(u, one) }\n"
+    val src = "axiom f : {u: Level} -> (A: Type { level = succ(u) }) -> (P: Prop) -> Type { level = max(u, one) }\n"
     val printed = PrettyPrinter.printTerm(axiomType(src, "f"))
 
     assertEquals(
       printed,
-      "{u: Level} -> (A: Sort { level = Level.succ(u) }) -> (P: Prop) -> Sort { level = Level.max(u, Level.one) }"
+      "{u: Level} -> (A: Type { level = Level.succ(u) }) -> (P: Prop) -> Type { level = Level.max(u, Level.one) }"
     )
     axiomType(s"axiom g : $printed\n", "g")
-    val two = PrettyPrinter.print(runProgram("{ Sort { level = succ(one) } }"))
-    assertEquals(two, "Sort { level = Level.succ(Level.one) }")
+    val two = PrettyPrinter.print(runProgram("{ Type { level = succ(one) } }"))
+    assertEquals(two, "Type { level = Level.succ(Level.one) }")
     // A constant level prints as its forms, not a numeral, so the sort reads back as itself.
-    assert(ValueEquivalence.defEq(runProgram(s"{ $two }"), runProgram("{ Sort { level = succ(one) } }")))
-    assertEquals(PrettyPrinter.print(runProgram("{ Sort { level = one } }")), "Type")
+    assert(ValueEquivalence.defEq(runProgram(s"{ $two }"), runProgram("{ Type { level = succ(one) } }")))
+    assertEquals(PrettyPrinter.print(runProgram("{ Type }")), "Type")
+    assertEquals(PrettyPrinter.print(runProgram("{ Prop }")), "Prop")
   }
 
   test("syntax a value holds prints under its environment, so a bound local prints as its value") {
@@ -122,5 +123,53 @@ class PrettyPrinterTests extends munit.FunSuite with TestSupport {
       PrettyPrinter.print(expectTypeError[TypeMismatch](source, Prelude.default).actual)
     assertEquals(actual("def bad (g: Nat -> (Nat -> Nat)): Nat := g\n"), "Nat -> (Nat -> Nat)")
     assertEquals(actual("def bad (g: Nat -> Nat -> Nat): Nat := g\n"), "Nat -> Nat -> Nat")
+  }
+
+  test("deep neutral applications and constructors print without recursive calls") {
+    val depth = 20000
+    val tpe = Sorts.Type
+    var app: Value = Value.Var("f", 0, tpe)
+    (0 until depth).foreach { id =>
+      app = Value.VApp(app, Vector(Value.Var("x", id + 1, tpe)), tpe)
+    }
+    val appText = PrettyPrinter.print(app)
+    assertEquals(appText.length, 1 + 3 * depth)
+    assert(appText.startsWith("f(x)(x)"))
+
+    val constructor = Value.ConstructorHead("Wrap.mk", 0, 1, tpe)
+    var nested: Value = Value.Var("x", 0, tpe)
+    (0 until depth).foreach { _ => nested = Value.VCtor(constructor, Vector(nested), tpe) }
+    val nestedText = PrettyPrinter.print(nested)
+    assertEquals(nestedText.length, 1 + 9 * depth)
+    assert(nestedText.startsWith("Wrap.mk(Wrap.mk("))
+    assert(nestedText.endsWith(")"))
+
+    // A partial Nat prefix must be recognized once even though every inner prefix also gets printed.
+    val natSucc = Value.ConstructorHead("Nat.succ", 0, 1, tpe)
+    var partialNat: Value = Value.Var("n", 0, tpe)
+    (0 until depth).foreach { _ => partialNat = Value.VCtor(natSucc, Vector(partialNat), tpe) }
+    val partialNatText = PrettyPrinter.print(partialNat)
+    assertEquals(partialNatText.length, 1 + 10 * depth)
+    assert(partialNatText.startsWith("Nat.succ(Nat.succ("))
+  }
+
+  test("deep CoreAst applications print without recursive calls") {
+    val depth = 20000
+    val span = Span(0, 0)
+    var term: CoreAst.Term = CoreAst.Term.GlobalRef("f", span)
+    val arg = CoreAst.Term.GlobalRef("x", span)
+    (0 until depth).foreach { _ => term = CoreAst.Term.App(term, Vector(arg), span) }
+
+    val printed = PrettyPrinter.printTerm(term)
+    assertEquals(printed.length, 1 + 3 * depth)
+    assert(printed.startsWith("f(x)(x)"))
+
+    var partialNat: CoreAst.Term = CoreAst.Term.GlobalRef("n", span)
+    (0 until depth).foreach { _ =>
+      partialNat = CoreAst.Term.App(CoreAst.Term.GlobalRef("Nat.succ", span), Vector(partialNat), span)
+    }
+    val partialNatText = PrettyPrinter.printTerm(partialNat)
+    assertEquals(partialNatText.length, 1 + 10 * depth)
+    assert(partialNatText.startsWith("Nat.succ(Nat.succ("))
   }
 }

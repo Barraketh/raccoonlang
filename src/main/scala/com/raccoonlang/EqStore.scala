@@ -70,13 +70,17 @@ final case class EqStore(subst: Map[VarId, Value], refinable: DepSet) {
     copy(subst = subst + (id -> v))
   }
 
-  def occurs(id: VarId, in: Value): Boolean = transitiveDeps(in).contains(id)
+  def occurs(id: VarId, in: Value): Boolean = reachable(in).contains(id)
 
   lazy val solvedIds: DepSet = DepSet.from(subst.keySet)
 
-  private def transitiveDeps(v: Value): DepSet = {
-    val seen = DepSet.newBuilder(v.synDeps)
-    var frontier = v.synDeps
+  /**
+   * Variable identities occurring in `value`, following every link already present in this store. Postponed equations
+   * use this same closure to decide whether a later link could have changed their result.
+   */
+  def reachable(value: Value): DepSet = {
+    val seen = DepSet.newBuilder(value.synDeps)
+    var frontier = value.synDeps
 
     while (frontier.nonEmpty) {
       val toExpand = frontier & solvedIds

@@ -75,9 +75,15 @@ object DepSet {
   def apply(ids: Int*): DepSet = from(ids)
 
   def unionAll(sets: DepSet*): DepSet = {
-    val builder = newBuilder
-    sets.foreach(builder.unionInPlace)
-    builder.result()
+    var acc = empty
+    var builder: Builder = null
+    sets.iterator.foreach { set =>
+      if (builder != null) builder.unionInPlace(set)
+      else if (set.isEmpty || (set eq acc) || acc.bitmap.contains(set.bitmap)) ()
+      else if (acc.isEmpty || set.bitmap.contains(acc.bitmap)) acc = set
+      else builder = newBuilder(acc).unionInPlace(set)
+    }
+    if (builder == null) acc else builder.result()
   }
 
   def from(ids: IterableOnce[Int]): DepSet = {

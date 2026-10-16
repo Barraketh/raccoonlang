@@ -34,7 +34,7 @@ class ResidualizationTests extends munit.FunSuite {
           Interpreter.evalDecl(decl, curEnv)
         }
         last match {
-          case CoreAst.Decl.ConstDecl(_, _, ty, CoreAst.ConstBody.TermBody(term), _) =>
+          case CoreAst.Decl.ConstDecl(_, ty, CoreAst.ConstBody.TermBody(term), _) =>
             TypeChecker.checkTerm(term, TypeChecker.checkDeclType(ty, env).value, env).residual
           case other => fail(s"Expected a term definition, got $other")
         }
@@ -50,8 +50,8 @@ class ResidualizationTests extends munit.FunSuite {
           Interpreter.evalDecl(decl, curEnv)
         }
         val ty = last match {
-          case CoreAst.Decl.ConstDecl(_, _, ty, _, _) => ty
-          case other                                  => fail(s"Expected a definition, got $other")
+          case CoreAst.Decl.ConstDecl(_, ty, _, _) => ty
+          case other                               => fail(s"Expected a definition, got $other")
         }
         TypeChecker.checkDeclType(ty, env).residual
 
@@ -106,7 +106,7 @@ class ResidualizationTests extends munit.FunSuite {
           | | true : Bool
           | | false : Bool
           |
-          |opaque def opaqueBool (b: Bool): Bool := b
+          |axiom neutralBool (b: Bool): Bool
           |
           |def choose (b: Bool): Peano := {
           |  match b returning Peano with
@@ -115,13 +115,13 @@ class ResidualizationTests extends munit.FunSuite {
           |}
           |
           |{
-          |  choose(opaqueBool(Bool.true))
+          |  choose(neutralBool(Bool.true))
           |}
           |""".stripMargin
 
     val res = resultTerm(checkBody(p).term)
     assert(containsGlobal(res, "choose"))
-    assert(containsGlobal(res, "opaqueBool"))
+    assert(containsGlobal(res, "neutralBool"))
   }
 
   test("checked residual elaborates field syntax to a selector application") {
@@ -202,10 +202,10 @@ class ResidualizationTests extends munit.FunSuite {
           | | false : Bool
           |
           |def id (n: Peano): Peano := n
-          |opaque def opaqueBool (b: Bool): Bool := b
+          |axiom neutralBool (b: Bool): Bool
           |
           |{
-          |  match opaqueBool(Bool.true) returning Peano with
+          |  match neutralBool(Bool.true) returning Peano with
           |  | Bool.true => id(Peano.zero)
           |  | Bool.false => id(Peano.zero)
           |}
@@ -228,10 +228,10 @@ class ResidualizationTests extends munit.FunSuite {
           | | false : Bool
           |
           |def idBool (b: Bool): Bool := b
-          |opaque def opaqueBool (b: Bool): Bool := b
+          |axiom neutralBool (b: Bool): Bool
           |
           |{
-          |  match idBool(opaqueBool(Bool.true)) returning Peano with
+          |  match idBool(neutralBool(Bool.true)) returning Peano with
           |  | Bool.true => Peano.zero
           |  | Bool.false => Peano.zero
           |}
@@ -240,7 +240,7 @@ class ResidualizationTests extends munit.FunSuite {
     resultTerm(checkBody(p).term) match {
       case CA.Term.Match(scrut, _, _, _, _) =>
         assert(containsGlobal(scrut, "idBool"))
-        assert(containsGlobal(scrut, "opaqueBool"))
+        assert(containsGlobal(scrut, "neutralBool"))
       case other => fail(s"Expected stuck match residual, got $other")
     }
   }
@@ -276,7 +276,7 @@ class ResidualizationTests extends munit.FunSuite {
         assert(implicitBinder.isImplicit, "expected leading binder to stay implicit in the residual")
         assert(implicitBinder.projection.isDefined, "expected forced implicit binder to carry a projection spec")
         implicitBinder.ty match {
-          case CA.Term.Sort(CA.Term.FormOp(CA.Form.LevelOne, _, _), _) =>
+          case CA.Term.Sort(CA.Term.FormOp(CA.Form.LevelZero, _, _), _) =>
           case other => fail(s"Expected Type binder annotation, got $other")
         }
         val explicitBinder = pi.binders(1)
@@ -345,8 +345,8 @@ class ResidualizationTests extends munit.FunSuite {
       case pi: CA.Term.Pi =>
         assert(!pi.binders.head.isImplicit, "expected explicit binder to stay explicit in the residual")
         pi.binders.head.ty match {
-          case CA.Term.Sort(CA.Term.FormOp(CA.Form.LevelOne, _, _), _) =>
-          case other                                                   => fail(s"Expected Type binder, got $other")
+          case CA.Term.Sort(CA.Term.FormOp(CA.Form.LevelZero, _, _), _) =>
+          case other                                                    => fail(s"Expected Type binder, got $other")
         }
         pi.out match {
           case CA.Term.LocalRef(outRef, _) => assertEquals(outRef, pi.binders.head.localRef)
@@ -360,7 +360,7 @@ class ResidualizationTests extends munit.FunSuite {
   test("a declaration header's residual preserves implicit level binders") {
     val p =
       """
-        |def f {u: Level}(A: Sort { level = u }): Sort { level = u } := A
+        |def f {u: Level}(A: Type { level = u }): Type { level = u } := A
         |""".stripMargin
 
     checkLastDeclType(p) match {
@@ -387,7 +387,7 @@ class ResidualizationTests extends munit.FunSuite {
   test("a generated selector's match residualizes its field type, under its earlier fields, as its motive") {
     val p =
       """
-        |struct Boxed : Sort { level = succ(one) }
+        |struct Boxed : Type { level = succ(one) }
         | | mk (T: Type)(x: T) : Boxed
         |""".stripMargin
 
@@ -425,10 +425,10 @@ class ResidualizationTests extends munit.FunSuite {
           | | true : Bool
           | | false : Bool
           |
-          |opaque def opaqueBool (b: Bool): Bool := b
+          |axiom neutralBool (b: Bool): Bool
           |
           |def pick (b: Bool): Peano := {
-          |  match opaqueBool(b) returning Peano with
+          |  match neutralBool(b) returning Peano with
           |  | Bool.true => Peano.zero
           |  | Bool.false => Peano.zero
           |}

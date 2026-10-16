@@ -1,5 +1,5 @@
 
-<root>/main.rac:2:12: error: {u: Level} -> {A: Sort { level = u }} -> (x: A) -> A is not a type
+<root>/main.rac:2:12: error: {u: Level} -> {A: Type { level = u }} -> (x: A) -> A is not a type
   let f := id
            ^^
 note: in definition g

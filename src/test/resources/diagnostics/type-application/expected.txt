@@ -1,0 +1,4 @@
+
+<root>/main.rac:3:3: error: Cannot apply non-fn type Type
+{ Type(Level.zero) }
+  ^^^^^^^^^^^^^^^^

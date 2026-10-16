@@ -18,7 +18,8 @@ class ProjectionTests extends munit.FunSuite with TestSupport {
       _ => Sorts.Type,
       DepSet.empty,
       ValueId.LocalId(NodeId.fresh(), Vector.empty),
-      () => Sorts.sort(Level.succ(Level.one))
+      () => Sorts.sort(Level.succ(Level.one)),
+      isPropValued = false
     )
     val root = VConst("f", Symbol, grouped)
     val tail = Projection
@@ -50,7 +51,8 @@ class ProjectionTests extends munit.FunSuite with TestSupport {
       _ => Sorts.Type,
       DepSet.empty,
       ValueId.LocalId(NodeId.fresh(), Vector.empty),
-      () => Sorts.sort(Level.succ(Level.one))
+      () => Sorts.sort(Level.succ(Level.one)),
+      isPropValued = false
     )
 
     assert(
@@ -125,7 +127,6 @@ class ProjectionTests extends munit.FunSuite with TestSupport {
         val core = Elaborator.elab(value, Prelude.test)
         val found = core.decls.exists {
           case CoreAst.Decl.ConstDecl(
-                false,
                 "Pair.snd",
                 _,
                 CoreAst.ConstBody.TermBody(
@@ -298,7 +299,7 @@ class ProjectionTests extends munit.FunSuite with TestSupport {
         |struct FnBox : Type
         | | mk (f: (n: Peano) -> Peano) : FnBox
         |
-        |opaque def box : FnBox := FnBox.mk(fun (n: Peano): Peano => n)
+        |axiom box : FnBox
         |def use : Peano := box.f(Peano.zero)
         |
         |{ use }
@@ -349,13 +350,13 @@ class ProjectionTests extends munit.FunSuite with TestSupport {
         |inductive Peano : Type
         | | zero : Peano
         |
-        |inductive Pack : Sort { level = succ(one) }
+        |inductive Pack : Type { level = succ(one) }
         | | mk {A: Type} (x: A) : Pack
         |
-        |inductive Wrap (p: Pack) : Type
+        |inductive Wrap (p: Pack) : Type { level = succ(one) }
         | | intro : Wrap(p)
         |
-        |struct S : Type
+        |struct S : Type { level = succ(one) }
         | | mk (x: Wrap(Pack.mk(Peano.zero))) : S
         |
         |def get (s: S): Wrap(Pack.mk(Peano.zero)) := s.x
@@ -364,7 +365,7 @@ class ProjectionTests extends munit.FunSuite with TestSupport {
     typecheckDecls(p)
   }
 
-  test("regression: projection from opaque struct-valued def stays neutral") {
+  test("regression: projection from an axiom-headed struct application stays neutral") {
     val p =
       """
         |inductive Peano : Type
@@ -374,10 +375,9 @@ class ProjectionTests extends munit.FunSuite with TestSupport {
         |struct Pair (A: Type)(B: Type) : Type
         | | mk (fst: A)(snd: B) : Pair(A, B)
         |
-        |// Opaque on purpose
-        |opaque def mkPair (a: Peano)(b: Peano): Pair(Peano, Peano) := Pair.mk(a, b)
+        |axiom mkPair : Peano -> Peano -> Pair(Peano, Peano)
         |
-        |def firstOpaque (a: Peano)(b: Peano): Peano := {
+        |def firstNeutral (a: Peano)(b: Peano): Peano := {
         |  let p := mkPair(a, b)
         |  p.fst
         |}
@@ -386,18 +386,17 @@ class ProjectionTests extends munit.FunSuite with TestSupport {
     typecheckDecls(p)
   }
 
-  test("regression: projection in type position from opaque struct constant stays neutral") {
+  test("regression: projection in type position from an axiom struct constant stays neutral") {
     val p =
       """
         |inductive Peano : Type
         | | zero : Peano
         | | succ (_: Peano) : Peano
         |
-        |struct PairU {u1: Level}{u2: Level}(A: Sort { level = u1 })(B: Sort { level = u2 }) : Sort { level = max(u1, u2) }
+        |struct PairU {u1: Level}{u2: Level}(A: Type { level = u1 })(B: Type { level = u2 }) : Type { level = max(u1, u2) }
         | | mk (fst: A)(snd: B) : PairU(A, B)
         |
-        |// Opaque on purpose
-        |opaque def F : PairU(Type, Type) := PairU.mk(Peano, Peano)
+        |axiom F : PairU(Type, Type)
         |
         |def idF (x: F.fst): F.fst := x
         |""".stripMargin
@@ -406,19 +405,17 @@ class ProjectionTests extends munit.FunSuite with TestSupport {
   }
 
   test("stuck projection in a constructor field type is transparent to positivity") {
-    // Before struct expansion (StructEta) this was rejected conservatively: F.fst was a blocked
-    // selector match, opaque to the positivity walker. An opaque struct global now publishes in
-    // constructor form, so F.fst is a structured stuck projection the walker can traverse.
+    // F is a neutral struct global, so F.fst remains a structured stuck projection that the
+    // positivity walker must be able to traverse.
     val p =
       """
         |inductive Peano : Type
         | | zero : Peano
         |
-        |struct PairU {u1: Level}{u2: Level}(A: Sort { level = u1 })(B: Sort { level = u2 }) : Sort { level = max(u1, u2) }
+        |struct PairU {u1: Level}{u2: Level}(A: Type { level = u1 })(B: Type { level = u2 }) : Type { level = max(u1, u2) }
         | | mk (fst: A)(snd: B) : PairU(A, B)
         |
-        |// Opaque on purpose
-        |opaque def F : PairU(Type, Type) := PairU.mk(Peano, Peano)
+        |axiom F : PairU(Type, Type)
         |
         |struct UsesF : Type
         | | mk (x: F.fst) : UsesF
@@ -439,8 +436,7 @@ class ProjectionTests extends munit.FunSuite with TestSupport {
         |struct Pair (A: Type)(B: Type) : Type
         | | mk (fst: A)(snd: B) : Pair(A, B)
         |
-        |// Opaque on purpose
-        |opaque def step (n: Peano): Peano := n
+        |axiom step : Peano -> Peano
         |
         |def choose (n: Peano): Pair(Peano, Peano) := {
         |  match step(n) returning Pair(Peano, Peano) with
@@ -678,19 +674,19 @@ class ProjectionTests extends munit.FunSuite with TestSupport {
     typecheckDecls(p)
   }
 
-  test("a generic struct projection remains valid when its instance specializes to Prop") {
+  test("a proposition-valued struct projection remains valid at its fixed Prop sort") {
     val p =
       """
         |inductive True : Prop
         | | intro : True
         |
-        |struct PolyBox {u: Level}(A: Sort { level = u }) : Sort { level = u }
-        | | mk (value: A) : PolyBox(A)
+        |struct PropBox (P: Prop) : Prop
+        | | mk (value: P) : PropBox(P)
         |
-        |def get {u: Level}{A: Sort { level = u }} (box: PolyBox(A)): A := box.value
+        |def get (P: Prop)(box: PropBox(P)): P := box.value
         |
-        |opaque def boxedTrue : PolyBox(True) := PolyBox.mk(True.intro)
-        |def gotTrue : True := get(boxedTrue)
+        |axiom boxedTrue : PropBox(True)
+        |def gotTrue : True := get(True, boxedTrue)
         |""".stripMargin
 
     typecheckDecls(p)
@@ -709,7 +705,7 @@ class ProjectionTests extends munit.FunSuite with TestSupport {
         |inductive HasProof : Prop
         | | intro (data: Peano)(proof: True) : HasProof
         |
-        |opaque def h : HasProof := HasProof.intro(Peano.zero, True.intro)
+        |axiom h : HasProof
         |def theProof : True := {
         |  match h returning True with
         |  | HasProof.intro data proof => proof
@@ -771,7 +767,7 @@ class ProjectionTests extends munit.FunSuite with TestSupport {
         |inductive IndexedProof indices (n: Peano) : Prop
         | | intro (data: Peano)(proof: True) : IndexedProof(data)
         |
-        |opaque def h : IndexedProof(Peano.zero) := IndexedProof.intro(Peano.zero, True.intro)
+        |axiom h : IndexedProof(Peano.zero)
         |def theData : Peano := {
         |  match h returning Peano with
         |  | IndexedProof.intro data proof => data
@@ -792,7 +788,7 @@ class ProjectionTests extends munit.FunSuite with TestSupport {
         |struct IndexedProp indices (n: Peano) : Prop
         | | intro (value: Peano) : IndexedProp(value)
         |
-        |opaque def h : IndexedProp(Peano.zero) := IndexedProp.intro(Peano.zero)
+        |axiom h : IndexedProp(Peano.zero)
         |def recovered : Peano := h.value
         |""".stripMargin
 
@@ -810,8 +806,8 @@ class ProjectionTests extends munit.FunSuite with TestSupport {
         |inductive Eq2 indices (left: Peano)(right: Peano) : Prop
         | | refl (value: Peano) : Eq2(value, value)
         |
-        |opaque def a : Peano := Peano.zero
-        |opaque def b : Peano := Peano.zero
+        |axiom a : Peano
+        |axiom b : Peano
         |def AB : Prop := Eq2(a, b)
         |""".stripMargin
 
@@ -859,8 +855,8 @@ class ProjectionTests extends munit.FunSuite with TestSupport {
         | | left (value: Peano) : Choice
         | | right (value: Peano) : Choice
         |
-        |opaque def box : Box := Box.mk(Peano.zero)
-        |opaque def choice : Choice := Choice.left(Peano.zero)
+        |axiom box : Box
+        |axiom choice : Choice
         |""".stripMargin
 
     val env = evalDecls(p)
@@ -903,8 +899,8 @@ class ProjectionTests extends munit.FunSuite with TestSupport {
         val core = Elaborator.elab(value, Prelude.test)
         Interpreter.run(core, Prelude.test)
         assert(!core.decls.exists {
-          case CoreAst.Decl.ConstDecl(_, "Bad._", _, _, _) => true
-          case _                                           => false
+          case CoreAst.Decl.ConstDecl("Bad._", _, _, _) => true
+          case _                                        => false
         })
       case err: Failure => fail(s"Failed to parse: $err, ${p.substring(err.curIdx)}")
     }

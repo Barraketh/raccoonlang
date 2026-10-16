@@ -32,6 +32,39 @@ object Execution {
     def result: Option[Value] = result0
   }
 
+  /** Run a complete pipeline on a thread with the requested stack, returning its value or rethrowing its failure. */
+  def onStack[A](stackBytes: Long)(body: => A): A = {
+    var outcome: Either[Throwable, A] = Left(new IllegalStateException("the checking thread did not finish"))
+    val thread = new Thread(
+      null,
+      () =>
+        outcome =
+          try Right(body)
+          catch { case thrown: Throwable => Left(thrown) },
+      "raccoon-check",
+      stackBytes
+    )
+    thread.start()
+    var joined = false
+    var interrupted = Option.empty[InterruptedException]
+    while (!joined) {
+      try {
+        thread.join()
+        joined = true
+      } catch {
+        case error: InterruptedException => interrupted = interrupted.orElse(Some(error))
+      }
+    }
+    interrupted.foreach { error =>
+      Thread.currentThread().interrupt()
+      throw error
+    }
+    outcome match {
+      case Right(value) => value
+      case Left(error)  => throw error
+    }
+  }
+
   private object CheckedProgram {
     def make(result: Option[Value]): CheckedProgram = new CheckedProgram(result)
   }

@@ -17,6 +17,7 @@ object MatchChecker {
 
   private def computeReachableCtors(
       scrut: Value,
+      scrutTerm: CA.Term,
       scrutTpe: Value,
       family: InductiveFamilyInstance,
       cases: Vector[CA.Case],
@@ -57,21 +58,33 @@ object MatchChecker {
           val valueRefinable = rootRefinable(scrut) ++ ctorRefinable
           val typeRefinable = refinableIn(scrutTpe, scrutTpe.synDeps) ++ ctorRefinable
 
-          // A constructor may only be pruned on a provably-apart unification failure. A merely stuck
-          // failure keeps the branch required but yields no refinement: checking it with fewer
-          // equations is conservative, whereas pruning on it would refute equations that may hold
-          // propositionally (e.g. via Quot.sound).
+          // Unification failures only propose pruning. A certificate checks the refutation in the original
+          // environment; a failed proposal retains the constructor with an empty store.
+          def excluded: Boolean =
+            RefinementCertificates.excludes(scrut, scrutTerm, family, h, fields, resultTy, env, scrutTerm.span)
           val branchEqStore =
-            unify(scrut, ctorValue, valueRefinable) match {
-              case Right(store)       => Some(store)
-              case Left(f) if f.apart => None
-              case Left(_) =>
-                unify(resultTy, scrutTpe, typeRefinable) match {
-                  case Right(store)       => Some(store)
-                  case Left(f) if f.apart => None
-                  case Left(_)            => Some(EqStore.empty)
-                }
-            }
+            if (RefinementCertificates.Testing.proposes) {
+              if (excluded) None else Some(EqStore.empty)
+            } else
+              scrut match {
+                case ConstructorForm(name, _) if name != ctorName =>
+                  if (excluded) None else Some(EqStore.empty)
+                case _ =>
+                  unify(scrut, ctorValue, valueRefinable) match {
+                    case Right(store)       => Some(store)
+                    case Left(f) if f.apart => if (excluded) None else Some(EqStore.empty)
+                    case Left(_) =>
+                      ValueEquivalence.tryUnifyMatchTypes(
+                        resultTy,
+                        scrutTpe,
+                        EqStore.empty.allowEta(typeRefinable.ids, typeRefinable.vars)
+                      ) match {
+                        case Right(store)       => Some(store)
+                        case Left(f) if f.apart => if (excluded) None else Some(EqStore.empty)
+                        case Left(_)            => Some(EqStore.empty)
+                      }
+                  }
+              }
 
           branchEqStore.map { branchStore =>
             val refinedResultTy = ValueOps.materialize(scrutTpe, branchStore)
@@ -104,7 +117,8 @@ object MatchChecker {
   ): CA.Case =
     framed(Frame.InBranch(br.ctorName, br.argRefs.map(_.name))) {
       at(br.span) {
-        if (args.length != br.argRefs.length) fail(ArityMismatch(args.length, br.argRefs.length))
+        if (args.length != br.argRefs.length)
+          fail(ArityMismatch(args.length, br.argRefs.length, ArityMismatch.Fields))
         // Proof recovery stores recursive proof fields shallowly. Crossing the pattern boundary exposes one such
         // field, so put it into the canonical form for its exact type. A field's type is its local's type at its
 
@@ -151,7 +165,7 @@ object MatchChecker {
     }
 
     lazy val reachableByType: Vector[ReachableCtor] =
-      computeReachableCtors(scrut, scrutTpe, inductiveFamily, cases, env)
+      computeReachableCtors(scrut, t.scrut, scrutTpe, inductiveFamily, cases, env)
 
     val checkedMotive = checkTypeTerm(t.motive, env)
     val motiveTy = checkedMotive.value
@@ -160,34 +174,28 @@ object MatchChecker {
 
     var checkedByCtor = Map.empty[String, CA.Case]
 
-    scrut match {
-      case ConstructorForm(ctorName, storedArgs) =>
-        cases.find(_.ctorName != ctorName).foreach { c =>
-          at(c.span) { fail(UnreachableCase(c.ctorName)) }
-        }
+    val reachableMap = reachableByType.map(info => info.name -> info).toMap
 
-        val br = cases.find(_.ctorName == ctorName).getOrElse(fail(MissingCase(ctorName)))
-        checkedByCtor += ctorName -> checkBranch(br, storedArgs, env, motiveTy)
+    inductiveCtorNames.foreach { ctorName =>
+      reachableMap.get(ctorName) match {
+        case None =>
+          cases.find(_.ctorName == ctorName).foreach { c =>
+            at(c.span) { fail(UnreachableCase(ctorName)) }
+          }
 
-      case _ =>
-        val reachableMap = reachableByType.map(info => info.name -> info).toMap
-
-        inductiveCtorNames.foreach { ctorName =>
-          reachableMap.get(ctorName) match {
-            case None =>
-              cases.find(_.ctorName == ctorName).foreach { c =>
-                at(c.span) { fail(UnreachableCase(ctorName)) }
-              }
-
-            case Some(info) =>
-              val br = cases.find(_.ctorName == ctorName).getOrElse(fail(MissingCase(ctorName)))
+        case Some(info) =>
+          val br = cases.find(_.ctorName == ctorName).getOrElse(fail(MissingCase(ctorName)))
+          scrut match {
+            case ConstructorForm(name, storedArgs) if name == ctorName =>
+              checkedByCtor += ctorName -> checkBranch(br, storedArgs, env, motiveTy)
+            case _ =>
               val branchStore = info.branchEqStore
               val branchEnv = ValueOps.materializeEnv(env, branchStore)
               val branchArgs = info.fieldArgs.map(arg => ValueOps.materialize(arg, branchStore))
               val branchMotiveTy = ValueOps.materialize(motiveTy, branchStore)
               checkedByCtor += ctorName -> checkBranch(br, branchArgs, branchEnv, branchMotiveTy)
           }
-        }
+      }
     }
 
     val checkedCases = cases.map { c =>

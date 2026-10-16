@@ -46,7 +46,7 @@ class MatchExhaustivenessTests extends munit.FunSuite with TestSupport {
         | | zero : Peano
         | | succ (_: Peano) : Peano
         |
-        |inductive Vec (A: Type) indices (n: Peano) : Sort { level = one }
+        |inductive Vec (A: Type) indices (n: Peano) : Type { level = one }
         | | nil : Vec(A, Peano.zero)
         | | cons (n: Peano) (xs: Vec(A, n)) (x: A): Vec(A, Peano.succ(n))
         |
@@ -61,18 +61,17 @@ class MatchExhaustivenessTests extends munit.FunSuite with TestSupport {
     interceptError[UnreachableCase] { typecheckDecls(p) }
   }
 
-  test("non-exhaustive: opaque scrutinee application should still require succ case") {
+  test("non-exhaustive: neutral scrutinee application should still require succ case") {
     val p =
       """
         |inductive Peano : Type
         | | zero : Peano
         | | succ (_: Peano) : Peano
         |
-        |// Opaque on purpose: evaluator will keep this as a Symbol head
-        |opaque def g (n: Peano): Peano := Peano.zero
+        |axiom g (n: Peano): Peano
         |
         |def bad (n: Peano): Peano := {
-        |  // scrutinee is neutral/opaque application: g n
+        |  // scrutinee is a neutral application: g n
         |  match g(n) returning Peano with
         |  | Peano.zero => Peano.zero
         |}
@@ -82,14 +81,14 @@ class MatchExhaustivenessTests extends munit.FunSuite with TestSupport {
     interceptError[MissingCase] { typecheckDecls(p) }
   }
 
-  test("exhaustive: opaque scrutinee application should typecheck") {
+  test("exhaustive: neutral scrutinee application should typecheck") {
     val p =
       """
         |inductive Peano : Type
         | | zero : Peano
         | | succ (_: Peano) : Peano
         |
-        |opaque def g (n: Peano): Peano := n
+        |axiom g (n: Peano): Peano
         |
         |def ok (n: Peano): Peano := {
         |  match g(n) returning Peano with
@@ -99,7 +98,7 @@ class MatchExhaustivenessTests extends munit.FunSuite with TestSupport {
         |
         |""".stripMargin
 
-    // Should typecheck (even if it evaluates to a stuck match at runtime for opaque g).
+    // Should typecheck even though a neutral g application remains stuck at runtime.
     typecheckDecls(p)
   }
 
@@ -176,8 +175,8 @@ class MatchExhaustivenessTests extends munit.FunSuite with TestSupport {
         |  | Peano.succ _ => y
         |}
         |
-        |opaque def n : Peano := Peano.zero
-        |opaque def a : Peano := Peano.zero
+        |axiom n : Peano
+        |axiom a : Peano
         |
         |{ f(n, a) }
         |""".stripMargin

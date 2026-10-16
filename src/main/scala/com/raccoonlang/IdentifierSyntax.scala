@@ -8,7 +8,6 @@ private[raccoonlang] object IdentifierSyntax {
     "as",
     "returning",
     "with",
-    "opaque",
     "axiom",
     "def",
     "inductive",
@@ -23,7 +22,6 @@ private[raccoonlang] object IdentifierSyntax {
     "measure",
     "indices",
     "in",
-    "Sort",
     "Type",
     "Prop"
   )

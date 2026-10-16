@@ -12,48 +12,33 @@ class UniverseTests extends munit.FunSuite with TestSupport {
       case _: Success[_]          => fail("expected a parse error")
     }
 
-  test("Type and Prop are the sorts at levels one and zero") {
+  test("Prop has its own sort tag and Type follows the data universe hierarchy") {
     val p =
       """
-        |def typeIsSortOne : Eq(Sort { level = succ(one) }, Type, Sort { level = one }) := Eq.refl(Type)
-        |def propIsSortZero : Eq(Type, Prop, Sort { level = Level.zero }) := Eq.refl(Prop)
+        |def typeZeroAlias : Eq(Type { level = one }, Type, Type { level = zero }) := Eq.refl(Type)
         |{ Type }
         |""".stripMargin
 
     runProgram(p)
+    assert(!ValueEquivalence.defEq(Sorts.Prop, Sorts.Type))
   }
 
-  test("Sort is not a function: Sort(u) does not parse") {
-    def program(sort: String): String = s"def f {u: Level}(A: $sort)(x: A): A := x\n"
+  test("Type level fields name a single known field") {
+    def program(typeExpr: String): String = s"def f {u: Level}(A: $typeExpr)(x: A): A := x\n"
 
-    typecheckDecls(program("Sort { level = u }"))
-    assertEquals(parseFailure(program("Sort(u)")), "Sort requires a level field")
-    assertEquals(parseFailure(program("Sort")), "Sort requires a level field")
+    typecheckDecls(program("Type { level = u }"))
+    assertEquals(parseFailure(program("Type {}")), "Empty field list")
+    assertEquals(parseFailure(program("Type { level = u, level = u }")), "Repeated field level")
+    assertEquals(parseFailure(program("Type { level = u, size = u }")), "Unknown field size")
   }
 
-  test("a sort's field list is nonempty and names each known field once") {
-    def program(sort: String): String = s"def f {u: Level}(A: $sort)(x: A): A := x\n"
-
-    typecheckDecls(program("Sort { level = u }"))
-    assertEquals(parseFailure(program("Sort {}")), "Empty field list")
-    assertEquals(parseFailure(program("Sort { level = u, level = u }")), "Repeated field level")
-    assertEquals(parseFailure(program("Sort { level = u, size = u }")), "Unknown field size")
-  }
-
-  test("Sort requires its level field") {
-    def program(sort: String): String = s"def f (A: $sort)(x: A): A := x\n"
-
-    typecheckDecls(program("Sort { level = one }"))
-    assertEquals(parseFailure(program("Sort ")), "Sort requires a level field")
-  }
-
-  test("Type and Prop fix the level, so a level field on them is misplaced") {
-    def program(sort: String): String = s"def f (A: $sort)(x: A): A := x\n"
+  test("Type accepts a data level field while Prop fixes the proposition sort") {
+    def program(typeExpr: String): String = s"def f (A: $typeExpr)(x: A): A := x\n"
 
     typecheckDecls(program("Type"))
+    typecheckDecls(program("Type { level = one }"))
     typecheckDecls(program("Prop"))
-    assertEquals(parseFailure(program("Type { level = one }")), "Misplaced field level: Type fixes the level")
-    assertEquals(parseFailure(program("Prop { level = zero }")), "Misplaced field level: Prop fixes the level")
+    assertEquals(parseFailure(program("Prop { level = zero }")), "Prop does not accept fields")
     assertEquals(parseFailure(program("Type {}")), "Empty field list")
   }
 
@@ -66,17 +51,16 @@ class UniverseTests extends munit.FunSuite with TestSupport {
         | | succ (_: Peano) : Peano
         |
         |namespace Peano {
-        |  def keep (A: Sort { level = succ(zero) })(x: A): A := x
-        |  def two : Peano := succ(succ(zero))
+        |  def keep (A: Type { level = succ(zero) })(x: A): A := x
         |}
         |
         |open Peano
-        |def keep (A: Sort { level = succ(zero) })(x: A): A := x
+        |def keep (A: Type { level = succ(zero) })(x: A): A := x
         |
-        |{ keep(Peano, Peano.keep(Peano, two)) }
+        |{ keep(Type, Peano.keep(Type, Peano)) }
         |""".stripMargin
 
-    assertEquals(PrettyPrinter.print(runProgram(p)), "Peano.succ(Peano.succ(Peano.zero))")
+    assertEquals(PrettyPrinter.print(runProgram(p)), "Peano")
   }
 
   // A recursive definition's own name and its peers' are not locals, so a field's forms win over them.
@@ -90,9 +74,9 @@ class UniverseTests extends munit.FunSuite with TestSupport {
         |inductive Tok : Type
         | | mk : Tok
         |
-        |def succ {u: Level}(A: Sort { level = succ(u) })(n: Peano): Peano decreases structural(n) :=
+        |def succ {u: Level}(A: Type { level = succ(u) })(n: Peano): Peano decreases structural(n) :=
         |  match n returning Peano with
-        |  | Peano.zero => (fun (x: Sort { level = succ(u) }): Peano => Peano.zero)(A)
+        |  | Peano.zero => (fun (x: Type { level = succ(u) }): Peano => Peano.zero)(A)
         |  | Peano.succ k => Peano.succ(succ(A, k))
         |
         |mutual {
@@ -120,7 +104,7 @@ class UniverseTests extends munit.FunSuite with TestSupport {
          |inductive Peano : Type
          | | zero : Peano
          |
-         |def keep ($name: Peano)(A: Sort { level = succ(zero) })(x: A): A := x
+         |def keep ($name: Peano)(A: Type { level = succ(zero) })(x: A): A := x
          |""".stripMargin
 
     typecheckDecls(program("p"))
@@ -130,10 +114,13 @@ class UniverseTests extends munit.FunSuite with TestSupport {
   // The level forms are forms of the language, not functions: one exists only applied to all of its arguments.
   test("a level form is written applied to all of its arguments") {
     def program(level: String): String =
-      s"def s : Sort { level = succ(succ(zero)) } := Sort { level = $level }\n"
+      s"def s : Type { level = succ(succ(zero)) } := Type { level = $level }\n"
 
     typecheckDecls(program("Level.succ(Level.zero)"))
-    assertEquals(expectOnly[ArityMismatch](typecheckDecls(program("Level.succ"))), ArityMismatch(1, 0))
+    assertEquals(
+      expectOnly[ArityMismatch](typecheckDecls(program("Level.succ"))),
+      ArityMismatch(1, 0, ArityMismatch.Arguments)
+    )
     expectOnly[ArityMismatch](typecheckDecls(program("Level.max(Level.zero)")))
   }
 
@@ -141,16 +128,16 @@ class UniverseTests extends munit.FunSuite with TestSupport {
     val source = "inductive Peano : Type\n | zero : Peano\n\ndef h (n: Peano): Peano := n\n{ h(Level.succ) }\n"
     val diagnostic = interceptDiagnostic(typecheckDecls(source))
 
-    assertEquals(diagnostic.error, ArityMismatch(1, 0))
+    assertEquals(diagnostic.error, ArityMismatch(1, 0, ArityMismatch.Arguments))
     assertEquals(diagnostic.span.map(span => source.substring(span.start, span.end)), Some("Level.succ"))
   }
 
   test("the kernel owns the sort formers and level forms; the prelude declares none") {
-    Vector("Sort", "Type", "Prop", "Level.zero", "Level.one", "Level.succ", "Level.max", "Level.imax").foreach { name =>
+    Vector("Type", "Prop", "Level.zero", "Level.one", "Level.succ", "Level.max").foreach { name =>
       assert(!Prelude.default.checkedEnv.globals.contains(name), s"the prelude declares $name")
     }
     def program(name: String): String =
-      s"namespace Level {\n  def $name (u: Level)(A: Sort { level = u }): Sort { level = u } := A\n}\n"
+      s"namespace Level {\n  def $name (u: Level)(A: Type { level = u }): Type { level = u } := A\n}\n"
 
     typecheckDecls(program("next"))
     expectOnly[AlreadyDefined](typecheckDecls(program("succ")))
@@ -189,7 +176,7 @@ class UniverseTests extends munit.FunSuite with TestSupport {
     }
   }
 
-  test("Type is Sort Level.one and has type Sort Level.succ(Level.one)") {
+  test("Type denotes data universe zero and has type Type one") {
     val p =
       """
         |{ Type }
@@ -197,42 +184,49 @@ class UniverseTests extends munit.FunSuite with TestSupport {
 
     val res = runProgram(p)
     res match {
-      case sort: Value.VSort => assertEquals(sort.level, Value.Level.one)
-      case other             => fail(s"Expected Type (Sort 1), got: $other")
+      case sort: Value.VSort =>
+        assert(!sort.isProp)
+        assertEquals(sort.level, Value.Level.zero)
+      case other => fail(s"Expected Type zero, got: $other")
     }
 
     res.tpe match {
-      case sort: Value.VSort => assertEquals(sort.level, Value.Level.succ(Value.Level.one))
-      case other             => fail(s"Expected the type of Type to be Sort 2, got: $other")
+      case sort: Value.VSort =>
+        assert(!sort.isProp)
+        assertEquals(sort.level, Value.Level.one)
+      case other => fail(s"Expected the type of Type to be Type one, got: $other")
     }
   }
 
-  test("Ascribe higher sort: let s : Sort 2 := Type") {
+  test("a Type one value inhabits exactly Type two") {
     val p =
       """
         |{
-        |  let s : Sort { level = succ(succ(zero)) } := Type
+        |  let s : Type { level = succ(succ(zero)) } := Type { level = one }
         |  s
         |}
         |""".stripMargin
 
     val res = runProgram(p)
     res match {
-      case sort: Value.VSort => assertEquals(sort.level, Value.Level.one)
-      case other             => fail(s"Expected Sort 1 value (Type), got: $other")
+      case sort: Value.VSort =>
+        assert(!sort.isProp)
+        assertEquals(sort.level, Value.Level.one)
+        assert(ValueEquivalence.defEq(sort.tpe, Sorts.sort(Value.Level.const(2))))
+      case other => fail(s"Expected Type one value, got: $other")
     }
   }
 
-  test("def f(u: Level)(A: Sort u)(x: A): A := x; apply at u=1, A=Peano, x=Peano.zero") {
+  test("a universe-polymorphic identity accepts Peano at universe zero") {
     val p =
       """
         |inductive Peano : Type
         |  | zero: Peano
         |  | succ (_: Peano) : Peano
         |
-        |def f (u: Level)(A: Sort { level = u })(x: A): A := x
+        |def f (u: Level)(A: Type { level = u })(x: A): A := x
         |
-        |{ f(Level.one, Peano, Peano.zero) }
+        |{ f(Level.zero, Peano, Peano.zero) }
         |""".stripMargin
 
     val res = runProgram(p)
@@ -241,34 +235,18 @@ class UniverseTests extends munit.FunSuite with TestSupport {
     }
   }
 
-  test("Cumulativity: Sort 1 fits into Sort 2 via let ascription (using Type)") {
-    val p =
-      """
-        |{
-        |  let s : Sort { level = succ(succ(zero)) } := Type
-        |  s
-        |}
-        |""".stripMargin
+  // Type one does not fit Type zero; checked above by the Type : Type ascription rejection.
 
-    val res = runProgram(p)
-    res match {
-      case sort: Value.VSort => assertEquals(sort.level, Value.Level.one)
-      case other             => fail(s"Expected Sort 1 value, got: $other")
-    }
-  }
-
-  // Downward non-cumulativity is covered by: Type 1 does not fit in Type 0 (let x : Type := Type fails)
-
-  test("Reject lifting: universes are not cumulative (Sort u does not fit Sort (u+2))") {
+  test("Reject lifting: data universes are exact, without cumulativity") {
     val p =
       """
         |inductive Peano : Type
         |  | zero: Peano
         |  | succ (_: Peano) : Peano
         |
-        |opaque def up2 (u: Level)(A: Sort { level = u }): Sort { level = succ(succ(u)) } := A
+        |def up2 (u: Level)(A: Type { level = u }): Type { level = succ(succ(u)) } := A
         |
-        |{ up2(Level.one, Peano) }
+        |{ up2(Level.zero, Peano) }
         |""".stripMargin
 
     LanguageParser.parseProgram(p) match {
@@ -279,10 +257,10 @@ class UniverseTests extends munit.FunSuite with TestSupport {
     }
   }
 
-  test("Reject lowering: cannot return Sort (succ u) where Sort u is expected") {
+  test("Reject lowering: a type in a higher universe cannot inhabit the lower universe") {
     val p =
       """
-        |def badDown (u: Level)(A: Sort { level = succ(u) }): Sort { level = u } := A
+        |def badDown (u: Level)(A: Type { level = succ(u) }): Type { level = u } := A
         |
         |""".stripMargin
 
@@ -294,22 +272,18 @@ class UniverseTests extends munit.FunSuite with TestSupport {
     }
   }
 
-  test("Pi formation level: (A: Prop)(x: A) -> A has type Prop") {
+  test("a data-valued Pi over a data type stays in the data universe") {
     val p =
       """
-        |{ fun (A: Sort { level = zero })(x: A): A => x }
+        |{ fun (A: Type { level = zero })(x: A): A => x }
         |""".stripMargin
 
     val res = runProgram(p)
-    // The Pi is classified in Prop, so the checked body is discarded after validation and the
-    // whole function uses the canonical proof eta-lambda.
     res match {
-      case Value.VLam(pi, _, Value.LamBody.ProofEta) =>
-        pi.tpe match {
-          case sort: Value.VSort => assert(Sorts.isProp(sort))
-          case other             => fail(s"Expected Pi type to live in Prop, got: $other")
-        }
-      case other => fail(s"Expected the canonical eta-lambda for the Prop-valued Pi, got: $other")
+      case Value.VLam(pi, _, _) =>
+        assert(!pi.isPropValued)
+        assert(ValueEquivalence.defEq(pi.tpe, Sorts.sort(Value.Level.one)))
+      case other => fail(s"Expected a data-valued function, got: $other")
     }
   }
 
@@ -325,86 +299,55 @@ class UniverseTests extends munit.FunSuite with TestSupport {
     }
   }
 
-  test("Level.imax applies the kernel simplification rules") {
+  test("Level.max normalizes duplicate and smaller operands") {
     val u = Value.Level.mk(freshLevel("u").id)
     val v = Value.Level.mk(freshLevel("v").id)
 
-    assertEquals(Value.Level.imax(u, Value.Level.zero), Value.Level.zero)
-    assertEquals(Value.Level.imax(Value.Level.zero, v), v)
-    assertEquals(Value.Level.imax(Value.Level.one, v), v)
-    assertEquals(Value.Level.imax(u, u), u)
+    assertEquals(Value.Level.max(Vector(u, u)), u)
+    assertEquals(Value.Level.max(Vector(Value.Level.zero, v)), v)
+    assertEquals(Value.Level.max(Vector(Value.Level.one, Value.Level.zero)), Value.Level.one)
+  }
+
+  test("Level.max tracks dependencies and materializes solved levels") {
+    val u = freshLevel("u")
+    val v = freshLevel("v")
+    val max = Value.Level.max(Vector(Value.Level.mk(u.id), Value.Level.mk(v.id)))
+
+    assert(max.synDeps.contains(u.id))
+    assert(max.synDeps.contains(v.id))
+    assertEquals(Value.Level.singleVariableOffset(max), None)
     assertEquals(
-      Value.Level.imax(u, Value.Level.succ(v)),
-      Value.Level.max(Vector(u, Value.Level.succ(v)))
+      ValueOps.materialize(max, EqStore(Map(v.id -> Value.Level.zero), DepSet.empty)),
+      Value.Level.mk(u.id)
     )
   }
 
-  test("unresolved imax is distinct from max and tracks nested dependencies") {
-    val u = freshLevel("u")
-    val v = freshLevel("v")
-    val imax = Value.Level.imax(Value.Level.mk(u.id), Value.Level.mk(v.id))
-
-    assert(Value.Level.containsIMax(imax))
-    assert(imax.synDeps.contains(u.id))
-    assert(imax.synDeps.contains(v.id))
-    assertEquals(Value.Level.singleVariableOffset(imax), None)
-    assertNotEquals(imax, Value.Level.max(Vector(Value.Level.mk(u.id), Value.Level.mk(v.id))))
-    assert(!ValueEquivalence.defEq(imax, Value.Level.max(Vector(Value.Level.mk(u.id), Value.Level.mk(v.id)))))
-  }
-
-  test("materialization reduces imax after its rhs level is solved") {
-    val u = freshLevel("u")
-    val v = freshLevel("v")
-    val imax = Value.Level.imax(Value.Level.mk(u.id), Value.Level.mk(v.id))
-
-    val atProp = ValueOps.materialize(imax, EqStore(Map(v.id -> Value.Level.zero), DepSet.empty))
-    assertEquals(atProp, Value.Level.zero)
-
-    val atType = ValueOps.materialize(imax, EqStore(Map(v.id -> Value.Level.one), DepSet.empty))
-    assertEquals(atType, Value.Level.max(Vector(Value.Level.mk(u.id), Value.Level.one)))
-  }
-
-  test("Level.leq handles conservative imax bounds") {
+  test("Level.leq handles ordinary maximum bounds") {
     val u = Value.Level.mk(freshLevel("u").id)
     val v = Value.Level.mk(freshLevel("v").id)
-    val imax = Value.Level.imax(u, v)
     val ordinaryMax = Value.Level.max(Vector(u, v))
 
-    assert(Value.Level.leq(v, imax))
-    assert(Value.Level.leq(imax, ordinaryMax))
-    assert(!Value.Level.leq(u, imax))
+    assert(Value.Level.leq(v, ordinaryMax))
+    assert(Value.Level.leq(u, ordinaryMax))
   }
 
-  test("imax normalization and successful bounds are sound on small assignments") {
+  test("maximum normalization and successful bounds are sound on small assignments") {
     val uId = freshLevel("u").id
     val vId = freshLevel("v").id
     val u = Value.Level.mk(uId)
     val v = Value.Level.mk(vId)
 
     def eval(level: Value.Level, assignment: Map[Value.VarId, Int]): Int = {
-      val termValues = level.terms.map { case (atom, offset) =>
+      val terms = level.terms.iterator.map { case (atom, offset) =>
         val base = atom match {
           case Value.Level.ParamAtom(id) => assignment(id)
-          case Value.Level.IMaxAtom(lhs, rhs) =>
-            val rhsValue = eval(rhs, assignment)
-            if (rhsValue == 0) 0 else math.max(eval(lhs, assignment), rhsValue)
         }
         base + offset
       }
-      (termValues.iterator ++ Iterator.single(level.c)).max
+      (terms ++ Iterator.single(level.c)).max
     }
 
-    val operands = Vector(
-      Value.Level.zero,
-      Value.Level.one,
-      u,
-      v,
-      Value.Level.succ(u),
-      Value.Level.max(Vector(u, v)),
-      Value.Level.imax(u, v),
-      Value.Level.succ(Value.Level.imax(u, v)),
-      Value.Level.imax(Value.Level.succ(u), v)
-    )
+    val operands = Vector(Value.Level.zero, Value.Level.one, u, v, Value.Level.succ(u), Value.Level.max(Vector(u, v)))
     val assignments = for {
       uValue <- 0 to 2
       vValue <- 0 to 2
@@ -412,14 +355,12 @@ class UniverseTests extends munit.FunSuite with TestSupport {
 
     operands.foreach { lhs =>
       operands.foreach { rhs =>
-        val normalized = Value.Level.imax(lhs, rhs)
+        val max = Value.Level.max(Vector(lhs, rhs))
         assignments.foreach { assignment =>
-          val rhsValue = eval(rhs, assignment)
-          val expected = if (rhsValue == 0) 0 else math.max(eval(lhs, assignment), rhsValue)
-          assertEquals(eval(normalized, assignment), expected)
+          assertEquals(eval(max, assignment), math.max(eval(lhs, assignment), eval(rhs, assignment)))
           if (Value.Level.leq(lhs, rhs))
             assert(
-              eval(lhs, assignment) <= rhsValue,
+              eval(lhs, assignment) <= eval(rhs, assignment),
               s"unsound level bound $lhs <= $rhs under $assignment"
             )
         }
@@ -427,25 +368,36 @@ class UniverseTests extends munit.FunSuite with TestSupport {
     }
   }
 
-  test("polymorphic Pi formation has an imax classifier") {
+  test("Prop remains a fixed sort tag under unification") {
+    val u = freshLevel("u")
+    val eqStore = EqStore.empty.allow(DepSet(u.id))
+
+    assert(
+      ValueEquivalence
+        .tryUnify(Sorts.Prop, Sorts.Type, eqStore)
+        .isLeft
+    )
+  }
+
+  test("polymorphic Pi formation uses the maximum data universe") {
     val p =
       """
-        |def piType {u: Level}{v: Level}(A: Sort { level = u })(B: Sort { level = v }): Sort { level = imax(u, v) } := (x: A) -> B
+        |def piType {u: Level}{v: Level}(A: Type { level = u })(B: Type { level = v }): Type { level = max(u, v) } := (x: A) -> B
         |{ Type }
         |""".stripMargin
 
     runProgram(p)
   }
 
-  test("multi-binder Pi formation preserves right-nested imax classifiers") {
+  test("multi-binder Pi formation uses the maximum of every data universe") {
     val p =
       """
-        |def piType2 {u: Level}{v: Level}{w: Level}(A: Sort { level = u })(B: Sort { level = v })(C: Sort { level = w })
-        |  : Sort { level = imax(u, imax(v, w)) } := (x: A) -> (y: B) -> C
+        |def piType2 {u: Level}{v: Level}{w: Level}(A: Type { level = u })(B: Type { level = v })(C: Type { level = w })
+        |  : Type { level = max(u, max(v, w)) } := (x: A) -> (y: B) -> C
         |
         |def piType3 {u: Level}{v: Level}{t: Level}{w: Level}
-        |  (A: Sort { level = u })(B: Sort { level = v })(C: Sort { level = t })(D: Sort { level = w })
-        |  : Sort { level = imax(u, imax(v, imax(t, w))) } := (x: A) -> (y: B) -> (z: C) -> D
+        |  (A: Type { level = u })(B: Type { level = v })(C: Type { level = t })(D: Type { level = w })
+        |  : Type { level = max(u, max(v, max(t, w))) } := (x: A) -> (y: B) -> (z: C) -> D
         |{ Type }
         |""".stripMargin
 
@@ -458,10 +410,10 @@ class UniverseTests extends munit.FunSuite with TestSupport {
         |inductive Truth : Prop
         | | intro : Truth
         |
-        |def polyK {u: Level}{v: Level}(A: Sort { level = u })(B: Sort { level = v })(b: B): (x: A) -> B :=
-        |  fun (x: A): B => b
+        |def polyK {u: Level}(A: Type { level = u })(h: Truth): (x: A) -> Truth :=
+        |  fun (_: A): Truth => h
         |
-        |{ polyK(Type, Truth, Truth.intro) }
+        |{ polyK(Type, Truth.intro) }
         |""".stripMargin
 
     runProgram(p) match {
@@ -470,17 +422,16 @@ class UniverseTests extends munit.FunSuite with TestSupport {
     }
   }
 
-  // Instead of constructing Sort in term position, test level-parametric usage via a term at the appropriate level
-  test("Level-parametric id at u=1 works for Peano") {
+  test("Level-parametric identity accepts Peano at universe zero") {
     val p =
       """
         |inductive Peano : Type
         |  | zero: Peano
         |  | succ (_: Peano) : Peano
         |
-        |def idAt (u: Level)(A: Sort { level = u })(x: A): A := x
+        |def idAt (u: Level)(A: Type { level = u })(x: A): A := x
         |
-        |{ idAt(Level.one, Peano, Peano.zero) }
+        |{ idAt(Level.zero, Peano, Peano.zero) }
         |""".stripMargin
 
     val res = runProgram(p)
@@ -599,16 +550,16 @@ class UniverseTests extends munit.FunSuite with TestSupport {
     )
   }
 
-  test("sort unification does not invent a solution through imax") {
+  test("sort unification does not invent a solution through a maximum") {
     val u = freshLevel("u")
     val v = freshLevel("v")
     val eqStore = EqStore.empty.allow(DepSet(u.id, v.id))
-    val imax = Value.Level.imax(Value.Level.mk(u.id), Value.Level.mk(v.id))
+    val max = Value.Level.max(Vector(Value.Level.mk(u.id), Value.Level.mk(v.id)))
 
     assert(
       ValueEquivalence
         .tryUnify(
-          Sorts.sort(imax),
+          Sorts.sort(max),
           Sorts.sort(Value.Level.one),
           eqStore
         )
@@ -623,7 +574,7 @@ class UniverseTests extends munit.FunSuite with TestSupport {
         | | zero : Peano
         | | succ (_: Peano) : Peano
         |
-        |def idUp {u: Level} (A: Sort { level = succ(u) })(x: A): A := x
+        |def idUp {u: Level} (A: Type { level = succ(u) })(x: A): A := x
         |
         |{
         |  idUp(Type, Peano)

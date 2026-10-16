@@ -1,4 +1,0 @@
-
-<root>/main.rac:1:11: error: Failed to parse module <root>/main.rac: Sort requires a level field
-def f (A: Sort )(x: A): A := x
-          ^

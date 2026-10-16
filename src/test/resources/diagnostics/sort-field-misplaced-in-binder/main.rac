@@ -1,3 +1,0 @@
-def apply (h: (A: Type { level = Level.one }) -> Nat): Nat := 0
-
-{ Nat.zero }

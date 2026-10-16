@@ -54,8 +54,11 @@ class MutualSiblingSortTests extends munit.FunSuite with TestSupport {
     typecheckDecls(
       trees +
         """
-          |def proofs (s: Tree)(t: Tree): Eq(Balanced, Balanced.intro(s), Balanced.intro(t)) :=
-          |  Eq.refl(Balanced.intro(s))
+          |inductive EqProof (P: Prop) indices (x: P)(y: P) : Prop
+          | | refl (x: P) : EqProof(P, x, x)
+          |
+          |def proofs (s: Tree)(t: Tree): EqProof(Balanced, Balanced.intro(s), Balanced.intro(t)) :=
+          |  EqProof.refl(Balanced.intro(s))
           |
           |def nodes (l: Tree)(r: Tree)(p: Balanced)(q: Balanced): Eq(Tree, Tree.node(l, r, p), Tree.node(l, r, q)) :=
           |  Eq.refl(Tree.node(l, r, p))
@@ -63,9 +66,9 @@ class MutualSiblingSortTests extends munit.FunSuite with TestSupport {
     )
   }
 
-  test("proof recovery reads each sibling's own sort") {
+  test("mutual siblings retain their declared sort at each universe") {
     // `Sound`'s field is a proof of its propositional sibling, so it is recovered and `Sound` eliminates into data;
-    // `Opt` is a proposition exactly at the instances whose level is zero, and its data sibling holds such proofs.
+    // `Opt` remains data at level zero, and its data sibling stores both an `Opt` and a proposition as data.
     val result = runProgram(
       """
         |mutual {
@@ -83,20 +86,23 @@ class MutualSiblingSortTests extends munit.FunSuite with TestSupport {
         |def fromSound (s: Sound): Nat := match s returning Nat with
         | | Sound.intro b => 7
         |
+        |inductive Truth : Prop
+        | | intro : Truth
+        |
         |mutual {
-        |  inductive Opt {u: Level}(A: Sort { level = u }) : Sort { level = u }
+        |  inductive Opt {u: Level}(A: Type { level = u }) : Type { level = u }
         |   | none : Opt(A)
         |
-        |  inductive Box {u: Level}(A: Sort { level = u }) : Sort { level = max(one, u) }
+        |  inductive Box {u: Level}(A: Type { level = u }) : Type { level = max(one, u) }
         |   | mk (o: Opt(A)) (a: A) : Box(A)
         |}
         |
-        |def fromOpt (o: Opt(True)): Nat := match o returning Nat with
+        |def fromOpt (o: Opt(Prop)): Nat := match o returning Nat with
         | | Opt.none => 3
         |
-        |def boxed : Box(True) := Box.mk(Opt.none(True), True.intro)
+        |def boxed : Box(Prop) := Box.mk(Opt.none(Prop), Truth)
         |
-        |{ Nat.add(fromSound(Sound.intro(Balanced.intro(Tree.leaf))), fromOpt(Opt.none(True))) }
+        |{ Nat.add(fromSound(Sound.intro(Balanced.intro(Tree.leaf))), fromOpt(Opt.none(Prop))) }
         |""".stripMargin
     )
     assert(ValueEquivalence.defEq(result, runProgram("{ 10 }")))

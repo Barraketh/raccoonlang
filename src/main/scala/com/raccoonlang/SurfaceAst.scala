@@ -46,14 +46,11 @@ object SurfaceAst {
     // Application: f(a)
     final case class App(fn: Term, args: Vector[Term], span: Span) extends Term
 
-    final case class Sort(level: SortLevel, span: Span) extends Term
+    /** A data universe; an omitted level is elaborated as Level.zero. */
+    final case class Type(level: Option[Term], span: Span) extends Term
 
-    sealed trait SortLevel
-    object SortLevel {
-      case object Zero extends SortLevel
-      case object One extends SortLevel
-      final case class Written(level: Term) extends SortLevel
-    }
+    /** The proposition sort has no surface fields. */
+    final case class Prop(span: Span) extends Term
 
     final case class Lam(header: FuncHeader, body: Term, span: Span) extends Term
 
@@ -125,10 +122,9 @@ object SurfaceAst {
     sealed trait Decl extends Command
 
     object Decl {
-      // Constant: name : type [:= value]. Opaque definitions keep only their symbolic head in the environment. A
-      // struct's generated selector names its family's declaration in `selectorOf`; a program cannot write one.
+      // Constant: name : type [:= value]. A struct's generated selector names its family's declaration in
+      // `selectorOf`; a program cannot write one.
       final case class ConstDecl(
-          isOpaque: Boolean,
           header: DeclHeader,
           decreases: Option[DecreaseSpec],
           body: ConstBody,

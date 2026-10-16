@@ -44,6 +44,8 @@ object TypeChecker {
         try env = Interpreter.evalDecl(decl, env)
         catch {
           case diagnostic: Diagnostic =>
+            if (diagnostic.error == EvaluationTooDeep)
+              throw Execution.CheckFailure(diagnostics.result() :+ diagnostic)
             diagnostics += diagnostic
             unavailable ++= decl.definedNames
         }
@@ -52,7 +54,12 @@ object TypeChecker {
     val collected = diagnostics.result()
     if (collected.nonEmpty) throw Execution.CheckFailure(collected)
     try
-      program.body.map(body => checkTerm(body, env).value)
+      program.body.map { body =>
+        try checkTerm(body, env).value
+        catch {
+          case _: StackOverflowError => at(body.span)(fail(EvaluationTooDeep))
+        }
+      }
     catch { case diagnostic: Diagnostic => throw Execution.CheckFailure(Vector(diagnostic)) }
   }
 
@@ -162,8 +169,21 @@ object TypeChecker {
         // explicit binders. `(a:A) -> (b:B) -> C` takes one argument and returns a function;
         // `(a:A)(b:B) -> C` takes two. Supplying the wrong number is an arity error here, not a
         // descent into the codomain — `f(x)(y)` is how a nested group is reached.
-        if (providedArgs.length != pi.numExplicit)
-          fail(ArityMismatch(pi.numExplicit, providedArgs.length))
+        if (providedArgs.length != pi.numExplicit) {
+          val familyParams = fnValue match {
+            case head: ConstructorHead => head.numErasedFamilyArgs
+            case _                     => 0
+          }
+          val implicitFamily = binders.take(familyParams).filter(_.isImplicit).map(_.name)
+          val explicit = binders.filterNot(_.isImplicit).map(_.name)
+          fail(
+            ArityMismatch(
+              pi.numExplicit,
+              providedArgs.length,
+              ArityMismatch.Call(applyHeadName(fnResidual), explicit, implicitFamily)
+            )
+          )
+        }
 
         val known = new Array[Value](binders.length)
         val checkedResiduals = Vector.newBuilder[CA.Term]
@@ -226,22 +246,22 @@ object TypeChecker {
    * The residual is `source` rebuilt, so it keeps its node identity.
    */
   private def finishPi(telescope: CheckedTelescope, source: CA.Term.Pi, env: Env): CheckedPi = {
+    val classifier = Interpreter.piClassifierFromChecked(
+      telescope.binders,
+      telescope.bodyEnv,
+      telescope.outTy
+    )
+    val knownPropValued = Sorts.isProposition(telescope.outTy)
     val residual =
       CA.Term.Pi(
         telescope.binders,
         telescope.out,
         source.span,
         source.id,
-        knownPropValued = Interpreter.stablePiPropClassification(telescope.outTy)
+        knownPropValued = Some(knownPropValued)
       )
     val evaluated = evalPi(residual, env)
-    // Force the classifier at declaration. Reuse the already checked fresh telescope instead of eta-expanding every
-    // binder a second time.
-    val classifier = Interpreter.piClassifierFromChecked(
-      telescope.binders,
-      telescope.bodyEnv,
-      telescope.outTy
-    )
+    // Reuse the checked fresh telescope instead of eta-expanding every binder a second time.
     CheckedPi(evaluated.copy(classifier0 = () => classifier), telescope.bodyEnv, telescope.outTy, residual)
   }
 
@@ -291,9 +311,10 @@ object TypeChecker {
       env: Env
   ): CheckedTerm = {
     val vType = base.value.tpe
+    // A base outside every family has no selectors, so the selection names nothing.
     val family = vType match {
       case InductiveFamilyValue(instance) => instance
-      case _                              => fail(NotAType(vType))
+      case _                              => fail(NotFound(s"${PrettyPrinter.printTerm(base.residual)}.$field"))
     }
     val selectorName = s"${family.head.name}.$field"
     if (!env.globals.contains(selectorName)) fail(NotFound(selectorName))
@@ -421,7 +442,7 @@ object TypeChecker {
 
   /**
    * A declaration's type: a type, or a large function type, since only a declaration's own type may bind a level (spec
-   * §2.2). A definition, opaque definition, axiom, family or constructor may therefore be level-polymorphic.
+   * §2.2). A definition, axiom, family or constructor may therefore be level-polymorphic.
    */
   def checkDeclType(term: CA.Term, env: Env): CheckedTerm =
     at(term.span) {
@@ -489,13 +510,13 @@ object TypeChecker {
 
   /**
    * An application's head: the one position where a reference whose type is large may stand, since a level-polymorphic
-   * declaration is used only applied.
+   * declaration is used only applied. A selection's base is checked as one too: other bases have no selectors.
    */
   private def checkHead(term: CA.Term, env: Env): CheckedTerm = at(term.span)(synthesize(term, env))
 
   private def synthesize(term: CA.Term, env: Env): CheckedTerm =
     term match {
-      case CA.Term.Select(base, field, span) => checkSelect(checkTerm(base, env), field, span, env)
+      case CA.Term.Select(base, field, span) => checkSelect(checkHead(base, env), field, span, env)
       case app: CA.Term.App =>
         val checkedFn = checkHead(app.fn, env)
         val checkedApp =
@@ -513,6 +534,7 @@ object TypeChecker {
       case CA.Term.Sort(level, span) =>
         val checkedLevel = checkTerm(level, LevelTpe, env)
         CheckedTerm(Sorts.sort(Interpreter.getLevel(checkedLevel.value)), CA.Term.Sort(checkedLevel.residual, span))
+      case CA.Term.Prop(span) => CheckedTerm(Sorts.Prop, CA.Term.Prop(span))
       case CA.Term.FormOp(form, args, span) =>
         val checkedArgs = args.map(checkTerm(_, Interpreter.parameterType(form.parameter), env))
         CheckedTerm(

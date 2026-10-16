@@ -16,22 +16,23 @@ The implementation favors:
 Raccoon provides dependent functions, universe polymorphism, strictly positive
 inductive families, dependent pattern matching, proof irrelevance, structural
 termination checking, structs, axioms, and quotients. Modules and namespaces
-organize source declarations. Sorts carry only a universe level, and functions
-carry only their dependent binders and result type.
+organize source declarations. `Prop` is separate from data universes; bare
+`Type` names data universe zero, and `Type { level = u }` names a data universe
+explicitly. Functions carry only their dependent binders and result type.
 
 Natural-number literals expand to ordinary constructors, and arithmetic runs
 through recursive prelude definitions. The core has no packed values, native
 arithmetic, lifetime scopes, linearity, closure annotations, or sealed families.
 
 ```raccoon
-inductive Vec {u: Level}(A: Sort { level = u }) indices (n: Nat)
-    : Sort { level = max(one, u) }
+inductive Vec {u: Level}(A: Type { level = u }) indices (n: Nat)
+    : Type { level = max(one, u) }
  | nil : Vec(A, Nat.zero)
  | cons (n: Nat)(tail: Vec(A, n))(head: A) : Vec(A, Nat.succ(n))
 
-def length {u: Level}{A: Sort { level = u }}{n: Nat}(xs: Vec(A, n)): Nat := n
+def length {u: Level}{A: Type { level = u }}{n: Nat}(xs: Vec(A, n)): Nat := n
 
-def appendOne {u: Level}{A: Sort { level = u }}{n: Nat}(xs: Vec(A, n))(x: A)
+def appendOne {u: Level}{A: Type { level = u }}{n: Nat}(xs: Vec(A, n))(x: A)
     : Vec(A, Nat.succ(n)) := Vec.cons(n, xs, x)
 
 { length(appendOne(Vec.nil(Nat), 0)) }

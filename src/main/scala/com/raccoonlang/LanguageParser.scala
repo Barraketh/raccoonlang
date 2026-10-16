@@ -13,9 +13,24 @@ object LanguageParser {
   private val comment = P("//") ~ CharsWhile(c => c != '\n')
 
   private val emptyLine = (skipWS ~ comment.? ~ Exact("\n")).named("EmptyLine")
-  private val lineSep = (emptyLine ~ skipWS).named("LineSep")
   private val skipAllWs = (emptyLine.rep(0) ~ skipWS).named("AllWS")
-  private val skipOneLine = emptyLine.? ~ skipWS
+
+  /** A list separator may contain any number of blank or comment-only lines. Items leave it to their list. */
+  private val lineSep = (emptyLine.rep(1) ~ skipWS).named("LineSep")
+
+  /** Check that an item ends its line without consuming the break owned by its enclosing list. */
+  private val lineEnd: Parser[NoValue.type] = new Parser[NoValue.type] {
+    private val rest = skipWS ~ comment.?
+
+    override def parse(input: String, startIdx: Int): ParseResult[NoValue.type] =
+      rest.parse(input, startIdx) match {
+        case Success(_, _, endIdx) if endIdx == input.length || input.charAt(endIdx) == '\n' =>
+          Success(NoValue, startIdx, startIdx)
+        case _ => fail(startIdx, startIdx)
+      }
+
+    override def toString: String = "end of line"
+  }
 
   private val wordAtom =
     (P("Word", c => IdentifierSyntax.isStart(c)) ~ P("WordPart", c => IdentifierSyntax.isContinue(c)).rep(0)).!
@@ -58,57 +73,51 @@ object LanguageParser {
   }
 
   private def termAtom(implicit sourceId: Option[SourceId]): Parser[Term] =
-    (sym("(") ~/ skipAllWs ~ term ~ layoutSymTight(")")) | rootTerm | identTerm | sortFormer | natLitTerm
+    (sym("(") ~/ skipAllWs ~ term ~ layoutSymTight(")")) | rootTerm | identTerm | typeFormer | propFormer | natLitTerm
 
-  /** The fields a sort takes by name. */
-  private val sortFieldNames: Set[String] = Set("level")
+  /** The only field accepted by Type. */
+  private val typeFieldNames: Set[String] = Set("level")
 
-  private def sortField(implicit sourceId: Option[SourceId]): Parser[(String, Term, Span)] =
+  private def typeField(implicit sourceId: Option[SourceId]): Parser[(String, Term, Span)] =
     (wordAtom ~ sym('=') ~/ skipAllWs ~ term).flatSpanned(sourceId)
 
-  /** A sort's field list `{ name = e, ... }` as written, with its span. */
-  private def fieldList(implicit sourceId: Option[SourceId]): Parser[(Vector[(String, Term, Span)], Span)] =
-    (P('{') ~/ skipAllWs ~ sortField.rep(0, layoutSym(',')) ~ layoutSymTight('}'))
+  /** A Type field list `{ level = e }` as written, with its span. */
+  private def typeFieldList(implicit sourceId: Option[SourceId]): Parser[(Vector[(String, Term, Span)], Span)] =
+    (P('{') ~/ skipAllWs ~ typeField.rep(0, layoutSym(',')) ~ layoutSymTight('}'))
       .flatSpanned(sourceId)
-      .named("FieldList")
+      .named("TypeFieldList")
 
   /**
-   * A written field list's fields by name. An empty list, an unknown or repeated field, and a `level` field where none
-   * belongs (`levelMisplaced` says why) are parse errors, the first in source order reported.
+   * A written Type field list's fields by name. An empty list, an unknown or repeated field is a parse error, with the
+   * first error in source order reported.
    */
-  private def fieldsByName(
-      written: (Vector[(String, Term, Span)], Span),
-      levelMisplaced: Option[String]
+  private def typeFieldsByName(
+      written: (Vector[(String, Term, Span)], Span)
   ): Map[String, Term] = {
     val (fields, span) = written
     if (fields.isEmpty) throw ParseError(span.start, span.start, "Empty field list")
     fields.foldLeft(Map.empty[String, Term]) { case (seen, (name, value, fieldSpan)) =>
       def reject(message: String): Nothing = throw ParseError(fieldSpan.start, fieldSpan.start, message)
-      if (!sortFieldNames(name)) reject(s"Unknown field $name")
-      if (name == "level") levelMisplaced.foreach(reason => reject(s"Misplaced field level: $reason"))
+      if (!typeFieldNames(name)) reject(s"Unknown field $name")
       if (seen.contains(name)) reject(s"Repeated field $name")
       seen + (name -> value)
     }
   }
 
-  /**
-   * The sort formers, each with the level it fixes. `Sort` fixes none, so it requires a `level` field; `Type` and
-   * `Prop` fix theirs, so a `level` field after either is misplaced.
-   */
-  private val sortFormers: Map[String, Option[SortLevel]] =
-    Map("Sort" -> None, "Type" -> Some(SortLevel.One), "Prop" -> Some(SortLevel.Zero))
+  /** Type defaults to the first data universe; a written level is elaborated as a Level term. */
+  private def typeFormer(implicit sourceId: Option[SourceId]): Parser[Term] =
+    (wordAtom.filter("Type", _ == "Type") ~ (skipWS ~ typeFieldList).?).flatSpanned(sourceId).map {
+      case (_, written, span) =>
+        val fields = written.fold(Map.empty[String, Term])(typeFieldsByName)
+        Type(fields.get("level"), span)
+    }
 
-  private def sortFormer(implicit sourceId: Option[SourceId]): Parser[Term] =
-    (wordAtom.filter("SortFormer", sortFormers.contains) ~ (skipWS ~ fieldList).?).flatSpanned(sourceId).map {
-      case (former, written, span) =>
-        val fixed = sortFormers(former)
-        val fields = written.fold(Map.empty[String, Term]) { list =>
-          fieldsByName(list, levelMisplaced = fixed.map(_ => s"$former fixes the level"))
-        }
-        val level = fixed
-          .orElse(fields.get("level").map(SortLevel.Written))
-          .getOrElse(throw ParseError(span.start, span.start, s"$former requires a level field"))
-        Sort(level, span)
+  /** Prop is a bare former. Consume a following field list so it receives a direct syntax error. */
+  private def propFormer(implicit sourceId: Option[SourceId]): Parser[Term] =
+    (wordAtom.filter("Prop", _ == "Prop") ~ (skipWS ~ typeFieldList).?).flatSpanned(sourceId).map {
+      case (_, Some((_, fieldListSpan)), _) =>
+        throw ParseError(fieldListSpan.start, fieldListSpan.start, "Prop does not accept fields")
+      case (_, None, span) => Prop(span)
     }
 
   private def parenArgs[A](arg: => Parser[A]): Parser[Vector[A]] =
@@ -137,7 +146,8 @@ object LanguageParser {
     sym('(') ~ skipAllWs ~ typeTerm ~ layoutSymTight(')') |
       rootTerm |
       identTerm |
-      sortFormer |
+      typeFormer |
+      propFormer |
       natLitTerm
 
   /**
@@ -232,12 +242,12 @@ object LanguageParser {
     openP.map(OpenStmt.apply) | let.map(LetStmt.apply)
 
   private def body(implicit sourceId: Option[SourceId]): Parser[Body] = {
-    val content = (bodyStmt.rep(0, lineSep) ~ skipOneLine ~ term)
+    val content = (bodyStmt.rep(0, lineSep) ~ skipAllWs ~ term)
       .map { case (statements, res) =>
         (statements, res)
       }
       .spanned(sourceId)
-    (sym("{") ~/ skipOneLine ~ content ~ skipOneLine ~ sym("}"))
+    (sym("{") ~/ skipAllWs ~ content ~ skipAllWs ~ sym("}"))
       .map { s =>
         Body(s.value._1, s.value._2, s.span)
       }
@@ -260,7 +270,7 @@ object LanguageParser {
 
   private def matchCase(implicit sourceId: Option[SourceId]): Parser[Case] = {
     val patternVar = argName.spanned(sourceId).map(name => PatternVar(name.value, name.span))
-    (sym("|") ~/ caseHead ~ (wsSep ~ patternVar).rep(0) ~ sym("=>") ~/ skipAllWs ~ term ~ lineSep)
+    (sym("|") ~/ caseHead ~ (wsSep ~ patternVar).rep(0) ~ sym("=>") ~/ skipAllWs ~ term ~ lineEnd)
       .flatSpanned(sourceId)
       .map { case (ctorPath, useShortName, patternVars, body, span) =>
         Case(ctorPath, useShortName, patternVars, body, span)
@@ -271,9 +281,9 @@ object LanguageParser {
   /** `returning` continues the header, so it may start the next line, as an arrow or a parameter group may. */
   private def matchP(implicit sourceId: Option[SourceId]): Parser[Match] = {
     (kw("match") ~/ term ~ (skipAllWs ~ kw("returning") ~/ typeTerm).named("returning clause") ~
-      (kwTight("with") ~/ lineSep) ~ matchCase.rep(0)).flatSpanned(sourceId).map { case (scrut, motive, cases, sp) =>
-      Match(scrut, motive, cases, sp)
-    }
+      kwTight("with") ~/ lineEnd ~ (lineSep ~ matchCase).rep(0))
+      .flatSpanned(sourceId)
+      .map { case (scrut, motive, cases, sp) => Match(scrut, motive, cases, sp) }
   }
 
   sealed trait TermTrailer
@@ -309,15 +319,12 @@ object LanguageParser {
 
   private def ctorDecl(implicit sourceId: Option[SourceId]): Parser[ConstructorDecl] = {
     (sym("|") ~/ ident ~ layoutParam.rep(0) ~ skipAllWs ~ sym(':') ~/ skipAllWs ~
-      typeTerm ~ lineSep)
+      typeTerm ~ lineEnd)
       .flatSpanned(sourceId)
       .map { case (name, binders, resTy, sp) =>
         ConstructorDecl(name, binders, resTy, sp)
       }
   }
-
-  private def opaqueP: Parser[Boolean] =
-    kw("opaque").!.?.map(_.isDefined)
 
   private def constBody(implicit sourceId: Option[SourceId]): Parser[ConstBody] =
     kwTight("builtin").!.flatSpanned(sourceId).map { case (_, span) => ConstBody.Builtin(span) } |
@@ -339,17 +346,17 @@ object LanguageParser {
         .flatSpanned(sourceId)
         .map { case (measureTerm, span) => DecreaseSpec.Measure(measureTerm, span) }
 
-    kw("decreases") ~/ (structural | lexicographic | measure)
+    val keyword = (skipWS ~ P("decreases") ~ (lineSep | wsSep)).named("Kw(decreases)")
+    keyword ~/ (structural | lexicographic | measure).named("structural(x), lexicographic(x, ...) or measure(e)")
   }
 
-  // opaque? def foo (a: A)(c : C): D := body
+  /** A decrease clause continues the definition header, so it may start on a later line. */
   private def constP(implicit sourceId: Option[SourceId]): Parser[ConstDecl] =
-    (opaqueP ~ kw("def") ~/ declHeader ~ decreasesP.? ~
+    (kw("def") ~/ declHeader ~ (skipAllWs ~ decreasesP).? ~
       (sym(":=") ~/ skipAllWs ~ constBody))
       .flatSpanned(sourceId)
-      .map { case (isOpaque, header, decreases, body, span) =>
+      .map { case (header, decreases, body, span) =>
         ConstDecl(
-          isOpaque,
           header,
           decreases,
           body,
@@ -365,12 +372,12 @@ object LanguageParser {
       }
 
   private def inductiveP(implicit sourceId: Option[SourceId]): Parser[InductiveDecl] =
-    (kw("inductive") ~/ inductiveHeader ~ lineSep ~ ctorDecl.rep(0))
+    (kw("inductive") ~/ inductiveHeader ~ lineEnd ~ (lineSep ~ ctorDecl).rep(0))
       .flatSpanned(sourceId)
       .map { case (h, cs, sp) => InductiveDecl(h, cs, generateSelectors = false, sp) }
 
   private def structP(implicit sourceId: Option[SourceId]): Parser[InductiveDecl] =
-    (kw("struct") ~/ inductiveHeader ~ lineSep ~ ctorDecl)
+    (kw("struct") ~/ inductiveHeader ~ lineEnd ~ lineSep ~ ctorDecl)
       .flatSpanned(sourceId)
       .map { case (h, cs, sp) => InductiveDecl(h, Vector(cs), generateSelectors = true, sp) }
 
@@ -378,7 +385,7 @@ object LanguageParser {
     declP | namespaceP | openP | mutualP | blockP
 
   private def commandsP(implicit sourceId: Option[SourceId]): Parser[Vector[Command]] =
-    skipAllWs ~ commandP.rep(0, lineSep.rep(1)) ~ skipAllWs
+    skipAllWs ~ commandP.rep(0, lineSep) ~ skipAllWs
 
   private def declP(implicit sourceId: Option[SourceId]): Parser[Decl] = constP | axiomP | inductiveP | structP
 
@@ -412,10 +419,10 @@ object LanguageParser {
       .map(Mutual.tupled)
 
   private def importP(implicit sourceId: Option[SourceId]): Parser[Import] =
-    (kw("import") ~/ pathP ~/ emptyLine).flatSpanned(sourceId).map(Import.tupled)
+    (kw("import") ~/ pathP ~/ lineEnd).flatSpanned(sourceId).map(Import.tupled)
 
   private def programP(implicit sourceId: Option[SourceId]): Parser[Program] = {
-    (skipAllWs ~ importP.rep(0) ~ commandsP ~ term.? ~ skipAllWs ~/ End).map(Program.tupled)
+    (skipAllWs ~ importP.rep(0, lineSep) ~ commandsP ~ term.? ~ skipAllWs ~/ End).map(Program.tupled)
   }
 
   private def tryParse[A](input: String, parser: Parser[A]): ParseResult[A] = try {

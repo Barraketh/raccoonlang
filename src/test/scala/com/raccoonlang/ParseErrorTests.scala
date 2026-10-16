@@ -43,24 +43,22 @@ class ParseErrorTests extends munit.FunSuite {
   private def everywhere(fragment: String, message: String)(implicit loc: munit.Location): Unit =
     typePositions.foreach(program => expectParseError(program(fragment), message))
 
-  test("each position parses a well-formed sort and function type") {
-    Vector("Type", "Sort { level = Level.one }", " Nat -> Nat").foreach { t =>
+  test("each position parses a data universe, Prop, and a function type") {
+    Vector("Type", "Type { level = Level.one }", "Prop", " Nat -> Nat").foreach { t =>
       typePositions.foreach(program => expectParses(program(t)))
     }
   }
 
-  test("a sort's field list is nonempty and names each known field once") {
-    everywhere("Sort @{}", "Empty field list")
+  test("Type's field list is nonempty and names each known field once") {
     everywhere("Type @{}", "Empty field list")
-    everywhere("Sort { level = Level.one, @size = 1 }", "Unknown field size")
-    everywhere("Sort { level = Level.one, @level = Level.one }", "Repeated field level")
+    everywhere("Type { level = Level.one, @size = 1 }", "Unknown field size")
+    everywhere("Type { level = Level.one, @level = Level.one }", "Repeated field level")
   }
 
-  test("Sort requires its level, bare or applied, and Type and Prop fix theirs") {
-    everywhere("@Sort", "Sort requires a level field")
-    everywhere("@Sort(Level.one)", "Sort requires a level field")
-    everywhere("Type { @level = Level.one }", "Misplaced field level: Type fixes the level")
-    everywhere("Prop { @level = Level.zero }", "Misplaced field level: Prop fixes the level")
+  test("Prop has no fields; former names are no longer reserved identifiers") {
+    everywhere("Prop @{}", "Prop does not accept fields")
+    everywhere("Prop@{ level = Level.zero }", "Prop does not accept fields")
+    expectParses("def Sort : Nat := 0\n{ Sort }\n")
   }
 
   // A match stands only where a term does: a type's grammar has none, so a header, a binder or a field cannot hold one.
@@ -80,6 +78,43 @@ class ParseErrorTests extends munit.FunSuite {
     expectParses(
       "def f (n: Nat): Nat := match n\n  // the motive\n  returning Nat with\n | .zero => 0\n | .succ k => k\n"
     )
+  }
+
+  // Cases and constructors remain line-terminated; a separator may follow them, but the next item cannot share it.
+  test("a case or constructor written after another item on the same line is a parse error") {
+    val cases = Vector(
+      "def f (n: Nat): Nat := match n returning Nat with@ | .zero => 0\n",
+      "def f (n: Nat): Nat := match n returning Nat with\n  | .zero => 0@ | .succ k => k\n",
+      "def f (n: Nat): Nat := {\n  let m := match n returning Nat with@ | .zero => 0\n  m\n}",
+      "def f (n: Nat): Nat := {\n  match n returning Nat with\n  | .zero => 0\n  | .succ k => k@ }\n"
+    )
+    cases.foreach(expectParseError(_, "Failed to parse end of line"))
+    val constructors = Vector(
+      "inductive Color : Type@ | red : Color\n",
+      "inductive Color : Type\n  | red : Color@ | green : Color\n",
+      "struct Point : Type@ | mk (x: Nat) : Point\n"
+    )
+    constructors.foreach(expectParseError(_, "Failed to parse end of line"))
+  }
+
+  test("a malformed decreases specification names the accepted forms") {
+    val expected = "Failed to parse structural(x), lexicographic(x, ...) or measure(e)"
+    Vector(" ", "\n    ", "\n\n  // the specification\n    ").foreach { before =>
+      expectParseError(s"def f (n: Nat): Nat${before}decreases @structral(n) := n\n", expected)
+    }
+    expectParseError("def f (n: Nat): Nat decreases\n    @structral(n) := n\n", expected)
+    expectParseError(
+      "def f (n: Nat): Nat decreases structural(n@ := n\n",
+      "Failed to parse SymTight())"
+    )
+  }
+
+  test("opaque is an identifier and no longer modifies definitions") {
+    LanguageParser.parseProgram("opaque def hidden : Nat := 0\n") match {
+      case _: Failure    => ()
+      case _: Success[_] => fail("opaque def should not parse as a declaration")
+    }
+    expectParses("def opaque : Nat := 0\n{ opaque }\n")
   }
 
   test("a parse failure names what was expected, never a parser object") {

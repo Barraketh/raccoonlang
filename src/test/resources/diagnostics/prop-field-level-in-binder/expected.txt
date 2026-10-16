@@ -1,0 +1,4 @@
+
+<root>/main.rac:1:24: error: Failed to parse module <root>/main.rac: Prop does not accept fields
+def apply (h: (A: Prop { level = Level.one }) -> True): True := True.intro
+                       ^

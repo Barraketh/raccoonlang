@@ -1,4 +1,4 @@
-inductive Vec (A: Type) indices (n: Nat) : Sort { level = one }
+inductive Vec (A: Type) indices (n: Nat) : Type { level = one }
  | nil : Vec(A, Nat.zero)
  | cons (n: Nat)(xs: Vec(A, n))(x: A) : Vec(A, Nat.succ(n))
 

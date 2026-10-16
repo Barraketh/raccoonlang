@@ -54,19 +54,19 @@ class MatchRefinementTests extends munit.FunSuite with TestSupport {
     interceptError[TypeMismatch] { typecheckDecls(p) }
   }
 
-  test("match refinement: cumulative family parameter on neutral Vec scrut succeeds") {
+  test("match refinement on a family parameter of a neutral Vec scrut succeeds at its universe") {
     val p =
       """
         |inductive Peano : Type
         | | zero : Peano
         | | succ (p: Peano) : Peano
         |
-        |inductive Vec (u: Level)(A: Sort { level = u }) indices (n: Peano) : Sort { level = max(one, u) }
+        |inductive Vec (u: Level)(A: Type { level = u }) indices (n: Peano) : Type { level = u }
         | | nil : Vec(u, A, Peano.zero)
         | | cons (n: Peano) (xs: Vec(u, A, n)) (x: A) : Vec(u, A, Peano.succ(n))
         |
-        |def keepVec (n: Peano)(v: Vec(Level.one, Peano, n)): Vec(Level.one, Peano, n) := {
-        |  match v returning Vec(Level.one, Peano, n) with
+        |def keepVec (n: Peano)(v: Vec(Level.zero, Peano, n)): Vec(Level.zero, Peano, n) := {
+        |  match v returning Vec(Level.zero, Peano, n) with
         |  | Vec.nil => v
         |  | Vec.cons k xs x => v
         |}
@@ -99,9 +99,9 @@ class MatchRefinementTests extends munit.FunSuite with TestSupport {
     interceptError[TypeMismatch] { typecheckDecls(p) }
   }
 
-  // A constructor's parameters are the scrutinee type's own, never unknowns, so an index equation that is stuck (here on
-  // an opaque `double`) leaves each field at the scrutinee's parameters. A lambda capturing one derives its closure over
-  // variables in scope.
+  // A constructor's parameters are the scrutinee type's own, never unknowns, so an index equation
+  // that is stuck (here on a neutral `double` application) leaves each field at the scrutinee's
+  // parameters. A lambda capturing one derives its closure over variables in scope.
   private def stuckIndex(declarations: String): String =
     """
       |inductive Peano : Type
@@ -111,7 +111,7 @@ class MatchRefinementTests extends munit.FunSuite with TestSupport {
       |inductive Tick : Type
       | | tick : Tick
       |
-      |opaque def double (n: Peano): Peano := n
+      |axiom double (n: Peano): Peano
       |""".stripMargin + declarations
 
   test("a stuck index equation preserves the field's type parameter") {
@@ -167,6 +167,55 @@ class MatchRefinementTests extends munit.FunSuite with TestSupport {
     typecheckDecls(program(nil, cons))
     expectOnly[MissingCase](typecheckDecls(program(nil)))
     expectOnly[MissingCase](typecheckDecls(program(cons)))
+  }
+
+  test("a postponed argument retries after a later argument links a variable it reaches") {
+    // `g(x) ~ g(c)` is stuck beneath the arbitrary function head. The next constructor argument links x and c, so the
+    // postponed equation now reaches a new link and succeeds on retry.
+    typecheckDecls(
+      """
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (p: Peano) : Peano
+        |
+        |inductive Two : Type
+        | | mk (a: Peano)(b: Peano) : Two
+        |
+        |def congArg (g: (n: Peano) -> Peano)(x: Peano)(c: Peano)
+        |  (p: Eq(Two, Two.mk(g(x), x), Two.mk(g(c), c))): Eq(Peano, c, x) := {
+        |  match p returning Eq(Peano, c, x) with
+        |  | Eq.refl t => Eq.refl(x)
+        |}
+        |""".stripMargin
+    )
+  }
+
+  private def nestedApply(head: String, value: String, depth: Int): String =
+    (0 until depth).foldLeft(value)((inner, _) => s"$head($inner)")
+
+  test("nested applications of one shared neutral head do not retry unchanged stuck arguments") {
+    val depth = 36
+    val declarations =
+      s"""
+         |inductive Peano : Type
+         | | zero : Peano
+         | | succ (p: Peano) : Peano
+         |
+         |inductive Indexed (g: (n: Peano) -> Peano) indices (n: Peano) : Type
+         | | wrap (x: Peano) : Indexed(g, ${nestedApply("g", "x", depth)})
+         |""".stripMargin
+
+    def matching(cases: String): String =
+      declarations +
+        s"""
+           |def use (g: (n: Peano) -> Peano)(n: Peano)(value: Indexed(g, ${nestedApply("g", "n", depth)})): Peano := {
+           |  match value returning Peano with
+           |$cases
+           |}
+           |""".stripMargin
+
+    typecheckDecls(matching("  | .wrap x => x\n"))
+    expectTypeError[MissingCase](matching(""))
   }
 
 }

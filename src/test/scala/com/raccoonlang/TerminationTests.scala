@@ -375,15 +375,15 @@ class TerminationTests extends munit.FunSuite with TestSupport {
     expectTypeError[NonDecreasingRecursiveCall](p)
   }
 
-  test("decrease metric on an opaque-typed value is rejected") {
-    // Quot and opaque types are Symbol consts, not inductives: their values are not well-founded
-    // trees the structural order could descend.
+  test("decrease metric on an axiomatized type's value is rejected") {
+    // An axiomatized type, as Quot is, is not inductive: its values are not well-founded trees the
+    // structural order could descend.
     val p =
       natDecls +
         """
-          |opaque def Opaque : Type := Peano
+          |axiom Carrier : Type
           |
-          |def bad (q: Opaque): Peano decreases structural(q) := Peano.zero
+          |def bad (q: Carrier): Peano decreases structural(q) := Peano.zero
           |""".stripMargin
 
     assert(!expectTypeError[NonInductiveDecreaseMetric](p).isProof)
@@ -393,10 +393,10 @@ class TerminationTests extends munit.FunSuite with TestSupport {
     val p =
       natDecls +
         """
-          |opaque def opaqueApply (h: Peano -> Peano)(n: Peano): Peano := h(n)
+          |axiom stuckApply (h: Peano -> Peano)(n: Peano): Peano
           |
           |def bad (n: Peano): Peano decreases structural(n) := {
-          |  let x := opaqueApply(bad, n)
+          |  let x := stuckApply(bad, n)
           |  Peano.zero
           |}
           |""".stripMargin

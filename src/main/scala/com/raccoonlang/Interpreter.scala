@@ -5,6 +5,8 @@ import com.raccoonlang.CoreAst.{Term => CTerm}
 import com.raccoonlang.Value._
 import com.raccoonlang.telescope.BinderOps
 
+import scala.annotation.tailrec
+
 /**
  * Interpreter evaluates CoreAst into ordinary WHNF Values in the Env it is given. EqStore-aware reduction is isolated
  * to resolveInEqStore and the materialization helpers in ValueOps.
@@ -24,8 +26,6 @@ object Interpreter {
               }
             case None => Level.mk(id)
           }
-        case Level.IMaxAtom(lhs, rhs) =>
-          Level.imax(normalizeLevel(lhs, eqStore), normalizeLevel(rhs, eqStore))
       }
       pieces += Level.addOffset(base, k)
     }
@@ -36,24 +36,29 @@ object Interpreter {
    * Continues the reduction of v if any dependency that blocks it has been solved in EqStore. The default call (if v
    * cannot be further reduced) is a fast empty/intersection check, so callers may use it defensively.
    */
-  private[raccoonlang] def resolveInEqStore(v: Value, eqStore: EqStore): Value = {
+  private[raccoonlang] def resolveInEqStore(v: Value, eqStore: EqStore): Value =
+    resolveInEqStore(v, ValueOps.newMaterializer(eqStore))
+
+  /** The overload used inside one materialization root, so shared values and environments share its memo tables. */
+  private[raccoonlang] def resolveInEqStore(v: Value, materializer: ValueOps.Materializer): Value = {
+    val eqStore = materializer.eqStore
     val v0 = eqStore.force(v)
     v0 match {
       case Blocked(blockedOn) if blockedOn.intersects(eqStore.solvedIds) =>
         v0 match {
           case VBlockedApp(h, args, tpe, _) =>
-            val h0 = ValueOps.materialize(resolveInEqStore(h, eqStore), eqStore)
-            val materializedArgs = args.map(arg => ValueOps.materialize(arg, eqStore))
+            val h0 = materializer.materialize(materializer.resolve(h))
+            val materializedArgs = args.map(materializer.materializeArgument)
             h0 match {
               case lam: VLam =>
                 val res = runLam(lam, materializedArgs)
-                resolveInEqStore(res, eqStore)
+                materializer.resolve(res)
               case nextHead @ Blocker(nextBlockedOn) =>
-                VBlockedApp(nextHead, args, tpe, nextBlockedOn)
+                VBlockedApp(nextHead, materializedArgs, tpe, nextBlockedOn)
               case other =>
-                resolveInEqStore(evalApply(other, materializedArgs), eqStore)
+                materializer.resolve(evalApply(other, materializedArgs))
             }
-          case vm: NeutralThunk => resolveInEqStore(forceThunk(vm, eqStore), eqStore)
+          case vm: NeutralThunk => materializer.resolve(forceThunk(vm, materializer))
           case _                => wtf(s"Blocked extractor matched unexpected value $v0")
         }
 
@@ -71,7 +76,7 @@ object Interpreter {
   private def getEnvWithArgs(fnTpe: VPi, baseEnv: Env, args: Vector[Value]): Env =
     BinderOps.instantiateFull(fnTpe.binders, baseEnv, args)
 
-  /** Fold domain levels with imax; a telescope binding a level has the internal classifier Large. */
+  /** Combine the levels of a data-valued function type; a telescope binding a level is classified as Large. */
   private[raccoonlang] def piClassifierFromChecked(
       binders: Vector[CoreAst.Binder],
       freshEnv: Env,
@@ -81,36 +86,19 @@ object Interpreter {
     if (freshValues.exists(_.tpe eq LevelTpe)) Large
     else {
       val outSort = TypeChecker.getUniverse(outV)
-      val domSorts = freshValues.flatMap { fresh =>
-        fresh.tpe match {
-          case _: ParameterTpe => None
-          case tpe             => Some(TypeChecker.getUniverse(tpe))
+      if (Sorts.isProp(outSort)) Sorts.Prop
+      else {
+        val domainLevels = freshValues.flatMap { fresh =>
+          fresh.tpe match {
+            case _: ParameterTpe => None
+            case tpe =>
+              val domainSort = TypeChecker.getUniverse(tpe)
+              Some(if (Sorts.isProp(domainSort)) Level.zero else domainSort.level)
+          }
         }
+        Sorts.sort(Level.max(domainLevels :+ outSort.level))
       }
-      val outLevel = outSort.level
-      val level =
-        if (Sorts.isProp(outSort)) outLevel
-        else if (Level.isNeverZero(outLevel)) Level.max(domSorts.map(_.level) :+ outLevel)
-        else domSorts.map(_.level).foldRight(outLevel)(Level.imax)
-      Sorts.sort(level)
     }
-  }
-
-  /** Cache only proposition classifications that cannot change when level parameters are instantiated. */
-  private[raccoonlang] def stablePiPropClassification(outV: Value): Option[Boolean] = {
-    val outSort = TypeChecker.getUniverse(outV)
-    if (Sorts.isProp(outSort)) Some(true)
-    else if (Level.isNeverZero(outSort.level)) Some(false)
-    else None
-  }
-
-  private def piClassifier(
-      binders: Vector[CoreAst.Binder],
-      baseEnv: Env,
-      out: CoreAst.Term
-  ): Classifier = {
-    val freshEnv = BinderOps.freshen(binders, baseEnv)
-    piClassifierFromChecked(binders, freshEnv, evalTerm(out, freshEnv))
   }
 
   private[raccoonlang] def evalPi(pi: CTerm.Pi, env: Env): VPi = {
@@ -124,14 +112,19 @@ object Interpreter {
       synDeps.unionInPlace(v.synDeps)
     }
 
+    lazy val freshEnv = BinderOps.freshen(pi.binders, closedEnv)
+    lazy val outV = evalTerm(pi.out, freshEnv)
+    lazy val classifier = piClassifierFromChecked(pi.binders, freshEnv, outV)
+    val isPropValued = pi.knownPropValued.getOrElse(Sorts.isProposition(outV))
+
     VPi(
       closedEnv,
       pi.binders,
       codomain = env => evalTerm(pi.out, env),
       synDeps.result(),
       id,
-      classifier0 = () => piClassifier(pi.binders, closedEnv, pi.out),
-      knownPropValued = pi.knownPropValued
+      classifier0 = () => classifier,
+      isPropValued = isPropValued
     )
   }
 
@@ -147,41 +140,43 @@ object Interpreter {
     }
   }
 
-  private[raccoonlang] def evalApply(fn: Value, vArgs: Vector[Value]): Value = {
+  private[raccoonlang] def evalApply(fn: Value, vArgs: Vector[Value]): Value = evalSteps(applyStep(fn, vArgs))
+
+  private def applyStep(fn: Value, vArgs: Vector[Value]): Step = {
     fn.tpe match {
       case pi: VPi =>
         // Grouping is part of a function type's identity, so an application supplies exactly this
         // Pi's own binders. A nested group is reached by a second application, which arrives here
         // as its own call. Keep this boundary checked because native lambdas bypass Core evaluation.
         if (vArgs.length != pi.binders.length)
-          fail(ArityMismatch(pi.binders.length, vArgs.length))
+          fail(ArityMismatch(pi.binders.length, vArgs.length, ArityMismatch.Arguments))
         // Lazy: the VLam branch delegates env construction to runLam.
         lazy val envWithArgs = getEnvWithArgs(pi, pi.env, vArgs)
         fn match {
           case lam: VLam =>
-            runLam(lam, vArgs)
+            lamStep(lam, vArgs)
           case h: ConstructorHead =>
             val resultTy = pi.codomain(envWithArgs)
             val storedArgs = Value.constructorStoredArgs(h, vArgs)
-            Value.canonicalizeProof(VCtor(h, storedArgs, resultTy))
+            Step.Done(Value.canonicalizeProof(VCtor(h, storedArgs, resultTy)))
           // Every non-reducing head builds one new application layer over itself. An existing
           // neutral stays the head rather than being flattened into the new spine: flattening
           // would destroy positional-projection arity. A blocked head propagates its blockers,
           // and any other head is unblocked.
           case head @ (_: VConst | _: VApp | _: NeutralThunk | _: Var) =>
             val blockedOn = Blocker.unapply(head).getOrElse(DepSet.empty)
-            Value.canonicalizeProof(VApp(head, vArgs, pi.codomain(envWithArgs), blockedOn))
+            Step.Done(Value.canonicalizeProof(VApp(head, vArgs, pi.codomain(envWithArgs), blockedOn)))
           case _ => fail(CannotApplyNonFunction(fn))
         }
       case _ => fail(CannotApplyNonFunction(fn.tpe))
     }
   }
 
-  private def evalApplyTerm(fn: CoreAst.Term, args: Vector[CoreAst.Term], env: Env): Value = {
+  private def evalApplyTerm(fn: CoreAst.Term, args: Vector[CoreAst.Term], env: Env): Step = {
     val vf = evalTerm(fn, env)
     val vArgs = args.map(a => evalTerm(a, env))
     if (vArgs.isEmpty) fail(CannotApplyNonFunction(vf.tpe))
-    evalApply(vf, reconstructImplicits(vf, vArgs))
+    applyStep(vf, reconstructImplicits(vf, vArgs))
   }
 
   private def valueName(v: Value): String =
@@ -203,7 +198,8 @@ object Interpreter {
         // A binder type is evaluated before the application inside it has been checked, so both of
         // these are reachable from a program and stay ordinary errors, located by whichever term the
         // checker was working on.
-        if (vArgs.length != pi.numExplicit) fail(ArityMismatch(pi.numExplicit, vArgs.length))
+        if (vArgs.length != pi.numExplicit)
+          fail(ArityMismatch(pi.numExplicit, vArgs.length, ArityMismatch.Arguments))
         var provided = 0
         pi.binders.map { binder =>
           if (!binder.isImplicit) {
@@ -242,14 +238,18 @@ object Interpreter {
   }
 
   private[raccoonlang] def runLam(lam: VLam, args: Vector[Value]): Value = {
+    evalSteps(lamStep(lam, args))
+  }
+
+  private def lamStep(lam: VLam, args: Vector[Value]): Step = {
     // Arguments are bound as supplied. A lambda's Pi is the one it was created with, so its binders
     // are exactly the ones its body expects.
     lazy val piEnv = BinderOps.instantiateFull(lam.tpe.binders, lam.tpe.env, args)
 
     lam.body match {
-      case LamBody.Native(run, nativeEnv, _) => run(args, nativeEnv)
+      case LamBody.Native(run, nativeEnv, _) => Step.Done(run(args, nativeEnv))
       case LamBody.ProofEta =>
-        Value.canonicalizeProof(VProof(lam.tpe.codomain(piEnv)))
+        Step.Done(Value.canonicalizeProof(VProof(lam.tpe.codomain(piEnv))))
       case LamBody.Core(term, coreEnv) =>
         val bodyEnv = BinderOps.instantiateFull(lam.tpe.binders, coreEnv, args)
 
@@ -265,12 +265,12 @@ object Interpreter {
                 .getOrElse(wtf(s"Checked recursive peer $name is absent from its group"))
           current.putLocal(ref, peer)
         }
-        evalTerm(term.body, recurEnv)
+        Step.Tail(term.body, recurEnv)
     }
   }
 
-  private def forceThunk(thunk: NeutralThunk, eqStore: EqStore): Value =
-    evalMatch(thunk.term, ValueOps.materializeEnv(thunk.env, eqStore))
+  private def forceThunk(thunk: NeutralThunk, materializer: ValueOps.Materializer): Value =
+    evalMatch(thunk.term, materializer.materializeEnv(thunk.env))
 
   private def evalLam(l: CTerm.Lam, env: Env): Value = evalLam(l, evalPi(l.ty, env), env)
 
@@ -293,35 +293,57 @@ object Interpreter {
       case CoreAst.Form.LevelOne  => Level.one
       case CoreAst.Form.LevelSucc => Level.succ(getLevel(args(0)))
       case CoreAst.Form.LevelMax  => Level.max(args.map(getLevel))
-      case CoreAst.Form.LevelIMax => Level.imax(getLevel(args(0)), getLevel(args(1)))
     }
 
   /**
    * Evaluation attaches no location: reduction runs inside callee bodies the user did not write, so a failure here
    * belongs to the term the checker was working on.
    */
-  private[raccoonlang] def evalTerm(term: CoreAst.Term, env: Env): Value =
+  private sealed trait Step
+  private object Step {
+    final case class Done(value: Value) extends Step
+    final case class Tail(term: CoreAst.Term, env: Env) extends Step
+  }
+
+  private[raccoonlang] def evalTerm(term: CoreAst.Term, env: Env): Value = evalSteps(step(term, env))
+
+  @tailrec
+  private def evalSteps(next: Step): Value =
+    next match {
+      case Step.Done(value)     => value
+      case Step.Tail(term, env) => evalSteps(step(term, env))
+    }
+
+  /** A block's result and a selected match branch are tail positions of their enclosing term. */
+  private def step(term: CoreAst.Term, env: Env): Step =
     term match {
-      case ref: CTerm.Ref         => evalRef(ref, env)
+      case ref: CTerm.Ref         => Step.Done(evalRef(ref, env))
       case CTerm.App(fn, args, _) => evalApplyTerm(fn, args, env)
-      case pi: CTerm.Pi           => evalPi(pi, env)
-      case l: CTerm.Lam           => evalLam(l, env)
-      case m: CTerm.Match         => evalMatch(m, env)
-      case b: CTerm.Body          => evalBody(b, env)
+      case pi: CTerm.Pi           => Step.Done(evalPi(pi, env))
+      case l: CTerm.Lam           => Step.Done(evalLam(l, env))
+      case m: CTerm.Match         => matchStep(m, env)
+      case b: CTerm.Body =>
+        val withLets = b.lets.foldLeft(env) { case (curEnv, let) =>
+          curEnv.putLocal(let.localRef, evalTerm(let.value, curEnv))
+        }
+        Step.Tail(b.res, withLets)
       case CTerm.Sort(level, _) =>
-        Sorts.sort(getLevel(evalTerm(level, env)))
-      case CTerm.FormOp(form, args, _) => evalFormOp(form, args.map(evalTerm(_, env)))
+        Step.Done(Sorts.sort(getLevel(evalTerm(level, env))))
+      case CTerm.Prop(_)               => Step.Done(Sorts.Prop)
+      case CTerm.FormOp(form, args, _) => Step.Done(evalFormOp(form, args.map(evalTerm(_, env))))
       // Named field syntax is resolved to a selector application by checkSelect, so a Select can
       // only reach evaluation if something published unchecked syntax.
       case CTerm.Select(_, field, _) =>
         wtf(s"Unresolved field selection .$field reached evaluation")
     }
 
-  private def evalMatch(m: CTerm.Match, env: Env): Value = {
+  private def evalMatch(m: CTerm.Match, env: Env): Value = evalSteps(matchStep(m, env))
+
+  private def matchStep(m: CTerm.Match, env: Env): Step = {
     val scrut = evalTerm(m.scrut, env)
     val (ctorName, args) = scrut match {
       case ConstructorForm(name, storedArgs) => (name, storedArgs)
-      case proof: VProof                     => return evalProofMatch(m, proof, env)
+      case proof: VProof                     => return Step.Done(evalProofMatch(m, proof, env))
       case other                             =>
         // Structure eta (rule 1): a neutral at an eta-eligible struct type has an eta view, so the
         // single branch fires against its virtual fields instead of sticking. The canonical
@@ -333,7 +355,7 @@ object Interpreter {
               case Vector(single) => single
               case _              => wtf(s"Eta-eligible struct match has ${m.cases.length} cases")
             }
-            return evalBranch(branch, etaFields, env)
+            return Step.Tail(branch.body, branchEnv(branch, etaFields, env))
           case None =>
         }
         // We are either blocked or stuck
@@ -341,19 +363,14 @@ object Interpreter {
           case Blocker(blockedOn) => blockedOn
           case _                  => DepSet.empty
         }
-        val blockedOn = headBlockers ++ typeCollapseDeps(other.tpe)
-        return Value.canonicalizeProof(stuckMatchThunk(m, env, evalTerm(m.motive, env), blockedOn))
+        val blockedOn = headBlockers
+        return Step.Done(Value.canonicalizeProof(stuckMatchThunk(m, env, evalTerm(m.motive, env), blockedOn)))
     }
 
     // Exhaustiveness is settled by MatchChecker: a constructor-form scrutinee always has a branch.
     val branch =
       m.cases.find(c => c.ctorName == ctorName).getOrElse(wtf(s"Checked match has no branch for constructor $ctorName"))
-    evalBranch(branch, args, env)
-  }
-
-  private[raccoonlang] def typeCollapseDeps(tpe: Value): DepSet = {
-    val classifierLevel = TypeChecker.getUniverse(tpe).level
-    if (Level.isNeverZero(classifierLevel)) DepSet.empty else classifierLevel.synDeps
+    Step.Tail(branch.body, branchEnv(branch, args, env))
   }
 
   private[raccoonlang] def stuckMatchThunk(
@@ -367,14 +384,17 @@ object Interpreter {
   }
 
   private[raccoonlang] def evalBranch(branch: CoreAst.Case, args: Vector[Value], env: Env): Value = {
+    evalTerm(branch.body, branchEnv(branch, args, env))
+  }
+
+  private def branchEnv(branch: CoreAst.Case, args: Vector[Value], env: Env): Env = {
     // Every caller supplies a scrutinee's stored fields to a branch MatchChecker already matched
     // against that constructor's arity.
     if (args.length != branch.argRefs.length)
       wtf(s"Checked branch for ${branch.ctorName} binds ${branch.argRefs.length} fields, got ${args.length}")
-    val newEnv = args.zip(branch.argRefs).foldLeft(env) { case (curEnv, (argV, ref)) =>
+    args.zip(branch.argRefs).foldLeft(env) { case (curEnv, (argV, ref)) =>
       curEnv.putLocal(ref, Value.canonicalizeProof(argV))
     }
-    evalTerm(branch.body, newEnv)
   }
 
   /**
@@ -388,17 +408,12 @@ object Interpreter {
     else stuckMatchThunk(m, env, outType, scrut.tpe.synDeps)
   }
 
-  private[raccoonlang] def evalBody(body: CTerm.Body, env: Env): Value = {
-    val newEnv = body.lets.foldLeft(env) { case (curEnv, l) =>
-      curEnv.putLocal(l.localRef, evalTerm(l.value, curEnv))
-    }
-    evalTerm(body.res, newEnv)
-  }
+  private[raccoonlang] def evalBody(body: CTerm.Body, env: Env): Value = evalSteps(step(body, env))
 
   // Proof publication (docs/kernel.md#proofs-and-elimination): exact type alone chooses a reconstructed constructor,
-  // a proof eta-lambda, or `VProof`; transparency and the value's origin are irrelevant. Data has
-  // no such policy: an opaque def or axiom of struct type publishes as the plain symbol, and
-  // structure eta reaches it through the rules rather than through its representation.
+  // a proof eta-lambda, or `VProof`; the value's origin is irrelevant. Data has no such policy: an axiom of struct type
+  // publishes as the plain symbol, and structure eta reaches it through the rules rather than through its
+  // representation.
   private def publishedValue(value: Value, ty: Value): Value =
     if (Sorts.isProposition(ty)) Value.canonicalizeProof(value)
     else value
@@ -411,52 +426,52 @@ object Interpreter {
   private[raccoonlang] def evalDecl(decl: Decl, env: Env, trusted: Boolean): Env =
     framed(Frame.InDefinition(decl.label)) {
       at(decl.span) {
-        decl match {
-          case Decl.ConstDecl(isOpaque, name, ty, body, _) =>
-            body match {
-              case CoreAst.ConstBody.Builtin(_) =>
-                if (isOpaque) wtf("Builtin declarations cannot be opaque")
-                if (!trusted) fail(ReservedKernelName(name))
-                val tyV = TypeChecker.checkDeclType(ty, env).value
-                env.putGlobal(name, publishedValue(Builtins.instantiate(name, tyV), tyV))
+        try
+          decl match {
+            case Decl.ConstDecl(name, ty, body, _) =>
+              body match {
+                case CoreAst.ConstBody.Builtin(_) =>
+                  if (!trusted) fail(ReservedKernelName(name))
+                  val tyV = TypeChecker.checkDeclType(ty, env).value
+                  env.putGlobal(name, publishedValue(Builtins.instantiate(name, tyV), tyV))
 
-              case CoreAst.ConstBody.TermBody(term) =>
-                val checkedTy = TypeChecker.checkDeclType(ty, env).value
-                val checked = TypeChecker.checkTerm(term, checkedTy, env)
-                val value = if (isOpaque) VConst(name, Symbol, checkedTy) else checked.value
-                val published = publishedValue(value, checkedTy)
-                env.putGlobal(name, published)
-            }
-
-          case Decl.AxiomDecl(name, ty, _) =>
-            val tyV = TypeChecker.checkDeclType(ty, env).value
-            env.putGlobal(name, publishedValue(VConst(name, Symbol, tyV), tyV))
-
-          case d: Decl.InductiveDecl =>
-            InductiveChecks.evalInductiveBlock(Decl.InductiveBlock(Vector(d), d.span), env)
-
-          case b: Decl.InductiveBlock => InductiveChecks.evalInductiveBlock(b, env)
-
-          case b: Decl.RecursiveDefBlock =>
-            b.definitions.foreach { definition =>
-              // One member of a group: more precise than the group's own span.
-              at(definition.span) {
-                if (env.globals.contains(definition.name)) fail(AlreadyDefined(definition.name))
-                if (definition.name == "_") wtf("Wildcards not allowed in global names")
+                case CoreAst.ConstBody.TermBody(term) =>
+                  val checkedTy = TypeChecker.checkDeclType(ty, env).value
+                  val checked = TypeChecker.checkTerm(term, checkedTy, env)
+                  val published = publishedValue(checked.value, checkedTy)
+                  env.putGlobal(name, published)
               }
-            }
-            val checked = TypeChecker.checkRecursiveDefBlock(b, env)
-            env.putRecursiveGroup(
-              checked.map(_.name),
-              groupEnv =>
-                checked.map { definition =>
-                  evalLam(definition.residual, definition.vpi, groupEnv) match {
-                    case lambda: VLam => lambda
-                    case other        => wtf(s"Checked recursive definition ${definition.name} produced $other")
-                  }
+
+            case Decl.AxiomDecl(name, ty, _) =>
+              val tyV = TypeChecker.checkDeclType(ty, env).value
+              env.putGlobal(name, publishedValue(VConst(name, Symbol, tyV), tyV))
+
+            case d: Decl.InductiveDecl =>
+              InductiveChecks.evalInductiveBlock(Decl.InductiveBlock(Vector(d), d.span), env)
+
+            case b: Decl.InductiveBlock => InductiveChecks.evalInductiveBlock(b, env)
+
+            case b: Decl.RecursiveDefBlock =>
+              b.definitions.foreach { definition =>
+                // One member of a group: more precise than the group's own span.
+                at(definition.span) {
+                  if (env.globals.contains(definition.name)) fail(AlreadyDefined(definition.name))
+                  if (definition.name == "_") wtf("Wildcards not allowed in global names")
                 }
-            )
-        }
+              }
+              val checked = TypeChecker.checkRecursiveDefBlock(b, env)
+              env.putRecursiveGroup(
+                checked.map(_.name),
+                groupEnv =>
+                  checked.map { definition =>
+                    evalLam(definition.residual, definition.vpi, groupEnv) match {
+                      case lambda: VLam => lambda
+                      case other        => wtf(s"Checked recursive definition ${definition.name} produced $other")
+                    }
+                  }
+              )
+          }
+        catch { case _: StackOverflowError => fail(EvaluationTooDeep) }
       }
     }
 

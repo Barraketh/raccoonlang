@@ -4,12 +4,12 @@ import com.raccoonlang.Value.{Large, Level, SortParameter, VPi, VSort}
 
 /** Construction and classification of universe sorts. */
 object Sorts {
-  def sort(level: Level): VSort = new VSort(level)
+  def sort(level: Level): VSort = new VSort(false, level)
 
-  val Prop: VSort = sort(Level.zero)
-  val Type: VSort = sort(Level.one)
+  val Prop: VSort = new VSort(true, Level.zero)
+  val Type: VSort = sort(Level.zero)
 
-  def isProp(sort: VSort): Boolean = sort.level == Level.zero
+  def isProp(sort: VSort): Boolean = sort.isProp
 
   def sortOf(tpe: Value): Option[VSort] =
     tpe.tpe match {

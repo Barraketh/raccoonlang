@@ -17,27 +17,37 @@ inductive Peano : Type
 { identity(Peano, Peano.zero) }
 ```
 
-`opaque def` checks a definition but hides its data body from reduction.
-Axioms introduce explicit assumptions in any module. `:= builtin` is reserved
-for the selected prelude's primitive quotient declarations.
+Every definition is transparent and reduces during checking and evaluation.
+Axioms introduce explicit assumptions in any module and have no body.
+`:= builtin` is reserved for the selected prelude's primitive quotient
+declarations.
 
 Checking collects independent errors in source order. Declarations that depend
 on a failed declaration are skipped. The final expression is evaluated only
 when checking succeeds. `--json` emits diagnostics as one JSON array.
+Missing qualified names report the full spelling that was written. Function
+and constructor arity errors name explicit parameters and, when known, family
+parameters inferred from other arguments. `--stack <size>` optionally runs the
+pipeline on a thread with that stack size; without the option, the JVM's normal
+thread-stack default is unchanged. Stack exhaustion is reported as
+`EvaluationTooDeep`.
 
 ## Universes
 
-`Prop`, `Type`, and `Sort { level = u }` are universe sorts. `Prop` is level
-zero, `Type` is level one, and a sort at `u` lives at `succ(u)`. Universe
-conversion is exact rather than cumulative.
+`Prop` is the universe of propositions and has type `Type`. Bare `Type` denotes
+data universe zero, the same universe written `Type { level = Level.zero }`.
+`Type { level = u }` denotes data universe `u` and has type
+`Type { level = Level.succ(u) }`. `Type` fields range only over data
+universes; `Prop` remains separate. Universe conversion is exact, with no
+cumulativity.
 
 `Level` is a second-class parameter admitted in declaration headers and family
-parameters. `Level.zero`, `Level.one`, `Level.succ(u)`, `Level.max(u, v)`, and
-`Level.imax(u, v)` form level expressions. Inside a sort's level field their
-short names are available. Every form requires its exact arity.
+parameters. `Level.zero`, `Level.one`, `Level.succ(u)`, and `Level.max(u, v)`
+form level expressions. Inside a `Type` level field, the short names are
+available. Every form requires its exact arity.
 
 ```raccoon
-def id {u: Level}{A: Sort { level = u }}(x: A): A := x
+def id {u: Level}{A: Type { level = u }}(x: A): A := x
 ```
 
 Level expressions are admitted in universe fields and arguments at level
@@ -88,15 +98,19 @@ Parameters precede `indices`; constructor fields follow each constructor's
 name. Constructor results must use the family's uniform parameters.
 
 ```raccoon
-inductive Vec {u: Level}(A: Sort { level = u }) indices (n: Nat)
-    : Sort { level = max(one, u) }
+inductive Vec {u: Level}(A: Type { level = u }) indices (n: Nat)
+    : Type { level = max(one, u) }
  | nil : Vec(A, Nat.zero)
  | cons (n: Nat)(tail: Vec(A, n))(head: A) : Vec(A, Nat.succ(n))
 ```
 
-Fields must be strictly positive and satisfy universe bounds. `mutual { ... }`
+Fields must be strictly positive and satisfy universe bounds. Parameters and
+indices are checked elementwise by the universes of their types, including
+through data-valued function types. For example, a family parameter
+`F: Type -> Type` requires the family result to be at least
+`Type { level = one }`, since `Type` itself lives in Type1. `mutual { ... }`
 groups mutually dependent families with a shared parameter telescope. The whole
-block succeeds or fails together.
+block succeeds or fails together, with positivity scans scoped to that block.
 
 ## Pattern matching
 
@@ -110,17 +124,24 @@ def pred (n: Nat): Nat := match n returning Nat with
 
 A branch may use a qualified constructor name or a short `.constructor` name.
 It binds one variable per stored field; `_` discards a field. The checker
-refines indices and requires all reachable cases. A failed equality check alone
-does not prove a case impossible. Proof irrelevance and controlled elimination
-from `Prop` follow the [kernel rules](kernel.md#proofs-and-elimination).
+refines indices and requires all reachable cases. Matching a proposition
+family at the scrutinee's root can refine its indices; that does not invert a
+proposition family buried inside an equality index. When the checker proposes
+that a case is impossible, it must check a contradiction in the original
+environment; unsupported quotations or failed checks keep the case reachable.
+A failed equality check alone does not prove a case impossible. Proof
+irrelevance and controlled elimination from `Prop` follow the
+[kernel rules](kernel.md#proofs-and-elimination).
 
 ## Recursive definitions
 
 Recursion requires `decreases structural(argument)`,
-`decreases lexicographic(first, second)`, or `decreases measure(term)`:
+`decreases lexicographic(first, second)`, or `decreases measure(term)`. The
+clause may continue the header on a later line:
 
 ```raccoon
-def size (n: Nat): Nat decreases structural(n) := match n returning Nat with
+def size (n: Nat): Nat
+    decreases structural(n) := match n returning Nat with
  | .zero => 0
  | .succ previous => Nat.succ(size(previous))
 ```
@@ -128,7 +149,13 @@ def size (n: Nat): Nat decreases structural(n) := match n returning Nat with
 Calls must decrease structurally in the declared metric. Recursive functions
 cannot be passed around as values while checking their own bodies. A
 `mutual { ... }` group may contain recursively calling definitions; every
-member requires a compatible decrease annotation.
+member requires a compatible decrease annotation. Tail calls in a branch's
+final expression or a block's result run without growing the evaluator's call
+stack.
+
+Blank and comment-only lines may separate declarations, statements, cases, and
+constructors. A nested match continues through blank lines until another case
+or a block boundary ends it; braces make that boundary explicit when needed.
 
 ## Structs and projections
 

@@ -8,4 +8,6 @@ object CoreTestTerms {
 
   def sortAt(level: CoreAst.Term, span: Span): CoreAst.Term.Sort =
     CoreAst.Term.Sort(level, span)
+
+  def prop(span: Span): CoreAst.Term.Prop = CoreAst.Term.Prop(span)
 }

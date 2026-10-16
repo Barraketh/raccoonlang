@@ -1,0 +1,3 @@
+def apply (h: (A: Prop { level = Level.one }) -> True): True := True.intro
+
+{ True.intro }

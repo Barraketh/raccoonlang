@@ -269,7 +269,7 @@ class TypingTests extends munit.FunSuite with TestSupport {
         | | zero : Peano
         | | succ (_: Peano) : Peano
         |
-        |inductive Vec (A: Type) indices (n: Peano) : Sort { level = one }
+        |inductive Vec (A: Type) indices (n: Peano) : Type { level = one }
         | | nil : Vec(A, Peano.zero)
         | | cons (n: Peano) (xs: Vec(A, n)) (x: A): Vec(A, Peano.succ(n))
         |
@@ -288,7 +288,7 @@ class TypingTests extends munit.FunSuite with TestSupport {
         | | zero : Peano
         | | succ (_: Peano) : Peano
         |
-        |inductive Vec (A: Type) indices (n: Peano) : Sort { level = one }
+        |inductive Vec (A: Type) indices (n: Peano) : Type { level = one }
         | | nil : Vec(A, Peano.zero)
         | | cons (n: Peano) (xs: Vec(A, n)) (x: A): Vec(A, Peano.succ(n))
         |
@@ -343,21 +343,6 @@ class TypingTests extends munit.FunSuite with TestSupport {
         | | succ (_: Peano) : Peano
         |
         |def bad : Peano := Type
-        |""".stripMargin
-
-    interceptError[TypeMismatch] {
-      typecheckDecls(p)
-    }
-  }
-
-  test("nullary top-level opaque def body must match declared type") {
-    val p =
-      """
-        |inductive Peano : Type
-        | | zero : Peano
-        | | succ (_: Peano) : Peano
-        |
-        |opaque def bad : Peano := Type
         |""".stripMargin
 
     interceptError[TypeMismatch] {

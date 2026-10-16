@@ -69,8 +69,8 @@ object CoreAst {
 
     //
     // No classifier field: a Pi's universe is env-dependent (level-polymorphic binder types), so it is derived at
-    // evaluation time (Interpreter.piClassifier), never baked in. `knownPropValued` is only a checker-filled cache of
-    // the classifications that cannot change under level instantiation.
+    // evaluation time (Interpreter.piClassifier), never baked in. `knownPropValued` caches only whether the codomain
+    // classifies in Prop; the data universe level still comes from the runtime closure.
     final case class Pi(
         binders: Vector[Binder],
         out: Term,
@@ -91,8 +91,11 @@ object CoreAst {
 
     final case class Body(lets: Vector[Let], res: Term, span: Span) extends Term
 
-    /** A universe sort, with Type at level one and Prop at level zero. */
+    /** A data universe sort at the given universe level. */
     final case class Sort(level: Term, span: Span) extends Term
+
+    /** The proposition sort, separate from data universes. */
+    final case class Prop(span: Span) extends Term
 
     /** A sort parameter's form applied to all of its arguments, as `Level.succ(u)`; a nullary form has none. */
     final case class FormOp(form: Form, args: Vector[Term], span: Span) extends Term {
@@ -160,15 +163,13 @@ object CoreAst {
     case object LevelOne extends Form(Parameter.Level, "one", 0)
     case object LevelSucc extends Form(Parameter.Level, "succ", 1)
     case object LevelMax extends Form(Parameter.Level, "max", 2)
-    case object LevelIMax extends Form(Parameter.Level, "imax", 2)
 
     val all: Vector[Form] =
       Vector(
         LevelZero,
         LevelOne,
         LevelSucc,
-        LevelMax,
-        LevelIMax
+        LevelMax
       )
   }
 
@@ -185,6 +186,7 @@ object CoreAst {
         Vector.empty
       case Term.Select(base, _, _)        => Vector(base)
       case Term.Sort(level, _)            => Vector(level)
+      case _: Term.Prop                   => Vector.empty
       case Term.FormOp(_, args, _)        => args
       case Term.App(fn, args, _)          => fn +: args
       case Term.Pi(binders, out, _, _, _) => binders.map(_.ty) :+ out
@@ -368,10 +370,7 @@ object CoreAst {
     }
 
   object Decl {
-    // Constant: name : type [:= value]. Opaque definitions keep only their symbolic head in the environment.
-
     final case class ConstDecl(
-        isOpaque: Boolean,
         name: String,
         ty: Term,
         body: ConstBody,

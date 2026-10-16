@@ -2,16 +2,15 @@ package com.raccoonlang
 
 import com.raccoonlang.Value._
 
-import scala.concurrent.duration.DurationInt
-import scala.concurrent.{Await, ExecutionContext, Future}
+import java.util.concurrent.atomic.AtomicReference
 
 class ValueEquivalenceTests extends munit.FunSuite with TestSupport {
   private val span = Span(0, 0)
-  private val typeSort: CoreAst.Term = CoreTestTerms.sortAt(CoreAst.Form.LevelOne, span)
+  private val typeSort: CoreAst.Term = CoreTestTerms.sortAt(CoreAst.Form.LevelZero, span)
   private val binderRef = CoreAst.LocalRef(0, "x")
   private val binder = CoreAst.Binder(binderRef, typeSort, Span(0, 0), CoreAst.BinderSite.Function)
   private val env = Env.empty
-  private val typeToTypeClassifier = Sorts.sort(Level.succ(Level.one))
+  private val typeToTypeClassifier = Sorts.sort(Level.one)
 
   private def parseBody(source: String): CoreAst.Term =
     LanguageParser.parseProgram(source) match {
@@ -25,18 +24,40 @@ class ValueEquivalenceTests extends munit.FunSuite with TestSupport {
     res.result()
   }
 
-  private def pi(captures: Vector[Value], out: Env => Value, id: NodeId): VPi =
+  private def onSmallStack(body: => Unit): Unit = {
+    val failure = new AtomicReference[Throwable]()
+    val thread = new Thread(
+      null,
+      new Runnable {
+        override def run(): Unit =
+          try body
+          catch { case error: Throwable => failure.set(error) }
+      },
+      "deep-value-equivalence",
+      256L * 1024L
+    )
+    thread.start()
+    thread.join()
+    val error = failure.get()
+    if (error != null) throw error
+  }
+
+  private def pi(captures: Vector[Value], isPropValued: Boolean, out: Env => Value, id: NodeId): VPi =
     VPi(
       env,
       Vector(binder),
       out,
       deps(captures: _*),
       ValueId.LocalId(id, captures),
-      () => typeToTypeClassifier
+      () => if (isPropValued) Sorts.Prop else typeToTypeClassifier,
+      isPropValued
     )
 
-  test("sorts compare only by conversion, never structurally") {
-    assert(ValueEquivalence.defEq(Sorts.sort(Level.one), Sorts.Type))
+  test("Prop is a separate sort from the data universes") {
+    assert(ValueEquivalence.defEq(Sorts.sort(Level.zero), Sorts.Type))
+    assert(!ValueEquivalence.defEq(Sorts.sort(Level.one), Sorts.Type))
+    assert(!ValueEquivalence.defEq(Sorts.Prop, Sorts.Type))
+    assertEquals(ValueEquivalence.tryUnify(Sorts.Prop, Sorts.Type, EqStore.empty).left.map(_.apart), Left(false))
     intercept[InternalError](Sorts.Type == Sorts.sort(Level.one))
     intercept[InternalError](Sorts.Prop.hashCode())
   }
@@ -44,8 +65,8 @@ class ValueEquivalenceTests extends munit.FunSuite with TestSupport {
   test("Pi unification rejects solutions that depend on fresh binder vars") {
     val hole = FreshVar.freshVar("A", Sorts.Type)
     val meta = EqStore.empty.allow(DepSet(hole.id))
-    val left = pi(Vector(hole), _ => hole, NodeId.fresh())
-    val right = pi(Vector.empty, env => env(binderRef), NodeId.fresh())
+    val left = pi(Vector(hole), false, _ => hole, NodeId.fresh())
+    val right = pi(Vector.empty, false, env => env(binderRef), NodeId.fresh())
 
     assert(ValueEquivalence.tryUnify(left, right, meta).isLeft)
   }
@@ -56,8 +77,8 @@ class ValueEquivalenceTests extends munit.FunSuite with TestSupport {
     val hole = FreshVar.freshVar("A", Sorts.Type)
     val closed = FreshVar.freshVar("B", Sorts.Type)
     val meta = EqStore.empty.allow(DepSet(hole.id))
-    val left = pi(Vector(hole), _ => hole, NodeId.fresh())
-    val right = pi(Vector(closed), _ => closed, NodeId.fresh())
+    val left = pi(Vector(hole), false, _ => hole, NodeId.fresh())
+    val right = pi(Vector(closed), false, _ => closed, NodeId.fresh())
 
     assert(ValueEquivalence.tryUnify(left, right, meta).isLeft)
   }
@@ -71,7 +92,8 @@ class ValueEquivalenceTests extends munit.FunSuite with TestSupport {
       _ => Sorts.Type,
       DepSet.empty,
       ValueId.LocalId(NodeId.fresh(), Vector.empty),
-      () => typeToTypeClassifier
+      () => typeToTypeClassifier,
+      false
     )
     val nested = VPi(
       env,
@@ -83,11 +105,13 @@ class ValueEquivalenceTests extends munit.FunSuite with TestSupport {
           _ => Sorts.Type,
           DepSet.empty,
           ValueId.LocalId(NodeId.fresh(), Vector.empty),
-          () => typeToTypeClassifier
+          () => typeToTypeClassifier,
+          false
         ),
       DepSet.empty,
       ValueId.LocalId(NodeId.fresh(), Vector.empty),
-      () => typeToTypeClassifier
+      () => typeToTypeClassifier,
+      false
     )
 
     // Grouping is part of a function type's identity: `(x: A)(y: A) -> Type` is a 2-ary function
@@ -111,16 +135,20 @@ class ValueEquivalenceTests extends munit.FunSuite with TestSupport {
           _ => Sorts.Type,
           DepSet.empty,
           ValueId.LocalId(NodeId.fresh(), Vector.empty),
-          () => typeToTypeClassifier
+          () => typeToTypeClassifier,
+          false
         ),
       DepSet.empty,
       ValueId.LocalId(NodeId.fresh(), Vector.empty),
-      () => typeToTypeClassifier
+      () => typeToTypeClassifier,
+      false
     )
-    val applicationEnv = env.putGlobal("nested", VConst("nested", Symbol, nested))
-    val ref = CoreTestTerms.sortAt(CoreAst.Form.LevelZero, span)
-    val first = CoreAst.Term.App(CoreAst.Term.GlobalRef("nested", span), Vector(ref), span)
-    val application = CoreAst.Term.App(first, Vector(ref), span)
+    val applicationEnv = env
+      .putGlobal("nested", VConst("nested", Symbol, nested))
+      .putGlobal("A", VConst("A", Symbol, Sorts.Type))
+    val typeValue = CoreAst.Term.GlobalRef("A", span)
+    val first = CoreAst.Term.App(CoreAst.Term.GlobalRef("nested", span), Vector(typeValue), span)
+    val application = CoreAst.Term.App(first, Vector(typeValue), span)
 
     val checked = TypeChecker.checkTerm(application, applicationEnv)
     assert(ValueEquivalence.defEq(checked.value.tpe, Sorts.Type))
@@ -251,9 +279,8 @@ class ValueEquivalenceTests extends munit.FunSuite with TestSupport {
     assert(!ValueEquivalence.defEq(neutral, wrongType))
   }
 
-  // Within one outermost assertion each pair of values is checked once. Rechecking every repeated pair walked a shared
-  // value as a tree: 2^40 nodes here. The deadline only turns a hang into a failure. By then the suite has failed, and
-  // the abandoned check may still be running on another thread, which the single-threaded checker does not support.
+  // Within one outermost assertion each pair of values is checked once. Rechecking every repeated pair would walk this
+  // fixed 41-node shared graph as a 2^40-node tree.
   test("the key-coherence assertion costs one structural pass on a shared value") {
     assert(ValueEquivalence.keyAssertionsEnabled)
     val program =
@@ -272,7 +299,28 @@ class ValueEquivalenceTests extends munit.FunSuite with TestSupport {
         |
         |def check : Eq(T, big(40), big(40)) := same(40)
         |""".stripMargin
-    Await.result(Future(typecheckDecls(program))(ExecutionContext.global), 60.seconds)
+    typecheckDecls(program)
+  }
+
+  test("key-coherence assertions check deep ordinary constructor chains without using the host stack") {
+    assert(ValueEquivalence.keyAssertionsEnabled)
+    val checkedEnv = Prelude.default.checkedEnv
+    val zero = checkedEnv("Nat.zero")
+    val succ = checkedEnv("Nat.succ")
+
+    onSmallStack {
+      def chain(): Value = {
+        var value = zero
+        var depth = 0
+        while (depth < 30000) {
+          value = Interpreter.evalApply(succ, Vector(value))
+          depth += 1
+        }
+        value
+      }
+
+      assert(ValueEquivalence.defEq(chain(), chain()))
+    }
   }
 
   // Two function types of different syntax that share a node identity share a key (the F2 bug class, which no checked
@@ -282,12 +330,36 @@ class ValueEquivalenceTests extends munit.FunSuite with TestSupport {
   test("the key-coherence assertion reaches a key collision beneath an agreeing parent") {
     assert(ValueEquivalence.keyAssertionsEnabled)
     val shared = NodeId.fresh()
-    val toProp = pi(Vector.empty, _ => Sorts.Prop, shared)
-    val toType = pi(Vector.empty, _ => Sorts.Type, shared)
+    val toProp = pi(Vector.empty, true, _ => Sorts.Prop, shared)
+    val toType = pi(Vector.empty, false, _ => Sorts.Type, shared)
     assertEquals(toProp.key, toType.key)
     val list = Prelude.default.checkedEnv("List")
     def listOf(elem: Value): Value = Interpreter.evalApply(list, Vector(Level.succ(Level.one), elem))
     val (left, right) = (listOf(toProp), listOf(toType))
+    assertEquals(left.key, right.key)
+
+    val error = intercept[InternalError](ValueEquivalence.defEq(left, right))
+    assert(error.getMessage.contains("ValueKey disagrees with conversion"), error.getMessage)
+  }
+
+  test("the key-coherence assertion reaches a deep key collision iteratively") {
+    assert(ValueEquivalence.keyAssertionsEnabled)
+    val shared = NodeId.fresh()
+    val toProp = pi(Vector.empty, true, _ => Sorts.Prop, shared)
+    val toType = pi(Vector.empty, false, _ => Sorts.Type, shared)
+    val list = Prelude.default.checkedEnv("List")
+    def listOf(elem: Value): Value = Interpreter.evalApply(list, Vector(Level.succ(Level.one), elem))
+    def wrap(value: Value): Value = {
+      var current = value
+      var depth = 0
+      while (depth < 30000) {
+        current = listOf(current)
+        depth += 1
+      }
+      current
+    }
+    val left = wrap(toProp)
+    val right = wrap(toType)
     assertEquals(left.key, right.key)
 
     val error = intercept[InternalError](ValueEquivalence.defEq(left, right))

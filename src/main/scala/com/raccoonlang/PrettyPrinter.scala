@@ -1,28 +1,80 @@
 package com.raccoonlang
 
+import scala.collection.mutable
+
 object PrettyPrinter {
-  private def numeral[A](value: A)(layer: A => Option[(String, Vector[A])]): Option[BigInt] = {
-    @annotation.tailrec
-    def loop(current: A, count: BigInt): Option[BigInt] =
-      layer(current) match {
-        case Some(("Nat.zero", Vector()))         => Some(count)
-        case Some(("Nat.succ", Vector(previous))) => loop(previous, count + 1)
-        case _                                    => None
+  private def numeral[A <: AnyRef](
+      value: A,
+      layer: A => Option[(String, Vector[A])],
+      cache: java.util.IdentityHashMap[A, Option[BigInt]]
+  ): Option[BigInt] = {
+    if (cache.containsKey(value)) return cache.get(value)
+
+    var path: mutable.ArrayBuffer[A] = null
+    var current = value
+    var terminal: Option[BigInt] = None
+    var failed = false
+    var done = false
+    while (!done) {
+      if (cache.containsKey(current)) {
+        terminal = cache.get(current)
+        failed = terminal.isEmpty
+        done = true
+      } else {
+        layer(current) match {
+          case Some(("Nat.zero", Vector())) =>
+            terminal = Some(BigInt(0))
+            done = true
+          case Some(("Nat.succ", Vector(previous))) =>
+            if (path == null) path = mutable.ArrayBuffer.empty[A]
+            path += current
+            current = previous
+          case _ =>
+            cache.put(current, None)
+            failed = true
+            done = true
+        }
       }
-    loop(value, BigInt(0))
-  }
+    }
 
-  private object NatValue {
-    def unapply(value: Value): Option[BigInt] = numeral(value)(Value.ConstructorForm.unapply)
-  }
-
-  private object NatTerm {
-    def unapply(term: CoreAst.Term): Option[BigInt] = numeral(term) {
-      case CoreAst.Term.GlobalRef(name, _)                            => Some((name, Vector.empty))
-      case CoreAst.Term.App(CoreAst.Term.GlobalRef(name, _), args, _) => Some((name, args))
-      case _                                                          => None
+    if (failed) {
+      if (path != null) path.foreach(node => cache.put(node, None))
+      cache.put(value, None)
+      None
+    } else {
+      val base = terminal.get
+      val pathLength = if (path == null) 0 else path.length
+      var index = pathLength - 1
+      while (index >= 0) {
+        cache.put(path(index), Some(base + BigInt(path.length - index)))
+        index -= 1
+      }
+      val result = base + BigInt(pathLength)
+      cache.put(value, Some(result))
+      Some(result)
     }
   }
+
+  /** Printing work is represented explicitly so values and syntax can be arbitrarily deep. */
+  private sealed trait Piece
+  private final case class Text(value: String) extends Piece
+  private final case class Val(value: Value) extends Piece
+  private final case class Term(value: CoreAst.Term, bound: CoreAst.LocalRef => Option[Value]) extends Piece
+  private final case class Level(value: Value.Level) extends Piece
+  private final case class Later(expand: () => Vector[Piece]) extends Piece
+
+  private def parens(piece: Piece): Vector[Piece] = Vector(Text("("), piece, Text(")"))
+
+  private def separated(items: Seq[Piece], separator: String): Vector[Piece] = {
+    val out = Vector.newBuilder[Piece]
+    items.iterator.zipWithIndex.foreach { case (item, idx) =>
+      if (idx > 0) out += Text(separator)
+      out += item
+    }
+    out.result()
+  }
+
+  private def argList(items: Seq[Piece]): Vector[Piece] = (Text("(") +: separated(items, ", ")) :+ Text(")")
 
   /**
    * Implicit arguments are never written in source, so a saturated call prints only its explicit ones. Anything that is
@@ -35,13 +87,12 @@ object PrettyPrinter {
       case _ => args
     }
 
-  private def printApp(head: Value, args: Seq[Value]): String = {
-    val headStr = head match {
-      case _: Value.VApp | _: Value.VConst | _: Value.Var | _: Value.VSort => print(head)
-      case _                                                               => s"(${print(head)})"
+  private def printApp(head: Value, args: Seq[Value]): Vector[Piece] = {
+    val headPiece = head match {
+      case _: Value.VApp | _: Value.VConst | _: Value.Var | _: Value.VSort => Val(head)
+      case _                                                               => Later(() => parens(Val(head)))
     }
-    val argsStr = explicitArgs(head, args).map(print).mkString(", ")
-    s"$headStr($argsStr)"
+    headPiece +: argList(explicitArgs(head, args).map(Val))
   }
 
   /** A value that prints as loose syntax, so it is parenthesized where an atom is expected. */
@@ -59,197 +110,181 @@ object PrettyPrinter {
       case _                                 => false
     }
 
-  private def printSort(former: String, level: Option[String]): String =
-    level.fold(former)(value => s"$former { level = $value }")
+  private def printSort(former: String, level: Option[Piece]): Vector[Piece] =
+    level match {
+      case None        => Vector(Text(former))
+      case Some(value) => Vector(Text(s"$former { level = "), value, Text(" }"))
+    }
 
   /**
    * Core syntax as source, under the values its free locals are bound to: a bound local prints as its value, and any
-   * other by its binder's name. A value holding syntax (a function type's binders, a stuck match) prints under its own
-   * environment, so a generated name such as a selector's parameter never shows for the argument it stands for.
+   * other by its binder's name. A value holding syntax prints under its own environment.
    */
   private final class SyntaxPrinter(bound: CoreAst.LocalRef => Option[Value]) {
-    private def printRef(ref: CoreAst.Term.Ref): String = ref match {
-      case CoreAst.Term.GlobalRef(name, _) => name
-      case CoreAst.Term.LocalRef(ref, _)   => bound(ref).fold(ref.name)(print)
+    private def term(value: CoreAst.Term): Piece = Term(value, bound)
+
+    private def printRef(ref: CoreAst.Term.Ref): Piece = ref match {
+      case CoreAst.Term.GlobalRef(name, _) => Text(name)
+      case CoreAst.Term.LocalRef(ref, _)   => bound(ref).fold[Piece](Text(ref.name))(Val)
     }
 
-    def printDecreaseSpec(spec: CoreAst.DecreaseSpec): String =
+    def printDecreaseSpec(spec: CoreAst.DecreaseSpec): Vector[Piece] =
       spec match {
         case CoreAst.DecreaseSpec.Lexicographic(args, _) =>
-          s"decreases lexicographic(${args.map(_.name).mkString(", ")})"
-        case CoreAst.DecreaseSpec.Measure(term, _) =>
-          s"decreases measure(${printCoreTerm(term)})"
+          Vector(Text(s"decreases lexicographic(${args.map(_.name).mkString(", ")})"))
+        case CoreAst.DecreaseSpec.Measure(measure, _) =>
+          Vector(Text("decreases measure("), term(measure), Text(")"))
       }
 
-    def printBinder(b: CoreAst.Binder): String = {
-      val body = s"${b.name}: ${printCoreTerm(b.ty)}"
-      if (b.isImplicit) s"{$body}" else s"($body)"
+    def printBinder(binder: CoreAst.Binder): Vector[Piece] = {
+      val (open, close) = if (binder.isImplicit) ("{", "}") else ("(", ")")
+      Vector(Text(s"$open${binder.name}: "), term(binder.ty), Text(close))
     }
 
-    def printPiBinder(b: CoreAst.Binder): String =
-      if (b.name == "_" && !b.isImplicit) printTermAtom(b.ty)
-      else printBinder(b)
+    def printPiBinder(binder: CoreAst.Binder): Vector[Piece] =
+      if (binder.name == "_" && !binder.isImplicit) printTermAtom(binder.ty)
+      else printBinder(binder)
 
-    def printBinders(binders: Vector[CoreAst.Binder]): String =
-      binders.map(printBinder).mkString(" ")
+    def printBinders(binders: Vector[CoreAst.Binder]): Vector[Piece] =
+      separated(binders.map(binder => Later(() => printBinder(binder))), " ")
 
-    private def printLet(l: CoreAst.Let): String = {
-      val tyStr = l.ty.map(t => s": ${printCoreTerm(t)}").getOrElse("")
-      s"let ${l.name}$tyStr := ${printCoreTerm(l.value)}"
+    private def printLet(let: CoreAst.Let): Vector[Piece] = {
+      val ty = let.ty.toVector.flatMap(tpe => Vector(Text(s": "), term(tpe)))
+      Vector(Text(s"let ${let.name}")) ++ ty ++ Vector(Text(" := "), term(let.value))
     }
 
-    private def printBody(b: CoreAst.Term.Body): String = {
-      if (b.lets.isEmpty) printCoreTerm(b.res)
-      else {
-        val letsStr = b.lets.map(printLet).mkString("\n")
-        s"{ $letsStr \n ${printCoreTerm(b.res)} }"
-      }
-    }
+    private def printBody(body: CoreAst.Term.Body): Vector[Piece] =
+      if (body.lets.isEmpty) Vector(term(body.res))
+      else
+        Vector(Text("{ ")) ++ separated(body.lets.map(let => Later(() => printLet(let))), "\n") ++
+          Vector(Text(" \n "), term(body.res), Text(" }"))
 
-    /**
-     * A term in a position where an operator would bind tighter than the term prints: atoms and already-delimited forms
-     * render as themselves, and the forms that print as loose infix-ish syntax get parenthesized.
-     */
-    private def printTermAtom(t: CoreAst.Term): String = t match {
-      // A bound local stands for its value, which may itself print as loose syntax.
-      case CoreAst.Term.LocalRef(ref, _) if bound(ref).exists(isLoose) => s"(${printCoreTerm(t)})"
+    /** Parenthesize loose forms in a position where an operator would bind tighter. */
+    private def printTermAtom(value: CoreAst.Term): Vector[Piece] = value match {
+      case CoreAst.Term.LocalRef(ref, _) if bound(ref).exists(isLoose) => parens(term(value))
       case _: CoreAst.Term.Ref | _: CoreAst.Term.App | _: CoreAst.Term.Select | _: CoreAst.Term.Sort |
-          _: CoreAst.Term.FormOp =>
-        printCoreTerm(t)
+          _: CoreAst.Term.Prop | _: CoreAst.Term.FormOp =>
+        Vector(term(value))
       case _: CoreAst.Term.Lam | _: CoreAst.Term.Match | _: CoreAst.Term.Body | _: CoreAst.Term.Pi =>
-        s"(${printCoreTerm(t)})"
+        parens(term(value))
     }
 
-    /**
-     * A function type's codomain, parenthesized when it is a function type itself, as the value printer's
-     * `PrettyPrinter.printCodomain` says why; a local bound to a value prints as that value does there.
-     */
-    private def printCodomain(out: CoreAst.Term): String = out match {
-      case _: CoreAst.Term.Pi            => s"(${printCoreTerm(out)})"
-      case CoreAst.Term.LocalRef(ref, _) => bound(ref).fold(ref.name)(PrettyPrinter.printCodomain)
-      case _                             => printCoreTerm(out)
+    private def printCodomain(value: CoreAst.Term): Vector[Piece] = value match {
+      case _: CoreAst.Term.Pi => parens(term(value))
+      case CoreAst.Term.LocalRef(ref, _) =>
+        bound(ref).fold(Vector[Piece](Text(ref.name)))(PrettyPrinter.printCodomain)
+      case _ => Vector(term(value))
     }
 
-    def printCoreTerm(t: CoreAst.Term): String = t match {
-      case NatTerm(value)        => value.toString
-      case ref: CoreAst.Term.Ref => printRef(ref)
-      case CoreAst.Term.Lam(ty, body, _, _, _, recursion, _) =>
-        val decreaseStr = recursion.map(r => s" ${printDecreaseSpec(r.decreases)}").getOrElse("")
-        s"fun ${printBinders(ty.binders)}: ${printCoreTerm(ty.out)}$decreaseStr => " +
-          printCoreTerm(body)
-      case m @ CoreAst.Term.Match(_, _, _, _, _) => printMatch(m)
-      case b: CoreAst.Term.Body                  => printBody(b)
-      case CoreAst.Term.Select(base, field, _)   => s"${printTermAtom(base)}[$field]"
-      case CoreAst.Term.App(fn, args, _) =>
-        val headStr = printTermAtom(fn)
-        val argsStr = args.map(printTermAtom).mkString(", ")
-        s"$headStr($argsStr)"
+    def printCoreTerm(value: CoreAst.Term, natural: CoreAst.Term => Option[BigInt]): Vector[Piece] =
+      natural(value) match {
+        case Some(number) => Vector(Text(number.toString))
+        case None         => printNonNumeralTerm(value)
+      }
+
+    private def printNonNumeralTerm(value: CoreAst.Term): Vector[Piece] = value match {
+      case ref: CoreAst.Term.Ref => Vector(printRef(ref))
+      case CoreAst.Term.Lam(tpe, body, _, _, _, recursion, _) =>
+        val decrease = recursion.toVector.flatMap(r => Vector(Text(" ")) ++ printDecreaseSpec(r.decreases))
+        Vector(Text("fun ")) ++ printBinders(tpe.binders) ++ Vector(Text(": "), term(tpe.out)) ++ decrease ++
+          Vector(Text(" => "), term(body))
+      case matchTerm: CoreAst.Term.Match       => printMatch(matchTerm)
+      case body: CoreAst.Term.Body             => printBody(body)
+      case CoreAst.Term.Select(base, field, _) => printTermAtom(base) :+ Text(s"[$field]")
+      case CoreAst.Term.App(fn, args, _)       => printTermAtom(fn) ++ argList(args.map(printTermAtomPiece))
       case CoreAst.Term.Pi(binders, out, _, _, _) =>
-        val bindersStr = binders.map(printPiBinder).mkString(" -> ")
-        s"$bindersStr -> ${printCodomain(out)}"
+        val bindersPieces = separated(binders.map(binder => Later(() => printPiBinder(binder))), " -> ")
+        bindersPieces ++ Vector(Text(" -> ")) ++ printCodomain(out)
       case CoreAst.Term.Sort(level, _) =>
-        val (former, levelField) =
-          if (isForm(level, CoreAst.Form.LevelZero)) ("Prop", None)
-          else if (isForm(level, CoreAst.Form.LevelOne)) ("Type", None)
-          else ("Sort", Some(printCoreTerm(level)))
-        printSort(former, levelField)
+        val levelField = Option.when(!isForm(level, CoreAst.Form.LevelZero))(term(level))
+        printSort("Type", levelField)
+      case CoreAst.Term.Prop(_) => Vector(Text("Prop"))
       case CoreAst.Term.FormOp(form, args, _) =>
-        val argsStr = if (args.isEmpty) "" else args.map(printCoreTerm).mkString("(", ", ", ")")
-        s"${form.qualifiedName}$argsStr"
+        Vector(Text(form.qualifiedName)) ++ (if (args.isEmpty) Vector.empty else argList(args.map(term)))
     }
 
-    private def printCase(c: CoreAst.Case): String = {
+    private def printTermAtomPiece(value: CoreAst.Term): Piece = Later(() => printTermAtom(value))
+
+    private def printCase(c: CoreAst.Case): Vector[Piece] = {
       val argNames = c.argRefs.map(_.name)
       val args = if (argNames.isEmpty) "" else s" ${argNames.mkString(" ")}"
       val ctor = if (c.isFullyQualified) c.ctorName else s".${c.ctorName}"
-      s"| $ctor$args => ${printCoreTerm(c.body)}"
+      Vector(Text(s"| $ctor$args => "), term(c.body))
     }
 
-    def printMatch(m: CoreAst.Term.Match): String = {
-      val scrutStr = printTermAtom(m.scrut)
-      val casesStr = m.cases.map(printCase).mkString(" ")
-      s"match $scrutStr returning ${printCoreTerm(m.motive)} with $casesStr"
+    def printMatch(matchTerm: CoreAst.Term.Match): Vector[Piece] = {
+      val cases = separated(matchTerm.cases.map(c => Later(() => printCase(c))), " ")
+      Vector(Text("match ")) ++ printTermAtom(matchTerm.scrut) ++
+        Vector(Text(" returning "), term(matchTerm.motive), Text(" with ")) ++ cases
     }
   }
 
   private val unbound = new SyntaxPrinter(_ => None)
 
-  def printBinder(b: CoreAst.Binder): String = unbound.printBinder(b)
+  def printBinder(binder: CoreAst.Binder): String = new Printer().run(unbound.printBinder(binder))
 
-  def printTerm(t: CoreAst.Ast): String = t match {
-    case term: CoreAst.Term             => unbound.printCoreTerm(term)
-    case decrease: CoreAst.DecreaseSpec => unbound.printDecreaseSpec(decrease)
+  def printTerm(ast: CoreAst.Ast): String = ast match {
+    case term: CoreAst.Term             => new Printer().run(Vector(Term(term, _ => None)))
+    case decrease: CoreAst.DecreaseSpec => new Printer().run(unbound.printDecreaseSpec(decrease))
   }
 
-  /**
-   * A level as source syntax (`Level.succ`, `Level.max`), not its normalized `max(atom+k, …, c)` form; a constant is
-   * `Level.zero`, `Level.one` or successors of it, since a level field takes no numeral.
-   */
-  private def printLevel(level: Value.Level): String = {
+  /** A level in source syntax, with successors rendered without recursively expanding nested levels. */
+  private def printLevel(level: Value.Level): Vector[Piece] = {
     def succs(base: String, offset: Int): String =
-      if (offset == 0) base else s"Level.succ(${succs(base, offset - 1)})"
+      if (offset == 0) base else ("Level.succ(" * offset) + base + (")" * offset)
 
-    def atom(a: Value.Level.Atom): String =
-      a match {
-        case Value.Level.ParamAtom(id)      => printParameterVar(id, "u")
-        case Value.Level.IMaxAtom(lhs, rhs) => s"Level.imax(${printLevel(lhs)}, ${printLevel(rhs)})"
-      }
-
-    val terms = level.terms.toVector.map { case (a, offset) => succs(atom(a), offset) }
+    val terms = level.terms.toVector.map { case (Value.Level.ParamAtom(id), offset) =>
+      succs(printParameterVar(id, "u"), offset)
+    }
     val constant = if (level.c == 0) "Level.zero" else succs("Level.one", level.c - 1)
     val parts = if (level.c > 0 || terms.isEmpty) terms :+ constant else terms
     parts match {
-      case Vector(single) => single
-      case several        => s"Level.max(${several.mkString(", ")})"
+      case Vector(single) => Vector(Text(single))
+      case several        => Vector(Text("Level.max(")) ++ separated(several.map(Text), ", ") ++ Vector(Text(")"))
     }
   }
 
   private def printParameterVar(id: Value.VarId, prefix: String): String =
     FreshVar.parameterName(id).filter(name => name.nonEmpty && name != "_").getOrElse(s"$prefix#$id")
 
-  /**
-   * Opens the telescope at fresh variables to print the codomain. Binders are joined by arrows because that is the
-   * spelling the parser folds back into this one binder group.
-   */
-  private def printPi(pi: Value.VPi): String = {
+  /** Opens the telescope at fresh variables to print its codomain. */
+  private def printPi(pi: Value.VPi): Vector[Piece] = {
     val bodyEnv = telescope.BinderOps.freshen(pi)
-    val bindersStr = pi.binders.map(new SyntaxPrinter(pi.env.locals.get).printPiBinder).mkString(" -> ")
-    s"$bindersStr -> ${printCodomain(pi.codomain(bodyEnv))}"
+    val syntax = new SyntaxPrinter(pi.env.locals.get)
+    val binders = separated(pi.binders.map(binder => Later(() => syntax.printPiBinder(binder))), " -> ")
+    binders ++ Vector(
+      Text(" -> "),
+      Later(() => printCodomain(pi.codomain(bodyEnv)))
+    )
   }
 
-  /**
-   * A function type in codomain position is parenthesized. Grouping is part of a function type's identity, and written
-   * bare, `A -> (B -> C)` would read back as the one group `A -> B -> C`.
-   */
-  private def printCodomain(codomain: Value): String =
+  /** A function type in codomain position is parenthesized to preserve its binder grouping. */
+  private def printCodomain(codomain: Value): Vector[Piece] =
     codomain match {
-      case _: Value.VPi => s"(${print(codomain)})"
-      case _            => print(codomain)
+      case _: Value.VPi => parens(Val(codomain))
+      case _            => Vector(Val(codomain))
     }
 
   /** A variable prints as its binder name; the id only disambiguates the nameless `_`. */
-  private def varName(v: Value.Var): String =
-    if (v.name.nonEmpty && v.name != "_") v.name else s"_#${v.id}"
+  private def varName(variable: Value.Var): String =
+    if (variable.name.nonEmpty && variable.name != "_") variable.name else s"_#${variable.id}"
 
-  private def printLam(lam: Value.VLam): String =
+  private def printLam(lam: Value.VLam): Vector[Piece] =
     lam.id match {
-      case Value.ValueId.Const(name) => name
+      case Value.ValueId.Const(name) => Vector(Text(name))
       case _: Value.ValueId.LocalId =>
-        s"fun ${new SyntaxPrinter(lam.tpe.env.locals.get).printBinders(lam.tpe.binders)} => …"
+        Vector(Text("fun ")) ++ new SyntaxPrinter(lam.tpe.env.locals.get).printBinders(lam.tpe.binders) ++
+          Vector(Text(" => …"))
     }
 
-  /**
-   * The call a stuck match came from. A recursive function's body env binds its self reference, which is the only thing
-   * in a thunk that names the call; the match equals that call only when it is the body's result, so a match nested
-   * deeper (or a non-recursive body, which binds no name) prints as the eliminator it is.
-   */
-  private def blockedCall(thunk: Value.NeutralThunk): Option[String] = {
+  /** Whether a match is the direct result of its recursive caller's body. */
+  private def blockedCall(thunk: Value.NeutralThunk): Option[Vector[Piece]] = {
     @annotation.tailrec
     def isResult(term: CoreAst.Term): Boolean =
       term match {
-        case body: CoreAst.Term.Body => isResult(body.res)
-        case m: CoreAst.Term.Match   => m.id == thunk.term.id
-        case _                       => false
+        case body: CoreAst.Term.Body       => isResult(body.res)
+        case matchTerm: CoreAst.Term.Match => matchTerm.id == thunk.term.id
+        case _                             => false
       }
 
     val callers = thunk.env.locals.valuesIterator.collect {
@@ -258,19 +293,15 @@ object PrettyPrinter {
     callers match {
       case Vector((name, pi)) =>
         val args = pi.binders.filter(!_.isImplicit).map(binder => thunk.env.locals.get(binder.localRef))
-        Option.when(args.forall(_.isDefined))(s"$name(${args.map(arg => print(arg.get)).mkString(", ")})")
+        Option.when(args.forall(_.isDefined))(
+          Vector(Text(name)) ++ argList(args.map(arg => Val(arg.get)))
+        )
       case _ => None
     }
   }
 
-  /**
-   * The selector call a stuck field projection stands for. A match with one branch, whose body is one of that branch's
-   * fields, on a local of a one-constructor family, projects that field: a struct's selector is this match, and so is
-   * structure eta's projection (StructEta), whose fields are named by position. Either prints as `P.x(v)`, with the
-   * field named as the constructor names it. The kernel does not record which families are structs, so a
-   * one-constructor `inductive`, which has no selectors, prints its projections the same way.
-   */
-  private def fieldProjection(thunk: Value.NeutralThunk): Option[String] =
+  /** A stuck projection over a one-constructor family, printed as its field selector call. */
+  private def fieldProjection(thunk: Value.NeutralThunk): Option[Vector[Piece]] =
     thunk.term match {
       case CoreAst.Term.Match(CoreAst.Term.LocalRef(scrutinee, _), _, Vector(branch), _, _) =>
         val fieldIdx = branch.body match {
@@ -282,38 +313,75 @@ object PrettyPrinter {
           family <- Value.InductiveFamilyValue.unapply(base.tpe)
           ctorHead <- family.meta.projectionInfo.flatMap(_.ctorHeadOption)
           field = ctorHead.fieldBinders(fieldIdx).name if field != "_"
-        } yield s"${family.head.name}.$field(${print(base)})"
+        } yield Vector(Text(s"${family.head.name}.$field("), Val(base), Text(")"))
       case _ => None
     }
 
-  /** A stuck match that prints as the call it stands for rather than as the match. */
-  private def printedCall(thunk: Value.NeutralThunk): Option[String] = blockedCall(thunk).orElse(fieldProjection(thunk))
+  private def printedCall(thunk: Value.NeutralThunk): Option[Vector[Piece]] =
+    blockedCall(thunk).orElse(fieldProjection(thunk))
 
-  def print(value: Value): String = value match {
-    case NatValue(number) => number.toString
-    case sort: Value.VSort =>
-      val (former, levelField) =
-        if (Sorts.isProp(sort)) ("Prop", None)
-        else if (sort.level == Value.Level.one) ("Type", None)
-        else ("Sort", Some(printLevel(sort.level)))
-      printSort(former, levelField)
-    case level: Value.Level                      => printLevel(level)
-    case pi: Value.VPi                           => printPi(pi)
-    case Value.VConst(name, _, _)                => name
-    case Value.ConstructorHead(name, _, _, _, _) => name
-    case Value.VCtor(head, storedArgs, _) =>
-      val headStr = print(head)
-      if (storedArgs.isEmpty) headStr
-      else s"$headStr(${storedArgs.map(print).mkString(", ")})"
-    case v: Value.VApp => printApp(v.head, v.args)
-    case v: Value.VLam => printLam(v)
-    case v: Value.Var  => varName(v)
-    case s: Value.NeutralThunk =>
-      printedCall(s).getOrElse(new SyntaxPrinter(s.env.locals.get).printMatch(s.term))
-    case p: Value.VProof     => s"‹proof of ${print(p.tpe)}›"
-    case Value.LevelTpe      => CoreAst.Parameter.Level.name
-    case Value.SortParameter => "SortParameter"
-    case Value.Large         => "Large"
+  private final class Printer {
+    private val valueNumerals = new java.util.IdentityHashMap[Value, Option[BigInt]]()
+    private val termNumerals = new java.util.IdentityHashMap[CoreAst.Term, Option[BigInt]]()
+    private val valueLayer: Value => Option[(String, Vector[Value])] = Value.ConstructorForm.unapply
+    private val termLayer: CoreAst.Term => Option[(String, Vector[CoreAst.Term])] = {
+      case CoreAst.Term.GlobalRef(name, _)                            => Some((name, Vector.empty))
+      case CoreAst.Term.App(CoreAst.Term.GlobalRef(name, _), args, _) => Some((name, args))
+      case _                                                          => None
+    }
+
+    private def naturalValue(value: Value): Option[BigInt] =
+      numeral(value, valueLayer, valueNumerals)
+
+    private def naturalTerm(value: CoreAst.Term): Option[BigInt] =
+      numeral(value, termLayer, termNumerals)
+
+    def run(pieces: Vector[Piece]): String = {
+      val out = new StringBuilder
+      val stack = mutable.Stack.empty[Piece]
+      def push(expanded: Vector[Piece]): Unit = expanded.reverseIterator.foreach(stack.push)
+      push(pieces)
+      while (stack.nonEmpty) {
+        stack.pop() match {
+          case Text(value)        => out.append(value)
+          case Val(value)         => push(expandValue(value))
+          case Term(value, bound) => push(new SyntaxPrinter(bound).printCoreTerm(value, naturalTerm))
+          case Level(value)       => push(printLevel(value))
+          case Later(expand)      => push(expand())
+        }
+      }
+      out.result()
+    }
+
+    private def expandValue(value: Value): Vector[Piece] =
+      naturalValue(value) match {
+        case Some(number) => Vector(Text(number.toString))
+        case None         => expandNonNumeralValue(value)
+      }
+
+    private def expandNonNumeralValue(value: Value): Vector[Piece] = value match {
+      case sort: Value.VSort =>
+        if (Sorts.isProp(sort)) Vector(Text("Prop"))
+        else if (sort.level == Value.Level.zero) Vector(Text("Type"))
+        else printSort("Type", Some(Level(sort.level)))
+      case level: Value.Level                      => printLevel(level)
+      case pi: Value.VPi                           => printPi(pi)
+      case Value.VConst(name, _, _)                => Vector(Text(name))
+      case Value.ConstructorHead(name, _, _, _, _) => Vector(Text(name))
+      case Value.VCtor(head, storedArgs, _) =>
+        if (storedArgs.isEmpty) Vector(Text(head.name))
+        else Vector(Text(head.name)) ++ argList(storedArgs.map(Val))
+      case app: Value.VApp     => printApp(app.head, app.args)
+      case lam: Value.VLam     => printLam(lam)
+      case variable: Value.Var => Vector(Text(varName(variable)))
+      case thunk: Value.NeutralThunk =>
+        printedCall(thunk).getOrElse(new SyntaxPrinter(thunk.env.locals.get).printMatch(thunk.term))
+      case proof: Value.VProof => Vector(Text("‹proof of "), Val(proof.tpe), Text("›"))
+      case Value.LevelTpe      => Vector(Text(CoreAst.Parameter.Level.name))
+      case Value.SortParameter => Vector(Text("SortParameter"))
+      case Value.Large         => Vector(Text("Large"))
+    }
   }
 
+  def print(value: Value): String = new Printer().run(Vector(Val(value)))
 }

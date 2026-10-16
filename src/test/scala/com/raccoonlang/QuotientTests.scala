@@ -193,7 +193,7 @@ class QuotientTests extends munit.FunSuite with TestSupport {
     val env = evalDecls(
       natPrelude +
         """
-          |opaque def q : Quot(Nat, Rel) := Quot.mk(Rel, 0)
+          |axiom q : Quot(Nat, Rel)
           |""".stripMargin
     )
     val span = Span(0, 0)
