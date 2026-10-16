@@ -1,12 +1,13 @@
-# Ports onto the dependent type theory core
+# Completed port to the dependent type theory core
 
-The starting point is `cleanup` at `2a4d7d8`. The donor is
-`codex/library-safety-native-buffer` at `2295cdd`. Port semantic rules and
-regressions onto the smaller implementation; do not restore deleted language
-features to make a donor patch apply. The soundness checkpoint `acaf536` is a
-useful reference, with later source-only corrections where applicable.
+This record covers the port from `cleanup` at `2a4d7d8`, using
+`codex/library-safety-native-buffer` at `2295cdd` as the donor. Semantic rules
+and regressions were carried onto the smaller implementation without restoring
+deleted language features to make donor patches apply. The soundness checkpoint
+`acaf536` was a useful reference, with later source-only corrections where
+applicable.
 
-## Implementation order
+## Completed implementation sequence
 
 - [x] **Remove opaque definitions first** (`4ed5e73`). Remove the modifier,
   AST flag, elaborator checks, and symbolic publication path. Every definition

@@ -54,9 +54,9 @@ class InductiveCheckTest extends munit.FunSuite with DiagnosticAssertions {
   private def axiom(name: String, ty: CoreAst.Term): CoreAst.Decl =
     CoreAst.Decl.AxiomDecl(name, ty, blockSpan)
 
-  private def sortAt(level: CoreAst.Form): CoreAst.Term = CoreTestTerms.sortAt(level, blockSpan)
+  private def sortAt(level: CoreAst.LevelForm): CoreAst.Term = CoreTestTerms.sortAt(level, blockSpan)
 
-  private val typeSort: CoreAst.Term = sortAt(CoreAst.Form.LevelZero)
+  private val typeSort: CoreAst.Term = sortAt(CoreAst.LevelForm.LevelZero)
   private val propSort: CoreAst.Term = CoreAst.Term.Prop(blockSpan)
 
   private def mutualEvenOdd(evenRecursiveFieldType: CoreAst.Term = global("Odd")): CoreAst.Decl.InductiveBlock = {

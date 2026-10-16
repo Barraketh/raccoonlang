@@ -10,7 +10,7 @@ object ProofReconstruction {
 
   private final case class Recovered(
       head: ConstructorHead,
-      fields: Vector[Option[Value]],
+      fields: Vector[Value],
       resultType: Option[Value]
   )
 
@@ -51,10 +51,9 @@ object ProofReconstruction {
    */
   private def validate(instance: InductiveFamilyInstance, info: ProofRecoveryInfo, tpe: Value): Option[Result] =
     recover(instance, info, includeResultType = true).flatMap { recovered =>
-      val fields = recovered.fields.flatten
-      if (fields.length != info.fieldSources.length || !recovered.resultType.exists(ValueEquivalence.defEq(_, tpe)))
+      if (!recovered.resultType.exists(ValueEquivalence.defEq(_, tpe)))
         None
-      else Some(new Result(recovered.head, fields))
+      else Some(new Result(recovered.head, recovered.fields))
     }
 
   private def recover(
@@ -84,7 +83,7 @@ object ProofReconstruction {
           parameterIndex += 1
         }
         val fieldBinders = head.fieldBinders
-        val recoveredFields = Array.fill[Option[Value]](fieldBinders.length)(None)
+        val recoveredFields = Vector.newBuilder[Value]
         var fieldIndex = 0
 
         while (fieldIndex < fieldBinders.length) {
@@ -102,7 +101,7 @@ object ProofReconstruction {
                 case ProofFieldSource.Unavailable => return None
               }
 
-          recoveredFields(fieldIndex) = Some(recovered)
+          recoveredFields += recovered
           // Keep inductive proof fields shallow here. Recursive proof reconstruction canonicalizes one exposed
           // layer at a time rather than building an infinite constructor tree; Pi proofs remain eta-applicable.
           env = env.putLocalUnchecked(binder.localRef, recovered)
@@ -110,7 +109,7 @@ object ProofReconstruction {
         }
 
         val resultType = Option.when(includeResultType)(pi.codomain(env))
-        Some(Recovered(head, recoveredFields.toVector, resultType))
+        Some(Recovered(head, recoveredFields.result(), resultType))
 
       case resultType if head.totalArity == 0 =>
         Some(Recovered(head, Vector.empty, Option.when(includeResultType)(resultType)))

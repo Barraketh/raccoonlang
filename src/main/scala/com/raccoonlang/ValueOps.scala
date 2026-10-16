@@ -3,7 +3,6 @@ package com.raccoonlang
 import com.raccoonlang.Value._
 
 import scala.collection.immutable.VectorMap
-import scala.reflect.ClassTag
 
 object ValueOps {
   def materialize(value: Value, eqStore: EqStore): Value = newMaterializer(eqStore).materialize(value)
@@ -29,8 +28,6 @@ object ValueOps {
     private val envs = new java.util.IdentityHashMap[Env, Env]()
 
     def resolve(value: Value): Value = Interpreter.resolveInEqStore(value, this)
-
-    def materializeArgument(value: Value): Value = materialize(value)
 
     def materializeEnv(env: Env): Env = {
       if (envs.containsKey(env)) return envs.get(env)
@@ -62,11 +59,11 @@ object ValueOps {
       }
 
       val rebuilt = resolved match {
-        case _: ParameterTpe | SortParameter | Large => resolved
-        case level: Level                            => materializeParameter(level)
-        case sort: VSort                             => rebuildClassifier(sort)
-        case Var(name, id, tpe)                      => Var(name, id, materialize(tpe))
-        case VConst(name, constType, tpe)            => VConst(name, constType, materialize(tpe))
+        case LevelTpe | LevelClassifier | Large => resolved
+        case level: Level                       => materializeLevel(level)
+        case sort: VSort                        => rebuildClassifier(sort)
+        case Var(name, id, tpe)                 => Var(name, id, materialize(tpe))
+        case VConst(name, constType, tpe)       => VConst(name, constType, materialize(tpe))
         case VApp(head, args, tpe, blockedOn) =>
           VApp(materialize(head), args.map(materialize), materialize(tpe), blockedOn)
         case NeutralThunk(term, env, id, tpe, blockedOn) =>
@@ -87,10 +84,10 @@ object ValueOps {
     private def mayNeedMaterialization(value: Value): Boolean =
       value.synDeps.intersects(eqStore.solvedIds)
 
-    private def materializeParameter[P <: Value: ClassTag](parameter: P): P =
-      resolve(parameter) match {
-        case normal: P => normal
-        case other     => wtf(s"$parameter : ${parameter.tpe} materialized to $other : ${other.tpe}")
+    private def materializeLevel(level: Level): Level =
+      resolve(level) match {
+        case normal: Level => normal
+        case other         => wtf(s"$level : ${level.tpe} materialized to $other : ${other.tpe}")
       }
 
     def materializeClassifier(classifier: Classifier): Classifier =
@@ -104,7 +101,7 @@ object ValueOps {
         case sort: VSort =>
           if (mayNeedMaterialization(sort))
             if (sort.isProp) Sorts.Prop
-            else Sorts.sort(materializeParameter(sort.level))
+            else Sorts.sort(materializeLevel(sort.level))
           else sort
         case Large => Large
       }

@@ -5,7 +5,7 @@ import com.raccoonlang.CoreAst.{Term => CTerm}
 class CapturedRefsTests extends munit.FunSuite with DiagnosticAssertions {
   private val span = Span(0, 0)
   private val valueType: Value = Sorts.Type
-  private val typeSort: CoreAst.Term = CoreTestTerms.sortAt(CoreAst.Form.LevelOne, span)
+  private val typeSort: CoreAst.Term = CoreTestTerms.sortAt(CoreAst.LevelForm.LevelOne, span)
 
   test("getCapturedRefs collects only local refs present in the current env") {
     val capturedRef = CoreAst.LocalRef(0, "captured")

@@ -22,6 +22,14 @@ private[raccoonlang] object RefinementCertificates {
 
   private final case class Unsupported() extends RuntimeException
 
+  private def certificateOrElse[A](fallback: => A)(body: => A): A =
+    try body
+    catch {
+      case _: Unsupported                                                  => fallback
+      case diagnostic: Diagnostic if diagnostic.error == EvaluationTooDeep => throw diagnostic
+      case _: Diagnostic                                                   => fallback
+    }
+
   private val suppressed = new ThreadLocal[Boolean] {
     override def initialValue(): Boolean = false
   }
@@ -185,20 +193,17 @@ private[raccoonlang] object RefinementCertificates {
 
     private def level(level: Level): CA.Term = {
       def offset(term: CA.Term, amount: Int): CA.Term =
-        (0 until amount).foldLeft(term)((result, _) => CA.Term.FormOp(CA.Form.LevelSucc, Vector(result), span))
+        (0 until amount).foldLeft(term)((result, _) => CA.Term.FormOp(CA.LevelForm.LevelSucc, Vector(result), span))
 
       val constant =
         if (level.c == 0 && level.terms.nonEmpty) Vector.empty
-        else Vector(offset(CA.Term.FormOp(CA.Form.LevelZero, Vector.empty, span), level.c))
-      val variables = level.terms.toVector.sortBy(_._1.toString).map { case (atom, amount) =>
-        atom match {
-          case Level.ParamAtom(id) => offset(levelParameter(id), amount)
-          case _                   => throw Unsupported()
-        }
+        else Vector(offset(CA.Term.FormOp(CA.LevelForm.LevelZero, Vector.empty, span), level.c))
+      val variables = level.terms.toVector.sortBy(_._1).map { case (id, amount) =>
+        offset(levelParameter(id), amount)
       }
       (constant ++ variables)
-        .reduceLeftOption((left, right) => CA.Term.FormOp(CA.Form.LevelMax, Vector(left, right), span))
-        .getOrElse(CA.Term.FormOp(CA.Form.LevelZero, Vector.empty, span))
+        .reduceLeftOption((left, right) => CA.Term.FormOp(CA.LevelForm.LevelMax, Vector(left, right), span))
+        .getOrElse(CA.Term.FormOp(CA.LevelForm.LevelZero, Vector.empty, span))
     }
 
     private def pi(value: VPi): CA.Term.Pi = {
@@ -517,11 +522,9 @@ private[raccoonlang] object RefinementCertificates {
         (equation.left, equation.right) match {
           case (ConstructorForm(left, _), ConstructorForm(right, _))
               if left != right && ValueEquivalence.defEq(equation.left.tpe, equation.right.tpe) =>
-            try return clash(equation, context)
-            catch {
-              case _: Unsupported                                                  =>
-              case diagnostic: Diagnostic if diagnostic.error == EvaluationTooDeep => throw diagnostic
-              case _: Diagnostic                                                   =>
+            certificateOrElse[Option[CA.Term]](None)(Some(clash(equation, context))) match {
+              case Some(proof) => return proof
+              case None        =>
             }
           case _ =>
         }
@@ -560,16 +563,12 @@ private[raccoonlang] object RefinementCertificates {
         val derived = pairs.flatMap { case (left, right, coordinate) =>
           if (!ValueEquivalence.defEq(left.tpe, right.tpe) || ValueEquivalence.defEq(left, right)) None
           else
-            try {
+            certificateOrElse[Option[Equation]](None) {
               val premise = coordinate match {
                 case Left(field) => inject(equation, field, context)
                 case Right(arg)  => nominal(equation, arg, context)
               }
               Some(Equation(left, right, premise))
-            } catch {
-              case _: Unsupported                                                  => None
-              case diagnostic: Diagnostic if diagnostic.error == EvaluationTooDeep => throw diagnostic
-              case _: Diagnostic                                                   => None
             }
         }
         if (derived.nonEmpty) return refute(pending.patch(index, derived, 1), store, depth + 1)
@@ -578,12 +577,9 @@ private[raccoonlang] object RefinementCertificates {
     }
 
     private def localEquation(left: Value, right: Value, context: Env, label: String): Option[Equation] =
-      try localEquation(left, right, equality(left, right, context), context, label)
-      catch {
-        case _: Unsupported                                                  => None
-        case diagnostic: Diagnostic if diagnostic.error == EvaluationTooDeep => throw diagnostic
-        case _: Diagnostic                                                   => None
-      }
+      certificateOrElse[Option[Equation]](None)(
+        localEquation(left, right, equality(left, right, context), context, label)
+      )
 
     private def localEquation(
         left: Value,
@@ -592,16 +588,12 @@ private[raccoonlang] object RefinementCertificates {
         context: Env,
         label: String
     ): Option[Equation] =
-      try {
+      certificateOrElse[Option[Equation]](None) {
         val proposition = TypeChecker.checkTypeTerm(propositionTerm, context).value
         if (!Sorts.isProposition(proposition)) throw Unsupported()
         val ref = SyntheticLocalRef.fresh(label)
         env = env.putLocal(ref, Value.canonicalizeProof(VProof(proposition)))
         Some(Equation(left, right, CA.Term.LocalRef(ref, span)))
-      } catch {
-        case _: Unsupported                                                  => None
-        case diagnostic: Diagnostic if diagnostic.error == EvaluationTooDeep => throw diagnostic
-        case _: Diagnostic                                                   => None
       }
 
     def discharge(
@@ -648,7 +640,7 @@ private[raccoonlang] object RefinementCertificates {
       if (!ValueEquivalence.defEq(checkedScrutinee.value, scrutinee)) throw Unsupported()
       val valueEquation =
         if (isDataType(scrutinee.tpe) && ValueEquivalence.defEq(scrutinee.tpe, ctor.tpe))
-          try {
+          certificateOrElse[Option[Equation]](None) {
             localEquation(
               scrutinee,
               ctor,
@@ -656,10 +648,6 @@ private[raccoonlang] object RefinementCertificates {
               env,
               "constructorValue"
             )
-          } catch {
-            case _: Unsupported                                                  => None
-            case diagnostic: Diagnostic if diagnostic.error == EvaluationTooDeep => throw diagnostic
-            case _: Diagnostic                                                   => None
           }
         else None
 
@@ -683,11 +671,8 @@ private[raccoonlang] object RefinementCertificates {
     if (suppressed.get()) false
     else
       withCertificatesSuppressed {
-        try new Search(env, span).discharge(scrutinee, scrutineeTerm, family, head, fields, resultType)
-        catch {
-          case _: Unsupported                                                  => false
-          case diagnostic: Diagnostic if diagnostic.error == EvaluationTooDeep => throw diagnostic
-          case _: Diagnostic                                                   => false
+        certificateOrElse(false) {
+          new Search(env, span).discharge(scrutinee, scrutineeTerm, family, head, fields, resultType)
         }
       }
 }

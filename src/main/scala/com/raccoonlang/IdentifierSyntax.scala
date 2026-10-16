@@ -21,7 +21,6 @@ private[raccoonlang] object IdentifierSyntax {
     "lexicographic",
     "measure",
     "indices",
-    "in",
     "Type",
     "Prop"
   )

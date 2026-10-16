@@ -9,7 +9,10 @@ hs_err_pid*
 .metals
 .bloop
 .vscode
-project/
+project/target/
+project/project/target/
+project/metals.sbt
+project/project/metals.sbt
 target/
 .bsp
 .idea
@@ -17,6 +20,3 @@ target/
 out.txt
 scratch.txt
 temp/
-
-# Reproducible Lean export artifacts (see scripts/fetch-lean-artifacts.sh).
-artifacts/lean/*/*.ndjson

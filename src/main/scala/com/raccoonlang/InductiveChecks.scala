@@ -136,7 +136,7 @@ object InductiveChecks {
 
             case _: ConstructorHead => localAbsentByDependencies(value)
 
-            case _: Level | _: ParameterTpe | SortParameter | Large | _: VSort | _: Var | _: VConst =>
+            case _: Level | LevelTpe | LevelClassifier | Large | _: VSort | _: Var | _: VConst =>
               localAbsentByDependencies(value)
           }
       }
@@ -178,7 +178,7 @@ object InductiveChecks {
 
             case _: ConstructorHead => true
 
-            case _: Level | _: ParameterTpe | SortParameter | Large | _: VSort | _: Var | _: VConst => true
+            case _: Level | LevelTpe | LevelClassifier | Large | _: VSort | _: Var | _: VConst => true
           }
       }
   }
@@ -224,8 +224,7 @@ object InductiveChecks {
 
             case VConst(name, Inductive(_), _) if blockNames(name) => false
 
-            case _: ConstructorHead | _: Level | _: ParameterTpe | SortParameter | Large | _: VSort | _: Var |
-                _: VConst =>
+            case _: ConstructorHead | _: Level | LevelTpe | LevelClassifier | Large | _: VSort | _: Var | _: VConst =>
               true
           }
       }
@@ -237,30 +236,14 @@ object InductiveChecks {
   private def constructorBinders(header: InductiveHeader, ctor: ConstructorDecl): Vector[Binder] =
     constructorFamilyParams(header) ++ ctor.binders
 
-  /**
-   * Every local this term references. Non-lexical, like capture analysis: a ref bound inside the term still counts,
-   * which is the conservative direction for the dependency questions this module asks.
-   */
-  private def referencedLocals(term: Term): Set[LocalRef] = {
-    val refs = Set.newBuilder[LocalRef]
-
-    def go(term: Term): Unit =
-      term match {
-        case Term.LocalRef(ref, _) => refs += ref
-        case other                 => CoreAst.children(other).foreach(go)
-      }
-
-    go(term)
-    refs.result()
-  }
-
   /** Precise transitive preceding-field dependencies of each stored field type. */
   private def constructorFieldDependencies(ctor: ConstructorDecl): Vector[BitSet] = {
     val fieldIndex = ctor.binders.zipWithIndex.map { case (binder, idx) => binder.localRef -> idx }.toMap
     val result = Array.fill(ctor.binders.length)(BitSet.empty)
     var idx = 0
     while (idx < ctor.binders.length) {
-      val direct = BitSet.fromSpecific(referencedLocals(ctor.binders(idx).ty).flatMap(fieldIndex.get).filter(_ < idx))
+      val direct =
+        BitSet.fromSpecific(CoreAst.mentionedRefs(ctor.binders(idx).ty).flatMap(fieldIndex.get).filter(_ < idx))
       result(idx) = direct.foldLeft(direct) { case (dependencies, dependency) =>
         dependencies ++ result(dependency)
       }
@@ -383,14 +366,14 @@ object InductiveChecks {
 
   /** Counts the value size of a family argument, descending elementwise through data function types. */
   private def familyArgumentLevel(tpe: Value): Level = tpe match {
-    case _: ParameterTpe => Level.zero
-    case sort: VSort     => if (Sorts.isProp(sort)) Level.zero else sort.level
+    case LevelTpe    => Level.zero
+    case sort: VSort => if (Sorts.isProp(sort)) Level.zero else sort.level
     case pi: VPi if !pi.isPropValued =>
       val freshEnv = BinderOps.freshen(pi.binders, pi.env)
       val domains = pi.binders.map { binder =>
         freshEnv(binder.localRef).tpe match {
-          case _: ParameterTpe => Level.zero
-          case domain          => TypeChecker.getUniverse(domain).level
+          case LevelTpe => Level.zero
+          case domain   => TypeChecker.getUniverse(domain).level
         }
       }
       Level.max(domains :+ familyArgumentLevel(pi.codomain(freshEnv)))
@@ -517,7 +500,6 @@ object InductiveChecks {
       val binderVars = binders.map(binder => envWithBinders(binder.localRef))
       val commonParamValues = binderVars.take(header.params.length)
       val ownBinderVars = binderVars.drop(header.params.length)
-      val sourceParamValues = commonParamValues
       val trueFieldVars = ownBinderVars
       val outputTpe = TypeChecker.checkTypeTerm(ctor.resultTy, envWithBinders).value
 
@@ -532,19 +514,7 @@ object InductiveChecks {
       if (outputArgs.length != header.arity) badResult
 
       checkConstructorParamDiscipline(header, ctor, envWithBinders, outputArgs)
-      if (
-        outputArgs.take(sourceParamValues.length).zip(sourceParamValues).exists { case (actual, expected) =>
-          !ValueEquivalence.defEq(actual, expected)
-        }
-      )
-        at(ctor.resultTy.span) {
-          fail(
-            InvalidInductiveBlock(
-              s"constructor ${ctor.canonicalName} does not preserve the complete source parameter prefix"
-            )
-          )
-        }
-      if (outputArgs.drop(sourceParamValues.length).exists(arg => !recursiveScan.absent(arg)))
+      if (outputArgs.drop(commonParamValues.length).exists(arg => !recursiveScan.absent(arg)))
         at(ctor.resultTy.span) {
           fail(
             NonStrictlyPositive(
@@ -576,14 +546,14 @@ object InductiveChecks {
       val constructorArgTypes = constructorArgs.map(_._2.tpe)
       val fieldDependencies = constructorFieldDependencies(ctor)
       val syntacticallyRecursive = Array.fill(ctor.binders.length)(false)
-      val uniformity = new UniformityScan(blockNames, sourceParamValues, recursiveScan)
+      val uniformity = new UniformityScan(blockNames, commonParamValues, recursiveScan)
       ctor.binders.indices.foreach { index =>
         syntacticallyRecursive(index) = CoreAst.mentionsGlobal(ctor.binders(index).ty, blockNames) ||
           fieldDependencies(index).exists(syntacticallyRecursive)
       }
       positivityContexts += PositiveParamContext(
-        sourceParamValues,
-        outputArgs.drop(sourceParamValues.length),
+        commonParamValues,
+        outputArgs.drop(commonParamValues.length),
         constructorArgTypes
       )
 

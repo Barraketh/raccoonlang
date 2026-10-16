@@ -8,10 +8,10 @@ class ValueVarsInTests extends munit.FunSuite {
   private val span = Span(0, 0)
 
   private def binder(ref: CoreAst.LocalRef): CoreAst.Binder =
-    CoreAst.Binder(ref, CoreTestTerms.sortAt(CoreAst.Form.LevelZero, span), span, CoreAst.BinderSite.Function)
+    CoreAst.Binder(ref, CoreTestTerms.sortAt(CoreAst.LevelForm.LevelZero, span), span, CoreAst.BinderSite.Function)
 
   private def localEnv(ref: CoreAst.LocalRef, value: Value): Env =
-    Env.empty.copy(locals = VectorMap(ref -> value), localRefs = Set(ref))
+    Env.empty.copy(locals = VectorMap(ref -> value))
 
   test("varsIn visits a shared value DAG once") {
     val target = Var("target", 40001, Sorts.Type)

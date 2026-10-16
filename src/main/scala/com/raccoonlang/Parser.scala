@@ -57,8 +57,6 @@ trait Parser[+A] {
 
   def named(name: String): Parser[A] = NamedParser(this, name)
 
-  def log(name: String): Parser[A] = LogParser(this, name)
-
   /** A leaf's failure, named by the leaf: a leaf's `toString` is its name. */
   def fail(startIdx: Int, curIdx: Int): Failure = Failure(startIdx, curIdx, message = s"$this")
 
@@ -113,12 +111,6 @@ object Parser {
     def ! : Parser[String] = Parser.Capture(p)
   }
 
-  implicit class SpanParserOps[A](p: Parser[Spanned[A]]) {
-    def flatten(implicit C: Sequence.Combine[A, Span]): Parser[C.Out] = p.map(sp => C.combine(sp.value, sp.span))
-
-    def mapAsT[B](f: PartialFunction[(A, Span), B]): Parser[B] = p.map(sp => f((sp.value, sp.span)))
-  }
-
   private def success(startIdx: Int, curIdx: Int): Success[NoValueT] = Success(Parser.NoValue, startIdx, curIdx)
 
   case class Exact(s: String) extends MatchParser {
@@ -167,18 +159,6 @@ object Parser {
       }
 
     override def toString: String = name
-  }
-
-  private case class LogParser[T](p: Parser[T], name: String) extends Parser[T] {
-    override def parse(input: String, startIdx: Int): ParseResult[T] = {
-      val res = p.parse(input, startIdx)
-      res match {
-        case Success(value, startIdx, endIdx) =>
-          println(s"$name - $startIdx: ${input.substring(startIdx, endIdx)}")
-        case _: Failure =>
-      }
-      res
-    }
   }
 
   /** What `p` parses when `f` accepts it; `name` names what was expected when it does not. */

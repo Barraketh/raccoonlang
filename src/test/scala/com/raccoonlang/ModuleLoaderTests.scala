@@ -219,6 +219,20 @@ class ModuleLoaderTests extends munit.FunSuite with DiagnosticAssertions {
     assertEquals(ctorName(run(entry)), "Lib.Peano.zero")
   }
 
+  test("deduplicates a module reached through its canonical path and a symlink") {
+    if (!System.getProperty("os.name").toLowerCase(java.util.Locale.ROOT).startsWith("windows")) {
+      val root = Files.createTempDirectory("raccoon-modules")
+      val actual = write(root, "Lib/Actual.rac", "namespace Lib { def value : Nat := 1 }\n")
+      Files.createSymbolicLink(root.resolve("Lib/Alias.rac"), actual.getFileName)
+      val entry = write(root, "Main.rac", "import Lib.Alias\nimport Lib.Actual\n")
+
+      val loaded = ModuleLoader.load(entry, ModuleLoader.LoadConfig.forEntry(entry, Prelude.test))
+
+      assertEquals(loaded.sources.size, 2)
+      assertEquals(loaded.sources.count(_.path == actual.toRealPath()), 1)
+    }
+  }
+
   test("top-level opens in imported modules do not leak to importers") {
     val root = Files.createTempDirectory("raccoon-modules")
     write(

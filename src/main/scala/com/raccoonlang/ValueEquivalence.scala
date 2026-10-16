@@ -25,7 +25,7 @@ object ValueEquivalence {
    * `Unify.tryUnify`.
    */
   def defEq(v1: Value, v2: Value): Boolean =
-    Unify.tryUnify(v1, v2, EqStore.empty, Unify.Ctx(invertibleFrame = true, scrutineeTypeRoot = false)).isRight
+    Unify.tryUnify(v1, v2, EqStore.empty, Unify.Ctx.Invertible).isRight
 
   /**
    * Proof irrelevance reduces every equation between proof values to the equation between their propositions
@@ -53,14 +53,14 @@ object ValueEquivalence {
       v2: Value,
       meta: EqStore
   ): Either[UnifyFailure, EqStore] =
-    Unify.tryUnify(v1, v2, meta, Unify.Ctx(invertibleFrame = true, scrutineeTypeRoot = false))
+    Unify.tryUnify(v1, v2, meta, Unify.Ctx.Invertible)
 
   /**
    * Unify a constructor result type with the type of its match scrutinee. The eliminator justifies inversion of a Prop
    * family at this root equation; all structural descent clears that permission.
    */
   def tryUnifyMatchTypes(v1: Value, v2: Value, meta: EqStore): Either[UnifyFailure, EqStore] =
-    Unify.tryUnify(v1, v2, meta, Unify.Ctx(invertibleFrame = true, scrutineeTypeRoot = true))
+    Unify.tryUnify(v1, v2, meta, Unify.Ctx.MatchTypeRoot)
 
   /**
    * Key-coherence assertions (docs/kernel.md#value-identity): wherever the fast path decides an equation by key alone,
@@ -95,11 +95,31 @@ object ValueEquivalence {
      * every enclosing frame is invertible: descending through a non-invertible frame produces sub-equations that are
      * sufficient but not necessary, so links beneath one are refused.
      */
-    final case class Ctx(invertibleFrame: Boolean, scrutineeTypeRoot: Boolean) {
-      def canLinkForced: Boolean = invertibleFrame
-      def enterNonInvertibleFrame: Ctx =
-        if (invertibleFrame || scrutineeTypeRoot) copy(invertibleFrame = false, scrutineeTypeRoot = false) else this
-      def nested: Ctx = if (scrutineeTypeRoot) copy(scrutineeTypeRoot = false) else this
+    sealed trait Ctx {
+      def canLinkForced: Boolean
+      def scrutineeTypeRoot: Boolean
+      def nested: Ctx
+      final def enterNonInvertibleFrame: Ctx = Ctx.NonInvertible
+    }
+
+    object Ctx {
+      case object MatchTypeRoot extends Ctx {
+        override val canLinkForced: Boolean = true
+        override val scrutineeTypeRoot: Boolean = true
+        override val nested: Ctx = Invertible
+      }
+
+      case object Invertible extends Ctx {
+        override val canLinkForced: Boolean = true
+        override val scrutineeTypeRoot: Boolean = false
+        override val nested: Ctx = this
+      }
+
+      case object NonInvertible extends Ctx {
+        override val canLinkForced: Boolean = false
+        override val scrutineeTypeRoot: Boolean = false
+        override val nested: Ctx = this
+      }
     }
 
     private def sameValueObject(v1: Value, v2: Value): Boolean =
@@ -185,7 +205,7 @@ object ValueEquivalence {
     //
     // Grouping is part of a function type's identity: two Pis are related binder-by-binder within their
     // single groups, and differing group counts are a failure to derive `≡` (stuck), never apartness.
-    // `(a:A)(b:B) -> C` and `(a:A) -> (b:B) -> C` are different types and do not relate here. So is the
+    // `(a:A)(b:B) -> C` and `(a:A) -> (b:B) -> C` are different types and do not relate here.
 
     private def tryUnifyPis(pi1: VPi, pi2: VPi, eqStore: EqStore, ctx: Ctx): Either[UnifyFailure, PiUnification] = {
       if (

@@ -119,9 +119,9 @@ object Value {
       case _: VPi | _: VLam | _: NeutralThunk => true
       // Sorts and level parameters sit at the top of an infinite classifier ascent. Their metadata is
       // known without following that ascent.
-      case _: VSort | _: Level | SortParameter | Large | _: ParameterTpe => false
-      case _: VProof                                                     => true
-      case _ if isKnownProof(value)                                      => true
+      case _: VSort | _: Level | LevelClassifier | Large | LevelTpe => false
+      case _: VProof                                                => true
+      case _ if isKnownProof(value)                                 => true
       // A value that structure eta can decompose compares fieldwise, which no key can decide
       // (StructEta, rule 2).
       case v if etaDecomposable(v) => true
@@ -212,7 +212,7 @@ object Value {
               pushValues(Vector(lam.tpe))
             // Everything else is either leaf-like or reaches vars only through its type. Sorts are
             // excluded explicitly: their types ascend forever with the same level dependencies.
-            case _: VSort | Large | SortParameter | _: ParameterTpe | _: Level | _: ConstructorHead =>
+            case _: VSort | Large | LevelClassifier | LevelTpe | _: Level | _: ConstructorHead =>
             case other =>
               pushValues(Vector(other.tpe))
           }
@@ -239,22 +239,16 @@ object Value {
     }
   }
 
-  sealed trait ParameterTpe extends TopLevelValue {
-    final override def tpe: Value = SortParameter
-  }
-
-  case object LevelTpe extends ParameterTpe {
+  case object LevelTpe extends TopLevelValue {
+    override def tpe: Value = LevelClassifier
     override val key: ValueKey.Key = ValueKey.levelTpe
     override val needsStructuralDefEq: Boolean = false
   }
 
-  /**
-   * The classifier of the sort parameters. It is not a sort, so nothing it classifies is a type; it classifies itself,
-   * and no program can write it.
-   */
-  case object SortParameter extends TopLevelValue {
-    override def tpe: Value = SortParameter
-    override val key: ValueKey.Key = ValueKey.sortParameter
+  /** The internal classifier of Level. It is not a sort and no program can write it. */
+  case object LevelClassifier extends TopLevelValue {
+    override def tpe: Value = LevelClassifier
+    override val key: ValueKey.Key = ValueKey.levelClassifier
     override val needsStructuralDefEq: Boolean = false
   }
 
@@ -276,9 +270,9 @@ object Value {
     override val needsStructuralDefEq: Boolean = false
   }
 
-  // Represents max(u1 + k1, u2 + k2... , c), where each ui is a level variable.
+  // Represents max(u1 + k1, u2 + k2... , c), where each ui is a level variable id.
   // Invariant: all offsets are non-negative, c is non-negative, and c is either 0 or c > k1...kn.
-  final class Level private (val terms: Map[Level.Atom, Int], val c: Int) extends Value {
+  final class Level private (val terms: Map[VarId, Int], val c: Int) extends Value {
     override val tpe: Value = LevelTpe
     override val key: ValueKey.Key = ValueKey.level(this)
     override val needsStructuralDefEq: Boolean = false
@@ -287,9 +281,7 @@ object Value {
 
     override val synDeps: DepSet = {
       val deps = DepSet.newBuilder
-      terms.keysIterator.foreach { case Level.ParamAtom(id) =>
-        deps.add(id)
-      }
+      terms.keysIterator.foreach(deps.add)
       deps.result()
     }
 
@@ -302,12 +294,9 @@ object Value {
     override def hashCode(): Int = cachedHashCode
   }
   object Level {
-    sealed trait Atom
-    final case class ParamAtom(id: VarId) extends Atom
-
-    private def ofTerms(terms: Map[Atom, Int], c: Int): Level = {
+    def of(terms: Map[VarId, Int], c: Int): Level = {
       require(c >= 0, s"Level constant must be non-negative: $c")
-      require(terms.values.forall(_ >= 0), s"Level atom offsets must be non-negative: $terms")
+      require(terms.values.forall(_ >= 0), s"Level variable offsets must be non-negative: $terms")
 
       val nextC =
         if (terms.nonEmpty && c <= terms.values.max) 0
@@ -315,18 +304,14 @@ object Value {
       new Level(terms, nextC)
     }
 
-    def of(atoms: Map[VarId, Int], c: Int): Level = {
-      ofTerms(atoms.map { case (id, offset) => ParamAtom(id) -> offset }, c)
-    }
-
-    def const(c: Int): Level = ofTerms(Map.empty, c)
+    def const(c: Int): Level = of(Map.empty, c)
 
     def addOffset(l: Level, offset: Int): Level = {
       if (offset == 0) l
       else {
-        val newTerms = l.terms.map { case (atom, k) => (atom, k + offset) }
+        val newTerms = l.terms.map { case (id, k) => id -> (k + offset) }
         val newC = if (l.c > 0 || l.terms.isEmpty) l.c + offset else 0
-        ofTerms(newTerms, newC)
+        of(newTerms, newC)
       }
     }
 
@@ -341,37 +326,33 @@ object Value {
     def max(xs: Vector[Level]): Level = {
       require(xs.nonEmpty, "Level.max requires at least one level")
 
-      val nextTerms = scala.collection.mutable.HashMap.empty[Atom, Int]
+      val nextTerms = scala.collection.mutable.HashMap.empty[VarId, Int]
       var cMax = 0
       xs.foreach { level =>
         cMax = math.max(cMax, level.c)
-        level.terms.foreach { case (atom, offset) =>
-          nextTerms.get(atom) match {
-            case Some(current) if offset > current => nextTerms.update(atom, offset)
-            case None                              => nextTerms.update(atom, offset)
+        level.terms.foreach { case (id, offset) =>
+          nextTerms.get(id) match {
+            case Some(current) if offset > current => nextTerms.update(id, offset)
+            case None                              => nextTerms.update(id, offset)
             case _                                 =>
           }
         }
       }
-      ofTerms(nextTerms.toMap, cMax)
+      of(nextTerms.toMap, cMax)
     }
 
     /** The exact invertible shape accepted by level unification and forced-implicit projection. */
     def singleVariableOffset(l: Level): Option[(VarId, Int)] =
       if (l.c != 0 || l.terms.size != 1) None
       else
-        l.terms.head match {
-          case (ParamAtom(id), offset) => Some((id, offset))
-        }
-
-    private def regularLeq(l1: Level, l2: Level): Boolean =
-      (l1.c <= l2.c || l2.terms.values.exists(_ >= l1.c)) &&
-        l1.terms.forall { case (atom, k) => k <= l2.terms.getOrElse(atom, -1) }
+        l.terms.headOption
 
     /** A sound, intentionally incomplete pointwise level bound used for inductive size checks. */
-    def leq(l1: Level, l2: Level): Boolean = regularLeq(l1, l2)
+    def leq(l1: Level, l2: Level): Boolean =
+      (l1.c <= l2.c || l2.terms.values.exists(_ >= l1.c)) &&
+        l1.terms.forall { case (id, k) => k <= l2.terms.getOrElse(id, -1) }
 
-    def mk(varId: VarId): Level = ofTerms(Map(ParamAtom(varId) -> 0), 0)
+    def mk(varId: VarId): Level = of(Map(varId -> 0), 0)
 
     val zero = const(0)
     val one = const(1)

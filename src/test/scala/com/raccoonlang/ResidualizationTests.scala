@@ -276,7 +276,7 @@ class ResidualizationTests extends munit.FunSuite {
         assert(implicitBinder.isImplicit, "expected leading binder to stay implicit in the residual")
         assert(implicitBinder.projection.isDefined, "expected forced implicit binder to carry a projection spec")
         implicitBinder.ty match {
-          case CA.Term.Sort(CA.Term.FormOp(CA.Form.LevelZero, _, _), _) =>
+          case CA.Term.Sort(CA.Term.FormOp(CA.LevelForm.LevelZero, _, _), _) =>
           case other => fail(s"Expected Type binder annotation, got $other")
         }
         val explicitBinder = pi.binders(1)
@@ -345,8 +345,8 @@ class ResidualizationTests extends munit.FunSuite {
       case pi: CA.Term.Pi =>
         assert(!pi.binders.head.isImplicit, "expected explicit binder to stay explicit in the residual")
         pi.binders.head.ty match {
-          case CA.Term.Sort(CA.Term.FormOp(CA.Form.LevelZero, _, _), _) =>
-          case other                                                    => fail(s"Expected Type binder, got $other")
+          case CA.Term.Sort(CA.Term.FormOp(CA.LevelForm.LevelZero, _, _), _) =>
+          case other => fail(s"Expected Type binder, got $other")
         }
         pi.out match {
           case CA.Term.LocalRef(outRef, _) => assertEquals(outRef, pi.binders.head.localRef)

@@ -16,15 +16,12 @@ import com.raccoonlang.telescope.BinderOps
  */
 object StructEta {
 
-  private def anyInstance(tpe: Value): Option[(InductiveFamilyInstance, ProjectionInfo)] =
+  /** The eta-eligible family instance behind `tpe`; proposition families are excluded at declaration checking. */
+  def eligibleInstance(tpe: Value): Option[(InductiveFamilyInstance, ProjectionInfo)] =
     tpe match {
       case InductiveFamilyValue(inst) => inst.meta.projectionInfo.filter(_.etaEligible).map(info => (inst, info))
       case _                          => None
     }
-
-  /** The eta-eligible family instance behind `tpe`; proposition families are excluded at declaration checking. */
-  def eligibleInstance(tpe: Value): Option[(InductiveFamilyInstance, ProjectionInfo)] =
-    anyInstance(tpe)
 
   /**
    * The eta view of a value at an eta-eligible structure type: the constructor's stored fields when it is already in

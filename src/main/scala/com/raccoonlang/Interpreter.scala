@@ -15,17 +15,14 @@ object Interpreter {
   private def normalizeLevel(l: Level, eqStore: EqStore): Level = {
     val pieces = Vector.newBuilder[Level]
     if (l.c > 0 || l.terms.isEmpty) pieces += Level.const(l.c)
-    l.terms.foreach { case (atom, k) =>
-      val base = atom match {
-        case Level.ParamAtom(id) =>
-          eqStore.subst.get(id) match {
-            case Some(sol) =>
-              eqStore.force(sol) match {
-                case next: Level => normalizeLevel(next, eqStore)
-                case other       => wtf(s"Level variable $id solved to the non-level $other")
-              }
-            case None => Level.mk(id)
+    l.terms.foreach { case (id, k) =>
+      val base = eqStore.subst.get(id) match {
+        case Some(sol) =>
+          eqStore.force(sol) match {
+            case next: Level => normalizeLevel(next, eqStore)
+            case other       => wtf(s"Level variable $id solved to the non-level $other")
           }
+        case None => Level.mk(id)
       }
       pieces += Level.addOffset(base, k)
     }
@@ -48,7 +45,7 @@ object Interpreter {
         v0 match {
           case VBlockedApp(h, args, tpe, _) =>
             val h0 = materializer.materialize(materializer.resolve(h))
-            val materializedArgs = args.map(materializer.materializeArgument)
+            val materializedArgs = args.map(materializer.materialize)
             h0 match {
               case lam: VLam =>
                 val res = runLam(lam, materializedArgs)
@@ -68,14 +65,6 @@ object Interpreter {
     }
   }
 
-  /**
-   * Arguments are bound exactly as supplied: a value's type annotation is what it was created with, and no site
-   * rewrites it. Binder types are evaluated against the Pi's own closure — their syntax is valid there, not in the body
-   * env the values are later bound into.
-   */
-  private def getEnvWithArgs(fnTpe: VPi, baseEnv: Env, args: Vector[Value]): Env =
-    BinderOps.instantiateFull(fnTpe.binders, baseEnv, args)
-
   /** Combine the levels of a data-valued function type; a telescope binding a level is classified as Large. */
   private[raccoonlang] def piClassifierFromChecked(
       binders: Vector[CoreAst.Binder],
@@ -88,13 +77,9 @@ object Interpreter {
       val outSort = TypeChecker.getUniverse(outV)
       if (Sorts.isProp(outSort)) Sorts.Prop
       else {
-        val domainLevels = freshValues.flatMap { fresh =>
-          fresh.tpe match {
-            case _: ParameterTpe => None
-            case tpe =>
-              val domainSort = TypeChecker.getUniverse(tpe)
-              Some(if (Sorts.isProp(domainSort)) Level.zero else domainSort.level)
-          }
+        val domainLevels = freshValues.map { fresh =>
+          val domainSort = TypeChecker.getUniverse(fresh.tpe)
+          if (Sorts.isProp(domainSort)) Level.zero else domainSort.level
         }
         Sorts.sort(Level.max(domainLevels :+ outSort.level))
       }
@@ -151,7 +136,7 @@ object Interpreter {
         if (vArgs.length != pi.binders.length)
           fail(ArityMismatch(pi.binders.length, vArgs.length, ArityMismatch.Arguments))
         // Lazy: the VLam branch delegates env construction to runLam.
-        lazy val envWithArgs = getEnvWithArgs(pi, pi.env, vArgs)
+        lazy val envWithArgs = BinderOps.instantiateFull(pi.binders, pi.env, vArgs)
         fn match {
           case lam: VLam =>
             lamStep(lam, vArgs)
@@ -261,7 +246,7 @@ object Interpreter {
             else
               coreEnv.globals
                 .get(name)
-                .map(_.value(coreEnv))
+                .map(_.value)
                 .getOrElse(wtf(s"Checked recursive peer $name is absent from its group"))
           current.putLocal(ref, peer)
         }
@@ -274,25 +259,19 @@ object Interpreter {
 
   private def evalLam(l: CTerm.Lam, env: Env): Value = evalLam(l, evalPi(l.ty, env), env)
 
-  /** The value that is a sort parameter's type, which a variable of it and an expression of it have. */
-  private[raccoonlang] def parameterType(parameter: CoreAst.Parameter): ParameterTpe =
-    parameter match {
-      case CoreAst.Parameter.Level => LevelTpe
-    }
-
-  // A checked sort parameter expression denotes a normal form: checking admits nothing else at its position.
+  // A checked level expression denotes a normal form: checking admits nothing else at its position.
   private[raccoonlang] def getLevel(v: Value): Level =
     v match {
       case l: Level => l
       case other    => wtf(s"Checked level expression evaluated to the non-level $other")
     }
 
-  private[raccoonlang] def evalFormOp(form: CoreAst.Form, args: Vector[Value]): Value =
+  private[raccoonlang] def evalFormOp(form: CoreAst.LevelForm, args: Vector[Value]): Value =
     form match {
-      case CoreAst.Form.LevelZero => Level.zero
-      case CoreAst.Form.LevelOne  => Level.one
-      case CoreAst.Form.LevelSucc => Level.succ(getLevel(args(0)))
-      case CoreAst.Form.LevelMax  => Level.max(args.map(getLevel))
+      case CoreAst.LevelForm.LevelZero => Level.zero
+      case CoreAst.LevelForm.LevelOne  => Level.one
+      case CoreAst.LevelForm.LevelSucc => Level.succ(getLevel(args(0)))
+      case CoreAst.LevelForm.LevelMax  => Level.max(args.map(getLevel))
     }
 
   /**
@@ -408,8 +387,6 @@ object Interpreter {
     else stuckMatchThunk(m, env, outType, scrut.tpe.synDeps)
   }
 
-  private[raccoonlang] def evalBody(body: CTerm.Body, env: Env): Value = evalSteps(step(body, env))
-
   // Proof publication (docs/kernel.md#proofs-and-elimination): exact type alone chooses a reconstructed constructor,
   // a proof eta-lambda, or `VProof`; the value's origin is irrelevant. Data has no such policy: an axiom of struct type
   // publishes as the plain symbol, and structure eta reaches it through the rules rather than through its
@@ -482,10 +459,7 @@ object Interpreter {
   private[raccoonlang] def run(p: Program, prelude: Prelude.Config = Prelude.default): Option[Value] =
     TypeChecker.checkRaw(p, prelude)
 
-  private[raccoonlang] val preludeInitialEnv: Env =
-    CoreAst.Parameter.all.foldLeft(Env.empty)((env, parameter) =>
-      env.putGlobal(parameter.name, parameterType(parameter))
-    )
+  private[raccoonlang] val preludeInitialEnv: Env = Env.empty.putGlobal("Level", LevelTpe)
 
   private[raccoonlang] def addPreludeDecl(env: Env, decl: Decl): Env = evalDecl(decl, env, trusted = true)
 

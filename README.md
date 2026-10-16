@@ -71,6 +71,7 @@ Other CLI options are:
 --prelude <file>   use a custom source prelude
 --no-prelude       run without a source prelude
 --wait-for-enter   pause after JVM startup
+--stack <size>     use an explicit JVM stack size, such as 2m
 --json             print diagnostics as JSON on stdout, and nothing else
 ```
 
@@ -103,7 +104,9 @@ Requirements:
 
 - Java 17 or newer;
 - sbt 1.8 or newer;
-- GraalVM `native-image` and a C++ toolchain for a native executable.
+
+Only building a native executable requires GraalVM `native-image` and a C++
+toolchain.
 
 Run formatting checks and the complete test suite:
 
@@ -118,8 +121,16 @@ Build and run the native executable:
 ./target/graalvm/raccoon examples/nats.rac
 ```
 
-The native build includes the bundled prelude and writes its intermediate
-classpath under `target/graalvm`.
+The native build includes the bundled prelude. It and the JVM runners in both
+benchmark scripts use the runtime classpath exported by sbt to
+`target/runtime-classpath.txt`:
+
+```bash
+sbt compile runtimeClasspath
+```
+
+The native executable is written to `target/graalvm/raccoon`. Each benchmark
+script also accepts `--classpath` to provide a classpath directly.
 
 ## Repository guide
 

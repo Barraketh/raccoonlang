@@ -104,7 +104,7 @@ object PrettyPrinter {
       case _                                          => false
     }
 
-  private def isForm(term: CoreAst.Term, form: CoreAst.Form): Boolean =
+  private def isForm(term: CoreAst.Term, form: CoreAst.LevelForm): Boolean =
     term match {
       case CoreAst.Term.FormOp(`form`, _, _) => true
       case _                                 => false
@@ -196,7 +196,7 @@ object PrettyPrinter {
         val bindersPieces = separated(binders.map(binder => Later(() => printPiBinder(binder))), " -> ")
         bindersPieces ++ Vector(Text(" -> ")) ++ printCodomain(out)
       case CoreAst.Term.Sort(level, _) =>
-        val levelField = Option.when(!isForm(level, CoreAst.Form.LevelZero))(term(level))
+        val levelField = Option.when(!isForm(level, CoreAst.LevelForm.LevelZero))(term(level))
         printSort("Type", levelField)
       case CoreAst.Term.Prop(_) => Vector(Text("Prop"))
       case CoreAst.Term.FormOp(form, args, _) =>
@@ -233,7 +233,7 @@ object PrettyPrinter {
     def succs(base: String, offset: Int): String =
       if (offset == 0) base else ("Level.succ(" * offset) + base + (")" * offset)
 
-    val terms = level.terms.toVector.map { case (Value.Level.ParamAtom(id), offset) =>
+    val terms = level.terms.toVector.sortBy(_._1).map { case (id, offset) =>
       succs(printParameterVar(id, "u"), offset)
     }
     val constant = if (level.c == 0) "Level.zero" else succs("Level.one", level.c - 1)
@@ -376,10 +376,10 @@ object PrettyPrinter {
       case variable: Value.Var => Vector(Text(varName(variable)))
       case thunk: Value.NeutralThunk =>
         printedCall(thunk).getOrElse(new SyntaxPrinter(thunk.env.locals.get).printMatch(thunk.term))
-      case proof: Value.VProof => Vector(Text("‹proof of "), Val(proof.tpe), Text("›"))
-      case Value.LevelTpe      => Vector(Text(CoreAst.Parameter.Level.name))
-      case Value.SortParameter => Vector(Text("SortParameter"))
-      case Value.Large         => Vector(Text("Large"))
+      case proof: Value.VProof   => Vector(Text("‹proof of "), Val(proof.tpe), Text("›"))
+      case Value.LevelTpe        => Vector(Text("Level"))
+      case Value.LevelClassifier => Vector(Text("LevelClassifier"))
+      case Value.Large           => Vector(Text("Large"))
     }
   }
 

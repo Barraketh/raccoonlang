@@ -6,7 +6,7 @@ import java.util.concurrent.atomic.AtomicReference
 
 class ValueEquivalenceTests extends munit.FunSuite with TestSupport {
   private val span = Span(0, 0)
-  private val typeSort: CoreAst.Term = CoreTestTerms.sortAt(CoreAst.Form.LevelZero, span)
+  private val typeSort: CoreAst.Term = CoreTestTerms.sortAt(CoreAst.LevelForm.LevelZero, span)
   private val binderRef = CoreAst.LocalRef(0, "x")
   private val binder = CoreAst.Binder(binderRef, typeSort, Span(0, 0), CoreAst.BinderSite.Function)
   private val env = Env.empty

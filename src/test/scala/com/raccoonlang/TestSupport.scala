@@ -16,10 +16,7 @@ trait TestSupport extends DiagnosticAssertions { this: munit.FunSuite =>
     }
 
   protected def parse(source: String, prelude: Prelude.Config): CoreAst.Program =
-    LanguageParser.parseProgram(source) match {
-      case Success(value, _, _) => Elaborator.elab(value, prelude)
-      case failure: Failure     => fail(s"Failed to parse: $failure, ${source.substring(failure.curIdx)}")
-    }
+    Elaborator.elab(parseSurface(source), prelude)
 
   protected def parse(source: String): CoreAst.Program = parse(source, suitePrelude)
 
@@ -55,21 +52,14 @@ trait TestSupport extends DiagnosticAssertions { this: munit.FunSuite =>
       loc: munit.Location
   ): E = expectTypeError(source, suitePrelude)
 
-  /** `client` checked in the same file as `module`, and run when it has a body. */
-  protected def inside(module: String, client: String): Option[Value] =
-    Interpreter.run(TypeChecker.check(Elaborator.elaborate(parseSurface(module + "\n" + client), suitePrelude)))
-
   /** `client` checked as an entry file importing `module`, another module, and run when it has a body. */
-  protected def outside(module: String, client: String): Option[Value] =
-    Interpreter.run(TypeChecker.check(Elaborator.elaborate(outsideProgram(module, client), suitePrelude)))
-
-  /** `client` loaded as an entry file importing `module`, another module. */
-  protected def outsideProgram(module: String, client: String): SurfaceAst.Program = {
+  protected def outside(module: String, client: String): Option[Value] = {
     val root = Files.createTempDirectory("raccoon-module")
     Files.write(root.resolve("Module.rac"), module.getBytes(StandardCharsets.UTF_8))
     val entry = root.resolve("main.rac")
     Files.write(entry, ("import Module\n" + client).getBytes(StandardCharsets.UTF_8))
-    ModuleLoader.load(entry, ModuleLoader.LoadConfig.forEntry(entry, suitePrelude)).program
+    val program = ModuleLoader.load(entry, ModuleLoader.LoadConfig.forEntry(entry, suitePrelude)).program
+    Interpreter.run(TypeChecker.check(Elaborator.elaborate(program, suitePrelude)))
   }
 
   protected def ctorName(value: Value): String = value match {

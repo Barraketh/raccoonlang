@@ -35,16 +35,14 @@ class ValueMetadataTests extends munit.FunSuite {
       }
 
       assertEquals(deep.synDeps, DepSet.empty)
-      assertEquals(deep.key, ValueKey.orderKey(deep))
+      assertNotEquals(deep.key, head.key)
       assert(!deep.needsStructuralDefEq)
       assert(ValueOps.materialize(deep, EqStore.empty) eq deep)
     }
   }
 
-  test("eager keys distinguish Prop from Type while preserving sort key coherence") {
+  test("eager keys distinguish Prop from Type") {
     assertNotEquals(Sorts.Prop.key, Sorts.Type.key)
-    assertEquals(Sorts.Prop.key, ValueKey.orderKey(Sorts.Prop))
-    assertEquals(Sorts.Type.key, ValueKey.orderKey(Sorts.Type))
   }
 
   test("materialization preserves shared value identity within one root") {
@@ -75,8 +73,7 @@ class ValueMetadataTests extends munit.FunSuite {
     val classifierSort = Sorts.sort(Level.mk(levelMeta.id))
     val capturedRef = CoreAst.LocalRef(420, "captured")
     val capturedEnv = Env.empty.copy(
-      locals = VectorMap(capturedRef -> VConst("A", Symbol, classifierSort)),
-      localRefs = Set(capturedRef)
+      locals = VectorMap(capturedRef -> VConst("A", Symbol, classifierSort))
     )
     val calls = new java.util.concurrent.atomic.AtomicInteger()
     val pi = VPi(
@@ -84,7 +81,7 @@ class ValueMetadataTests extends munit.FunSuite {
       Vector(
         CoreAst.Binder(
           CoreAst.LocalRef(421, "x"),
-          CoreTestTerms.sortAt(CoreAst.Form.LevelZero, Span(0, 0)),
+          CoreTestTerms.sortAt(CoreAst.LevelForm.LevelZero, Span(0, 0)),
           Span(0, 0),
           CoreAst.BinderSite.Function
         )

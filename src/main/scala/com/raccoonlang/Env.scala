@@ -6,8 +6,7 @@ object Env {
   val empty: Env =
     Env(
       globals = Map.empty,
-      locals = VectorMap.empty,
-      localRefs = Set.empty
+      locals = VectorMap.empty
     )
 
   // Internal-invariant assertions run on every env bind — the hottest path in the system — and
@@ -30,18 +29,18 @@ object Env {
 }
 
 sealed trait GlobalBinding {
-  def value(env: Env): Value
+  def value: Value
 }
 
 object GlobalBinding {
   final case class Strict(value0: Value) extends GlobalBinding {
-    override def value(env: Env): Value = value0
+    override def value: Value = value0
   }
 
   final class Lazy(force: () => Value) extends GlobalBinding {
     private[this] var cached: Option[Value] = None
 
-    override def value(env: Env): Value =
+    override def value: Value =
       cached match {
         case Some(value) => value
         case None =>
@@ -59,13 +58,12 @@ object GlobalBinding {
 // reach this layer; local lookup uses the resolved LocalRef as the map key.
 final case class Env(
     globals: Map[String, GlobalBinding],
-    locals: VectorMap[CoreAst.LocalRef, Value],
-    private[raccoonlang] val localRefs: Set[CoreAst.LocalRef]
+    locals: VectorMap[CoreAst.LocalRef, Value]
 ) {
-  require(localRefs.size == locals.size, "local-ref index size disagrees with locals")
+  private[raccoonlang] lazy val localRefs: Set[CoreAst.LocalRef] = locals.keySet
 
   def apply(name: String): Value =
-    globals.get(name).map(_.value(this)).getOrElse(fail(NotFound(name)))
+    globals.get(name).map(_.value).getOrElse(fail(NotFound(name)))
 
   def apply(ref: CoreAst.LocalRef): Value =
     locals.getOrElse(ref, fail(NotFound(ref.toString)))
@@ -109,7 +107,7 @@ final case class Env(
   ): Env = {
     Env.assertCanonicalProof(value)
     if (locals.contains(ref)) wtf(s"Local ref $ref is already bound")
-    else copy(locals = locals + (ref -> value), localRefs = localRefs + ref)
+    else copy(locals = locals + (ref -> value))
   }
 
   /**
@@ -118,7 +116,7 @@ final case class Env(
    */
   private[raccoonlang] def putLocalUnchecked(ref: CoreAst.LocalRef, value: Value): Env = {
     if (locals.contains(ref)) wtf(s"Local ref $ref is already bound")
-    else copy(locals = locals + (ref -> value), localRefs = localRefs + ref)
+    else copy(locals = locals + (ref -> value))
   }
 
   def closeForEval(capturedRefs: Set[CoreAst.LocalRef]): Env = {
@@ -129,7 +127,7 @@ final case class Env(
 
     val capturedLocals = VectorMap.from(locals.iterator.filter { case (ref, _) => capturedRefs(ref) })
 
-    copy(locals = capturedLocals, localRefs = capturedRefs)
+    copy(locals = capturedLocals)
   }
 
 }

@@ -579,7 +579,7 @@ class ProofCollapseTests extends munit.FunSuite with TestSupport {
     }
   }
 
-  test("annotated let proof values stay collapsed through evalBody") {
+  test("annotated let proof values stay collapsed through body evaluation") {
     // A let's value is bound as evaluated — nothing retypes it at the annotation — so the value
     // must already be collapsed when it is produced. `putLocal`'s collapse-invariant assertion
     // would reject an uncollapsed prop-typed binding.

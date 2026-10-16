@@ -1,6 +1,6 @@
 package com.raccoonlang
 
-import com.raccoonlang.Value.{Large, Level, SortParameter, VPi, VSort}
+import com.raccoonlang.Value.{Large, Level, LevelClassifier, VPi, VSort}
 
 /** Construction and classification of universe sorts. */
 object Sorts {
@@ -13,9 +13,9 @@ object Sorts {
 
   def sortOf(tpe: Value): Option[VSort] =
     tpe.tpe match {
-      case sort: VSort           => Some(sort)
-      case Large | SortParameter => None
-      case classifier            => wtf(s"The type $tpe is classified by $classifier, which is no classifier")
+      case sort: VSort             => Some(sort)
+      case Large | LevelClassifier => None
+      case classifier              => wtf(s"The type $tpe is classified by $classifier, which is no classifier")
     }
 
   def isProposition(tpe: Value): Boolean =

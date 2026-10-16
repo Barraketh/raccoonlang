@@ -17,18 +17,15 @@ typechecking without spending time constructing a runtime vector value.
 from __future__ import annotations
 
 import argparse
-import statistics
-import subprocess
 import sys
-import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
+from common import load_runtime_classpath, measure_command
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-SCALA_VERSION = "2.13.18"
-ROARING_BITMAP_VERSION = "1.3.0"
 DEFAULT_RACCOON_SIZES = [0, 100, 400, 800, 1600, 6400, 12800, 51200]
 DEFAULT_LEAN_SIZES = [0, 100, 400, 800, 1600, 3200, 6400]
 
@@ -130,61 +127,6 @@ def generate_lean(out_dir: Path, sizes: Iterable[int]) -> None:
         write_file(out_dir / f"nested_zip_raised_{size}.lean", lean_source(size, raised_limits=True))
 
 
-def find_dependency_jar(group_path: str, artifact: str, version: str) -> Path:
-    home = Path.home()
-    filename = f"{artifact}-{version}.jar"
-    ivy_group = group_path.replace("/", ".")
-    candidates = [
-        home
-        / "Library/Caches/Coursier/v1/https/repo1.maven.org/maven2"
-        / group_path
-        / artifact
-        / version
-        / filename,
-        home
-        / ".cache/coursier/v1/https/repo1.maven.org/maven2"
-        / group_path
-        / artifact
-        / version
-        / filename,
-        home
-        / ".ivy2/cache"
-        / ivy_group
-        / artifact
-        / "jars"
-        / filename,
-    ]
-    for candidate in candidates:
-        if candidate.exists():
-            return candidate
-
-    search_roots = [home / "Library/Caches/Coursier/v1", home / ".cache/coursier/v1", home / ".ivy2/cache"]
-    for root in search_roots:
-        if not root.exists():
-            continue
-        matches = list(root.glob(f"**/{filename}"))
-        if matches:
-            return matches[0]
-
-    raise FileNotFoundError(f"could not find {filename}; run `sbt -no-colors compile` or pass --classpath")
-
-
-def find_scala_library() -> Path:
-    return find_dependency_jar("org/scala-lang", "scala-library", SCALA_VERSION)
-
-
-def find_roaring_bitmap() -> Path:
-    return find_dependency_jar("org/roaringbitmap", "RoaringBitmap", ROARING_BITMAP_VERSION)
-
-
-def default_classpath() -> str:
-    classes = REPO_ROOT / "target/scala-2.13/classes"
-    if not classes.exists():
-        raise FileNotFoundError("missing target/scala-2.13/classes; run `sbt -no-colors compile` first")
-    jars = [str(find_scala_library()), str(find_roaring_bitmap())]
-    return ":".join([str(classes), *jars])
-
-
 @dataclass
 class RunSummary:
     name: str
@@ -197,45 +139,17 @@ class RunSummary:
     stderr_tail: str
 
 
-def run_once(command: list[str], timeout: float | None) -> tuple[int, float, str]:
-    start = time.perf_counter()
-    try:
-        result = subprocess.run(
-            command,
-            cwd=REPO_ROOT,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-            timeout=timeout,
-        )
-        elapsed = time.perf_counter() - start
-        return result.returncode, elapsed, result.stderr.decode(errors="replace")
-    except subprocess.TimeoutExpired as exc:
-        elapsed = time.perf_counter() - start
-        stderr = ""
-        if exc.stderr:
-            stderr = exc.stderr.decode(errors="replace")
-        return 124, elapsed, stderr + f"\ntimeout after {timeout}s"
-
-
 def benchmark_command(name: str, size: int, command: list[str], reps: int, timeout: float | None) -> RunSummary:
-    timings: list[float] = []
-    stderr_tail = ""
-    for rep in range(reps):
-        code, elapsed, stderr = run_once(command, timeout)
-        stderr_tail = "\n".join(line for line in stderr.strip().splitlines()[-4:] if line.strip())
-        if code != 0:
-            return RunSummary(name, size, f"exit {code}", None, elapsed, elapsed, rep + 1, stderr_tail)
-        timings.append(elapsed)
-
+    timing = measure_command(command, reps, timeout)
     return RunSummary(
         name=name,
         size=size,
-        status="ok",
-        median=statistics.median(timings),
-        minimum=min(timings),
-        maximum=max(timings),
-        reps=reps,
-        stderr_tail=stderr_tail,
+        status=timing.status,
+        median=timing.median,
+        minimum=timing.minimum,
+        maximum=timing.maximum,
+        reps=timing.reps,
+        stderr_tail=timing.stderr_tail,
     )
 
 
@@ -255,7 +169,7 @@ def print_summary(summary: RunSummary) -> None:
 
 
 def run_raccoon_jvm(args: argparse.Namespace, out_dir: Path) -> None:
-    classpath = args.classpath or default_classpath()
+    classpath = load_runtime_classpath(REPO_ROOT, args.classpath)
     for size in args.raccoon_sizes:
         reps = reps_for_size(size, args.reps, args.large_reps, args.large_threshold)
         path = out_dir / f"nested_zip_{size}.rac"
@@ -270,7 +184,7 @@ def run_raccoon_native(args: argparse.Namespace, out_dir: Path) -> None:
     for size in args.raccoon_sizes:
         reps = reps_for_size(size, args.reps, args.large_reps, args.large_threshold)
         path = out_dir / f"nested_zip_{size}.rac"
-        command = [str(native_bin), str(path)]
+        command = [str(native_bin), "--prelude", args.prelude, str(path)]
         print_summary(benchmark_command("raccoon-native", size, command, reps, args.timeout))
 
 
@@ -308,7 +222,7 @@ def main() -> int:
     parser.add_argument("--java", default="java")
     parser.add_argument("--classpath", help="JVM classpath for com.raccoonlang.Main")
     parser.add_argument("--prelude", default=str(REPO_ROOT / "src/main/resources/Init/TestPrelude.rac"))
-    parser.add_argument("--native-bin", default=str(REPO_ROOT / "native/target/scala-2.13/raccoon-release-full"))
+    parser.add_argument("--native-bin", default=str(REPO_ROOT / "target/graalvm/raccoon"))
     parser.add_argument("--lean", default="lean")
     args = parser.parse_args()
 

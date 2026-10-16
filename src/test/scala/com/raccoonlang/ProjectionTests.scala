@@ -9,7 +9,7 @@ class ProjectionTests extends munit.FunSuite with TestSupport {
   test("Pi-codomain projection peels one binder from a grouped telescope") {
     val span = Span(0, 0)
     val env = Env.empty
-    val typeSort = CoreTestTerms.sortAt(CoreAst.Form.LevelOne, span)
+    val typeSort = CoreTestTerms.sortAt(CoreAst.LevelForm.LevelOne, span)
     val x = CoreAst.Binder(CoreAst.LocalRef(0, "x"), typeSort, span, CoreAst.BinderSite.Function)
     val y = CoreAst.Binder(CoreAst.LocalRef(1, "y"), typeSort, span, CoreAst.BinderSite.Function)
     val grouped = VPi(
@@ -37,7 +37,7 @@ class ProjectionTests extends munit.FunSuite with TestSupport {
   test("Pi-result projection crosses dependent grouped binders") {
     val span = Span(0, 0)
     val env = Env.empty
-    val typeSort = CoreTestTerms.sortAt(CoreAst.Form.LevelOne, span)
+    val typeSort = CoreTestTerms.sortAt(CoreAst.LevelForm.LevelOne, span)
     val x = CoreAst.Binder(CoreAst.LocalRef(0, "x"), typeSort, span, CoreAst.BinderSite.Function)
     val y = CoreAst.Binder(
       CoreAst.LocalRef(1, "y"),

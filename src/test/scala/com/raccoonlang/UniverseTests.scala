@@ -338,10 +338,8 @@ class UniverseTests extends munit.FunSuite with TestSupport {
     val v = Value.Level.mk(vId)
 
     def eval(level: Value.Level, assignment: Map[Value.VarId, Int]): Int = {
-      val terms = level.terms.iterator.map { case (atom, offset) =>
-        val base = atom match {
-          case Value.Level.ParamAtom(id) => assignment(id)
-        }
+      val terms = level.terms.iterator.map { case (id, offset) =>
+        val base = assignment(id)
         base + offset
       }
       (terms ++ Iterator.single(level.c)).max

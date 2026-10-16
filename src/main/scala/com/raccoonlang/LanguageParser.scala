@@ -156,23 +156,22 @@ object LanguageParser {
    */
   private def trailerSpan(base: Term, trailer: Span): Span = trailer.copy(start = base.span.start)
 
-  sealed trait TypeTrailer
-  case class Dot(name: String, span: Span) extends TypeTrailer
-  case class AppTrailer(args: Vector[Term], span: Span) extends TypeTrailer
+  private sealed trait Trailer
+  private final case class Dot(name: String, span: Span) extends Trailer
+  private final case class Apply(args: Vector[Term], span: Span) extends Trailer
 
-  private def typeTrailers(implicit sourceId: Option[SourceId]): Parser[Vector[TypeTrailer]] =
-    ((P(".") ~/ identAtom).flatSpanned(sourceId).map(Dot.tupled) |
-      nonEmptyParenArgs(typeTerm).flatSpanned(sourceId).map(AppTrailer.tupled)).rep(0)
+  private def trailers(args: => Parser[Vector[Term]])(implicit sourceId: Option[SourceId]): Parser[Vector[Trailer]] =
+    ((P(".") ~/ identAtom).flatSpanned(sourceId).map[Trailer] { case (name, span) => Dot(name, span) } |
+      args.flatSpanned(sourceId).map[Trailer] { case (args, span) => Apply(args, span) }).rep(0)
+
+  private def foldTrailers(base: Term, trailers: Vector[Trailer]): Term =
+    trailers.foldLeft(base) {
+      case (cur, Dot(name, span))   => Select(cur, name, trailerSpan(cur, span))
+      case (cur, Apply(args, span)) => App(cur, args, trailerSpan(cur, span))
+    }
 
   private def typeExpr(implicit sourceId: Option[SourceId]): Parser[Term] =
-    (typeAtom ~ typeTrailers).map { case (ta, trailers) =>
-      trailers.foldLeft(ta) { case (curTerm, nextTrailer) =>
-        nextTrailer match {
-          case Dot(name, sp)        => Select(curTerm, name, trailerSpan(curTerm, sp))
-          case AppTrailer(args, sp) => App(curTerm, args, trailerSpan(curTerm, sp))
-        }
-      }
-    }
+    (typeAtom ~ trailers(nonEmptyParenArgs(typeTerm))).map { case (base, next) => foldTrailers(base, next) }
 
   /**
    * Named binder groups that open an arrow chain: `(a: A) ->`, `(a: A)(b: B) ->`. A binder commits once its `(name :`
@@ -286,20 +285,9 @@ object LanguageParser {
       .map { case (scrut, motive, cases, sp) => Match(scrut, motive, cases, sp) }
   }
 
-  sealed trait TermTrailer
-  case class TermDot(name: String, span: Span) extends TermTrailer
-  case class TermApp(args: Vector[Term], span: Span) extends TermTrailer
-
-  private def termTrailers(implicit sourceId: Option[SourceId]): Parser[Vector[TermTrailer]] =
-    ((P(".") ~/ identAtom).flatSpanned(sourceId).map(TermDot.tupled) |
-      parenArgs(term).flatSpanned(sourceId).map(TermApp.tupled)).rep(0)
-
   private def term(implicit sourceId: Option[SourceId]): Parser[Term] =
-    ((lambda | matchP | body | simplePi | termAtom) ~ termTrailers).map { case (base, trailers) =>
-      trailers.foldLeft(base) {
-        case (cur, TermDot(name, sp)) => Select(cur, name, trailerSpan(cur, sp))
-        case (cur, TermApp(args, sp)) => App(cur, args, trailerSpan(cur, sp))
-      }
+    ((lambda | matchP | body | simplePi | termAtom) ~ trailers(parenArgs(term))).map { case (base, next) =>
+      foldTrailers(base, next)
     }
 
   private def funcHeader(implicit sourceId: Option[SourceId]): Parser[FuncHeader] =

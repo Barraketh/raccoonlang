@@ -53,8 +53,7 @@ object ModuleLoader {
     }
 
     private def visitEntry(path: Path): ParsedModule = {
-      val canonical = existingPath(path.toAbsolutePath.normalize, path.toString, None)
-      visit(canonical, path.toString, None, isEntry = true)
+      visit(path.toAbsolutePath.normalize, path.toString, None, isEntry = true)
     }
 
     private def visit(path: Path, importName: String, importSpan: Option[Span], isEntry: Boolean): ParsedModule = {
@@ -134,7 +133,6 @@ object ModuleLoader {
       val candidates = sourceRoots.map(root => root.resolve(relative).normalize)
       candidates
         .find(Files.isRegularFile(_))
-        .map(_.toRealPath())
         .getOrElse(failLoad(ModuleNotFound(imp.path.mkString("."), candidates), Some(imp.span)))
     }
 

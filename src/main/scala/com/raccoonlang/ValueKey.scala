@@ -32,7 +32,6 @@ object ValueKey {
     val Level = 2
     val Sort = 3
     val PropSort = 4
-    val KernelObject = 5
     val Const = 6
     val Var = 7
     val App = 8
@@ -43,8 +42,8 @@ object ValueKey {
     val Proof = 13
     val ConstId = 16
     val LocalId = 17
-    val LevelParamAtom = 19
-    val SortParameter = 21
+    val LevelVariable = 19
+    val LevelClassifier = 21
     val Large = 22
   }
 
@@ -78,25 +77,6 @@ object ValueKey {
       cur = mixLong(cur, value.charAt(idx).toLong)
       idx += 1
     }
-    cur
-  }
-
-  private[raccoonlang] def mixBytes(key: Key, bytes: Array[Byte]): Key = {
-    var cur = mixLong(key, bytes.length.toLong)
-    var acc = 0L
-    var n = 0
-    var idx = 0
-    while (idx < bytes.length) {
-      acc = (acc << 8) | (bytes(idx) & 0xffL)
-      n += 1
-      if (n == 8) {
-        cur = mixLong(cur, acc)
-        acc = 0L
-        n = 0
-      }
-      idx += 1
-    }
-    if (n > 0) cur = mixLong(cur, acc)
     cur
   }
 
@@ -134,21 +114,18 @@ object ValueKey {
         mixValues(mixLong(mixKey(key, tag(Tag.LocalId)), nodeId.value.toLong), captures)
     }
 
-  private[raccoonlang] def levelAtomKey(atom: Value.Level.Atom): Key =
-    atom match {
-      case Value.Level.ParamAtom(id) => mixLong(tag(Tag.LevelParamAtom), id.toLong)
-    }
+  private def levelVariableKey(id: Value.VarId): Key = mixLong(tag(Tag.LevelVariable), id.toLong)
 
-  private def levelKey(terms: Map[Value.Level.Atom, Int], c: Int): Key = {
+  private def levelKey(terms: Map[Value.VarId, Int], c: Int): Key = {
     var cur = mixLong(tag(Tag.Level), c.toLong)
     val sortedTerms = terms.iterator
-      .map { case (atom, offset) => (levelAtomKey(atom), offset) }
+      .map { case (id, offset) => (levelVariableKey(id), offset) }
       .toArray
       .sortBy(_._1)
     var idx = 0
     while (idx < sortedTerms.length) {
-      val (atomKey, offset) = sortedTerms(idx)
-      cur = mixLong(mixKey(cur, atomKey), offset.toLong)
+      val (variableKey, offset) = sortedTerms(idx)
+      cur = mixLong(mixKey(cur, variableKey), offset.toLong)
       idx += 1
     }
     mixLong(cur, sortedTerms.length.toLong)
@@ -156,7 +133,7 @@ object ValueKey {
 
   def levelTpe: Key = tag(Tag.LevelTpe)
 
-  def sortParameter: Key = tag(Tag.SortParameter)
+  def levelClassifier: Key = tag(Tag.LevelClassifier)
 
   def large: Key = tag(Tag.Large)
 
@@ -189,24 +166,4 @@ object ValueKey {
     else headKey(head)
 
   def proof(tpe: Value): Key = mixKey(tag(Tag.Proof), tpe.key)
-
-  def orderKey(v: Value): Key = v match {
-    case Value.LevelTpe      => levelTpe
-    case Value.SortParameter => sortParameter
-    case Value.Large         => large
-    case level: Value.Level  => this.level(level)
-    case sort: Value.VSort   =>
-      // Prop and data Type0 have the same level but are distinct sorts.
-      this.sort(sort.isProp, sort.level)
-    case Value.VConst(n, _, _) => constant(n)
-    case Value.Var(_, id, _)   => variable(id)
-    case Value.VApp(h, args, tpe, _) =>
-      application(h, args, tpe)
-    case Value.VLam(_, id, _)        => lambda(id)
-    case m: Value.NeutralThunk       => neutralThunk(m.id)
-    case p: Value.VPi                => pi(p.id, p.binders.length)
-    case head: Value.ConstructorHead => constructorHead(head)
-    // All erased proofs of defEq propositions share a key; VProof contains only its proposition.
-    case p: Value.VProof => proof(p.tpe)
-  }
 }

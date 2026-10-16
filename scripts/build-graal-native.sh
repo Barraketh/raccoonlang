@@ -55,10 +55,10 @@ GRAAL_HOME="$(cd "$(dirname "$NATIVE_IMAGE_BIN")/.." && pwd)"
 
 mkdir -p "$OUTPUT_DIR"
 
-echo "Compiling JVM classes and writing GraalVM classpath..."
-"$SBT_BIN" -batch -no-colors compile graalvmNativeImageClasspath
+echo "Compiling JVM classes and writing the runtime classpath..."
+"$SBT_BIN" -batch -no-colors compile runtimeClasspath
 
-CLASSPATH_FILE="$ROOT_DIR/target/graalvm/classpath.txt"
+CLASSPATH_FILE="$ROOT_DIR/target/runtime-classpath.txt"
 if [[ ! -f "$CLASSPATH_FILE" ]]; then
   echo "Missing classpath file: $CLASSPATH_FILE" >&2
   exit 1

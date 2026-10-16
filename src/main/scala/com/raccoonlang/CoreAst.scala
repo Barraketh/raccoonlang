@@ -97,8 +97,8 @@ object CoreAst {
     /** The proposition sort, separate from data universes. */
     final case class Prop(span: Span) extends Term
 
-    /** A sort parameter's form applied to all of its arguments, as `Level.succ(u)`; a nullary form has none. */
-    final case class FormOp(form: Form, args: Vector[Term], span: Span) extends Term {
+    /** A level form applied to all of its arguments, as `Level.succ(u)`; a nullary form has none. */
+    final case class FormOp(form: LevelForm, args: Vector[Term], span: Span) extends Term {
       require(args.length == form.arity, s"${form.qualifiedName} takes ${form.arity} arguments")
     }
 
@@ -136,35 +136,20 @@ object CoreAst {
   }
 
   /**
-   * The sort parameters. The kernel owns them and their forms; the prelude declares none of them. `name` is the global
-   * that names the parameter and the namespace of its forms.
+   * The kernel-owned forms for universe levels. They are forms of the language, not functions: no declaration
+   * introduces them, and one is only ever written applied to all of its arguments.
    */
-  sealed abstract class Parameter(val name: String) {
-    lazy val forms: Vector[Form] = Form.all.filter(_.parameter == this)
+  sealed abstract class LevelForm(val name: String, val arity: Int) {
+    def qualifiedName: String = s"Level.$name"
   }
 
-  object Parameter {
-    case object Level extends Parameter("Level")
+  object LevelForm {
+    case object LevelZero extends LevelForm("zero", 0)
+    case object LevelOne extends LevelForm("one", 0)
+    case object LevelSucc extends LevelForm("succ", 1)
+    case object LevelMax extends LevelForm("max", 2)
 
-    val all: Vector[Parameter] = Vector(Level)
-  }
-
-  /**
-   * The forms of the sort parameters. They are forms of the language, not functions: the kernel owns them, no
-   * declaration introduces them, and one is only ever written applied to all of its arguments. A form's arguments and
-   * result are all of its own parameter.
-   */
-  sealed abstract class Form(val parameter: Parameter, val name: String, val arity: Int) {
-    def qualifiedName: String = s"${parameter.name}.$name"
-  }
-
-  object Form {
-    case object LevelZero extends Form(Parameter.Level, "zero", 0)
-    case object LevelOne extends Form(Parameter.Level, "one", 0)
-    case object LevelSucc extends Form(Parameter.Level, "succ", 1)
-    case object LevelMax extends Form(Parameter.Level, "max", 2)
-
-    val all: Vector[Form] =
+    val all: Vector[LevelForm] =
       Vector(
         LevelZero,
         LevelOne,
