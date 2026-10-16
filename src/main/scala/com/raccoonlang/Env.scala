@@ -7,10 +7,7 @@ object Env {
     Env(
       globals = Map.empty,
       locals = VectorMap.empty,
-      nativeLiterals = NativeLiteralState.empty,
-      localRefs = Set.empty,
-      openAtoms = DepSet.empty,
-      sealedMembers = Map.empty
+      localRefs = Set.empty
     )
 
   // Internal-invariant assertions run on every env bind — the hottest path in the system — and
@@ -19,11 +16,9 @@ object Env {
   private val assertionsEnabled: Boolean =
     java.lang.Boolean.parseBoolean(System.getProperty("raccoon.envAssertions", "true"))
 
-  // An atom is not a variable: a global may hold one, as a closure that names its scope's binder does (spec §4.2), or a
-  // type computed under a scope does; the type checker keeps any type that names it inside the scope.
   private[raccoonlang] def assertClosedGlobal(value: Value): Unit =
-    if (assertionsEnabled && (value.synDeps -- Atoms.all).nonEmpty)
-      wtf(s"Global value must be closed, but has free vars ${value.synDeps -- Atoms.all}")
+    if (assertionsEnabled && value.synDeps.nonEmpty)
+      wtf(s"Global value must be closed, but has free vars ${value.synDeps}")
 
   // Proof-representation invariant (docs/kernel.md#proofs-and-elimination): every value of known-propositional type
   // is a fixed point of canonicalizeProof. This includes reconstructed constructors as well as
@@ -32,15 +27,6 @@ object Env {
   private[raccoonlang] def assertCanonicalProof(value: Value): Unit =
     if (assertionsEnabled && !(Value.canonicalizeProof(value) eq value))
       wtf(s"Non-canonical proof bound into env: value ${value} of type ${value.tpe}")
-}
-
-final case class NativeLiteralState private[raccoonlang] (
-    natLayout: Option[Packed.ValidatedNatLayout],
-    stringLayout: Option[Value.ValidatedStringLayout]
-)
-
-object NativeLiteralState {
-  private[raccoonlang] val empty: NativeLiteralState = NativeLiteralState(None, None)
 }
 
 sealed trait GlobalBinding {
@@ -71,19 +57,10 @@ object GlobalBinding {
 
 // Runtime/checking environment for resolved terms. Source-name scoping is handled by the elaborator before terms
 // reach this layer; local lookup uses the resolved LocalRef as the map key.
-//
-// `openAtoms` is checker-only: the atoms whose `scope` binders enclose the position being checked (spec §4.2). It is
-// lexical, so only the checker opens one, and closing an env over a value drops them, since evaluation never checks.
-//
-// `sealedMembers` is checker-only too: each constructor and selector of a sealed family, by global name, with its
-// family's seal, which the checker consults where a global name is resolved (Sealing).
 final case class Env(
     globals: Map[String, GlobalBinding],
     locals: VectorMap[CoreAst.LocalRef, Value],
-    nativeLiterals: NativeLiteralState,
-    private[raccoonlang] val localRefs: Set[CoreAst.LocalRef],
-    private[raccoonlang] val openAtoms: DepSet,
-    private[raccoonlang] val sealedMembers: Map[String, Sealing.Seal]
+    private[raccoonlang] val localRefs: Set[CoreAst.LocalRef]
 ) {
   require(localRefs.size == locals.size, "local-ref index size disagrees with locals")
 
@@ -152,28 +129,7 @@ final case class Env(
 
     val capturedLocals = VectorMap.from(locals.iterator.filter { case (ref, _) => capturedRefs(ref) })
 
-    copy(locals = capturedLocals, localRefs = capturedRefs, openAtoms = DepSet.empty)
+    copy(locals = capturedLocals, localRefs = capturedRefs)
   }
 
-  /** Record a published global as a constructor or selector of a family sealed by `seal`. */
-  private[raccoonlang] def sealMember(name: String, seal: Sealing.Seal): Env = {
-    if (!globals.contains(name)) wtf(s"Sealed member $name is not a global")
-    copy(sealedMembers = sealedMembers + (name -> seal))
-  }
-
-  /** The body of a `scope` term, checked: its binder denotes the atom, which is open there. */
-  private[raccoonlang] def openScope(ref: CoreAst.LocalRef, atom: Value.Lifetime): Env =
-    putLocal(ref, atom).copy(openAtoms = openAtoms ++ atom.vars)
-
-  private[raccoonlang] def installStringLayout(layout: Value.ValidatedStringLayout): Env =
-    nativeLiterals.stringLayout match {
-      case Some(_) => wtf("Validated String layout is already installed")
-      case None    => copy(nativeLiterals = nativeLiterals.copy(stringLayout = Some(layout)))
-    }
-
-  private[raccoonlang] def installNatLayout(layout: Packed.ValidatedNatLayout): Env =
-    nativeLiterals.natLayout match {
-      case Some(_) => wtf("Validated Nat layout is already installed")
-      case None    => copy(nativeLiterals = nativeLiterals.copy(natLayout = Some(layout)))
-    }
 }

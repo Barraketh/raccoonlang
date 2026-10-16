@@ -1,9 +1,0 @@
-inductive Tok (l: Lifetime) : Type { kind = lin, scope = l }
- | mk : Tok(l)
-
-def eat {l: Lifetime}(t: Tok(l)): Nat := match t returning Nat with
- | Tok.mk => 0
-
-def burn {l: Lifetime}(t: Tok(l)): Eq(Nat, eat(t), 0) := Eq.refl(0)
-
-{ Nat.zero }

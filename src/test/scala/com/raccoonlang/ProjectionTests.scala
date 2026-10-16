@@ -16,11 +16,9 @@ class ProjectionTests extends munit.FunSuite with TestSupport {
       env,
       Vector(x, y),
       _ => Sorts.Type,
-      Value.Kind.unr,
-      Value.Lifetime.empty,
       DepSet.empty,
       ValueId.LocalId(NodeId.fresh(), Vector.empty),
-      () => Sorts.sort(Level.succ(Level.one), Value.Kind.unr, Value.Lifetime.empty)
+      () => Sorts.sort(Level.succ(Level.one))
     )
     val root = VConst("f", Symbol, grouped)
     val tail = Projection
@@ -50,11 +48,9 @@ class ProjectionTests extends munit.FunSuite with TestSupport {
       env,
       Vector(x, y),
       _ => Sorts.Type,
-      Value.Kind.unr,
-      Value.Lifetime.empty,
       DepSet.empty,
       ValueId.LocalId(NodeId.fresh(), Vector.empty),
-      () => Sorts.sort(Level.succ(Level.one), Value.Kind.unr, Value.Lifetime.empty)
+      () => Sorts.sort(Level.succ(Level.one))
     )
 
     assert(
@@ -135,7 +131,6 @@ class ProjectionTests extends munit.FunSuite with TestSupport {
                 CoreAst.ConstBody.TermBody(
                   CoreAst.Term.Lam(_, m: CoreAst.Term.Match, _, _, _, _, _)
                 ),
-                None,
                 _
               ) =>
             m.cases.length == 1 && m.cases.head.ctorName.endsWith("mk") && m.cases.head.argRefs.length == 2
@@ -908,8 +903,8 @@ class ProjectionTests extends munit.FunSuite with TestSupport {
         val core = Elaborator.elab(value, Prelude.test)
         Interpreter.run(core, Prelude.test)
         assert(!core.decls.exists {
-          case CoreAst.Decl.ConstDecl(_, "Bad._", _, _, _, _) => true
-          case _                                              => false
+          case CoreAst.Decl.ConstDecl(_, "Bad._", _, _, _) => true
+          case _                                           => false
         })
       case err: Failure => fail(s"Failed to parse: $err, ${p.substring(err.curIdx)}")
     }

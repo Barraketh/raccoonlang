@@ -26,8 +26,8 @@ class QuotientTests extends munit.FunSuite with TestSupport {
     case other                     => SConst(other.toString)
   }
 
-  private val natZero = SConst("0")
-  private val natOne = SConst("1")
+  private val natZero = SConst("Nat.zero")
+  private val natOne = SApp(SConst("Nat.succ"), List(natZero))
 
   private val natPrelude =
     """
@@ -121,7 +121,7 @@ class QuotientTests extends munit.FunSuite with TestSupport {
     )
 
     res.tpe match {
-      case Value.VApp(Value.VConst("Eq", _, _), Vector(_, _, quotTy, left, right), _, _) =>
+      case Value.VApp(Value.VConst("Eq", _, _), Vector(_, quotTy, left, right), _, _) =>
         val printedQuot = PrettyPrinter.print(quotTy)
         assert(printedQuot.startsWith("Quot("))
         assert(printedQuot.contains("Nat"))

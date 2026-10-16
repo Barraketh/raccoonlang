@@ -276,7 +276,7 @@ class ConsistencyTests extends munit.FunSuite with TestSupport {
     // must never inspect that proof computation. Once checked, every proof of a Pi proposition is
     // replaced by the type-directed eta-lambda, whose applications reconstruct only their result
     // proposition rather than re-entering the discarded source body.
-    // Propositional extensionality is an assumption, so it goes in a trusted prelude (spec §7.3).
+
     val propext =
       TestSupport.preludeAssuming(
         TestSupport.bundledPreludeSource,

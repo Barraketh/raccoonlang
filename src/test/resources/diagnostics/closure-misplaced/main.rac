@@ -1,3 +1,0 @@
-def apply (f: Nat -> { kind = lin } Nat -> Nat): Nat := f(0, 0)
-
-{ Nat.zero }

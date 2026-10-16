@@ -1,7 +1,0 @@
-import File
-
-// The handle is captured by a closure that would close it, but the closure is never applied.
-{
-  let h := openFile(Unit.unit)
-  fun (u: Unit): Nat => closeFile(h)
-}

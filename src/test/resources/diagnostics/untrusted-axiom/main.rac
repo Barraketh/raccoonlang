@@ -1,3 +1,0 @@
-axiom excludedMiddle (P: Prop): Or(P, Not(P))
-
-{ Nat.zero }

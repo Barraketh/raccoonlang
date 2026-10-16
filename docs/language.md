@@ -1,897 +1,170 @@
-# Raccoon language reference
-
-This document describes the source language accepted by the current parser and
-checker. It is a reference for implemented behavior, not a roadmap.
+# Raccoon language
 
 ## Programs and declarations
 
-A `.rac` file contains imports, declarations, and optionally one final
-expression. Imports must come first. Only the entry file may have a final
-expression; imported files are declaration modules.
+A file contains imports, declarations, and an optional final expression.
+Definitions, axioms, inductive families, structs, namespaces, and mutual blocks
+are supported:
 
 ```raccoon
-import Data.Nat
+def identity (A: Type)(x: A): A := x
+axiom assumed : Prop
 
-def twice (f: Nat -> Nat)(x: Nat): Nat := f(f(x))
+inductive Peano : Type
+ | zero : Peano
+ | succ (previous: Peano) : Peano
 
-{ twice(Nat.succ, 0) }
+{ identity(Peano, Peano.zero) }
 ```
 
-The declaration forms are:
+`opaque def` checks a definition but hides its data body from reduction.
+Axioms introduce explicit assumptions in any module. `:= builtin` is reserved
+for the selected prelude's primitive quotient declarations.
 
-```text
-def name (parameters): Result := term
-opaque def name (parameters): Result := term
-axiom name (parameters): Result
-[sealed] inductive Family (parameters) indices (indices): Sort
-[sealed] struct Family (parameters) indices (indices): Sort
-mutual { declarations }
-namespace Path { declarations }
-open Path
-```
-
-A `mutual` block is atomic and must contain either only function definitions or
-only inductive or structure declarations. Function bodies can refer to every
-peer, and constructors can refer to every family head. Mutual function members
-must be ordinary transparent definitions with a function parameter list, a
-`decreases` annotation, and no builtin or opaque body. For example:
-
-```raccoon
-mutual {
-  def even (n: Nat): Bool decreases structural(n) := {
-    match n returning Bool with
-    | Nat.zero => Bool.true
-    | Nat.succ k => odd(k)
-  }
-  def odd (n: Nat): Bool decreases structural(n) := {
-    match n returning Bool with
-    | Nat.zero => Bool.false
-    | Nat.succ k => even(k)
-  }
-}
-```
-
-Mutually recursive inductives use the same block form. Their declarations must
-share the common parameter telescope required by the kernel; sibling family
-heads are available in constructor fields and results:
-
-```raccoon
-mutual {
-  inductive Even : Type
-   | zero : Even
-   | succ (odd: Odd) : Even
-
-  inductive Odd : Type
-   | succ (even: Even) : Odd
-}
-```
-
-A transparent `def` reduces during checking and evaluation. An `opaque def`
-has a checked body but does not unfold after publication. An `axiom` has the
-declared type and no body. At proof types, both forms still obey canonical proof
-representation and proof irrelevance.
-
-Only the trusted prelude declares axioms. An `axiom` in any other module is
-`UntrustedAxiom`, whatever its type:
-
-```raccoon
-axiom excludedMiddle (P: Prop): Or(P, Not(P))       // UntrustedAxiom
-axiom eat {A: Type { kind = lin }}(x: A): Unit      // UntrustedAxiom
-```
-
-No rule on an axiom's type could keep it from breaking sealing, linearity or
-lifetimes: an axiom can state `False`, from which every value follows, and even
-a consistent one could consume a token without its module or equate two
-lifetimes. A program that needs an assumption declares it in a custom prelude
-instead, a copy of the bundled `Init/Prelude.rac` with the axiom added, and
-runs with `--prelude <file>`. That makes the extension of the trusted base
-explicit. The bundled prelude's axioms are `Quot` and `Quot.sound`.
-
-`:= builtin` is reserved for declarations in the trusted prelude. Ordinary
-programs cannot acquire builtin behavior.
-
-## Checking and execution
-
-The supported embedding pipeline is staged:
-
-```text
-surface program -> elaborated program -> checked program -> result
-```
-
-Elaboration resolves names and lowers surface syntax. Checking typechecks and
-publishes declarations while computing the final body value. Execution accepts
-only the resulting checked artifact; there is no second unchecked evaluation
-pass. Core-AST evaluation helpers and trusted-prelude construction are internal
-implementation operations; public prelude loaders only select a prelude for the
-staged pipeline.
-
-Identifiers begin with a letter and continue with letters, digits, or `_`.
-`//` starts a comment that runs to the end of the line. `_` binds an anonymous
-local wherever a local is bound: a binder, a pattern field, `let _ := e` or
-`scope _ => e`. No name refers to it.
+Checking collects independent errors in source order. Declarations that depend
+on a failed declaration are skipped. The final expression is evaluated only
+when checking succeeds. `--json` emits diagnostics as one JSON array.
 
 ## Universes
 
-Types are terms. `Sort`, `Type` and `Prop` are the sort formers, and they are
-keywords:
+`Prop`, `Type`, and `Sort { level = u }` are universe sorts. `Prop` is level
+zero, `Type` is level one, and a sort at `u` lives at `succ(u)`. Universe
+conversion is exact rather than cumulative.
 
-```text
-Sort { level = e, kind = k, scope = S }   // the sort at level e, kind k, scope S
-Type { kind = k, scope = S }              // level is Level.one
-Prop { kind = k, scope = S }              // level is Level.zero
-```
-
-A sort has three parameters, supplied by name in any order: its `level`, its
-`kind`, which says how the values of its types may be used, and its `scope`, a
-lifetime: the set of atoms and lifetime variables its types' values may depend
-on (see [Scopes](#scopes)).
-`Sort` is not a function: it always takes a field list, which must give its
-`level`. An omitted `kind` is `Kind.unr` and an omitted `scope` is
-`Lifetime.empty`; that is what the shorter spelling means. So `Type` is
-`Sort { level = Level.one, kind = Kind.unr, scope = Lifetime.empty }`. A field
-list is nonempty, and an unknown or repeated field is a parse error. `Type` and
-`Prop` fix the level, so a `level` field on either is a parse error too.
-
-`Level`, `Kind` and `Lifetime` are the sort parameters. An expression of one is
-a variable or one of its forms:
-
-```text
-Level.zero  Level.one  Level.succ(e)  Level.max(e, e)  Level.imax(e, e)
-Kind.unr  Kind.lin  Kind.join(e, e)
-Lifetime.empty  Lifetime.union(e, e)
-```
-
-The forms belong to the language, not to the prelude: they are not functions,
-and `Level.succ` or `Lifetime.union` written without its arguments is an
-`ArityMismatch`, as a partial application of one is. A name in a sort or
-closure field resolves to a local first, then to one of that field's forms
-unqualified, and only then as usual. So `level = succ(u)` means
-`Level.succ(u)`, even inside `namespace Nat` or in the body of a recursive
-`def succ`, and `kind = lin` and `scope = union(a, b)` mean `Kind.lin` and
-`Lifetime.union(a, b)`:
+`Level` is a second-class parameter admitted in declaration headers and family
+parameters. `Level.zero`, `Level.one`, `Level.succ(u)`, `Level.max(u, v)`, and
+`Level.imax(u, v)` form level expressions. Inside a sort's level field their
+short names are available. Every form requires its exact arity.
 
 ```raccoon
 def id {u: Level}{A: Sort { level = u }}(x: A): A := x
-
-inductive Box (u: Level)(A: Sort { level = u }) : Sort { level = u }
- | mk (value: A) : Box(u, A)
-
-def keep {k: Kind}{S: Lifetime}{A: Type { kind = k, scope = S }}(x: A): A := x
 ```
 
-Kinds and lifetimes are normalized as they are built. A lifetime is a set of
-atoms and lifetime variables:
-`union` is associative, commutative and idempotent, with `Lifetime.empty` as its
-identity. A kind is `Kind.lin` or a set of kind variables, the empty set being
-`Kind.unr`: `join` unites the sets, and `Kind.lin` absorbs. Two kinds or two
-lifetimes are equal exactly when their normal forms are.
-
-The sort parameters are second-class: they parameterize sorts, families and
-declarations, but none is a type, since no sort contains it. A position that
-requires a type rejects them with `NotAType`, so there is no `List(Level)`, no
-`Eq(Lifetime, a, b)`, no constructor field or `let` holding one, and no
-function returning one.
-
-A variable of a sort parameter is bound only at these binders; anywhere else a
-binder's type must be a type:
-
-| Binder | `Level` | `Kind` | `Lifetime` |
-|---|---|---|---|
-| a definition's, opaque definition's or axiom's header | yes | yes | yes |
-| a family parameter | yes | yes | yes |
-| a family index, a constructor field | no | no | no |
-| a function type or lambda binder | no | no | yes |
-| `scope l =>` | – | – | yes |
-
-A header is the binders written before a declaration's `:`. A function type
-written after the `:` is an ordinary function type, so
-`def f : {u: Level} -> Sort { level = u } -> Nat := …` is `NotAType` and is
-written `def f {u: Level}(A: Sort { level = u }): Nat := …`.
-
-An expression of a sort parameter stands only at a parameter position: a
-sort's field, or the argument at a binder of that parameter, as in
-`Box(Level.one, Nat)`. Anywhere else, such as a `match` scrutinee, a block's
-result or an argument at an ordinary binder, it is `NotAType`. A term of
-another type at a parameter position, such as `Sort { level = Nat.zero }` or
-`Type { scope = Kind.lin }`, is `TypeMismatch`.
-
-A function type that binds a level is *large*: no sort contains it, so a large
-type fits no position that requires a type. Only a declaration's own type can
-be large, so a level-polymorphic declaration is used only applied. Naming one
-anywhere but as the head of an application is `NotAType`: `let f := id` is
-rejected, and `fun (x: Nat): Nat => id(x)` is written instead. A large function
-type whose result is a proposition is still a proposition, so a
-level-polymorphic lemma such as `Eq.symm` is a proof like any other. A kind or
-lifetime binder does not make a type large.
-
-A sort's type is the sort one level up at the same scope and at `Kind.unr`:
-`Sort { level = u, kind = k, scope = S } : Sort { level = succ(u), scope = S }`.
-A function type's sort is at its closure kind (see
-[Closures](#closures)). Its level is computed as below, and its scope unites
-its closure scope and its binder types' scopes with its result's, less the
-lifetimes the function type binds itself, since the caller supplies them. So
-for a family `Lease (l: Lifetime) : Type { scope = l }`, `Lease(m) -> Nat` is at
-`Type { scope = m }`, and `(l: Lifetime) -> Lease(l) -> Nat` is at `Type`. A
-kind or lifetime binder contributes neither a level nor a scope.
-
-A sort whose kind is not `Kind.unr` must have a level that is never zero, else
-`LinearProp`, since proofs are unrestricted. So `Prop { kind = lin }`,
-`Sort { level = u, kind = k }` and a `{ kind = lin }` function type into a
-proposition are rejected, and a kind-polymorphic sort is written
-`Type { kind = k }` or `Sort { level = succ(u), kind = k }`.
-
-Universes are not cumulative, and neither are kinds and scopes. A value in
-`Sort { level = u }` does not automatically fit a position expecting a larger
-sort, and a type at `Type { scope = S }` does not fit a position expecting
-`Type`. Sorts must be definitionally equal, level, kind and scope alike, where
-types are compared.
-
-A binder `{k: Kind}` or `{S: Lifetime}` is forced like any implicit: through a
-family parameter in a later explicit argument's type, or through a sort's
-field or a function type's closure field, which recovers a variable only when
-the field is exactly that variable. So
-`{S: Lifetime}{A: Type { scope = S }}(x: A)` forces `S`, and so does
-`{S: Lifetime}(f: { scope = S } A -> B)`, while
-`{A: Type { scope = union(S, m) }}` does not.
-
-`Prop` is impredicative: a dependent function whose result is a proposition is
-itself a proposition regardless of the parameter universes. The sort `Prop` is
-not itself a proposition; it has type `Type`.
+Level expressions are admitted in universe fields and arguments at level
+parameters. They are not ordinary values that can be stored in an inductive
+field or returned as program results.
 
 ## Functions and binder groups
 
-Explicit parameters use parentheses. A lambda binds at least one parameter and
-writes its result type:
+All lambda parameters and result types are explicit in syntax:
 
 ```raccoon
-def apply (f: Nat -> Nat)(x: Nat): Nat := f(x)
-
-def identity : (A: Type) -> A -> A :=
-  fun (A: Type)(x: A): A => x
+fun (A: Type)(x: A): A => x
 ```
 
-An unparenthesized arrow chain forms one binder group:
+An arrow chain forms one argument group: `A -> B -> C` takes two arguments and
+is applied as `f(a, b)`. Parentheses create a nested group:
+`A -> (B -> C)` is applied as `f(a)(b)`. Grouping and implicitness are part of
+a function type's identity.
 
-```text
-A -> B -> C              two arguments, called as f(a, b)
-(a: A) -> (b: B) -> C    two arguments, called as f(a, b)
-A -> (B -> C)            one argument returning a function, called as f(a)(b)
-```
+Implicit binders use braces, as `{A: Type}`. They must be forced by the types
+of later explicit arguments. A call supplies only explicit arguments; the
+checker reconstructs implicits and then verifies all argument types. No
+heuristic unification guesses omitted arguments.
 
-Grouping is part of the type. The two-argument and nested one-argument forms
-are not convertible. Every application supplies exactly the explicit
-arguments of the function's current binder group.
-
-### Implicit parameters
-
-Implicit parameters use braces:
-
-```raccoon
-def id {A: Type}(x: A): A := x
-
-{ id(Nat.zero) }
-```
-
-Call sites never write implicit arguments. Every implicit must be recoverable
-from the type of a later explicit argument. The checker records that structural
-projection and reconstructs the implicit both while checking and while
-evaluating residual terms. An implicit binder that is not forced is rejected.
-
-Implicit and explicit binders may be interleaved. Reconstruction must still
-come from a later explicit argument, and call sites supply all explicit
-arguments in their source order.
-
-A term's type never depends on where it stands. Checking a term against an
-expected type synthesizes the term's own type and requires the two to be
-definitionally equal. So a polymorphic function named without arguments keeps
-its implicit binders, and does not fit a function type without them. Write the
-lambda instead:
-
-```raccoon
-def polyId {A: Type}(x: A): A := x
-
-def natId : Nat -> Nat := fun (x: Nat): Nat => polyId(x)
-```
-
-Inductive family parameters are erased from constructor values. At a
-constructor call, a family parameter is inferred when later stored fields
-force it; otherwise it becomes an explicit constructor argument. Implicits
-written directly on a constructor must still be forced.
-
-### Closures
-
-A function type or lambda may carry a closure, a field list with a `kind` and
-a `scope`, that says how its values may be applied and what they hold:
-
-```raccoon
-inductive Lease (l: Lifetime) : Type { scope = l }
- | mk : Lease(l)
-
-def use {l: Lifetime}(h: Lease(l)): Nat := 0
-
-def apply {kf: Kind}{S: Lifetime}(f: { kind = kf, scope = S } Unit -> Nat): Nat := f(Unit.unit)
-
-def delay (l: Lifetime)(h: Lease(l)): { scope = l } Unit -> Nat :=
-  fun (u: Unit): Nat => use(h)
-```
-
-A closure prefixes a whole binder group: the first one of an unparenthesized
-chain, or a parenthesized one, as in `A -> ({ kind = lin } B -> C)`. Before a
-later domain of the same chain it is a parse error, and so is a `level` field,
-an empty list, or an unknown or repeated field. The token after the first name
-tells a closure `{ kind = ...` from an implicit binder `{ kind: ...`. A closure
-is part of the function type, compared exactly like the rest of it, and a
-function type is at its closure's kind and counts its closure's scope.
-
-A function type captures nothing, so an omitted closure field of one is
-`Kind.unr` or `Lifetime.empty`, and a definition's own type is always at those.
-A lambda's closure is written after `fun`, and each omitted field is derived
-from what the lambda captures: the locals bound outside it that its body
-mentions. Its binder types and result type are not its body. The derived kind
-joins the captures' types' kinds, and the derived scope unites their scopes; a
-variable of `Kind` or `Lifetime` contributes nothing. So `delay`'s lambda,
-which captures `h: Lease(l)`, has type `{ scope = l } Unit -> Nat`, and a
-lambda that captures nothing has an unrestricted, empty closure wherever it
-stands: checking `fun (u: Unit): Nat => 0` against `{ scope = l } Unit -> Nat`
-is a `TypeMismatch`. A written closure field must contain what the captures
-derive, else `KindExceeded` or `ScopeExceeded`. That is also how a function
-value is lifted to a larger closure:
-`fun { kind = k, scope = S } (x: A): B => f(x)`.
+Locals may be used, copied, captured, or discarded without resource annotations.
+A function type consists of its dependent binders and result type.
 
 ## Terms and local blocks
 
-Function application uses parentheses and comma-separated arguments:
-
-```raccoon
-f(x, y)
-```
-
-A block contains ordered `let` or `open` statements followed by one result
-term:
+Terms include names, applications, lambdas, function types, sorts, matches,
+field selections, and local blocks:
 
 ```raccoon
 {
-  let x := Nat.succ(Nat.zero)
-  let y: Nat := Nat.succ(x)
-  Nat.add(x, y)
+  let n: Nat := 2
+  let next := Nat.succ(n)
+  Nat.add(next, n)
 }
 ```
 
-A type annotation on `let` must equal the value's own type. Local bindings may
-shadow earlier names.
-
-Natural-number literals are arbitrary non-negative integers. They require the
-active prelude to provide the validated unary `Nat` layout used by the bundled
-prelude. String literal syntax uses JSON-style escapes and Unicode scalar
-values, but it is available only when the active trusted prelude provides the
-validated `String`, `List Char`, and `Char.ofNat` layout. The bundled prelude
-does not currently provide that string layout.
-
-### Scopes
-
-`scope l => e` opens a fresh atom and binds `l` to the lifetime holding it,
-then denotes the value of `e`. Its type is `e`'s type. `scope` is a keyword at
-the start of a term, and a field name inside a field list; the body extends as
-far to the right as a lambda body does:
-
-```raccoon
-inductive Lease (l: Lifetime) : Type { scope = l }
- | mk : Lease(l)
-
-def use {l: Lifetime}(h: Lease(l)): Nat := 0
-
-def ok : Nat := scope l => use(Lease.mk(l))
-```
-
-The atom is unique to the `scope` term: two `scope` terms open two atoms, while
-running one term twice, a recursive call included, opens the same one. Printed
-output spells an atom as its binder.
-
-Outside its `scope`, an atom cannot be named in a type. A type whose sort's
-scope names an atom whose `scope` does not enclose it is `LifetimeEscapes`. That
-is checked on every type a term has or is checked against, on the type of every
-local at its binder, and on every argument that is a type, which is confined
-through its own sort. So `use(scope l => Lease.mk(l))` is rejected: the
-`scope`'s own type `Lease(l)` is at `Type { scope = l }`, which names its atom
-where `l` is no longer bound. So is `def T : Type := scope l => Lease(l)`,
-whose body's type is that sort. A value whose type's sort does not name the
-atom may leave, even when its code does: in
-`scope l => fun (u: Unit): Nat => use(Lease.mk(l))`, the lambda has type
-`Unit -> Nat`, since a lifetime is not a value and the lambda captures nothing
-scoped. Capturing a local of type `Lease(l)` instead would give the lambda type
-`{ scope = l } Unit -> Nat`, which cannot leave. A proposition about the first
-lambda, such as `Eq(Unit -> Nat, f, f)`, is at `Prop` and may leave too.
-
-An atom is not a variable: matching never links it to another lifetime, while a
-lifetime variable may be linked to it. Nothing checks a `scope` at run time.
+Numerals expand to ordinary applications of `Nat.zero` and `Nat.succ`. The
+prelude's natural-number operations are recursive source definitions, so large
+numerals and arithmetic can be expensive. String literals are not supported.
 
 ## Inductive families
 
-Parameters before `indices` are uniform across every constructor result.
-Binders after `indices` are indices and may vary between constructors.
+Parameters precede `indices`; constructor fields follow each constructor's
+name. Constructor results must use the family's uniform parameters.
 
 ```raccoon
-inductive Nat : Type
- | zero : Nat
- | succ (pred: Nat) : Nat
-
 inductive Vec {u: Level}(A: Sort { level = u }) indices (n: Nat)
     : Sort { level = max(one, u) }
  | nil : Vec(A, Nat.zero)
  | cons (n: Nat)(tail: Vec(A, n))(head: A) : Vec(A, Nat.succ(n))
 ```
 
-Constructors are global declarations inside the family namespace, such as
-`Nat.zero` and `Vec.cons`. A constructor result must be an application of its
-own family using all parameters uniformly. The checker validates:
-
-- the family and constructor universes, kinds and scopes;
-- constructor result shape and parameter uniformity;
-- strict positivity, including occurrences nested through parameters already
-  certified as positive;
-- the parameter/index split used by matching and reconstruction.
-
-A family's sort is declared, level, kind and scope alike, and never derived
-from its constructors. An instance `D(p*, i*)` is at exactly the declared sort
-with the arguments substituted for the parameters. The declaration must
-account for everything a value of the family can hand over:
-
-- the declared kind contains each constructor field's kind, else
-  `KindExceeded` naming the field. A family whose fields are linear only
-  through a kind variable is declared at that variable;
-- the declared scope names exactly the family's lifetime parameters: it may
-  mention only parameters, and must name each lifetime parameter, else
-  `ScopeExceeded` naming it, since a forced implicit reads the lifetime off an
-  instance's type. So `inductive Wrap (l: Lifetime) : Type` is rejected, and
-  declares `Type { scope = l }` instead.
-
-Only a parameter binds a lifetime, so each constructor field's scope, and the
-scope of each parameter's and index's type, lies within the declared scope and
-needs no check of its own. A type parameter counts at its sort's scope, which
-names a lifetime parameter.
-
-```raccoon
-inductive Lease (l: Lifetime) : Type { scope = l }
- | mk : Lease(l)
-
-inductive Tok (l: Lifetime) : Type { kind = lin, scope = l }
- | mk : Tok(l)
-
-inductive Holder {k: Kind}{S: Lifetime}(A: Type { kind = k, scope = S })
-    : Type { kind = k, scope = S }
- | mk (held: A) : Holder(A)
-
-inductive Phantom {S: Lifetime}(A: Type { scope = S }) : Type { scope = S }
- | mk : Phantom(A)
-```
-
-`Holder(Tok(m))` is at `Type { kind = lin, scope = m }` and `Holder(Nat)` at
-`Type`. `Phantom` holds no `A`, but `A` can be read off its type, so it
-declares `A`'s scope. A field of function type is at its own kind, `Kind.unr`
-for an arrow, and at its scope, which counts its domains' and result's scopes.
-A proposition obeys the same rules, so a family in `Prop` holds no linear
-field. A sibling in a `mutual` block is read by its declared sort.
-
-Constructor pattern fields correspond to stored constructor fields. Erased
-family parameters are not pattern fields.
-
-A `mutual` block may contain several inductive families or structures. The
-families are checked and published atomically; all sibling family heads are
-available while constructor fields and results are elaborated. They must share
-the same common parameter telescope, as required by the trusted Core block, but
-each may be at its own sort: a `Type` family and a `Prop` family, or a linear
-token and an unrestricted factory of them, may be siblings. Each family is
-checked against its own declared sort, so siblings that hold each other are
-bounded at each field. Generated structure selectors are declared
-immediately after the family block.
+Fields must be strictly positive and satisfy universe bounds. `mutual { ... }`
+groups mutually dependent families with a shared parameter telescope. The whole
+block succeeds or fails together.
 
 ## Pattern matching
 
-```raccoon
-def pred (n: Nat): Nat := {
-  match n returning Nat with
-  | Nat.zero => Nat.zero
-  | Nat.succ p => p
-}
-```
-
-Matches are checked for missing, duplicate, and unreachable cases. An indexed
-constructor that cannot produce the scrutinee's exact family instance may be
-omitted. Reachable constructor equations refine indices and branch-local
-types.
-
-Use `.constructor` to select a constructor by short name from the scrutinee's
-family:
+Every match writes its result type after `returning`:
 
 ```raccoon
-match n returning Nat with
-| .zero => Nat.zero
-| .succ p => p
+def pred (n: Nat): Nat := match n returning Nat with
+ | .zero => Nat.zero
+ | .succ previous => previous
 ```
 
-### Result types and `returning`
-
-A match result type is its motive, which every match writes with
-`returning`:
-
-```raccoon
-match xs returning Vec(A, n) with
-| Vec.nil => Vec.nil(A)
-| Vec.cons k tail head => xs
-```
-
-The clause continues the match header, so it may start the next line, as an
-arrow of a function type may. A match without `returning` is a parse error,
-and a motive that is not a type is `NotAType`. Each branch is checked against
-the motive under the branch's refinements. The match's type is the motive,
-evaluated where the match stands, whether or not the match reduces.
-
-Elimination from `Prop` is restricted. A Prop-valued result is always allowed.
-A data-valued result is allowed only for an empty reachable constructor set or
-when the exact proposition determines every constructor field. See
-[Proofs and elimination](kernel.md#proofs-and-elimination).
-
-## Linear types
-
-A type is linear when its kind is not `Kind.unr`: a family declared at
-`Kind.lin`, or at a kind variable its instance makes linear; a function type
-whose closure kind is not `Kind.unr`; or a type variable whose sort's kind is
-not. A kind variable counts, since some instantiation makes it `Kind.lin`.
-Sorts and propositions are never linear. Values of a linear family are made by
-its constructors and consumed by `match`.
-
-Every local of linear type is used exactly once within its binder's extent,
-whether a lambda's or definition's parameter, a `let` or a pattern field binds
-it, `_` included. Uses are counted along each path that takes one branch at
-every `match`, and any occurrence is a use:
-
-```raccoon
-inductive Tok (l: Lifetime) : Type { kind = lin, scope = l }
- | mk : Tok(l)
-
-def eat {l: Lifetime}(t: Tok(l)): Nat := match t returning Nat with
- | Tok.mk => 0
-
-def pick {l: Lifetime}(b: Bool)(t: Tok(l)): Nat := match b returning Nat with
- | Bool.true => eat(t)
- | Bool.false => Nat.succ(eat(t))
-```
-
-Leaving out `eat(t)` in one branch is `LinearUnused(t)`, reported at the
-binder, and `Nat.add(eat(t), eat(t))` is `LinearReused(t)`, reported at the
-second use. A path that reuses a local is reported as reused, even where
-another path leaves it unused. Matching a linear value consumes it, and its
-fields must each be used once in the branch, so a wildcard over a linear field
-is `LinearUnused`. A match with no branch ends every path through it and so
-uses every linear local still unused there; nothing after it is on those
-paths. A `decreases` clause is not a use. Applying a struct selector to a
-linear value consumes the value.
-
-A lambda's body runs only when the lambda is applied, so it is not on the
-paths around it, and a match with no branch inside it ends none of them. A use
-of an outer local inside a lambda is one use, by the lambda, at the lambda's
-position, and the lambda must use it exactly once on every path through its
-body. A lambda that captures a linear local is itself
-linear, its derived closure kind is `Kind.lin`, and writing it at `Kind.unr` is
-`KindExceeded`. A value of a linear function type is used by applying it, so
-it is applied exactly once.
-
-Binders are exact about kinds: `{A: Type}` accepts only unrestricted types and
-`{A: Type { kind = lin }}` only linear ones. A position that accepts both takes
-a kind variable, and a local whose type is at that variable is tracked, so the
-one definition consumes its argument in every instantiation:
-
-```raccoon
-def pass {k: Kind}{S: Lifetime}{A: Type { kind = k, scope = S }}(x: A): A := x
-
-def apply {kf: Kind}{Sf: Lifetime}(f: { kind = kf, scope = Sf } Unit -> Nat): Nat := f(Unit.unit)
-```
-
-`pass(3)` and `pass(t)` both check, as do `apply` of a lambda that captures a
-token and of one that captures nothing. A definition that drops or copies its
-argument exists only at `Kind.unr`.
-
-A value outside every binder is never tracked, so a definition or opaque
-definition whose type is linear is `LinearGlobal`, and so is a program whose
-final `{ … }` result has a linear type: nothing would ever use it, so a client
-could end the program holding a module's token. Axioms belong to the trusted
-prelude. A definition's own function type is unrestricted, so a definition that
-takes or returns tokens is an ordinary global.
-
-Types and proofs hold no tokens. A term whose type is a sort or a proposition
-may not contain a subterm of linear type, which is `LinearInType`, reported at
-that subterm. That covers a binder type such as `Eq(Nat, eat(t), 0)`, a type
-computed by a definition, a `returning` motive, and a proof: a definition
-whose type is a proposition cannot consume a token, and so cannot take one. A lambda that
-consumes its own linear parameter is refused inside a type too; name it by a
-definition and refer to it by name instead. So no type mentions a linear local,
-and an implicit binder of linear type is never forced, which is
-`NonForcedImplicitParam`. Facts about a token are stated about its indices,
-which are unrestricted:
-
-```raccoon
-inductive Coin (l: Lifetime) indices (n: Nat) : Type { kind = lin, scope = l }
- | mk (n: Nat) : Coin(l, n)
-
-def spend {l: Lifetime}{n: Nat}(c: Coin(l, n))(p: Eq(Nat, n, 1)): Nat := match c returning Nat with
- | Coin.mk m => m
-```
-
-A struct selector binds every field and returns one, so a selector of a linear
-struct is rejected when another field is linear (`LinearUnused`), when its
-field's type names an earlier field, since its result type then applies that
-field's selector to the struct value (`LinearInType`), and when its field is a
-proof (`LinearInType`). The struct and its other selectors are still declared;
-match on the constructor instead.
+A branch may use a qualified constructor name or a short `.constructor` name.
+It binds one variable per stored field; `_` discards a field. The checker
+refines indices and requires all reachable cases. A failed equality check alone
+does not prove a case impossible. Proof irrelevance and controlled elimination
+from `Prop` follow the [kernel rules](kernel.md#proofs-and-elimination).
 
 ## Recursive definitions
 
-A recursive function must carry a `decreases` clause:
+Recursion requires `decreases structural(argument)`,
+`decreases lexicographic(first, second)`, or `decreases measure(term)`:
 
 ```raccoon
-def add (a: Nat)(b: Nat): Nat decreases structural(b) := {
-  match b returning Nat with
-  | Nat.zero => a
-  | Nat.succ p => add(Nat.succ(a), p)
-}
+def size (n: Nat): Nat decreases structural(n) := match n returning Nat with
+ | .zero => 0
+ | .succ previous => Nat.succ(size(previous))
 ```
 
-Three specifications are available:
-
-- `decreases structural(x)` requires the recursive call's `x` argument to be
-  a strict constructor subterm of the current one;
-- `decreases lexicographic(x, y, ...)` accepts a decrease in the first changed
-  component after a definitionally equal prefix;
-- `decreases measure(term)` evaluates an inductive-valued measure and requires
-  it to become a strict structural subterm.
-
-`measure` is useful when the recursive arguments are rebuilt rather than
-passed directly as constructor fields. The same measure expression is
-evaluated for the current call and for each recursive call:
-
-```raccoon
-struct Cursor {u: Level}(A: Sort { level = u }) : Sort { level = u }
- | mk (remaining: List(A)) : Cursor(A)
-
-def countRemaining {u: Level}{A: Sort { level = u }}(cursor: Cursor(A)): Nat decreases measure(cursor.remaining) := {
-  match cursor.remaining returning Nat with
-  | List.nil => 0
-  | List.cons _ tail =>
-      Nat.succ(countRemaining(Cursor.mk(tail)))
-}
-```
-
-The new `Cursor` is not itself a subterm of the old one, but its `remaining`
-list is a strict subterm of the old list. A measure is not an arbitrary
-well-founded relation or an inequality proved by the program: after evaluation,
-the checker must be able to observe strict constructor-field descent. Packed
-`Nat` measures use numeric `<`, corresponding to repeated predecessor descent.
-
-Metrics must have genuine inductive data types. Proofs, axiomatic types, and
-quotients cannot supply structural termination evidence.
-
-The recursive name may occur only as the head of a direct recursive call while
-checking the body. It cannot be stored, returned, passed to another function,
-or hidden inside another value. A recursive call must supply the exact current
-binder group.
-
-A `mutual` block exposes mutually recursive definitions whose members have
-compatible lexicographic metrics. Every member must carry `decreases
-structural(...)` or `decreases lexicographic(...)`; measure specifications are
-supported only for singly recursive definitions. Mutual groups are checked and
-published atomically, and cross-member calls obey the caller's metric.
+Calls must decrease structurally in the declared metric. Recursive functions
+cannot be passed around as values while checking their own bodies. A
+`mutual { ... }` group may contain recursively calling definitions; every
+member requires a compatible decrease annotation.
 
 ## Structs and projections
 
-`struct` is syntax for a one-constructor inductive plus named selector
-definitions:
+A `struct` has one constructor and generates selectors for its named fields:
 
 ```raccoon
 struct Pair (A: Type)(B: Type) : Type
- | mk (fst: A)(snd: B) : Pair(A, B)
-
-def first {A: Type}{B: Type}(p: Pair(A, B)): A := p.fst
+ | mk (first: A)(second: B) : Pair(A, B)
 ```
 
-A struct declaration has exactly one constructor. Every named stored field
-gets a selector in the family namespace, so `p.fst` and `Pair.fst(p)` are the
-same ordinary function application. A selector is a match on its parameter
-`self` that returns the field, with the field's type as its `returning` clause.
-An `_` field remains stored but gets no selector.
-
-Structure eta is based on the checked family shape, not the `struct` keyword.
-Any non-Prop family instance is eta-eligible when it has exactly one
-constructor, no indices, and no recursive constructor field, sealed or not. A plain
-`inductive` can therefore receive eta without receiving named selectors.
-Indexed or recursive singleton families still have positional metadata used by
-generated selectors, but they do not receive eta.
-
-For a Prop-valued instance, proof representation and elimination rules replace
-data structure eta. A selector out of a proposition is an ordinary match and
-must obey the same elimination restriction as any other match.
-
-## Sealed families
-
-A family declared `sealed inductive` or `sealed struct` keeps its constructors
-and selectors to its module, the `.rac` file that declares it. Every other
-module sees its head, parameters, indices and sort, and may use the module's
-definitions, but outside the module each of these is `SealedConstructor`:
-
-- naming one of its constructors, applied or not;
-- selecting one of its fields, as `b.n` or `Box.n(b)`;
-- matching on a value of it, with qualified or `.short` case heads.
-
-The names still resolve, so such a use reports `SealedConstructor` rather than
-an unknown name. A value of a sealed family is therefore made and taken apart
-only by its module, which is what makes a capability confine anything:
-
-```raccoon
-// Lease.rac
-sealed inductive Lease (l: Lifetime) : Type { scope = l }
- | mk : Lease(l)
-
-def withLease {k: Kind}{S: Lifetime}{A: Type { kind = k, scope = S }}{kf: Kind}{Sf: Lifetime}
-    (f: { kind = kf, scope = Sf } (l: Lifetime) -> Lease(l) -> A): A :=
-  scope l => f(l, Lease.mk(l))
-```
-
-Another module calls `withLease(fun (l: Lifetime)(h: Lease(l)): Nat => 0)`, but
-`Lease.mk(l)` there is `SealedConstructor`. `withLease` serves every callback:
-`A`, `k` and `S` are read off the callback's result type, and `kf` and `Sf` off
-its closure, so a callback that captures a token is linear and one that
-captures nothing is not. Since `A` is bound outside the callback's lifetime
-binder, a callback cannot return anything whose type names `l`, such as the
-lease itself: its result type depends on the binder, so `A` cannot be
-reconstructed. `examples/leases` is a runnable module and client that use it.
-
-An implicit parameter may be forced through a sealed constructor's field only
-inside the family's module; elsewhere it is `NonForcedImplicitParam`. The
-module's own definitions that force one that way can be applied anywhere, and
-an implicit argument the checker reconstructs may be a sealed constructor
-application.
-
-Every value of a sealed family comes from its constructors, since only the
-trusted prelude declares axioms and it declares no sealed family. So structure
-eta and proof reconstruction apply to a sealed family as to any other, and open
-nothing its module did not build.
-
-```raccoon
-// Permit.rac
-sealed inductive Permit (l: Lifetime) : Prop
- | mk : Permit(l)
-
-sealed inductive Tok (l: Lifetime) : Type { kind = lin, scope = l }
- | mk : Tok(l)
-
-def redeem {l: Lifetime}(p: Permit(l)): Tok(l) := match p returning Tok(l) with
- | .mk => Tok.mk(l)
-
-def grant (n: Nat): Permit(Lifetime.empty) := Permit.mk(Lifetime.empty)
-```
-
-A proof function's body never runs, so `grant(0)` is the proof of
-`Permit(Lifetime.empty)` reconstructed from its proposition, which is
-`Permit.mk(Lifetime.empty)`. Any module may call `redeem(grant(0))`, and it
-reduces to a token.
-
-Sealing restricts what a program may write, not what the checker knows: kinds,
-scopes, coverage, apartness and conversion use the full declaration in every
-module.
+`p.first` resolves to `Pair.first(p)`. Selectors are ordinary functions
+implemented by pattern matching. Eligible data structures have structure eta.
+Constructors and selectors are accessible from importing modules.
 
 ## Namespaces and names
 
-Namespaces prefix canonical declaration names:
-
-```raccoon
-namespace Data {
-  inductive Tree : Type
-   | leaf : Tree
-   | node (left: Tree)(right: Tree) : Tree
-}
-```
-
-This declares `Data.Tree`, `Data.Tree.leaf`, and `Data.Tree.node`.
-Constructors always live under their family head.
-
-Dotted names resolve their first segment as follows:
-
-1. a local binding;
-2. in a sort or closure field, one of that field's forms;
-3. in the body of a recursive definition or `mutual` group, a member of the
-   group, when the whole path names it as it would name its global;
-4. the current namespace, from most specific to the root;
-5. aliases in the current open scope.
-
-A definition's own name and its peers' are not locals, which is why a field's
-forms win over them. If the first segment is local, the remaining path is
-projection syntax. Once a
-global first segment is selected, resolution continues inside that object and
-does not backtrack to another open. Prefix a path with `_root_.` to bypass
-locals, a field's forms, the current namespace, and opens.
-
-`open` takes a snapshot of a namespace's existing children:
-
-```raccoon
-open Nat
-open Nat.{zero, succ}
-open Nat.{zero as z, succ as s}
-open Nat.{*, -succ, succ as nsucc}
-open _root_.Nat
-```
-
-`open Nat` means `open Nat.{*}`. Renamed aliases may be used as prefixes when
-the opened object has children. Conflicting aliases in one open scope are
-rejected. Opens are lexically scoped by namespaces, command blocks, and term
-blocks; declarations retain their canonical names.
+`namespace Name { ... }` qualifies declarations. `open Name` makes members
+available locally; `open Name.{member, old as renamed, -excluded, *}` controls
+aliases. Opens inside blocks affect subsequent statements in that block.
+Locals take precedence over opened names. `_root_.Name.member` resolves an
+absolute global name.
 
 ## Imports
 
-```raccoon
-import Lib.Data.Nat
-```
-
-The import searches each configured source root for `Lib/Data/Nat.rac`.
-Dependencies load before the importing module, duplicate imports are emitted
-once, and import cycles are rejected. Each file is its own module, which is
-what a sealed family's seal refers to. Imported declarations keep their
-canonical names and are not opened automatically.
-
-`Init.Prelude` is loaded automatically by the normal CLI. An explicit
-`import Init.Prelude` is accepted as a no-op with the bundled or custom
-prelude configuration.
+`import A.B` loads `A/B.rac` from a source root. The entry file's directory is
+the default root; repeat `--root <directory>` to add roots. Imported modules
+contain declarations without a final program expression. Import cycles,
+missing modules, and module parse errors produce diagnostics.
 
 ## Bundled prelude
 
-The bundled prelude defines the ordinary logical and data vocabulary used by
-the examples and tests, including:
+The bundled `Init/Prelude.rac` supplies equality, propositions, booleans,
+natural numbers, lists, options, sums, products, dependent pairs, subtypes,
+decidability helpers, and quotients. Its definitions are polymorphic in universe
+levels where applicable.
 
-- `Eq`, `False`, `True`, `And`, `Or`, `Iff`, and `Not`;
-- `Empty`, `Unit`, `Bool`, `Nat`, `Option`, `Sum`, `List`, `Prod`, and `Sigma`;
-- `Decidable`, `Subtype`, `Exists`, `Nonempty`, and common boolean and natural
-  operations;
-- `Quot` with `Quot.mk`, `Quot.sound`, `Quot.lift`, and `Quot.ind`.
-
-Its polymorphic declarations are lifetime-polymorphic. Each takes a lifetime
-variable beside each type parameter, `Prop`-valued ones included, one for the
-sort of each type-family parameter's result, and one for each function-typed
-parameter's closure scope. All of them are forced implicits, so no call site
-writes them:
-
-```text
-inductive List {u: Level}{S: Lifetime}(A: Sort { level = u, scope = S })
-    : Sort { level = u, scope = S }
-
-def List.map {u: Level}{v: Level}{S: Lifetime}{T: Lifetime}{Sf: Lifetime}
-    {A: Sort { level = u, scope = S }}
-    (xs: List(A))(B: Sort { level = v, scope = T })(f: { scope = Sf } A -> B)
-    : List(B)
-
-def Eq.subst {u: Level}{S: Lifetime}{Sm: Lifetime}{Sc: Lifetime}
-    {A: Sort { level = u, scope = S }}{x: A}{y: A}
-    (p: Eq(A, x, y))(v: Level)(motive: { scope = Sc } A -> Sort { level = v, scope = Sm })
-    (h: motive(x)): motive(y)
-```
-
-So for a family `W (l: Lifetime) : Type { scope = l }`, `List(W(l))` is at
-`Type { scope = l }`, `Eq(W(l), a, b)` is at `Prop { scope = l }`, and a lambda
-passed to `List.map` may capture a `W(l)`. A family declares the union of its
-parameters' scopes, as `Prod` declares `scope = union(S, T)`. The prelude
-declares nothing at a kind other than `Kind.unr` and no kind variable, and every
-declaration is at `Lifetime.empty`, a lifetime variable, or a union of them.
-
-A family's function-typed field cannot have a closure-scope variable of its
-own, since nothing in an instance's type would force it. It takes the family's
-own scope as its closure scope instead, as in
-`BEq {u: Level}{S: Lifetime}(A: Sort { level = u, scope = S })` with
-`mk (beq: { scope = S } A -> A -> Bool)`: the closure may hold what the
-family's values may already depend on, and adds nothing to the family's scope.
-`Iff`, `DecidableEq`, `LE`, `LT` and `Subsingleton` do the same, and `LE.le` and
-`LT.lt` return propositions at that scope too. `Not(a)` is a function type at
-`a`'s scope, `{ scope = S } (h: a) -> False`. So `listBEq` can build a `BEq`
-from a lambda that captures a `BEq(A)`, while a lambda that captures nothing
-passed at a scoped instance writes its closure, as
-`fun { scope = S } (a: P)(b: P): Eq(P, a, b) => Eq.refl(a)` does in
-`propSubsingleton`.
-
-The prelude source is authoritative for its exact API:
-`src/main/resources/Init/Prelude.rac`.
+Use `--prelude <file>` to select a custom prelude or `--no-prelude` to start
+with only the kernel's universe forms. A custom prelude is checked as ordinary
+source and does not need any particular numeric or string layout.

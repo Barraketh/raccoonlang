@@ -1,3 +1,0 @@
-def keep : Nat -> Nat := fun {} (n: Nat): Nat => n
-
-{ keep(Nat.zero) }

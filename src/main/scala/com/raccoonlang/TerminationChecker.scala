@@ -162,14 +162,6 @@ object TerminationChecker {
 
   private[raccoonlang] def isStrictSubterm(candidate: Value, root: Value): Boolean =
     root match {
-      // A packed root is ordered by its codec, never by field descent: the decoded layer is a
-      // freshly built value, so descending it would compare against a different representation.
-      // This arm must stay ahead of the constructor-form one.
-      case root: VPacked =>
-        candidate match {
-          case packed: VPacked if packed.codec == root.codec => root.codec.strictlyLess(packed, root)
-          case _                                             => false
-        }
       case ConstructorForm(_, fields) =>
         descendsInto(candidate, fields)
       // Structure eta (rule 4): a neutral root at an eta-eligible struct type has the same fields a

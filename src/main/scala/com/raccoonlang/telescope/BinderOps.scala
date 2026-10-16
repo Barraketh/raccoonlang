@@ -54,8 +54,7 @@ object BinderOps {
   def checkBinders(
       binders: Vector[CoreAst.Binder],
       baseEnv: Env,
-      familyParams: Int,
-      span: Span
+      familyParams: Int
   ): CheckedBinders = {
     var env = baseEnv
     val holeIds = Vector.newBuilder[Option[Value.VarId]]
@@ -71,7 +70,7 @@ object BinderOps {
     val inputs = binders.zip(holeIds.result()).map { case (binder, holeId) =>
       Projection.BinderInput(binder.name, binder.span, binder.isImplicit, env(binder.localRef), holeId)
     }
-    val compiled = Projection.compile(inputs, familyParams, span)
+    val compiled = Projection.compile(inputs, familyParams)
 
     checked(compiled, binders, checkedTys, env)
   }

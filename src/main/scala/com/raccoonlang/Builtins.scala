@@ -55,10 +55,7 @@ private object Builtins {
       case None        => wtf(s"Unknown builtin $name")
     }
 
-  /**
-   * The position of the binder `name` in a builtin's declared type. Builtins locate their arguments by name, so the
-   * prelude may add binders, such as lifetime variables, without moving them.
-   */
+  /** Locate a primitive quotient argument in its declared telescope. */
   private def binderIndex(pi: VPi, name: String): Int =
     pi.binders.indexWhere(_.name == name) match {
       case -1  => wtf(s"Builtin type $pi has no binder $name")

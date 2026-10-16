@@ -8,9 +8,9 @@ package com.raccoonlang
 //
 // A few fields exist only after checking — `Binder.projection`, `Pi.knownPropValued`, and
 // `Lam.recursivePeers`. Each defaults to the "not yet checked" value, so the parser and elaborator
-// never mention them. A lambda's derived closure field is likewise empty until the checker derives it.
+// never mention them.
 //
-// A Pi, lambda, match and `scope` carry their node identity (NodeId) as a field of their own, with no default: whoever
+// A Pi, lambda and match carry their node identity (NodeId) as a field of their own, with no default: whoever
 // makes one of these nodes allocates it a fresh identity, and whoever rebuilds one, as the checker does with its
 // residual, keeps the identity of the node it rebuilds (docs/kernel.md#value-identity).
 
@@ -64,23 +64,16 @@ object CoreAst {
 
     final case class LocalRef(ref: CoreAst.LocalRef, span: Span) extends Ref
 
-    final case class NatLit(value: BigInt, span: Span) extends Term
-
-    final case class StrLit(scalars: Vector[Int], span: Span) extends Term
-
     // Projection: base[field]
     final case class Select(base: Term, field: String, span: Span) extends Term
 
-    // Pi { kind = k, scope = S } (x: A) -> B x
     //
     // No classifier field: a Pi's universe is env-dependent (level-polymorphic binder types), so it is derived at
     // evaluation time (Interpreter.piClassifier), never baked in. `knownPropValued` is only a checker-filled cache of
-    // the classifications that cannot change under level instantiation. The closure is evaluated where the Pi stands,
-    // outside its own binders.
+    // the classifications that cannot change under level instantiation.
     final case class Pi(
         binders: Vector[Binder],
         out: Term,
-        closure: Closure,
         span: Span,
         id: NodeId,
         knownPropValued: Option[Boolean] = None
@@ -98,11 +91,8 @@ object CoreAst {
 
     final case class Body(lets: Vector[Let], res: Term, span: Span) extends Term
 
-    /**
-     * The sort at `level`, `kind` and `scope`. `Type` and `Prop` elaborate to it at `Level.one` and `Level.zero`, and
-     * an omitted `kind` or `scope` to `Kind.unr` or `Lifetime.empty`.
-     */
-    final case class Sort(level: Term, kind: Term, scope: Term, span: Span) extends Term
+    /** A universe sort, with Type at level one and Prop at level zero. */
+    final case class Sort(level: Term, span: Span) extends Term
 
     /** A sort parameter's form applied to all of its arguments, as `Level.succ(u)`; a nullary form has none. */
     final case class FormOp(form: Form, args: Vector[Term], span: Span) extends Term {
@@ -124,18 +114,11 @@ object CoreAst {
         recursivePeers: Vector[(CoreAst.LocalRef, String)] = Vector.empty
     ) extends Term {
 
-      /** What the body mentions: a local bound outside the lambda among these is one of its captures (spec §4.3). */
+      /** What the body mentions: a local bound outside the lambda among these is one of its captures. */
       lazy val bodyRefs: Set[CoreAst.LocalRef] = mentionedRefs(body)
 
       lazy val refs: Set[CoreAst.LocalRef] = ty.refs | bodyRefs
     }
-
-    /**
-     * `scope l => body` (spec §4.1): `ref` denotes the atom this term opens, which its node identity names (Atoms), in
-     * checking and evaluation alike. A residual keeps the term's node identity, so re-evaluating it opens the same
-     * atom.
-     */
-    final case class Scope(ref: CoreAst.LocalRef, body: Term, span: Span, id: NodeId) extends Term
 
     final case class Match(
         scrut: Term,
@@ -150,51 +133,8 @@ object CoreAst {
   }
 
   /**
-   * A function type's or lambda's closure (spec §1): its kind, how its values may be applied, and its scope, what they
-   * hold. A function type captures nothing, so an omitted field of one is written as `Kind.unr` or `Lifetime.empty`.
-   */
-  final case class Closure(kind: ClosureField, scope: ClosureField) {
-    def terms: Vector[Term] = Vector(kind, scope).flatMap(_.term)
-  }
-
-  object Closure {
-
-    /** The closure of a function type that writes none, and of every declaration's own type (spec §3.3). */
-    def unrestricted(span: Span): Closure =
-      Closure(
-        ClosureField.Written(Term.FormOp(Form.KindUnr, Vector.empty, span)),
-        ClosureField.Written(Term.FormOp(Form.LifetimeEmpty, Vector.empty, span))
-      )
-  }
-
-  sealed trait ClosureField {
-    def term: Option[Term]
-  }
-
-  object ClosureField {
-    final case class Written(written: Term) extends ClosureField {
-      override def term: Option[Term] = Some(written)
-    }
-
-    /** A lambda's omitted field as elaborated, before checking derives it from the lambda's captures. */
-    case object Omitted extends ClosureField {
-      override def term: Option[Term] = None
-    }
-
-    /**
-     * A lambda's omitted field as checked (spec §8): the captures it is derived from. Evaluation reads them where the
-     * lambda stands and derives the field from their types' sorts (spec §4.3). A capture that contributes `Kind.unr` or
-     * `Lifetime.empty` to the field as checking saw it is left out, since every instantiation keeps that. The captures
-     * are among the lambda's body refs, so the lambda's own closure env binds them; they are not subterms of its type.
-     */
-    final case class Derived(captures: Vector[LocalRef]) extends ClosureField {
-      override def term: Option[Term] = None
-    }
-  }
-
-  /**
-   * The sort parameters (spec §2.2). The kernel owns them and their forms; the prelude declares none of them. `name` is
-   * the global that names the parameter and the namespace of its forms.
+   * The sort parameters. The kernel owns them and their forms; the prelude declares none of them. `name` is the global
+   * that names the parameter and the namespace of its forms.
    */
   sealed abstract class Parameter(val name: String) {
     lazy val forms: Vector[Form] = Form.all.filter(_.parameter == this)
@@ -202,10 +142,8 @@ object CoreAst {
 
   object Parameter {
     case object Level extends Parameter("Level")
-    case object Kind extends Parameter("Kind")
-    case object Lifetime extends Parameter("Lifetime")
 
-    val all: Vector[Parameter] = Vector(Level, Kind, Lifetime)
+    val all: Vector[Parameter] = Vector(Level)
   }
 
   /**
@@ -223,11 +161,6 @@ object CoreAst {
     case object LevelSucc extends Form(Parameter.Level, "succ", 1)
     case object LevelMax extends Form(Parameter.Level, "max", 2)
     case object LevelIMax extends Form(Parameter.Level, "imax", 2)
-    case object KindUnr extends Form(Parameter.Kind, "unr", 0)
-    case object KindLin extends Form(Parameter.Kind, "lin", 0)
-    case object KindJoin extends Form(Parameter.Kind, "join", 2)
-    case object LifetimeEmpty extends Form(Parameter.Lifetime, "empty", 0)
-    case object LifetimeUnion extends Form(Parameter.Lifetime, "union", 2)
 
     val all: Vector[Form] =
       Vector(
@@ -235,12 +168,7 @@ object CoreAst {
         LevelOne,
         LevelSucc,
         LevelMax,
-        LevelIMax,
-        KindUnr,
-        KindLin,
-        KindJoin,
-        LifetimeEmpty,
-        LifetimeUnion
+        LevelIMax
       )
   }
 
@@ -253,17 +181,16 @@ object CoreAst {
    */
   def children(term: Term): Vector[Term] =
     term match {
-      case _: Term.GlobalRef | _: Term.LocalRef | _: Term.NatLit | _: Term.StrLit =>
+      case _: Term.GlobalRef | _: Term.LocalRef =>
         Vector.empty
-      case Term.Select(base, _, _)                 => Vector(base)
-      case Term.Sort(level, kind, scope, _)        => Vector(level, kind, scope)
-      case Term.FormOp(_, args, _)                 => args
-      case Term.App(fn, args, _)                   => fn +: args
-      case Term.Pi(binders, out, closure, _, _, _) => closure.terms ++ binders.map(_.ty) :+ out
+      case Term.Select(base, _, _)        => Vector(base)
+      case Term.Sort(level, _)            => Vector(level)
+      case Term.FormOp(_, args, _)        => args
+      case Term.App(fn, args, _)          => fn +: args
+      case Term.Pi(binders, out, _, _, _) => binders.map(_.ty) :+ out
       case Term.Body(lets, res, _) =>
         lets.flatMap(let => let.ty.toVector :+ let.value) :+ res
       case Term.Lam(ty, body, _, _, _, _, _) => Vector(ty, body)
-      case Term.Scope(_, body, _, _)         => Vector(body)
       case Term.Match(scrut, motive, cases, _, _) =>
         Vector(scrut, motive) ++ cases.map(_.body)
     }
@@ -309,9 +236,9 @@ object CoreAst {
   }
 
   /**
-   * Where a binder was written, which decides what it may bind (spec §2.2): a declaration's header or a family's
-   * parameters may bind a level; a family index, a constructor field, and a function type's or lambda's binder may not.
-   * A function type written after a declaration's `:` is not its header.
+   * Where a binder was written, which decides what it may bind: a declaration's header or a family's parameters may
+   * bind a level; a family index, a constructor field, and a function type's or lambda's binder may not. A function
+   * type written after a declaration's `:` is not its header.
    */
   sealed trait BinderSite
   object BinderSite {
@@ -442,14 +369,12 @@ object CoreAst {
 
   object Decl {
     // Constant: name : type [:= value]. Opaque definitions keep only their symbolic head in the environment.
-    // `sealedBy` is the seal of the family whose generated selector this is, when that family is sealed: the selector is
-    // kept to the family's module, as its constructors are.
+
     final case class ConstDecl(
         isOpaque: Boolean,
         name: String,
         ty: Term,
         body: ConstBody,
-        sealedBy: Option[Sealing.Seal],
         span: Span
     ) extends Decl
 
@@ -459,12 +384,10 @@ object CoreAst {
         span: Span
     ) extends Decl
 
-    // Inductive type declaration. Record syntax has already been lowered to ordinary selector definitions. A sealed
-    // family's `seal` keeps its constructors and selectors to the module its declaration was read from (Sealing).
+    // Record syntax has already been lowered to ordinary selector definitions.
     final case class InductiveDecl(
         header: InductiveHeader,
         ctors: Vector[ConstructorDecl],
-        seal: Option[Sealing.Seal],
         span: Span
     ) extends Decl
 

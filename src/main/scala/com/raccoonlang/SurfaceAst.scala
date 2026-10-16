@@ -37,27 +37,16 @@ object SurfaceAst {
 
     final case class NatLit(value: BigInt, span: Span) extends Term
 
-    final case class StrLit(scalars: Vector[Int], span: Span) extends Term
-
     // Projection: base.field
     final case class Select(base: Term, field: String, span: Span) extends Term
 
-    /**
-     * Pi `{ kind = k, scope = S } (x: A) -> B x`. An unparenthesised arrow chain is ONE binder group: `(a: A) -> (b: B)
-     * -> C` carries both binders here. Grouping is part of a function type's identity, so a parenthesised Pi in body
-     * position — `(a: A) -> ((b: B) -> C)` — is a nested, separate 1-ary Pi and stays its own node. The closure
-     * prefixes the whole group.
-     */
-    final case class Pi(closure: Closure, binders: Vector[Binder], body: Term, span: Span) extends Term
+    /** An unparenthesized arrow chain is one binder group; a parenthesized codomain starts a nested group. */
+    final case class Pi(binders: Vector[Binder], body: Term, span: Span) extends Term
 
     // Application: f(a)
     final case class App(fn: Term, args: Vector[Term], span: Span) extends Term
 
-    /**
-     * A sort former: `Sort { level = e, ... }`, or `Type` /`Prop`, which fix the level. `kind` and `scope` are the
-     * fields written, if any.
-     */
-    final case class Sort(level: SortLevel, kind: Option[Term], scope: Option[Term], span: Span) extends Term
+    final case class Sort(level: SortLevel, span: Span) extends Term
 
     sealed trait SortLevel
     object SortLevel {
@@ -66,11 +55,7 @@ object SurfaceAst {
       final case class Written(level: Term) extends SortLevel
     }
 
-    // Lambda: fun { kind = k, scope = S } (x : A)(y: B): B => body
-    final case class Lam(closure: Closure, header: FuncHeader, body: Term, span: Span) extends Term
-
-    // Scope: scope l => body
-    final case class Scope(name: String, body: Term, span: Span) extends Term
+    final case class Lam(header: FuncHeader, body: Term, span: Span) extends Term
 
     final case class Match(
         scrut: Term,
@@ -102,15 +87,6 @@ object SurfaceAst {
 
     /** A pattern's variable for one constructor field, `_` included, where it is written. */
     final case class PatternVar(name: String, span: Span)
-  }
-
-  /**
-   * A function type's or lambda's closure, as written: its `kind` and `scope` fields, either of which may be omitted.
-   */
-  final case class Closure(kind: Option[Term], scope: Option[Term])
-
-  object Closure {
-    val omitted: Closure = Closure(None, None)
   }
 
   case class Binder(
@@ -156,7 +132,6 @@ object SurfaceAst {
           header: DeclHeader,
           decreases: Option[DecreaseSpec],
           body: ConstBody,
-          selectorOf: Option[InductiveDecl],
           span: Span
       ) extends Decl
 
@@ -170,7 +145,6 @@ object SurfaceAst {
           header: InductiveHeader,
           ctors: Vector[ConstructorDecl],
           generateSelectors: Boolean,
-          isSealed: Boolean,
           span: Span
       ) extends Decl
     }

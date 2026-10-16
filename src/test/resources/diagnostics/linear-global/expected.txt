@@ -1,5 +1,0 @@
-
-<root>/main.rac:4:14: error: Definition shared has the linear type Tok(Lifetime.empty); a value outside every binder is never linear, since only a local's uses are counted
-def shared : Tok(Lifetime.empty) := Tok.mk(Lifetime.empty)
-             ^^^^^^^^^^^^^^^^^^^
-note: in definition shared

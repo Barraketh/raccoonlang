@@ -1,5 +1,0 @@
-
-<root>/main.rac:4:20: error: Lifetime l escapes its scope: the type Type { scope = l } names it outside `scope l`
-def leak : Type := scope l => Wrap(l)
-                   ^^^^^^^^^^^^^^^^^^
-note: in definition leak

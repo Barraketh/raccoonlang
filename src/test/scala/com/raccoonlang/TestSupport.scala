@@ -75,7 +75,6 @@ trait TestSupport extends DiagnosticAssertions { this: munit.FunSuite =>
   protected def ctorName(value: Value): String = value match {
     case Value.ConstructorHead(name, _, _, _, _) => name
     case Value.VCtor(head, _, _)                 => head.name
-    case packed: Value.VPacked                   => packed.codec.decodeHead(packed)._1
     case other                                   => fail(s"Expected constructor value, got $other")
   }
 }
@@ -85,35 +84,7 @@ object TestSupport {
 
   lazy val testPreludeSource: String = resource("/Init/TestPrelude.rac")
 
-  /**
-   * The sealed Lease and Tok capabilities of spec §5.1 and `withLease` of spec §4.4, with the module's helpers, which
-   * alone make and consume them: `issue` mints a token for a lease's holder, in the lease's lifetime, and `burn`
-   * consumes one.
-   */
-  val leaseModule: String =
-    """
-      |sealed inductive Lease (l: Lifetime) : Type { scope = l }
-      | | mk : Lease(l)
-      |
-      |sealed inductive Tok (l: Lifetime) : Type { kind = lin, scope = l }
-      | | mk : Tok(l)
-      |
-      |def withLease {k: Kind}{S: Lifetime}{A: Type { kind = k, scope = S }}{kf: Kind}{Sf: Lifetime}
-      |    (f: { kind = kf, scope = Sf } (l: Lifetime) -> Lease(l) -> A): A :=
-      |  scope l => f(l, Lease.mk(l))
-      |
-      |def issue {l: Lifetime}(h: Lease(l)): Tok(l) := Tok.mk(l)
-      |
-      |def useLease {l: Lifetime}(h: Lease(l)): Nat := 2
-      |
-      |def burn {l: Lifetime}(t: Tok(l)): Nat := match t returning Nat with
-      | | .mk => 1
-      |""".stripMargin
-
-  /**
-   * The trusted prelude `base` followed by `assumptions`. Only the trusted prelude declares axioms (spec §7.3), so a
-   * test assumes one the way a program does, with a custom prelude.
-   */
+  /** A custom prelude extended with shared assumptions for a suite. */
   def preludeAssuming(base: String, assumptions: String): Prelude.Config =
     Prelude.fromSource("assumptions", base + "\n" + assumptions)
 

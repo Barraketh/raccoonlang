@@ -56,14 +56,6 @@ final case class AlreadyDefined(name: String) extends TypeError
 
 final case class ReservedKernelName(name: String) extends TypeError
 
-final case class NatLiteralUnavailable(reason: String) extends TypeError
-
-final case class StringLiteralUnavailable(reason: String) extends TypeError
-
-final case class NativeOperationDeclarationMismatch(name: String, reason: String) extends TypeError
-
-final case class NativeOperationLimitExceeded(operation: String, argument: BigInt, limit: BigInt) extends TypeError
-
 final case class AmbiguousName(name: String, candidates: Vector[String]) extends TypeError
 
 final case class UnsupportedImport(path: String) extends TypeError
@@ -114,53 +106,6 @@ final case class InductiveUniverseTooSmall(
 ) extends TypeError
 
 final case class InductiveTypeNotASort(tpe: Value) extends TypeError
-
-/** A sort of a kind other than `Kind.unr` at a level that may be zero (spec §2.3): proofs are unrestricted. */
-final case class LinearProp(kind: Value.Kind, level: Value.Level) extends TypeError
-
-/** A declared kind that does not contain the kind of `part` (spec §2.6), such as a family's constructor field. */
-final case class KindExceeded(declaration: String, declared: Value.Kind, part: String, partKind: Value.Kind)
-  extends TypeError
-
-/**
- * A declared scope that does not contain the scope of `part` (spec §2.6), such as a family's constructor field,
- * parameter or index.
- */
-final case class ScopeExceeded(declaration: String, declared: Value.Lifetime, part: String, partScope: Value.Lifetime)
-  extends TypeError
-
-/** A local of linear type that some path through its binder's extent does not use (spec §3.2). */
-final case class LinearUnused(local: String) extends TypeError
-
-/** A second use of a local of linear type on some path through its binder's extent (spec §3.2). */
-final case class LinearReused(local: String) extends TypeError
-
-/**
- * A subterm of linear type, `term`, inside a term whose type is a sort or a proposition: types and proofs hold no
- * tokens (spec §3.2).
- */
-final case class LinearInType(term: CoreAst.Term, tpe: Value) extends TypeError
-
-/**
- * A value outside every binder whose type is linear (spec §3.2): `definition` names a definition, which every reference
- * uses, and is absent for the program's result, which nothing uses. Only a local's uses are counted.
- */
-final case class LinearGlobal(definition: Option[String], tpe: Value) extends TypeError
-
-/** A type that names the atom of a `scope` whose binder `lifetime` does not enclose it (spec §4.2). */
-final case class LifetimeEscapes(lifetime: String, tpe: Value) extends TypeError
-
-/**
- * A use of a sealed family's constructors or selectors outside its module (spec §7.1): `member` names the constructor
- * or selector named, and is absent for a match on a value of the family.
- */
-final case class SealedConstructor(family: String, member: Option[String]) extends TypeError
-
-/**
- * An axiom outside the trusted prelude (spec §7.3). No rule on an axiom's type could keep it from breaking sealing,
- * linearity or confinement, since an axiom can state `False`; a program adds an assumption in a custom prelude.
- */
-final case class UntrustedAxiom(axiom: String) extends TypeError
 
 final case class InvalidInductiveBlock(reason: String) extends TypeError
 

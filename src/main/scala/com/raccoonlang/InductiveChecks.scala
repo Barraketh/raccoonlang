@@ -89,12 +89,9 @@ object InductiveChecks {
         // A proof's interior is erased; its type is all that can carry an occurrence.
         case p: VProof => doesNotOccur(target, p.tpe)
 
-        case p: VPacked => doesNotOccur(target, p.tpe)
-
         case _: ConstructorHead => !target.mayOccurIn(value)
 
-        case _: Level | _: Kind | _: Lifetime | _: ParameterTpe | SortParameter | Large | _: VLam | _: VSort | _: Var |
-            _: VConst =>
+        case _: Level | _: ParameterTpe | SortParameter | Large | _: VLam | _: VSort | _: Var | _: VConst =>
           !target.mayOccurIn(value)
       }
 
@@ -195,8 +192,6 @@ object InductiveChecks {
         // its proposition at all — positivity through an erased interior is unjustifiable.
         case p: VProof => doesNotOccur(target, p.tpe)
 
-        case p: VPacked => doesNotOccur(target, p.tpe)
-
         case lam: VLam =>
           inspectLambda(lam) { (freshArgs, result) =>
             freshArgs.forall(arg => doesNotOccur(target, arg.tpe)) &&
@@ -205,8 +200,7 @@ object InductiveChecks {
 
         case _: ConstructorHead => true
 
-        case _: Level | _: Kind | _: Lifetime | _: ParameterTpe | SortParameter | Large | _: VSort | _: Var |
-            _: VConst =>
+        case _: Level | _: ParameterTpe | SortParameter | Large | _: VSort | _: Var | _: VConst =>
           true
       }
 
@@ -243,8 +237,6 @@ object InductiveChecks {
 
       case p: VProof => blockFamilyApplicationsAreUniform(blockNames, target, expectedParams, p.tpe)
 
-      case p: VPacked => blockFamilyApplicationsAreUniform(blockNames, target, expectedParams, p.tpe)
-
       case lam: VLam =>
         inspectLambda(lam) { (freshArgs, result) =>
           freshArgs.forall(arg =>
@@ -254,8 +246,7 @@ object InductiveChecks {
 
       case VConst(name, Inductive(_), _) if blockNames(name) => false
 
-      case _: ConstructorHead | _: Level | _: Kind | _: Lifetime | _: ParameterTpe | SortParameter | Large | _: VSort |
-          _: Var | _: VConst =>
+      case _: ConstructorHead | _: Level | _: ParameterTpe | SortParameter | Large | _: VSort | _: Var | _: VConst =>
         true
     }
 
@@ -301,7 +292,7 @@ object InductiveChecks {
   private[raccoonlang] def constructorTypeTerm(header: InductiveHeader, ctor: ConstructorDecl): Term = {
     val allBinders = constructorBinders(header, ctor)
     if (allBinders.isEmpty) ctor.resultTy
-    else Term.Pi(allBinders, ctor.resultTy, Closure.unrestricted(ctor.span), ctor.span, NodeId.fresh())
+    else Term.Pi(allBinders, ctor.resultTy, ctor.span, NodeId.fresh())
   }
 
   private def installConstructors(family: PreparedFamily, baseEnv: Env): Env = {
@@ -313,7 +304,7 @@ object InductiveChecks {
         ctor.canonicalName,
         ConstructorHead(ctor.canonicalName, familyParams, familyParams + ctor.binders.length, fullType)
       )
-      family.seal.fold(installed)(installed.sealMember(ctor.canonicalName, _))
+      installed
     }
   }
 
@@ -373,7 +364,6 @@ object InductiveChecks {
   private final case class PreparedFamily(
       decl: Decl.InductiveDecl,
       head: VConst,
-      seal: Option[Sealing.Seal],
       completeConstructorLink: Env => Unit
   )
 
@@ -407,7 +397,6 @@ object InductiveChecks {
       Term.Pi(
         decl.header.binders,
         decl.header.resultTy,
-        Closure.unrestricted(decl.header.span),
         decl.header.span,
         NodeId.fresh()
       )
@@ -471,21 +460,6 @@ object InductiveChecks {
         case sort: VSort => sort
         case other       => at(decl.header.resultTy.span) { fail(InductiveTypeNotASort(other)) }
       }
-      // spec §5.1: the declared scope may mention only the family's parameters, and it names each lifetime parameter,
-      // so it is exactly their union. No field's, parameter's or index's type can name another lifetime, since only a
-      // parameter binds one and no atom is open at a declaration, so each of their scopes lies within it unchecked.
-      decl.header.binders.zip(familyArgs).foreach {
-        case (binder, lifetime: Lifetime) =>
-          Sorts.requireContains(
-            Sorts.ScopeField,
-            s"Family ${decl.header.name}",
-            declaredSort.scope,
-            s"lifetime parameter ${binder.name}, which every family must name",
-            lifetime,
-            binder.span
-          )
-        case _ =>
-      }
       FamilySignature(decl, familyType, declaredSort, familyArgs)
     }
   }
@@ -500,8 +474,7 @@ object InductiveChecks {
       decl.header.binders.length,
       provisionalBlock,
       projectionInfo = None,
-      proofRecovery = None,
-      seal = decl.seal
+      proofRecovery = None
     )
   }
 
@@ -538,7 +511,7 @@ object InductiveChecks {
     decl.ctors.foreach { ctor =>
       val allConstructorBinders = constructorBinders(header, ctor)
       val checkedBinders =
-        BinderOps.checkBinders(allConstructorBinders, provisionalEnv, familyParams = header.params.length, ctor.span)
+        BinderOps.checkBinders(allConstructorBinders, provisionalEnv, familyParams = header.params.length)
       val binders = checkedBinders.binders
       val envWithBinders = checkedBinders.env
       val binderVars = binders.map(binder => envWithBinders(binder.localRef))
@@ -615,25 +588,12 @@ object InductiveChecks {
 
       constructorArgs.zipWithIndex.foreach { case ((binder, field), sourceFieldIndex) =>
         def fieldName = s"${ctor.canonicalName}.${binder.name}"
-        def part = s"field $fieldName : ${field.tpe}"
         val fieldSort = TypeChecker.getUniverse(field.tpe)
         // 2) Universe bound: skip for Prop families; enforce for Sort families
         if (!Sorts.isProp(constructorUniverse) && !Level.leq(fieldSort.level, constructorUniverse.level))
           at(binder.span) {
             fail(InductiveUniverseTooSmall(name, fieldName, field.tpe, fieldSort.level, constructorUniverse.level))
           }
-        // Kind bound (spec §5.1), Prop families included: the declared kind, never derived, contains each field's. A
-        // sibling's field is read by its declared sort, so no fixed point is needed. The field's scope lies within the
-        // declared scope by construction (see checkFamilySignatures).
-        Sorts.requireContains(
-          Sorts.KindField,
-          s"Family $name",
-          constructorUniverse.kind,
-          part,
-          fieldSort.kind,
-          binder.span
-        )
-
         if (!doesNotOccur(recursiveTarget, field.tpe)) hasRecursiveField = true
 
         // 3) Every true source field type must be strictly positive in every block family.
@@ -732,7 +692,7 @@ object InductiveChecks {
         projectionInfo.foreach(_.ctorHead)
       }
 
-    PreparedFamily(decl, inductiveHead, meta.seal, completeConstructorLink)
+    PreparedFamily(decl, inductiveHead, completeConstructorLink)
   }
 
   def evalInductiveBlock(block: Decl.InductiveBlock, env: Env): Env = {

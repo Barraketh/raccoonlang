@@ -33,7 +33,7 @@ class InductiveCheckTest extends munit.FunSuite with DiagnosticAssertions {
 
   /** A neutral global of type `ty`: an opaque definition, a symbol whatever `body` built. */
   private def opaque(name: String, ty: CoreAst.Term, body: CoreAst.Term): CoreAst.Decl =
-    CoreAst.Decl.ConstDecl(isOpaque = true, name, ty, CoreAst.ConstBody.TermBody(body), None, blockSpan)
+    CoreAst.Decl.ConstDecl(isOpaque = true, name, ty, CoreAst.ConstBody.TermBody(body), blockSpan)
 
   private def sortAt(level: CoreAst.Form): CoreAst.Term = CoreTestTerms.sortAt(level, blockSpan)
 
@@ -50,13 +50,11 @@ class InductiveCheckTest extends munit.FunSuite with DiagnosticAssertions {
         CoreAst.ConstructorDecl("Even.zero", "zero", Vector.empty, global("Even"), blockSpan),
         CoreAst.ConstructorDecl("Even.succ", "succ", Vector(oddField), global("Even"), blockSpan)
       ),
-      seal = None,
       blockSpan
     )
     val odd = CoreAst.Decl.InductiveDecl(
       CoreAst.InductiveHeader("Odd", Vector.empty, Vector.empty, typeSort, blockSpan),
       Vector(CoreAst.ConstructorDecl("Odd.succ", "succ", Vector(evenField), global("Odd"), blockSpan)),
-      seal = None,
       blockSpan
     )
     CoreAst.Decl.InductiveBlock(Vector(even, odd), blockSpan)
@@ -72,7 +70,6 @@ class InductiveCheckTest extends munit.FunSuite with DiagnosticAssertions {
       CoreAst.Decl.InductiveDecl(
         CoreAst.InductiveHeader(name, Vector(param), Vector.empty, typeSort, blockSpan),
         Vector(CoreAst.ConstructorDecl(s"$name.mk", "mk", Vector.empty, result, blockSpan)),
-        seal = None,
         blockSpan
       )
     }
@@ -93,7 +90,6 @@ class InductiveCheckTest extends munit.FunSuite with DiagnosticAssertions {
     val inner = CoreAst.Term.Pi(
       Vector(innerArg),
       firstParamTerm,
-      CoreAst.Closure.unrestricted(blockSpan),
       blockSpan,
       NodeId.fresh()
     )
@@ -101,7 +97,7 @@ class InductiveCheckTest extends munit.FunSuite with DiagnosticAssertions {
     val field = CoreAst.Binder(
       CoreAst.LocalRef(1016, "field"),
       CoreAst.Term
-        .Pi(Vector(outerArg), firstParamTerm, CoreAst.Closure.unrestricted(blockSpan), blockSpan, NodeId.fresh()),
+        .Pi(Vector(outerArg), firstParamTerm, blockSpan, NodeId.fresh()),
       blockSpan,
       CoreAst.BinderSite.Field
     )
@@ -112,13 +108,11 @@ class InductiveCheckTest extends munit.FunSuite with DiagnosticAssertions {
     val first = CoreAst.Decl.InductiveDecl(
       CoreAst.InductiveHeader("First", Vector(firstParam), Vector.empty, typeSort, blockSpan),
       Vector(CoreAst.ConstructorDecl("First.mk", "mk", Vector(field), result("First", firstParam), blockSpan)),
-      seal = None,
       blockSpan
     )
     val second = CoreAst.Decl.InductiveDecl(
       CoreAst.InductiveHeader("Second", Vector(secondParam), Vector.empty, typeSort, blockSpan),
       Vector(CoreAst.ConstructorDecl("Second.mk", "mk", Vector.empty, result("Second", secondParam), blockSpan)),
-      seal = None,
       blockSpan
     )
     CoreAst.Decl.InductiveBlock(Vector(first, second), blockSpan)
@@ -135,7 +129,6 @@ class InductiveCheckTest extends munit.FunSuite with DiagnosticAssertions {
     val first = CoreAst.Decl.InductiveDecl(
       CoreAst.InductiveHeader("First", Vector(firstParam), Vector.empty, typeSort, blockSpan),
       Vector(CoreAst.ConstructorDecl("First.mk", "mk", Vector(recursiveField), firstResult, blockSpan)),
-      seal = None,
       blockSpan
     )
     val secondResult =
@@ -143,7 +136,6 @@ class InductiveCheckTest extends munit.FunSuite with DiagnosticAssertions {
     val second = CoreAst.Decl.InductiveDecl(
       CoreAst.InductiveHeader("Second", Vector(secondParam), Vector.empty, typeSort, blockSpan),
       Vector(CoreAst.ConstructorDecl("Second.mk", "mk", Vector.empty, secondResult, blockSpan)),
-      seal = None,
       blockSpan
     )
     CoreAst.Decl.InductiveBlock(Vector(first, second), blockSpan)
@@ -155,13 +147,11 @@ class InductiveCheckTest extends munit.FunSuite with DiagnosticAssertions {
     val first = CoreAst.Decl.InductiveDecl(
       CoreAst.InductiveHeader("First", Vector.empty, Vector(index), typeSort, blockSpan),
       Vector(CoreAst.ConstructorDecl("First.mk", "mk", Vector.empty, firstAtSecond, blockSpan)),
-      seal = None,
       blockSpan
     )
     val second = CoreAst.Decl.InductiveDecl(
       CoreAst.InductiveHeader("Second", Vector.empty, Vector.empty, typeSort, blockSpan),
       Vector(CoreAst.ConstructorDecl("Second.mk", "mk", Vector.empty, global("Second"), blockSpan)),
-      seal = None,
       blockSpan
     )
     CoreAst.Decl.InductiveBlock(Vector(first, second), blockSpan)
@@ -185,7 +175,6 @@ class InductiveCheckTest extends munit.FunSuite with DiagnosticAssertions {
     val declaration = CoreAst.Decl.InductiveDecl(
       CoreAst.InductiveHeader("Poly", Vector(universe), Vector.empty, sort, blockSpan),
       Vector(CoreAst.ConstructorDecl("Poly.mk", "mk", Vector.empty, result, blockSpan)),
-      seal = None,
       blockSpan
     )
 
@@ -296,7 +285,6 @@ class InductiveCheckTest extends munit.FunSuite with DiagnosticAssertions {
       CoreAst.Term.Pi(
         Vector(functionArg),
         global("Even"),
-        CoreAst.Closure.unrestricted(blockSpan),
         blockSpan,
         NodeId.fresh()
       )

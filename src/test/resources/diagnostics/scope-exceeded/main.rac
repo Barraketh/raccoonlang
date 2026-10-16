@@ -1,4 +1,0 @@
-inductive Wrap (l: Lifetime) : Type
- | mk : Wrap(l)
-
-{ Nat.zero }

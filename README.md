@@ -13,32 +13,15 @@ The implementation favors:
 
 ## Language at a glance
 
-Raccoon currently provides:
+Raccoon provides dependent functions, universe polymorphism, strictly positive
+inductive families, dependent pattern matching, proof irrelevance, structural
+termination checking, structs, axioms, and quotients. Modules and namespaces
+organize source declarations. Sorts carry only a universe level, and functions
+carry only their dependent binders and result type.
 
-- dependent functions with forced implicit parameters, whose function types
-  and lambdas carry a closure kind and scope, derived for a lambda from what
-  it captures;
-- `Prop`, `Type`, and `Sort { level = u, kind = k, scope = S }`, whose
-  universe levels, kinds and lifetimes are second-class parameters of sorts,
-  families and declarations, normalized and compared exactly;
-- strictly positive inductive families with parameters and indices, whose
-  declared kind and scope bound what their values hold;
-- `scope l => e`, which opens a fresh lifetime atom that no type's sort may
-  name outside it;
-- linear types: every local of a type whose kind is not `Kind.unr` is used
-  exactly once on every path through its scope, and no type or proof holds one;
-- dependent, exhaustive pattern matching with an explicit `returning` motive;
-- checking by synthesis and definitional equality: a term's type never depends
-  on where it stands;
-- structural, lexicographic, and measure-based termination checking;
-- single-constructor `struct` declarations, named projections, and structure eta;
-- sealed families, whose constructors and selectors only their own file may use;
-- proof irrelevance and controlled elimination from `Prop`;
-- namespaces, scoped `open`, and file imports;
-- opaque definitions, quotients, and axioms, which only the trusted prelude
-  (bundled or `--prelude`) declares;
-- compact natural-number literals and trusted native natural-number reduction;
-- a bundled prelude that is polymorphic in lifetimes as well as levels.
+Natural-number literals expand to ordinary constructors, and arithmetic runs
+through recursive prelude definitions. The core has no packed values, native
+arithmetic, lifetime scopes, linearity, closure annotations, or sealed families.
 
 ```raccoon
 inductive Vec {u: Level}(A: Sort { level = u }) indices (n: Nat)
@@ -61,7 +44,7 @@ two-argument function type and is called as `f(a, b)`. Write
 
 See [the language reference](docs/language.md) for source syntax and semantics,
 and [the kernel reference](docs/kernel.md) for the trusted rules behind
-conversion, proofs, inductives, and native values.
+conversion, proofs, and inductives.
 
 ## Run a program
 
@@ -70,10 +53,6 @@ The CLI accepts one entry file:
 ```bash
 sbt "run examples/nats.rac"
 ```
-
-`examples/leases/main.rac` imports the module `examples/leases/Lease.rac` and
-shows scoped leases and linear tokens: what a callback may capture and return,
-what may leave a scope, and the variants the checker rejects.
 
 The bundled `Init/Prelude.rac` is loaded automatically. A program may end in an
 expression; if it does, the CLI evaluates and prints the result.
@@ -88,7 +67,7 @@ sbt 'run --root examples examples/nats.rac'
 Other CLI options are:
 
 ```text
---prelude <file>   use a custom trusted prelude
+--prelude <file>   use a custom source prelude
 --no-prelude       run without a source prelude
 --wait-for-enter   pause after JVM startup
 --json             print diagnostics as JSON on stdout, and nothing else
@@ -114,8 +93,8 @@ Lines and columns are 1-based, matching the `file:line:column` positions the
 human-readable report prints. A run that finds nothing prints `[]`, so stdout is
 always a JSON document.
 
-Choosing a custom prelude changes the trusted bootstrap. See the
-[kernel reference](docs/kernel.md#trusted-bootstrap-and-native-values).
+Custom preludes are checked as ordinary source. Only primitive quotient bodies
+require prelude privileges; axioms may be declared in any module.
 
 ## Build and test
 

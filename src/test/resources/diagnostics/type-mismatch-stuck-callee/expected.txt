@@ -2,7 +2,7 @@
 <root>/main.rac:7:51: error: type mismatch
 def bad (b: Bool): Eq(Nat, twice(b), Nat.zero) := Eq.refl(Nat.zero)
                                                   ^^^^^^^^^^^^^^^^^
-  expected: Eq(Nat, match b returning Nat with | Bool.true => Nat.zero | Bool.false => Nat.succ(Nat.zero), 0)
+  expected: Eq(Nat, match b returning Nat with | Bool.true => 0 | Bool.false => 1, 0)
   actual:   Eq(Nat, 0, 0)
-  differ at: match b returning Nat with | Bool.true => Nat.zero | Bool.false => Nat.succ(Nat.zero)  vs  0   (not reducible: stuck)
+  differ at: match b returning Nat with | Bool.true => 0 | Bool.false => 1  vs  0   (not reducible: stuck)
 note: in definition bad

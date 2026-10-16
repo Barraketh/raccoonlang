@@ -15,12 +15,11 @@ class RecursiveDefBlockTests extends munit.FunSuite with DiagnosticAssertions {
   private def param(ref: CoreAst.LocalRef, tpe: Term): CoreAst.Binder = binder(ref, tpe, CoreAst.BinderSite.Parameter)
   // A definition's header.
   private def pi(ref: CoreAst.LocalRef, input: Term, output: Term): Term.Pi =
-    Term.Pi(Vector(param(ref, input)), output, CoreAst.Closure.unrestricted(span), span, NodeId.fresh())
+    Term.Pi(Vector(param(ref, input)), output, span, NodeId.fresh())
   private def pi2(first: CoreAst.LocalRef, firstType: Term, second: CoreAst.LocalRef, secondType: Term): Term.Pi =
     Term.Pi(
       Vector(param(first, firstType), param(second, secondType)),
       global("GroupResult"),
-      CoreAst.Closure.unrestricted(span),
       span,
       NodeId.fresh()
     )
@@ -49,7 +48,6 @@ class RecursiveDefBlockTests extends munit.FunSuite with DiagnosticAssertions {
           span
         )
       ),
-      seal = None,
       span
     )
     val familyB = Decl.InductiveDecl(
@@ -64,13 +62,11 @@ class RecursiveDefBlockTests extends munit.FunSuite with DiagnosticAssertions {
           span
         )
       ),
-      seal = None,
       span
     )
     val result = Decl.InductiveDecl(
       CoreAst.InductiveHeader("GroupResult", Vector.empty, Vector.empty, typeSort, span),
       Vector(CoreAst.ConstructorDecl("GroupResult.zero", "zero", Vector.empty, global("GroupResult"), span)),
-      seal = None,
       span
     )
     val withResult = Interpreter.evalDecl(result, Prelude.test.checkedEnv)
@@ -197,7 +193,6 @@ class RecursiveDefBlockTests extends munit.FunSuite with DiagnosticAssertions {
               Term.Pi(
                 Vector(binder(argument, global("GroupA"), CoreAst.BinderSite.Function)),
                 global("GroupResult"),
-                CoreAst.Closure.unrestricted(span),
                 span,
                 NodeId.fresh()
               )
@@ -207,7 +202,6 @@ class RecursiveDefBlockTests extends munit.FunSuite with DiagnosticAssertions {
           span
         )
       ),
-      seal = None,
       span
     )
     val holderEnv = Interpreter.evalDecl(holder, base)

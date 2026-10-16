@@ -1,7 +1,28 @@
 package com.raccoonlang
 
 object PrettyPrinter {
-  private def printString(scalars: Vector[Int]): String = UnicodeScalarString.renderQuoted(scalars)
+  private def numeral[A](value: A)(layer: A => Option[(String, Vector[A])]): Option[BigInt] = {
+    @annotation.tailrec
+    def loop(current: A, count: BigInt): Option[BigInt] =
+      layer(current) match {
+        case Some(("Nat.zero", Vector()))         => Some(count)
+        case Some(("Nat.succ", Vector(previous))) => loop(previous, count + 1)
+        case _                                    => None
+      }
+    loop(value, BigInt(0))
+  }
+
+  private object NatValue {
+    def unapply(value: Value): Option[BigInt] = numeral(value)(Value.ConstructorForm.unapply)
+  }
+
+  private object NatTerm {
+    def unapply(term: CoreAst.Term): Option[BigInt] = numeral(term) {
+      case CoreAst.Term.GlobalRef(name, _)                            => Some((name, Vector.empty))
+      case CoreAst.Term.App(CoreAst.Term.GlobalRef(name, _), args, _) => Some((name, args))
+      case _                                                          => None
+    }
+  }
 
   /**
    * Implicit arguments are never written in source, so a saturated call prints only its explicit ones. Anything that is
@@ -38,24 +59,8 @@ object PrettyPrinter {
       case _                                 => false
     }
 
-  /** A sort as its former and the fields it spells out; a field left at its former's value is not printed. */
-  private def printSort(former: String, level: Option[String], kind: Option[String], scope: Option[String]): String = {
-    val fields = fieldList(
-      level.map(l => s"level = $l").toVector ++ kind.map(k => s"kind = $k") ++ scope.map(l => s"scope = $l")
-    )
-    if (fields.isEmpty) former else s"$former $fields"
-  }
-
-  /**
-   * A closure prefix: the fields that are not `Kind.unr` or `Lifetime.empty`, with a trailing space, or nothing. A
-   * lambda's derived field prints as the expression the checker derived, once it has.
-   */
-  private def printClosure(kind: Option[String], scope: Option[String]): String = {
-    val fields = fieldList(kind.map(k => s"kind = $k").toVector ++ scope.map(l => s"scope = $l"))
-    if (fields.isEmpty) "" else s"$fields "
-  }
-
-  private def fieldList(fields: Vector[String]): String = if (fields.isEmpty) "" else s"{ ${fields.mkString(", ")} }"
+  private def printSort(former: String, level: Option[String]): String =
+    level.fold(former)(value => s"$former { level = $value }")
 
   /**
    * Core syntax as source, under the values its free locals are bound to: a bound local prints as its value, and any
@@ -108,11 +113,10 @@ object PrettyPrinter {
     private def printTermAtom(t: CoreAst.Term): String = t match {
       // A bound local stands for its value, which may itself print as loose syntax.
       case CoreAst.Term.LocalRef(ref, _) if bound(ref).exists(isLoose) => s"(${printCoreTerm(t)})"
-      case _: CoreAst.Term.NatLit | _: CoreAst.Term.StrLit | _: CoreAst.Term.Ref | _: CoreAst.Term.App |
-          _: CoreAst.Term.Select | _: CoreAst.Term.Sort | _: CoreAst.Term.FormOp =>
+      case _: CoreAst.Term.Ref | _: CoreAst.Term.App | _: CoreAst.Term.Select | _: CoreAst.Term.Sort |
+          _: CoreAst.Term.FormOp =>
         printCoreTerm(t)
-      case _: CoreAst.Term.Lam | _: CoreAst.Term.Scope | _: CoreAst.Term.Match | _: CoreAst.Term.Body |
-          _: CoreAst.Term.Pi =>
+      case _: CoreAst.Term.Lam | _: CoreAst.Term.Match | _: CoreAst.Term.Body | _: CoreAst.Term.Pi =>
         s"(${printCoreTerm(t)})"
     }
 
@@ -127,14 +131,12 @@ object PrettyPrinter {
     }
 
     def printCoreTerm(t: CoreAst.Term): String = t match {
-      case CoreAst.Term.NatLit(value, _)   => value.toString
-      case CoreAst.Term.StrLit(scalars, _) => printString(scalars)
-      case ref: CoreAst.Term.Ref           => printRef(ref)
+      case NatTerm(value)        => value.toString
+      case ref: CoreAst.Term.Ref => printRef(ref)
       case CoreAst.Term.Lam(ty, body, _, _, _, recursion, _) =>
         val decreaseStr = recursion.map(r => s" ${printDecreaseSpec(r.decreases)}").getOrElse("")
-        s"fun ${printCoreClosure(ty.closure)}${printBinders(ty.binders)}: ${printCoreTerm(ty.out)}$decreaseStr => " +
+        s"fun ${printBinders(ty.binders)}: ${printCoreTerm(ty.out)}$decreaseStr => " +
           printCoreTerm(body)
-      case CoreAst.Term.Scope(ref, body, _, _)   => s"scope ${ref.name} => ${printCoreTerm(body)}"
       case m @ CoreAst.Term.Match(_, _, _, _, _) => printMatch(m)
       case b: CoreAst.Term.Body                  => printBody(b)
       case CoreAst.Term.Select(base, field, _)   => s"${printTermAtom(base)}[$field]"
@@ -142,30 +144,19 @@ object PrettyPrinter {
         val headStr = printTermAtom(fn)
         val argsStr = args.map(printTermAtom).mkString(", ")
         s"$headStr($argsStr)"
-      case CoreAst.Term.Pi(binders, out, closure, _, _, _) =>
+      case CoreAst.Term.Pi(binders, out, _, _, _) =>
         val bindersStr = binders.map(printPiBinder).mkString(" -> ")
-        s"${printCoreClosure(closure)}$bindersStr -> ${printCodomain(out)}"
-      case CoreAst.Term.Sort(level, kind, scope, _) =>
+        s"$bindersStr -> ${printCodomain(out)}"
+      case CoreAst.Term.Sort(level, _) =>
         val (former, levelField) =
           if (isForm(level, CoreAst.Form.LevelZero)) ("Prop", None)
           else if (isForm(level, CoreAst.Form.LevelOne)) ("Type", None)
           else ("Sort", Some(printCoreTerm(level)))
-        printSort(
-          former,
-          levelField,
-          Option.unless(isForm(kind, CoreAst.Form.KindUnr))(printCoreTerm(kind)),
-          Option.unless(isForm(scope, CoreAst.Form.LifetimeEmpty))(printCoreTerm(scope))
-        )
+        printSort(former, levelField)
       case CoreAst.Term.FormOp(form, args, _) =>
         val argsStr = if (args.isEmpty) "" else args.map(printCoreTerm).mkString("(", ", ", ")")
         s"${form.qualifiedName}$argsStr"
     }
-
-    private def printCoreClosure(closure: CoreAst.Closure): String =
-      printClosure(
-        closure.kind.term.filterNot(isForm(_, CoreAst.Form.KindUnr)).map(printCoreTerm),
-        closure.scope.term.filterNot(isForm(_, CoreAst.Form.LifetimeEmpty)).map(printCoreTerm)
-      )
 
     private def printCase(c: CoreAst.Case): String = {
       val argNames = c.argRefs.map(_.name)
@@ -213,25 +204,6 @@ object PrettyPrinter {
     }
   }
 
-  /** A kind as source syntax: `Kind.lin`, `Kind.unr`, or its variables joined. */
-  private def printKind(kind: Value.Kind): String =
-    if (kind.isLin) "Kind.lin"
-    else joined(kind.vars, "k", "Kind.unr", "Kind.join")
-
-  /** A lifetime as source syntax; an atom prints as its `scope` binder (spec §4.1). */
-  private def printLifetime(lifetime: Value.Lifetime): String =
-    joined(lifetime.vars, "l", "Lifetime.empty", "Lifetime.union")
-
-  private def joined(vars: DepSet, prefix: String, empty: String, form: String): String = {
-    val names = Vector.newBuilder[String]
-    vars.foreach(id => names += printParameterVar(id, prefix))
-    names.result().reduceLeftOption((acc, name) => s"$form($acc, $name)").getOrElse(empty)
-  }
-
-  /**
-   * A variable of a sort parameter, or an atom, prints as its binder's name, as a `Var` does; only one bound by `_`
-   * prints by id.
-   */
   private def printParameterVar(id: Value.VarId, prefix: String): String =
     FreshVar.parameterName(id).filter(name => name.nonEmpty && name != "_").getOrElse(s"$prefix#$id")
 
@@ -242,16 +214,12 @@ object PrettyPrinter {
   private def printPi(pi: Value.VPi): String = {
     val bodyEnv = telescope.BinderOps.freshen(pi)
     val bindersStr = pi.binders.map(new SyntaxPrinter(pi.env.locals.get).printPiBinder).mkString(" -> ")
-    val closure = printClosure(
-      Option.unless(pi.closureKind.isUnr)(printKind(pi.closureKind)),
-      Option.unless(pi.closureScope.isEmpty)(printLifetime(pi.closureScope))
-    )
-    s"$closure$bindersStr -> ${printCodomain(pi.codomain(bodyEnv))}"
+    s"$bindersStr -> ${printCodomain(pi.codomain(bodyEnv))}"
   }
 
   /**
    * A function type in codomain position is parenthesized. Grouping is part of a function type's identity, and written
-   * bare, `A -> (B -> C)` would read back as the one group `A -> B -> C`, and a closure there would be misplaced.
+   * bare, `A -> (B -> C)` would read back as the one group `A -> B -> C`.
    */
   private def printCodomain(codomain: Value): String =
     codomain match {
@@ -322,26 +290,17 @@ object PrettyPrinter {
   private def printedCall(thunk: Value.NeutralThunk): Option[String] = blockedCall(thunk).orElse(fieldProjection(thunk))
 
   def print(value: Value): String = value match {
+    case NatValue(number) => number.toString
     case sort: Value.VSort =>
       val (former, levelField) =
         if (Sorts.isProp(sort)) ("Prop", None)
         else if (sort.level == Value.Level.one) ("Type", None)
         else ("Sort", Some(printLevel(sort.level)))
-      printSort(
-        former,
-        levelField,
-        Option.unless(sort.kind.isUnr)(printKind(sort.kind)),
-        Option.unless(sort.scope.isEmpty)(printLifetime(sort.scope))
-      )
+      printSort(former, levelField)
     case level: Value.Level                      => printLevel(level)
-    case kind: Value.Kind                        => printKind(kind)
-    case lifetime: Value.Lifetime                => printLifetime(lifetime)
     case pi: Value.VPi                           => printPi(pi)
     case Value.VConst(name, _, _)                => name
     case Value.ConstructorHead(name, _, _, _, _) => name
-    case Value.VCtor(head, Vector(field: Value.VPacked), _)
-        if head.name == "String.mk" && field.codec.isInstanceOf[Value.CharListCodec] =>
-      printString(field.charScalars.getOrElse(wtf("Invalid packed String field")))
     case Value.VCtor(head, storedArgs, _) =>
       val headStr = print(head)
       if (storedArgs.isEmpty) headStr
@@ -351,15 +310,8 @@ object PrettyPrinter {
     case v: Value.Var  => varName(v)
     case s: Value.NeutralThunk =>
       printedCall(s).getOrElse(new SyntaxPrinter(s.env.locals.get).printMatch(s.term))
-    case p: Value.VProof => s"‹proof of ${print(p.tpe)}›"
-    case p: Value.VPacked =>
-      p.natValue
-        .map(_.toString)
-        .orElse(p.charScalars.map(scalars => s"proj[String,0](${printString(scalars)})"))
-        .getOrElse(wtf("Unknown packed payload"))
+    case p: Value.VProof     => s"‹proof of ${print(p.tpe)}›"
     case Value.LevelTpe      => CoreAst.Parameter.Level.name
-    case Value.KindTpe       => CoreAst.Parameter.Kind.name
-    case Value.LifetimeTpe   => CoreAst.Parameter.Lifetime.name
     case Value.SortParameter => "SortParameter"
     case Value.Large         => "Large"
   }

@@ -32,33 +32,6 @@ object Interpreter {
     Level.max(pieces.result())
   }
 
-  /** The solution of a solved kind or lifetime variable, which refinement links only to a normal form of its own. */
-  private def solvedParameter(id: VarId, eqStore: EqStore): Option[Value] = eqStore.subst.get(id).map(eqStore.force)
-
-  private def normalizeKind(k: Kind, eqStore: EqStore): Kind = {
-    val pieces = Vector.newBuilder[Kind]
-    k.vars.foreach { id =>
-      pieces += (solvedParameter(id, eqStore) match {
-        case Some(next: Kind) => normalizeKind(next, eqStore)
-        case Some(other)      => wtf(s"Kind variable $id solved to the non-kind $other")
-        case None             => Kind.variable(id)
-      })
-    }
-    if (k.isLin) Kind.lin else Kind.join(pieces.result())
-  }
-
-  private def normalizeLifetime(l: Lifetime, eqStore: EqStore): Lifetime = {
-    val pieces = Vector.newBuilder[Lifetime]
-    l.vars.foreach { id =>
-      pieces += (solvedParameter(id, eqStore) match {
-        case Some(next: Lifetime) => normalizeLifetime(next, eqStore)
-        case Some(other)          => wtf(s"Lifetime variable $id solved to the non-lifetime $other")
-        case None                 => Lifetime.variable(id)
-      })
-    }
-    Lifetime.union(pieces.result())
-  }
-
   /**
    * Continues the reduction of v if any dependency that blocks it has been solved in EqStore. The default call (if v
    * cannot be further reduced) is a fast empty/intersection check, so callers may use it defensively.
@@ -84,9 +57,7 @@ object Interpreter {
           case _                => wtf(s"Blocked extractor matched unexpected value $v0")
         }
 
-      case l: Level if l.synDeps.intersects(eqStore.solvedIds)    => normalizeLevel(l, eqStore)
-      case k: Kind if k.synDeps.intersects(eqStore.solvedIds)     => normalizeKind(k, eqStore)
-      case l: Lifetime if l.synDeps.intersects(eqStore.solvedIds) => normalizeLifetime(l, eqStore)
+      case l: Level if l.synDeps.intersects(eqStore.solvedIds) => normalizeLevel(l, eqStore)
 
       case _ => v0
     }
@@ -100,24 +71,11 @@ object Interpreter {
   private def getEnvWithArgs(fnTpe: VPi, baseEnv: Env, args: Vector[Value]): Env =
     BinderOps.instantiateFull(fnTpe.binders, baseEnv, args)
 
-  /**
-   * The sort of a Pi, derived from the env it closed over (spec §2.4). Its level right-folds the binder types' levels
-   * with imax over the codomain's, which reduces to Prop for a Prop-valued codomain and to ordinary max for a
-   * definitely positive one. Its kind is its closure kind alone. Its scope unites its closure scope, what its values
-   * hold, with the binder types' scopes and the codomain's, less the lifetimes the group itself binds, since the caller
-   * supplies them. A kind or lifetime binder contributes no level and no scope. Computing it per instance means a
-   * residual Pi re-evaluated with concrete parameters gets the concrete sort, not the declaration-time one. A Pi that
-   * binds a level is `Large`: the level changes the universe of everything after it, so no sort contains the Pi.
-   *
-   * A closure kind other than `Kind.unr` at a level that may be zero is `LinearProp` (spec §2.3); substitution keeps a
-   * level that is never zero, so only checking can reach it.
-   */
+  /** Fold domain levels with imax; a telescope binding a level has the internal classifier Large. */
   private[raccoonlang] def piClassifierFromChecked(
       binders: Vector[CoreAst.Binder],
       freshEnv: Env,
-      outV: Value,
-      closureKind: Kind,
-      closureScope: Lifetime
+      outV: Value
   ): Classifier = {
     val freshValues = binders.map(binder => freshEnv(binder.localRef))
     if (freshValues.exists(_.tpe eq LevelTpe)) Large
@@ -129,15 +87,12 @@ object Interpreter {
           case tpe             => Some(TypeChecker.getUniverse(tpe))
         }
       }
-      // A lifetime binder enters as its own variable, which the caller supplies.
-      val ownLifetimes = freshValues.collect { case lifetime: Lifetime => lifetime.vars }.foldLeft(DepSet.empty)(_ ++ _)
-      val scope = Lifetime.less(Lifetime.union(closureScope +: domSorts.map(_.scope) :+ outSort.scope), ownLifetimes)
       val outLevel = outSort.level
       val level =
         if (Sorts.isProp(outSort)) outLevel
         else if (Level.isNeverZero(outLevel)) Level.max(domSorts.map(_.level) :+ outLevel)
         else domSorts.map(_.level).foldRight(outLevel)(Level.imax)
-      Sorts.checkedSort(level, closureKind, scope)
+      Sorts.sort(level)
     }
   }
 
@@ -152,79 +107,33 @@ object Interpreter {
   private def piClassifier(
       binders: Vector[CoreAst.Binder],
       baseEnv: Env,
-      out: CoreAst.Term,
-      closureKind: Kind,
-      closureScope: Lifetime
+      out: CoreAst.Term
   ): Classifier = {
     val freshEnv = BinderOps.freshen(binders, baseEnv)
-    piClassifierFromChecked(binders, freshEnv, evalTerm(out, freshEnv), closureKind, closureScope)
+    piClassifierFromChecked(binders, freshEnv, evalTerm(out, freshEnv))
   }
-
-  /**
-   * A checked closure field, where its function type stands: a written one is its expression's value, and a lambda's
-   * derived one is what its captures derive there (spec §8).
-   */
-  private def evalClosureField[P <: Value](field: CoreAst.ClosureField, part: Sorts.Field[P], env: Env): P =
-    field match {
-      case CoreAst.ClosureField.Written(term)     => part.normalForm(evalTerm(term, env))
-      case CoreAst.ClosureField.Derived(captures) => derivedField(part, captures, env)
-      case CoreAst.ClosureField.Omitted           => wtf("An omitted closure field reached evaluation before checking")
-    }
 
   private[raccoonlang] def evalPi(pi: CTerm.Pi, env: Env): VPi = {
     val capturedRefs = CapturedRefs.getCapturedRefs(pi, env)
     val closedEnv = env.closeForEval(capturedRefs)
     val captureVals = closedEnv.locals.values.toVector
     val id = ValueId.LocalId(pi.id, captureVals)
-    val closureKind = evalClosureField(pi.closure.kind, Sorts.KindField, env)
-    val closureScope = evalClosureField(pi.closure.scope, Sorts.ScopeField, env)
 
     val synDeps = DepSet.newBuilder
     captureVals.foreach { v =>
       synDeps.unionInPlace(v.synDeps)
     }
-    synDeps.unionInPlace(closureKind.synDeps)
-    synDeps.unionInPlace(closureScope.synDeps)
 
     VPi(
       closedEnv,
       pi.binders,
       codomain = env => evalTerm(pi.out, env),
-      closureKind,
-      closureScope,
       synDeps.result(),
       id,
-      classifier0 = () => piClassifier(pi.binders, closedEnv, pi.out, closureKind, closureScope),
+      classifier0 = () => piClassifier(pi.binders, closedEnv, pi.out),
       knownPropValued = pi.knownPropValued
     )
   }
-
-  /** A local a lambda captures, and the sort of its type, which is what it contributes to the lambda's closure. */
-  private[raccoonlang] final case class Capture(ref: CoreAst.LocalRef, value: Value, sort: VSort)
-
-  /**
-   * The locals a lambda captures (spec §4.3): those bound outside it, in `env`, that its body mentions, each
-   * contributing the sort of its type. The binder types and result are not the body, and implicit arguments are never
-   * written, so neither contributes. A variable of a sort parameter is not a value and contributes nothing. Neither
-   * does a recursive definition's reference to itself, the one local whose type may be large: it names a global, which
-   * a lambda does not capture (spec §3.3). The residual lists them, in ref id order.
-   */
-  private[raccoonlang] def lambdaCaptures(l: CTerm.Lam, env: Env): Vector[Capture] =
-    l.bodyRefs.toVector
-      .sortBy(_.id)
-      .flatMap(ref => env.locals.get(ref).flatMap(value => Sorts.sortOf(value.tpe).map(Capture(ref, value, _))))
-
-  /**
-   * A lambda's derived closure field (spec §4.3): the join of that field of its captures' sorts, read in `env`, where
-   * the lambda stands. Checking and evaluation both derive it here from the residual's captures, and sorts commute with
-   * substitution, so evaluation agrees with what checking derived.
-   */
-  private def derivedField[P <: Value](field: Sorts.Field[P], captures: Vector[CoreAst.LocalRef], env: Env): P =
-    field.join(captures.flatMap { ref =>
-      Sorts
-        .sortOf(env.locals.getOrElse(ref, wtf(s"The derived closure's capture ${ref.name} is unbound")).tpe)
-        .map(field.of)
-    })
 
   private def evalRef(ref: CTerm.Ref, env: Env): Value = {
     val res = ref match {
@@ -233,7 +142,7 @@ object Interpreter {
     }
     res match {
       case h: ConstructorHead if h.totalArity == 0 =>
-        Value.canonicalizeProof(Packed.foldCtor(h, Vector.empty, h.tpe).getOrElse(VCtor(h, Vector.empty, h.tpe)))
+        Value.canonicalizeProof(VCtor(h, Vector.empty, h.tpe))
       case _ => res
     }
   }
@@ -254,7 +163,7 @@ object Interpreter {
           case h: ConstructorHead =>
             val resultTy = pi.codomain(envWithArgs)
             val storedArgs = Value.constructorStoredArgs(h, vArgs)
-            Value.canonicalizeProof(Packed.foldCtor(h, storedArgs, resultTy).getOrElse(VCtor(h, storedArgs, resultTy)))
+            Value.canonicalizeProof(VCtor(h, storedArgs, resultTy))
           // Every non-reducing head builds one new application layer over itself. An existing
           // neutral stays the head rather than being flattened into the new spine: flattening
           // would destroy positional-projection arity. A blocked head propagates its blockers,
@@ -368,9 +277,7 @@ object Interpreter {
   /** The value that is a sort parameter's type, which a variable of it and an expression of it have. */
   private[raccoonlang] def parameterType(parameter: CoreAst.Parameter): ParameterTpe =
     parameter match {
-      case CoreAst.Parameter.Level    => LevelTpe
-      case CoreAst.Parameter.Kind     => KindTpe
-      case CoreAst.Parameter.Lifetime => LifetimeTpe
+      case CoreAst.Parameter.Level => LevelTpe
     }
 
   // A checked sort parameter expression denotes a normal form: checking admits nothing else at its position.
@@ -380,30 +287,13 @@ object Interpreter {
       case other    => wtf(s"Checked level expression evaluated to the non-level $other")
     }
 
-  private[raccoonlang] def getKind(v: Value): Kind =
-    v match {
-      case k: Kind => k
-      case other   => wtf(s"Checked kind expression evaluated to the non-kind $other")
-    }
-
-  private[raccoonlang] def getLifetime(v: Value): Lifetime =
-    v match {
-      case l: Lifetime => l
-      case other       => wtf(s"Checked lifetime expression evaluated to the non-lifetime $other")
-    }
-
   private[raccoonlang] def evalFormOp(form: CoreAst.Form, args: Vector[Value]): Value =
     form match {
-      case CoreAst.Form.LevelZero     => Level.zero
-      case CoreAst.Form.LevelOne      => Level.one
-      case CoreAst.Form.LevelSucc     => Level.succ(getLevel(args(0)))
-      case CoreAst.Form.LevelMax      => Level.max(args.map(getLevel))
-      case CoreAst.Form.LevelIMax     => Level.imax(getLevel(args(0)), getLevel(args(1)))
-      case CoreAst.Form.KindUnr       => Kind.unr
-      case CoreAst.Form.KindLin       => Kind.lin
-      case CoreAst.Form.KindJoin      => Kind.join(args.map(getKind))
-      case CoreAst.Form.LifetimeEmpty => Lifetime.empty
-      case CoreAst.Form.LifetimeUnion => Lifetime.union(args.map(getLifetime))
+      case CoreAst.Form.LevelZero => Level.zero
+      case CoreAst.Form.LevelOne  => Level.one
+      case CoreAst.Form.LevelSucc => Level.succ(getLevel(args(0)))
+      case CoreAst.Form.LevelMax  => Level.max(args.map(getLevel))
+      case CoreAst.Form.LevelIMax => Level.imax(getLevel(args(0)), getLevel(args(1)))
     }
 
   /**
@@ -412,18 +302,14 @@ object Interpreter {
    */
   private[raccoonlang] def evalTerm(term: CoreAst.Term, env: Env): Value =
     term match {
-      case CTerm.NatLit(value, _)   => Packed.evalNatLit(value, env)
-      case CTerm.StrLit(scalars, _) => Packed.evalStrLit(scalars, env)
-      case ref: CTerm.Ref           => evalRef(ref, env)
-      case CTerm.App(fn, args, _)   => evalApplyTerm(fn, args, env)
-      case pi: CTerm.Pi             => evalPi(pi, env)
-      case l: CTerm.Lam             => evalLam(l, env)
-      case m: CTerm.Match           => evalMatch(m, env)
-      case b: CTerm.Body            => evalBody(b, env)
-      // The interpreter binds a scope's variable to its atom and makes none of its checks (spec §8).
-      case scope: CTerm.Scope => evalTerm(scope.body, env.putLocal(scope.ref, Atoms.of(scope)))
-      case CTerm.Sort(level, kind, scope, _) =>
-        Sorts.sort(getLevel(evalTerm(level, env)), getKind(evalTerm(kind, env)), getLifetime(evalTerm(scope, env)))
+      case ref: CTerm.Ref         => evalRef(ref, env)
+      case CTerm.App(fn, args, _) => evalApplyTerm(fn, args, env)
+      case pi: CTerm.Pi           => evalPi(pi, env)
+      case l: CTerm.Lam           => evalLam(l, env)
+      case m: CTerm.Match         => evalMatch(m, env)
+      case b: CTerm.Body          => evalBody(b, env)
+      case CTerm.Sort(level, _) =>
+        Sorts.sort(getLevel(evalTerm(level, env)))
       case CTerm.FormOp(form, args, _) => evalFormOp(form, args.map(evalTerm(_, env)))
       // Named field syntax is resolved to a selector application by checkSelect, so a Select can
       // only reach evaluation if something published unchecked syntax.
@@ -521,20 +407,13 @@ object Interpreter {
   // There is no separate run world: once a definition has made it into the env, it is trusted.
   private[raccoonlang] def evalDecl(decl: Decl, env: Env): Env = evalDecl(decl, env, trusted = false)
 
-  /**
-   * The per-declaration boundary: locates what happens between a declaration's terms (name collisions, block layout,
-   * bootstrap privilege) and appends the outermost context frame.
-   *
-   * `trusted` is the one bootstrap privilege: a prelude may declare builtin bodies, the native Nat operations and
-   * axioms (spec §7.3). A program cannot, so nothing it declares can acquire kernel semantics it did not write, nor
-   * assume a value no checked body built.
-   */
+  /** Only the selected prelude may install primitive quotient bodies. */
   private[raccoonlang] def evalDecl(decl: Decl, env: Env, trusted: Boolean): Env =
     framed(Frame.InDefinition(decl.label)) {
       at(decl.span) {
         decl match {
-          case Decl.ConstDecl(isOpaque, name, ty, body, sealedBy, _) =>
-            val installed = body match {
+          case Decl.ConstDecl(isOpaque, name, ty, body, _) =>
+            body match {
               case CoreAst.ConstBody.Builtin(_) =>
                 if (isOpaque) wtf("Builtin declarations cannot be opaque")
                 if (!trusted) fail(ReservedKernelName(name))
@@ -543,20 +422,13 @@ object Interpreter {
 
               case CoreAst.ConstBody.TermBody(term) =>
                 val checkedTy = TypeChecker.checkDeclType(ty, env).value
-                // A global is never tracked, so none may be linear (spec §3.2).
-                if (Linearity.isLinear(checkedTy)) at(ty.span)(fail(LinearGlobal(Some(name), checkedTy)))
                 val checked = TypeChecker.checkTerm(term, checkedTy, env)
                 val value = if (isOpaque) VConst(name, Symbol, checkedTy) else checked.value
-                val published =
-                  if (trusted && Packed.opNames(name)) Packed.nativeOp(name, value, env)
-                  else publishedValue(value, checkedTy)
+                val published = publishedValue(value, checkedTy)
                 env.putGlobal(name, published)
             }
-            // A sealed family's selectors are kept to its module, as its constructors are (spec §7.1).
-            sealedBy.fold(installed)(installed.sealMember(name, _))
 
           case Decl.AxiomDecl(name, ty, _) =>
-            if (!trusted) fail(UntrustedAxiom(name))
             val tyV = TypeChecker.checkDeclType(ty, env).value
             env.putGlobal(name, publishedValue(VConst(name, Symbol, tyV), tyV))
 
@@ -602,22 +474,6 @@ object Interpreter {
 
   private[raccoonlang] def addPreludeDecl(env: Env, decl: Decl): Env = evalDecl(decl, env, trusted = true)
 
-  /**
-   * Install the native literal layouts of a completed prelude. A prelude that declares `Nat` or `String` must present
-   * the exact checked source layout, so a malformed representation is rejected rather than silently left without
-   * literals. Validation failure rejects the candidate without mutating the environment the declarations were streamed
-   * into.
-   */
-  private[raccoonlang] def finishPrelude(env: Env): Env = {
-    val withNat =
-      if (env.nativeLiterals.natLayout.isEmpty && env.globals.contains(NatCodec.familyName))
-        env.installNatLayout(Packed.validateNatFamily(env))
-      else env
-    if (withNat.nativeLiterals.stringLayout.isEmpty && withNat.globals.contains("String"))
-      withNat.installStringLayout(Packed.validateStringLayout(withNat))
-    else withNat
-  }
-
   private[raccoonlang] def buildPreludeEnv(core: Program): Env =
-    finishPrelude(core.decls.foldLeft(preludeInitialEnv)(addPreludeDecl))
+    core.decls.foldLeft(preludeInitialEnv)(addPreludeDecl)
 }

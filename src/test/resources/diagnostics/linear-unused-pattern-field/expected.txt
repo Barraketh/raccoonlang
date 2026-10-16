@@ -1,6 +1,0 @@
-
-<root>/main.rac:11:13: error: b has a linear type, so it must be used exactly once, but some path does not use it
- | Two.mk a b => Nat.add(eat(a),
-            ^
-note: in branch Two.mk a b
-note: in definition first

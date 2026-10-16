@@ -3,7 +3,7 @@ package com.raccoonlang
 /** Pins the declaration-time proof representation policy (docs/kernel.md#proofs-and-elimination). */
 class ProofCollapseTests extends munit.FunSuite with TestSupport {
 
-  /** Neutral proofs no program could build, assumed in a trusted prelude (spec §7.3). */
+  /** Neutral proofs no program could build, assumed in a trusted prelude. */
   private lazy val assumptions =
     TestSupport.preludeAssuming(
       TestSupport.bundledPreludeSource,

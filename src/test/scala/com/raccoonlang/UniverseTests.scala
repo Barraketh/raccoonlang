@@ -35,18 +35,16 @@ class UniverseTests extends munit.FunSuite with TestSupport {
     def program(sort: String): String = s"def f {u: Level}(A: $sort)(x: A): A := x\n"
 
     typecheckDecls(program("Sort { level = u }"))
-    typecheckDecls(program("Sort { scope = empty, level = u, kind = unr }"))
     assertEquals(parseFailure(program("Sort {}")), "Empty field list")
     assertEquals(parseFailure(program("Sort { level = u, level = u }")), "Repeated field level")
-    assertEquals(parseFailure(program("Sort { level = u, scope = empty, scope = empty }")), "Repeated field scope")
     assertEquals(parseFailure(program("Sort { level = u, size = u }")), "Unknown field size")
   }
 
   test("Sort requires its level field") {
     def program(sort: String): String = s"def f (A: $sort)(x: A): A := x\n"
 
-    typecheckDecls(program("Sort { level = one, kind = unr }"))
-    assertEquals(parseFailure(program("Sort { kind = unr }")), "Sort requires a level field")
+    typecheckDecls(program("Sort { level = one }"))
+    assertEquals(parseFailure(program("Sort ")), "Sort requires a level field")
   }
 
   test("Type and Prop fix the level, so a level field on them is misplaced") {
@@ -89,7 +87,7 @@ class UniverseTests extends munit.FunSuite with TestSupport {
         | | zero : Peano
         | | succ (_: Peano) : Peano
         |
-        |inductive Tok : Type { kind = lin }
+        |inductive Tok : Type
         | | mk : Tok
         |
         |def succ {u: Level}(A: Sort { level = succ(u) })(n: Peano): Peano decreases structural(n) :=
@@ -100,7 +98,7 @@ class UniverseTests extends munit.FunSuite with TestSupport {
         |mutual {
         |  def lin (n: Peano): Peano decreases structural(n) := {
         |    match n returning Peano with
-        |    | Peano.zero => (fun (x: Type { kind = lin }): Peano => Peano.zero)(Tok)
+        |    | Peano.zero => (fun (x: Type ): Peano => Peano.zero)(Tok)
         |    | Peano.succ k => Peano.succ(other(k))
         |  }
         |  def other (n: Peano): Peano decreases structural(n) := {
@@ -127,10 +125,6 @@ class UniverseTests extends munit.FunSuite with TestSupport {
 
     typecheckDecls(program("p"))
     expectOnly[TypeMismatch](typecheckDecls(program("zero")))
-    // A kind form too: `lin` is the parameter, so `Kind.unr` instantiates it and an unrestricted `Peano` fits.
-    val kindLocal =
-      "def f (lin: Kind)(A: Type { kind = lin })(x: A): A := x\ndef g : Peano := f(Kind.unr, Peano, Peano.zero)\n"
-    typecheckDecls(program("p") + kindLocal)
   }
 
   // The level forms are forms of the language, not functions: one exists only applied to all of its arguments.
@@ -581,8 +575,8 @@ class UniverseTests extends munit.FunSuite with TestSupport {
 
     val solved = ValueEquivalence
       .tryUnify(
-        Sorts.sort(Value.Level.mk(u.id), Value.Kind.unr, Value.Lifetime.empty),
-        Sorts.sort(Value.Level.const(1), Value.Kind.unr, Value.Lifetime.empty),
+        Sorts.sort(Value.Level.mk(u.id)),
+        Sorts.sort(Value.Level.const(1)),
         eqStore
       )
       .getOrElse(fail("expected sort unification to solve the level variable"))
@@ -597,8 +591,8 @@ class UniverseTests extends munit.FunSuite with TestSupport {
     assert(
       ValueEquivalence
         .tryUnify(
-          Sorts.sort(Value.Level.of(Map(u.id -> 1), 0), Value.Kind.unr, Value.Lifetime.empty),
-          Sorts.sort(Value.Level.zero, Value.Kind.unr, Value.Lifetime.empty),
+          Sorts.sort(Value.Level.of(Map(u.id -> 1), 0)),
+          Sorts.sort(Value.Level.zero),
           eqStore
         )
         .isLeft
@@ -614,8 +608,8 @@ class UniverseTests extends munit.FunSuite with TestSupport {
     assert(
       ValueEquivalence
         .tryUnify(
-          Sorts.sort(imax, Value.Kind.unr, Value.Lifetime.empty),
-          Sorts.sort(Value.Level.one, Value.Kind.unr, Value.Lifetime.empty),
+          Sorts.sort(imax),
+          Sorts.sort(Value.Level.one),
           eqStore
         )
         .isLeft

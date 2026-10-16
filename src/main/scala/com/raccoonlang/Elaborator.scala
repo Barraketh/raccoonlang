@@ -53,11 +53,11 @@ object Elaborator {
   /**
    * Source-name resolution state.
    *
-   * `scopes` are the locals. `fieldForms` are the forms of the sort or closure field being elaborated, by short name.
+   * `scopes` are the locals. `fieldForms` are the forms of the sort field being elaborated, by short name.
    * `recursiveAliases` are the members of the recursive group whose bodies are being elaborated, by full name: a
-   * definition's own name and its peers' are not locals (spec §1), but in the group's bodies they denote local refs.
-   * Global names and namespace objects live in `root`. Open scopes are snapshots of resolved objects, so later
-   * declarations do not affect an earlier `open`. `elabPath` states the order in which these are consulted.
+   * definition's own name and its peers' are not locals, but in the group's bodies they denote local refs. Global names
+   * and namespace objects live in `root`. Open scopes are snapshots of resolved objects, so later declarations do not
+   * affect an earlier `open`. `elabPath` states the order in which these are consulted.
    */
   private final case class ResolveEnv(
       scopes: List[Map[String, CA.LocalRef]],
@@ -75,7 +75,7 @@ object Elaborator {
 
     def exitScoped(inner: ResolveEnv): ResolveEnv = copy(root = inner.root)
 
-    /** The scope of a sort or closure field of `parameter`: that parameter's forms resolve unqualified. */
+    /** The scope of a sort field of `parameter`: that parameter's forms resolve unqualified. */
     def openForms(parameter: CA.Parameter): ResolveEnv =
       copy(fieldForms = parameter.forms.map(form => form.name -> form).toMap)
 
@@ -236,7 +236,7 @@ object Elaborator {
       }
     }
 
-    /** `_` binds an anonymous local (spec §1): it has a ref, as every local does, but no name resolves to it. */
+    /** `_` binds an anonymous local: it has a ref, as every local does, but no name resolves to it. */
     def bind(name: String, allowShadow: Boolean): (CA.LocalRef, ResolveEnv) =
       if (name == "_") allocate(name)
       else if (reservedLocals.contains(name)) fail(AlreadyDefined(name))
@@ -345,9 +345,7 @@ object Elaborator {
       fields.map { case (field, fieldIdx) =>
         // The result type is the field's own type, as written, with each earlier field it mentions bound to that
         // field's selector applied to `self`. The selector is spelled qualified so it resolves whether or not the
-        // namespace is open. Only a mentioned field is bound: an unmentioned one would put `self` in the type for
-        // nothing, which a linear struct cannot have (spec §3.5). Each binding stands at the field's first mention,
-        // where an error about it belongs. The type keeps the field type's spans, so an error in it is located where
+        // namespace is open. Only mentioned fields are bound, each at its first mention, where an error belongs. The type keeps the field type's spans, so an error in it is located where
         // the field's type is written. It is elaborated twice, as the header's codomain and as the match's motive, and
         // so is two nodes, each with an identity of its own (docs/kernel.md#value-identity).
         val mentions = freeIdentifiers(field.ty, Set.empty)
@@ -393,7 +391,6 @@ object Elaborator {
           selectorHeader,
           decreases = None,
           SA.ConstBody.TermBody(body),
-          selectorOf = Some(decl),
           field.span
         )
       }
@@ -407,30 +404,28 @@ object Elaborator {
    */
   private def freeIdentifiers(term: SA.Term, bound: Set[String]): Vector[SA.Term.Ident] = {
     def free(part: SA.Term): Vector[SA.Term.Ident] = freeIdentifiers(part, bound)
-    def closure(written: SA.Closure): Vector[SA.Term.Ident] = (written.kind.toVector ++ written.scope).flatMap(free)
     // Binders in one group scope left to right: each one's type sees the names bound before it.
     def group(binders: Vector[SA.Binder]): (Vector[SA.Term.Ident], Set[String]) =
       binders.foldLeft((Vector.empty[SA.Term.Ident], bound)) { case ((found, inner), binder) =>
         (found ++ freeIdentifiers(binder.ty, inner), inner + binder.name)
       }
     term match {
-      case ident: SA.Term.Ident                  => if (bound(ident.name)) Vector.empty else Vector(ident)
-      case _: SA.Term.NatLit | _: SA.Term.StrLit => Vector.empty
-      case SA.Term.Select(base, _, _)            => free(base)
-      case SA.Term.App(fn, args, _)              => (fn +: args).flatMap(free)
-      case SA.Term.Sort(level, kind, scope, _) =>
+      case ident: SA.Term.Ident       => if (bound(ident.name)) Vector.empty else Vector(ident)
+      case _: SA.Term.NatLit          => Vector.empty
+      case SA.Term.Select(base, _, _) => free(base)
+      case SA.Term.App(fn, args, _)   => (fn +: args).flatMap(free)
+      case SA.Term.Sort(level, _) =>
         val written = level match {
           case SA.Term.SortLevel.Written(written)             => Vector(written)
           case SA.Term.SortLevel.Zero | SA.Term.SortLevel.One => Vector.empty
         }
-        (written ++ kind ++ scope).flatMap(free)
-      case SA.Term.Pi(written, binders, body, _) =>
+        written.flatMap(free)
+      case SA.Term.Pi(binders, body, _) =>
         val (inBinders, inner) = group(binders)
-        closure(written) ++ inBinders ++ freeIdentifiers(body, inner)
-      case SA.Term.Lam(written, header, body, _) =>
+        inBinders ++ freeIdentifiers(body, inner)
+      case SA.Term.Lam(header, body, _) =>
         val (inBinders, inner) = group(header.params)
-        closure(written) ++ inBinders ++ freeIdentifiers(header.ty, inner) ++ freeIdentifiers(body, inner)
-      case SA.Term.Scope(name, body, _) => freeIdentifiers(body, bound + name)
+        inBinders ++ freeIdentifiers(header.ty, inner) ++ freeIdentifiers(body, inner)
       case SA.Term.Match(scrut, motive, cases, _) =>
         free(scrut) ++ free(motive) ++ cases.flatMap(c => freeIdentifiers(c.body, bound ++ c.patternVars.map(_.name)))
       case SA.Term.Body(statements, out, _) =>
@@ -446,9 +441,9 @@ object Elaborator {
   }
 
   /**
-   * Elaborate a dotted path. This is the one order in which a name resolves (spec §1):
+   * Elaborate a dotted path. This is the one order in which a name resolves:
    *   1. a local, the rest of the path being a projection chain;
-   *   2. in a sort or closure field, one of the field's forms, as its qualified name does;
+   *   2. in a sort field, one of the field's forms, as its qualified name does;
    *   3. a member of the recursive group being elaborated, by its short or qualified name. It is not a local, so a
    *      field's forms win over it: `level = succ(u)` means `Level.succ(u)` even in the body of a recursive `def succ`;
    *   4. a global, through the current namespace and then the open scopes.
@@ -481,7 +476,7 @@ object Elaborator {
 
   /**
    * A head that is not applied. A nullary form is complete as written; any other form exists only applied to all of its
-   * arguments (spec §2.2), so naming it without them is applying it to none.
+   * arguments, so naming it without them is applying it to none.
    */
   private def unapplied(head: Either[CA.Form, CA.Term], span: Span): CA.Term =
     head match {
@@ -502,25 +497,10 @@ object Elaborator {
     val piEnv = env.enterLocalScope
     val (binders, binderEnv) = elabBinders(pi.binders, CA.BinderSite.Function, piEnv)
     val body = elabTerm(pi.body, binderEnv)
-    // A function type captures nothing, so an omitted closure field is Kind.unr or Lifetime.empty (spec §1).
-    val closure = elabClosure(pi.closure, CA.Closure.unrestricted(pi.span), env)
-    CA.Term.Pi(binders, body, closure, pi.span, NodeId.fresh())
+    CA.Term.Pi(binders, body, pi.span, NodeId.fresh())
   }
 
-  /**
-   * A function type's or lambda's closure: each written field elaborated as a field, and each omitted one taken from
-   * `omitted`, since what an omitted field is depends on what omits it.
-   */
-  private def elabClosure(written: SA.Closure, omitted: CA.Closure, env: ResolveEnv): CA.Closure = {
-    def field(term: Option[SA.Term], parameter: CA.Parameter, omittedField: CA.ClosureField): CA.ClosureField =
-      term.fold(omittedField)(written => CA.ClosureField.Written(elabField(written, parameter, env)))
-    CA.Closure(
-      field(written.kind, CA.Parameter.Kind, omitted.kind),
-      field(written.scope, CA.Parameter.Lifetime, omitted.scope)
-    )
-  }
-
-  /** A sort's or closure's written field, elaborated with its parameter's forms open (spec §1). */
+  /** A sort's written field, elaborated with its parameter's forms open. */
   private def elabField(written: SA.Term, parameter: CA.Parameter, env: ResolveEnv): CA.Term =
     elabTerm(written, env.openForms(parameter))
 
@@ -562,14 +542,10 @@ object Elaborator {
       constructorNames: Vector[GlobalName]
   )
 
-  /**
-   * A declaration's header binds `Parameter` s and its type's closure is unrestricted, since a declaration captures
-   * nothing (spec §3.3); a lambda's header binds `Function` binders at the lambda's closure.
-   */
+  /** Declaration headers admit universe parameters; lambda headers bind ordinary values. */
   private def elabHeader(
       header: SA.FuncHeader,
       site: CA.BinderSite,
-      closure: CA.Closure,
       env: ResolveEnv
   ): HeaderResult = {
     val headerEnv = env.enterLocalScope
@@ -577,12 +553,12 @@ object Elaborator {
     val outTy = elabTerm(header.ty, bodyEnv)
     val ty =
       if (params.isEmpty) outTy
-      else CA.Term.Pi(params, outTy, closure, header.span, NodeId.fresh())
+      else CA.Term.Pi(params, outTy, header.span, NodeId.fresh())
     HeaderResult(ty, bodyEnv)
   }
 
   private def elabDeclHeader(header: SA.FuncHeader, env: ResolveEnv): HeaderResult =
-    elabHeader(header, CA.BinderSite.Parameter, CA.Closure.unrestricted(header.span), env)
+    elabHeader(header, CA.BinderSite.Parameter, env)
 
   def getType(header: SA.FuncHeader): CA.Term = elabDeclHeader(header, ResolveEnv.empty).ty
 
@@ -615,8 +591,16 @@ object Elaborator {
     }
 
   private def elabTerm(term: SurfaceAst.Term, env: ResolveEnv): CA.Term = term match {
-    case SA.Term.NatLit(value, span)   => CA.Term.NatLit(value, span)
-    case SA.Term.StrLit(scalars, span) => CA.Term.StrLit(scalars, span)
+    case SA.Term.NatLit(value, span) =>
+      val zero = elabPathTerm(SurfacePath(root = true, Vector("Nat", "zero"), span), env)
+      lazy val succ = elabPathTerm(SurfacePath(root = true, Vector("Nat", "succ"), span), env)
+      var result = zero
+      var remaining = value
+      while (remaining > 0) {
+        result = CA.Term.App(succ, Vector(result), span)
+        remaining -= 1
+      }
+      result
     case i: SA.Term.Ident =>
       elabPathTerm(identPath(i.name, i.span), env)
     case s: SA.Term.Select =>
@@ -635,33 +619,22 @@ object Elaborator {
           CA.Term.FormOp(form, args.map(elabTerm(_, env)), sp)
         case _ => CA.Term.App(unapplied(head, fn.span), args.map(elabTerm(_, env)), sp)
       }
-    case SA.Term.Sort(level, kind, scope, sp) =>
-      // `Type` and `Prop` fix the level, and an omitted kind or scope is Kind.unr or Lifetime.empty (spec §1).
+    case SA.Term.Sort(level, sp) =>
       def fixed(form: CA.Form): CA.Term = CA.Term.FormOp(form, Vector.empty, sp)
       val levelTerm = level match {
         case SA.Term.SortLevel.Zero          => fixed(CA.Form.LevelZero)
         case SA.Term.SortLevel.One           => fixed(CA.Form.LevelOne)
         case SA.Term.SortLevel.Written(term) => elabField(term, CA.Parameter.Level, env)
       }
-      CA.Term.Sort(
-        levelTerm,
-        kind.fold(fixed(CA.Form.KindUnr))(elabField(_, CA.Parameter.Kind, env)),
-        scope.fold(fixed(CA.Form.LifetimeEmpty))(elabField(_, CA.Parameter.Lifetime, env)),
-        sp
-      )
+      CA.Term.Sort(levelTerm, sp)
     case pi: SA.Term.Pi => elabPi(pi, env)
     case l: SA.Term.Lam =>
-      // A lambda's omitted closure field is derived from its captures by the checker (spec §4.3).
-      val closure = elabClosure(l.closure, CA.Closure(CA.ClosureField.Omitted, CA.ClosureField.Omitted), env)
-      val header = elabHeader(l.header, CA.BinderSite.Function, closure, env)
+      val header = elabHeader(l.header, CA.BinderSite.Function, env)
       header.ty match {
         case pi: CA.Term.Pi =>
           elabLam(pi, header.bodyEnv, l.body, None, None, l.span)
         case _ => at(l.span) { wtf("Lambda header must produce a function type") }
       }
-    case SA.Term.Scope(name, body, span) =>
-      val (ref, bodyEnv) = env.enterLocalScope.bind(name, allowShadow = false)
-      CA.Term.Scope(ref, elabTerm(body, bodyEnv), span, NodeId.fresh())
     case b: SA.Term.Body =>
       val checkedLets = Vector.newBuilder[CA.Let]
       val startEnv = env.enterOpenScope
@@ -767,17 +740,6 @@ object Elaborator {
   }
 
   /**
-   * The seal of the family that `family` declares under the global name `name`, if it is `sealed`. Its constructors and
-   * its generated selectors both take their seal from here, so they are kept to one module: the source the declaration
-   * was read from. Every parsed program has a source (LanguageParser.parseProgram), so a sealed declaration without one
-   * was read from no file and cannot be kept to it; that is a broken invariant, not a program's error.
-   */
-  private def familySeal(family: SA.Command.Decl.InductiveDecl, name: String): Option[Sealing.Seal] =
-    Option.when(family.isSealed) {
-      Sealing.Seal(name, family.span.source.getOrElse(wtf(s"Sealed family $name has no source")))
-    }
-
-  /**
    * Elaborate one or more inductive families. Family signatures see only the incoming environment; constructors see
    * every family head, but no constructors, matching the Core block checker's provisional environment.
    */
@@ -821,7 +783,6 @@ object Elaborator {
         CA.Decl.InductiveDecl(
           family.header,
           constructors,
-          familySeal(family.surface, family.header.name),
           family.surface.span
         ),
         constructorNames
@@ -903,10 +864,8 @@ object Elaborator {
                 CA.ConstBody.TermBody(elabTerm(term, envWithSelf))
             }
         }
-        // A selector is declared in its family's namespace, so that namespace names its family.
-        val sealedBy = c.selectorOf.flatMap(family => familySeal(family, globalName(env.namespace)))
         (
-          CA.Decl.ConstDecl(c.isOpaque, nameText, header.ty, body, sealedBy, c.span),
+          CA.Decl.ConstDecl(c.isOpaque, nameText, header.ty, body, c.span),
           envWithSelf
         )
       case c: SurfaceAst.Command.Decl.AxiomDecl =>

@@ -3,7 +3,7 @@ package com.raccoonlang
 class PrettyPrinterTests extends munit.FunSuite with TestSupport {
   override protected val suitePrelude: Prelude.Config = Prelude.test
 
-  /** The elaborated type of axiom `name` in `src`, read as a prelude: only a prelude declares axioms (spec §7.3). */
+  /** The elaborated type of axiom `name` in `src`, read as a prelude: only a prelude declares axioms. */
   private def axiomType(src: String, name: String): CoreAst.Term =
     Prelude
       .fromSource("printer", src)
@@ -47,23 +47,6 @@ class PrettyPrinterTests extends munit.FunSuite with TestSupport {
     // A constant level prints as its forms, not a numeral, so the sort reads back as itself.
     assert(ValueEquivalence.defEq(runProgram(s"{ $two }"), runProgram("{ Sort { level = succ(one) } }")))
     assertEquals(PrettyPrinter.print(runProgram("{ Sort { level = one } }")), "Type")
-  }
-
-  test("a sort prints the kind and scope it does not leave at their defaults") {
-    val src = "axiom f : (l: Lifetime) -> (A: Type { scope = union(l, empty), kind = lin }) -> Prop { scope = l }\n"
-    val printed = PrettyPrinter.printTerm(axiomType(src, "f"))
-
-    assertEquals(
-      printed,
-      "(l: Lifetime) -> (A: Type { kind = Kind.lin, scope = Lifetime.union(l, Lifetime.empty) }) -> " +
-        "Prop { scope = l }"
-    )
-    axiomType(s"axiom g : $printed\n", "g")
-    assertEquals(PrettyPrinter.print(runProgram("{ Type { kind = lin, scope = empty } }")), "Type { kind = Kind.lin }")
-    assertEquals(
-      PrettyPrinter.print(runProgram("{ Sort { level = succ(one), kind = unr } }")),
-      "Sort { level = Level.succ(Level.one) }"
-    )
   }
 
   test("syntax a value holds prints under its environment, so a bound local prints as its value") {
@@ -118,18 +101,17 @@ class PrettyPrinterTests extends munit.FunSuite with TestSupport {
   }
 
   // Grouping is part of a function type's identity, so a function type in codomain position is parenthesized: bare, it
-  // would read back as part of the enclosing group, and a closure there would be misplaced (spec §1).
+
   test("a function-type codomain stays parenthesized, so a printed type reads back as the same type") {
     val types = Vector(
       "Type -> (Type -> Type)" -> "Type -> (Type -> Type)",
       "(A: Type) -> ((x: A) -> A)" -> "(A: Type) -> ((x: A) -> A)",
-      "(l: Lifetime) -> Type -> ({ scope = l } Type -> Type)" -> "(l: Lifetime) -> Type -> ({ scope = l } Type -> Type)",
       "Type -> Type -> Type" -> "Type -> Type -> Type"
     )
     // The binder groups down a chain of codomains.
     def groups(term: CoreAst.Term): Vector[Int] = term match {
-      case CoreAst.Term.Pi(binders, out, _, _, _, _) => binders.length +: groups(out)
-      case _                                         => Vector.empty
+      case CoreAst.Term.Pi(binders, out, _, _, _) => binders.length +: groups(out)
+      case _                                      => Vector.empty
     }
     types.foreach { case (written, printed) =>
       val core = axiomType(s"axiom f : $written\n", "f")
@@ -139,10 +121,6 @@ class PrettyPrinterTests extends munit.FunSuite with TestSupport {
     def actual(source: String): String =
       PrettyPrinter.print(expectTypeError[TypeMismatch](source, Prelude.default).actual)
     assertEquals(actual("def bad (g: Nat -> (Nat -> Nat)): Nat := g\n"), "Nat -> (Nat -> Nat)")
-    assertEquals(
-      actual("def bad (l: Lifetime)(g: Nat -> ({ scope = l } Nat -> Nat)): Nat := g\n"),
-      "Nat -> ({ scope = l } Nat -> Nat)"
-    )
     assertEquals(actual("def bad (g: Nat -> Nat -> Nat): Nat := g\n"), "Nat -> Nat -> Nat")
   }
 }

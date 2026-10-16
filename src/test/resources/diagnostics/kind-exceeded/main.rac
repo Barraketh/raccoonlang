@@ -1,4 +1,0 @@
-inductive Holder {k: Kind}{S: Lifetime}(A: Type { kind = k, scope = S }) : Type { scope = S }
- | mk (held: A) : Holder(A)
-
-{ Nat.zero }

@@ -8,7 +8,7 @@ class ValueOpsTests extends munit.FunSuite with DiagnosticAssertions {
   private val valueType: Value = Sorts.Type
   private val typeRef: CoreAst.Term = CTerm.GlobalRef("Type", span)
   private val typeToTypeClassifier: Value.VSort =
-    Sorts.sort(Level.succ(Level.one), Value.Kind.unr, Value.Lifetime.empty)
+    Sorts.sort(Level.succ(Level.one))
 
   private def symbolicValue(name: String): VConst =
     VConst(name, Symbol, valueType)
@@ -91,8 +91,6 @@ class ValueOpsTests extends munit.FunSuite with DiagnosticAssertions {
       runtimeEnv,
       Vector(binder),
       _ => valueType,
-      Value.Kind.unr,
-      Value.Lifetime.empty,
       captured.synDeps,
       ValueId.LocalId(NodeId.fresh(), Vector(captured)),
       () => typeToTypeClassifier
@@ -100,7 +98,6 @@ class ValueOpsTests extends munit.FunSuite with DiagnosticAssertions {
     val piTerm = CTerm.Pi(
       Vector(CoreAst.Binder(argRef, typeRef, span, CoreAst.BinderSite.Function)),
       typeRef,
-      CoreAst.Closure.unrestricted(span),
       span,
       NodeId.fresh()
     )
@@ -137,8 +134,6 @@ class ValueOpsTests extends munit.FunSuite with DiagnosticAssertions {
       runtimeEnv,
       Vector(binder),
       _ => valueType,
-      Value.Kind.unr,
-      Value.Lifetime.empty,
       DepSet.empty,
       ValueId.LocalId(NodeId.fresh(), Vector.empty),
       () => typeToTypeClassifier
@@ -146,7 +141,6 @@ class ValueOpsTests extends munit.FunSuite with DiagnosticAssertions {
     val piTerm = CTerm.Pi(
       Vector(CoreAst.Binder(argRef, typeRef, span, CoreAst.BinderSite.Function)),
       typeRef,
-      CoreAst.Closure.unrestricted(span),
       span,
       NodeId.fresh()
     )
@@ -172,7 +166,6 @@ class ValueOpsTests extends munit.FunSuite with DiagnosticAssertions {
     val piTerm = CTerm.Pi(
       Vector(CoreAst.Binder(argRef, typeRef, span, CoreAst.BinderSite.Function)),
       typeRef,
-      CoreAst.Closure.unrestricted(span),
       span,
       NodeId.fresh()
     )

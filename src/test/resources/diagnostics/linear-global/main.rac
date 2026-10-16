@@ -1,6 +1,0 @@
-inductive Tok (l: Lifetime) : Type { kind = lin, scope = l }
- | mk : Tok(l)
-
-def shared : Tok(Lifetime.empty) := Tok.mk(Lifetime.empty)
-
-{ Nat.zero }

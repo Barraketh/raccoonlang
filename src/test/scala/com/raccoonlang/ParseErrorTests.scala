@@ -1,9 +1,9 @@
 package com.raccoonlang
 
 /**
- * Spec §9's parse errors, each reached at every position its syntax can stand in: a definition's header, a lambda's
- * header, a function type's binder in a type and in a term position, and a constructor's field. An error inside a
- * binder is reported as itself, not swallowed into a generic failure of the enclosing type.
+ * Parse errors, each reached at every position its syntax can stand in: a definition's header, a lambda's header, a
+ * function type's binder in a type and in a term position, and a constructor's field. An error inside a binder is
+ * reported as itself, not swallowed into a generic failure of the enclosing type.
  *
  * A fragment marks where its error is reported with `@`, which the program does not contain.
  */
@@ -44,7 +44,7 @@ class ParseErrorTests extends munit.FunSuite {
     typePositions.foreach(program => expectParseError(program(fragment), message))
 
   test("each position parses a well-formed sort and function type") {
-    Vector("Type", "Sort { level = Level.one, kind = Kind.unr }", "{ kind = Kind.unr } Nat -> Nat").foreach { t =>
+    Vector("Type", "Sort { level = Level.one }", " Nat -> Nat").foreach { t =>
       typePositions.foreach(program => expectParses(program(t)))
     }
   }
@@ -53,36 +53,14 @@ class ParseErrorTests extends munit.FunSuite {
     everywhere("Sort @{}", "Empty field list")
     everywhere("Type @{}", "Empty field list")
     everywhere("Sort { level = Level.one, @size = 1 }", "Unknown field size")
-    everywhere("Type { kind = Kind.unr, @kind = Kind.unr }", "Repeated field kind")
+    everywhere("Sort { level = Level.one, @level = Level.one }", "Repeated field level")
   }
 
   test("Sort requires its level, bare or applied, and Type and Prop fix theirs") {
     everywhere("@Sort", "Sort requires a level field")
     everywhere("@Sort(Level.one)", "Sort requires a level field")
-    everywhere("@Sort { kind = Kind.unr }", "Sort requires a level field")
     everywhere("Type { @level = Level.one }", "Misplaced field level: Type fixes the level")
-    everywhere("Prop { kind = Kind.unr, @level = Level.zero }", "Misplaced field level: Prop fixes the level")
-  }
-
-  test("a function type's closure is a field list without a level, before the group's first domain") {
-    everywhere("@{} Nat -> Nat", "Empty field list")
-    everywhere("{ @level = Level.one } Nat -> Nat", "Misplaced field level: a closure has no level")
-    everywhere("{ @size = 1 } Nat -> Nat", "Unknown field size")
-    everywhere("{ kind = Kind.unr, @kind = Kind.unr } Nat -> Nat", "Repeated field kind")
-    val misplaced = "A closure prefixes a whole function type; parenthesize a nested one"
-    everywhere("Nat -> @{ kind = Kind.unr } Nat -> Nat", misplaced)
-    everywhere("(n: Nat) -> @{ kind = Kind.unr } (m: Nat) -> Nat", misplaced)
-    everywhere("@{ kind = Kind.unr } Nat", "A closure prefixes a function type")
-  }
-
-  test("a lambda's closure is a field list without a level") {
-    def lambda(closure: String): String = s"def f : Nat := (fun $closure (x: Nat): Nat => x)(0)\n"
-
-    expectParses(lambda("{ kind = Kind.unr }"))
-    expectParseError(lambda("@{}"), "Empty field list")
-    expectParseError(lambda("{ @level = Level.one }"), "Misplaced field level: a closure has no level")
-    expectParseError(lambda("{ @size = 1 }"), "Unknown field size")
-    expectParseError(lambda("{ scope = Lifetime.empty, @scope = Lifetime.empty }"), "Repeated field scope")
+    everywhere("Prop { @level = Level.zero }", "Misplaced field level: Prop fixes the level")
   }
 
   // A match stands only where a term does: a type's grammar has none, so a header, a binder or a field cannot hold one.

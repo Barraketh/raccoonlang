@@ -13,7 +13,6 @@ private[raccoonlang] object IdentifierSyntax {
     "def",
     "inductive",
     "struct",
-    "sealed",
     "namespace",
     "open",
     "import",
@@ -24,7 +23,6 @@ private[raccoonlang] object IdentifierSyntax {
     "measure",
     "indices",
     "in",
-    "scope",
     "Sort",
     "Type",
     "Prop"

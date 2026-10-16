@@ -1,5 +1,0 @@
-
-<root>/main.rac:1:1: error: Axiom excludedMiddle is declared outside the trusted prelude; only the prelude declares axioms, so an assumption goes in a custom prelude (--prelude)
-axiom excludedMiddle (P: Prop): Or(P, Not(P))
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-note: in definition excludedMiddle

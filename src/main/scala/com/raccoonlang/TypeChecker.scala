@@ -13,7 +13,7 @@ object TypeChecker {
       residual: CA.Term.Pi
   )
 
-  /** A Pi's checked binders and result, before its closure: the caller decides what the closure is. */
+  /** A Pi's checked binders and result. */
   private final case class CheckedTelescope(binders: Vector[CA.Binder], bodyEnv: Env, outTy: Value, out: CA.Term)
 
   /** A checker-produced term; callers cannot construct or copy one themselves. */
@@ -52,12 +52,7 @@ object TypeChecker {
     val collected = diagnostics.result()
     if (collected.nonEmpty) throw Execution.CheckFailure(collected)
     try
-      program.body.map { body =>
-        val result = checkTerm(body, env).value
-        // The result is outside every binder, like a global, so it may not be linear either (spec §3.2).
-        if (Linearity.isLinear(result.tpe)) at(typeSite(body))(fail(LinearGlobal(None, result.tpe)))
-        result
-      }
+      program.body.map(body => checkTerm(body, env).value)
     catch { case diagnostic: Diagnostic => throw Execution.CheckFailure(Vector(diagnostic)) }
   }
 
@@ -68,8 +63,7 @@ object TypeChecker {
    * An argument of a checked application: its own syntax, checked inside the application's argument frame, or a value
    * the caller has already checked (a selected field's base). An argument is synthesized, except that at a binder of a
    * sort parameter it is checked against that parameter, the one place an expression of one may stand as an argument
-   * (spec §2.2). The verification pass then checks each one against its binder type, as any check is synthesis followed
-   * by equality.
+   * The verification pass then checks each one against its binder type, as any check is synthesis followed by equality.
    */
   private sealed trait PendingArg {
     def check(env: Env, parameter: Option[ParameterTpe]): CheckedTerm
@@ -208,15 +202,7 @@ object TypeChecker {
         // pass is what makes the application well-typed. Arguments are bound as supplied.
         val calleeEnv =
           binders.indices.foldLeft(pi.env) { case (curEnv, idx) =>
-            // An argument at a binder whose type is a sort is a type, confined where the application stands.
-            def bind: Env = {
-              val bound = BinderOps.bindValueAndCheck(curEnv, binders(idx), known(idx))
-              known(idx).tpe match {
-                case _: VSort => requireInScope(known(idx), env)
-                case _        =>
-              }
-              bound
-            }
+            def bind: Env = BinderOps.bindValueAndCheck(curEnv, binders(idx), known(idx))
             val position = argumentPositions(idx)
             if (position == 0) bind
             else framed(Frame.InArgument(position, binders(idx).name, applyHeadName(fnResidual)))(bind)
@@ -230,21 +216,20 @@ object TypeChecker {
 
   private def checkTelescope(pi: CA.Term.Pi, env: Env, familyParams: Int): CheckedTelescope = {
     // Implicit legality (forced-by-later-binders) and projection specs come from BinderOps.checkBinders.
-    val checkedBinders = BinderOps.checkBinders(pi.binders, env, familyParams, pi.span)
+    val checkedBinders = BinderOps.checkBinders(pi.binders, env, familyParams)
     val checkedOut = checkTypeTerm(pi.out, checkedBinders.env)
     CheckedTelescope(checkedBinders.binders, checkedBinders.env, checkedOut.value, checkedOut.residual)
   }
 
   /**
-   * The residual of the function type `source`, from its checked telescope and closure, and its value with its
-   * classifier forced. The residual is `source` rebuilt, so it keeps its node identity.
+   * The residual of the function type `source`, from its checked telescope, and its value with its classifier forced.
+   * The residual is `source` rebuilt, so it keeps its node identity.
    */
-  private def finishPi(telescope: CheckedTelescope, closure: CA.Closure, source: CA.Term.Pi, env: Env): CheckedPi = {
+  private def finishPi(telescope: CheckedTelescope, source: CA.Term.Pi, env: Env): CheckedPi = {
     val residual =
       CA.Term.Pi(
         telescope.binders,
         telescope.out,
-        closure,
         source.span,
         source.id,
         knownPropValued = Interpreter.stablePiPropClassification(telescope.outTy)
@@ -255,29 +240,13 @@ object TypeChecker {
     val classifier = Interpreter.piClassifierFromChecked(
       telescope.binders,
       telescope.bodyEnv,
-      telescope.outTy,
-      evaluated.closureKind,
-      evaluated.closureScope
+      telescope.outTy
     )
     CheckedPi(evaluated.copy(classifier0 = () => classifier), telescope.bodyEnv, telescope.outTy, residual)
   }
 
-  /** A function type captures nothing, so its closure is always written (spec §1): the elaborator writes it so. */
-  private def checkPi(pi: CA.Term.Pi, env: Env, familyParams: Int): CheckedPi = {
-    val telescope = checkTelescope(pi, env, familyParams)
-    def written(field: CA.ClosureField, parameter: ParameterTpe): CA.ClosureField =
-      field match {
-        case CA.ClosureField.Written(term) => CA.ClosureField.Written(checkTerm(term, parameter, env).residual)
-        case CA.ClosureField.Omitted | _: CA.ClosureField.Derived =>
-          wtf(s"The function type $pi has an omitted closure field")
-      }
-    finishPi(
-      telescope,
-      CA.Closure(written(pi.closure.kind, KindTpe), written(pi.closure.scope, LifetimeTpe)),
-      pi,
-      env
-    )
-  }
+  private def checkPi(pi: CA.Term.Pi, env: Env, familyParams: Int): CheckedPi =
+    finishPi(checkTelescope(pi, env, familyParams), pi, env)
 
   /**
    * Constructor telescopes route through here so unforced family params (the leading `familyParams` binders) get
@@ -307,15 +276,6 @@ object TypeChecker {
 
     val checkedRes = checkTerm(body.res, curEnv)
     val lets = checkedLets.result()
-    // A let's extent is what follows it (spec §3.2).
-    lets.zipWithIndex.foreach { case (let, idx) =>
-      Ledger.requireUsedOnce(
-        let.localRef,
-        curEnv(let.localRef).tpe,
-        let.span,
-        lets.drop(idx + 1).flatMap(later => later.ty.toVector :+ later.value) :+ checkedRes.residual
-      )
-    }
     CheckedTerm(checkedRes.value, CA.Term.Body(lets, checkedRes.residual, body.span))
   }
 
@@ -337,7 +297,6 @@ object TypeChecker {
     }
     val selectorName = s"${family.head.name}.$field"
     if (!env.globals.contains(selectorName)) fail(NotFound(selectorName))
-    Sealing.requireAccessibleGlobal(selectorName, span, env)
     val selector = env(selectorName)
     val applied =
       checkApplyChecked(
@@ -350,55 +309,9 @@ object TypeChecker {
     CheckedTerm(applied.value, applied.residual)
   }
 
-  /**
-   * A lambda's closure is what it captures (spec §4.3). A written field must contain each capture's kind or scope, else
-   * `KindExceeded` or `ScopeExceeded` naming the capture. An omitted field is derived: the residual carries the
-   * captures it is derived from, and evaluating the residual derives it (spec §8), here as anywhere. Only the lambda
-   * and its captures' types decide it, never where the lambda stands.
-   */
-  private def checkLamClosure(l: CA.Term.Lam, env: Env): CA.Closure = {
-    val captures = Interpreter.lambdaCaptures(l, env)
-    def checkField[P <: Value](field: CA.ClosureField, part: Sorts.Field[P]): CA.ClosureField =
-      field match {
-        case CA.ClosureField.Written(term) =>
-          val checked = checkTerm(term, part.parameter, env)
-          val written = part.normalForm(checked.value)
-          captures.foreach { capture =>
-            Sorts.requireContains(
-              part,
-              "Lambda",
-              written,
-              s"capture ${capture.ref.name} : ${capture.value.tpe}",
-              part.of(capture.sort),
-              term.span
-            )
-          }
-          CA.ClosureField.Written(checked.residual)
-        // A capture whose field is least contributes nothing under any instantiation, so the residual leaves it out.
-        case CA.ClosureField.Omitted =>
-          CA.ClosureField.Derived(captures.filterNot(capture => part.isLeast(part.of(capture.sort))).map(_.ref))
-        case _: CA.ClosureField.Derived => wtf(s"The lambda ${l.name.getOrElse("fun")} was already checked")
-      }
-    CA.Closure(checkField(l.ty.closure.kind, Sorts.KindField), checkField(l.ty.closure.scope, Sorts.ScopeField))
-  }
-
-  /**
-   * A lambda's or definition's parameter's extent is what follows it: the later binders' types, the result type and the
-   * body (spec §3.2).
-   */
-  private def requireParametersUsedOnce(pi: CA.Term.Pi, bodyEnv: Env, body: CA.Term): Unit =
-    pi.binders.zipWithIndex.foreach { case (binder, idx) =>
-      Ledger.requireUsedOnce(
-        binder.localRef,
-        bodyEnv(binder.localRef).tpe,
-        binder.span,
-        pi.binders.drop(idx + 1).map(_.ty) :+ pi.out :+ body
-      )
-    }
-
   private def checkLam(l: CA.Term.Lam, env: Env): CheckedTerm = {
     val telescope = checkTelescope(l.ty, env, familyParams = 0)
-    val checkedVpi = finishPi(telescope, checkLamClosure(l, env), l.ty, env)
+    val checkedVpi = finishPi(telescope, l.ty, env)
     val vpi = checkedVpi.vpi
     val bodyEnv = checkedVpi.bodyEnv
 
@@ -418,7 +331,6 @@ object TypeChecker {
 
     val checkedBody = checkTerm(l.body, checkedVpi.outTy, recurEnv)
     assertNonRawRecursive(checkedBody.value)
-    requireParametersUsedOnce(checkedVpi.residual, bodyEnv, checkedBody.residual)
 
     val checkedLam =
       CA.Term.Lam(
@@ -474,7 +386,6 @@ object TypeChecker {
       }
       val checkedBody = checkTerm(definition.body, checkedPi.outTy, bodyEnv)
       assertNonRawRecursive(checkedBody.value)
-      requireParametersUsedOnce(checkedPi.residual, checkedPi.bodyEnv, checkedBody.residual)
       val residual = CA.Term.Lam(
         checkedPi.residual,
         checkedBody.residual,
@@ -490,26 +401,6 @@ object TypeChecker {
     }
   }
 
-  /**
-   * An atom's confinement (spec §4.2): a type whose sort's scope names an atom whose `scope` does not enclose the
-   * position is `LifetimeEscapes`, and the sort's scope answers it, nothing else. The sort is the type's classifier,
-   * and a sort's own sort is at its scope; a large type or a sort parameter is at none. An atom the type's value merely
-   * holds, in a closure's code or environment or a stuck computation, does not confine it. This is the one test; the
-   * checker applies it to every type it synthesizes or checks against, to each local's type at its binder, and to each
-   * argument that is a type. Evaluation never makes it.
-   */
-  private[raccoonlang] def requireInScope(tpe: Value, env: Env): Unit = {
-    // Until a program opens an atom there is nothing to confine: the per-term fast path.
-    if (Atoms.all.nonEmpty) {
-      val sortScope = Sorts.sortOf(tpe).fold(DepSet.empty)(_.scope.vars)
-      val escaped = (sortScope & Atoms.all) -- env.openAtoms
-      if (escaped.nonEmpty) {
-        val atom = escaped.max
-        fail(LifetimeEscapes(FreshVar.parameterName(atom).getOrElse(wtf(s"Atom $atom has no binder name")), tpe))
-      }
-    }
-  }
-
   /** A term at a type position: it must be a type. */
   def checkTypeTerm(term: CA.Term, env: Env): CheckedTerm =
     at(term.span) {
@@ -518,20 +409,13 @@ object TypeChecker {
       checked
     }
 
-  /**
-   * A binder's type: a type, or a sort parameter where the binder's site admits it (spec §2.2). A parameter site admits
-   * every sort parameter, a function type's or lambda's binder only `Lifetime`, and a field site none. It is the type
-   * of the local the binder binds, so it is confined where the binder stands (spec §4.2).
-   */
   def checkBinderType(binder: CA.Binder, env: Env): CheckedTerm =
     at(binder.ty.span) {
       val checked = synthesize(binder.ty, env)
       (binder.site, checked.value) match {
         case (CA.BinderSite.Parameter, _: ParameterTpe) =>
-        case (CA.BinderSite.Function, LifetimeTpe)      =>
         case _                                          => assertType(checked.value)
       }
-      requireInScope(checked.value, env)
       checked
     }
 
@@ -556,9 +440,9 @@ object TypeChecker {
     }
 
   /**
-   * A term must have a type wherever it stands (spec §2.2), except where `admitsNonType` allows otherwise. So a sort
-   * parameter itself, an expression of one, and a reference whose type is large are `NotAType` there; a large reference
-   * may still head an application (`checkHead`).
+   * A term must have a type wherever it stands, except where `admitsNonType` allows otherwise. So a sort parameter
+   * itself, an expression of one, and a reference whose type is large are `NotAType` there; a large reference may still
+   * head an application (`checkHead`).
    */
   private def requireTyped(value: Value): Unit =
     value.tpe match {
@@ -570,8 +454,7 @@ object TypeChecker {
   /**
    * The positions where a term whose type is not a type may stand: an expression of a sort parameter where one is
    * expected (a sort's field, the argument at a binder of a sort parameter), and a definition's lambda at its own large
-   * declared type. Equality with the expected type then decides as for any check, so a kind where a level is expected
-   * is a `TypeMismatch`, as a term of any other type there is.
+   * declared type. Equality with the expected type decides as for any check.
    */
   private def admitsNonType(actualTy: Value, expectedTy: Value): Boolean =
     (actualTy, expectedTy) match {
@@ -597,7 +480,6 @@ object TypeChecker {
       val synthed = synthesize(term, env)
       expected match {
         case Some(expectedTy) =>
-          requireInScope(expectedTy, env)
           if (!admitsNonType(synthed.value.tpe, expectedTy)) requireTyped(synthed.value)
           at(typeSite(term))(checkType(synthed.value, expectedTy))
         case None => requireTyped(synthed.value)
@@ -607,59 +489,12 @@ object TypeChecker {
 
   /**
    * An application's head: the one position where a reference whose type is large may stand, since a level-polymorphic
-   * declaration is used only applied (spec §2.2).
+   * declaration is used only applied.
    */
   private def checkHead(term: CA.Term, env: Env): CheckedTerm = at(term.span)(synthesize(term, env))
 
-  /**
-   * The first subterm of linear type, in order of completion, among the terms synthesized since the innermost
-   * `synthesize` in progress began. A synthesis starts from none, and when it completes it restores what its enclosing
-   * synthesis had seen, extended by its own first one, or else by itself when it is linear. A failure abandons the
-   * syntheses in progress, and every later one starts from none again. Like FreshVar, it assumes a single checking
-   * thread.
-   */
-  private var linearSubterm: Option[CheckedTerm] = None
-
-  /**
-   * A term's own type, whatever position it stands at; the callers above decide what the position admits. Every term
-   * the checker sees is synthesized here, so this is where each synthesized type is confined (spec §4.2), and where a
-   * type or a proof is found to contain a subterm of linear type, `LinearInType` located at that subterm (spec §3.2).
-   * Types and proofs hold no tokens, since they are copied and dropped freely; this is the one test of it, and until a
-   * kind other than `Kind.unr` has been built no term is linear.
-   */
-  private def synthesize(term: CA.Term, env: Env): CheckedTerm = {
-    val enclosing = linearSubterm
-    linearSubterm = None
-    val synthed = synthesizeTerm(term, env)
-    requireInScope(synthed.value.tpe, env)
-    val inner = linearSubterm
-    inner.foreach { subterm =>
-      val holdsNoTokens = synthed.value.tpe match {
-        case _: VSort => true
-        case tpe      => Sorts.isProposition(tpe)
-      }
-      if (holdsNoTokens) at(subterm.residual.span)(fail(LinearInType(subterm.residual, subterm.value.tpe)))
-    }
-    linearSubterm =
-      if (enclosing.isDefined) enclosing
-      else if (inner.isDefined) inner
-      else if (Linearity.isLinear(synthed.value.tpe)) Some(synthed)
-      else None
-    synthed
-  }
-
-  private def synthesizeTerm(term: CA.Term, env: Env): CheckedTerm =
+  private def synthesize(term: CA.Term, env: Env): CheckedTerm =
     term match {
-      case CA.Term.NatLit(value, span) =>
-        val layout = env.nativeLiterals.natLayout.getOrElse(fail(NatLiteralUnavailable("no validated Nat layout")))
-        CheckedTerm(VPacked.nat(value, layout.natTpe), CA.Term.NatLit(value, span))
-      case CA.Term.StrLit(scalars, span) =>
-        val layout =
-          env.nativeLiterals.stringLayout.getOrElse(fail(StringLiteralUnavailable("no validated String layout")))
-        val checked = CheckedTerm(Packed.evalStrLit(scalars, env), CA.Term.StrLit(scalars, span))
-        if (!ValueEquivalence.defEq(checked.value.tpe, layout.stringTpe))
-          wtf("String literal evaluator returned the wrong type")
-        checked
       case CA.Term.Select(base, field, span) => checkSelect(checkTerm(base, env), field, span, env)
       case app: CA.Term.App =>
         val checkedFn = checkHead(app.fn, env)
@@ -672,27 +507,12 @@ object TypeChecker {
         val checked = checkPi(pi, env, familyParams = 0)
         CheckedTerm(checked.vpi, checked.residual)
       case global: CA.Term.GlobalRef =>
-        Sealing.requireAccessibleGlobal(global.name, global.span, env)
         CheckedTerm(Interpreter.evalTerm(global, env), global)
       case local: CA.Term.LocalRef => CheckedTerm(Interpreter.evalTerm(local, env), local)
       case l: CA.Term.Lam          => checkLam(l, env)
-      // The body is checked with the binder denoting the atom, open there (spec §4.1). The construct's type is its
-      // body's, which `synthesize` then confines at the scope's own position, where the atom is no longer open.
-      case scope: CA.Term.Scope =>
-        val checkedBody = checkTerm(scope.body, env.openScope(scope.ref, Atoms.of(scope)))
-        CheckedTerm(checkedBody.value, CA.Term.Scope(scope.ref, checkedBody.residual, scope.span, scope.id))
-      case CA.Term.Sort(level, kind, scope, span) =>
+      case CA.Term.Sort(level, span) =>
         val checkedLevel = checkTerm(level, LevelTpe, env)
-        val checkedKind = checkTerm(kind, KindTpe, env)
-        val checkedScope = checkTerm(scope, LifetimeTpe, env)
-        CheckedTerm(
-          Sorts.checkedSort(
-            Interpreter.getLevel(checkedLevel.value),
-            Interpreter.getKind(checkedKind.value),
-            Interpreter.getLifetime(checkedScope.value)
-          ),
-          CA.Term.Sort(checkedLevel.residual, checkedKind.residual, checkedScope.residual, span)
-        )
+        CheckedTerm(Sorts.sort(Interpreter.getLevel(checkedLevel.value)), CA.Term.Sort(checkedLevel.residual, span))
       case CA.Term.FormOp(form, args, span) =>
         val checkedArgs = args.map(checkTerm(_, Interpreter.parameterType(form.parameter), env))
         CheckedTerm(
@@ -701,13 +521,12 @@ object TypeChecker {
         )
     }
 
-  /** Where a term's type comes from, for locating a mismatch: a block's type is its result's, a scope's its body's. */
+  /** Where a term's type comes from, for locating a mismatch: a block's type is its result's. */
   @annotation.tailrec
   private def typeSite(term: CA.Term): Span =
     term match {
-      case body: CA.Term.Body   => typeSite(body.res)
-      case scope: CA.Term.Scope => typeSite(scope.body)
-      case other                => other.span
+      case body: CA.Term.Body => typeSite(body.res)
+      case other              => other.span
     }
 
 }

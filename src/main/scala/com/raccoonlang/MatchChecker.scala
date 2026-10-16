@@ -51,7 +51,7 @@ object MatchChecker {
           // they are exactly what the constructor value mentions beyond the scrutinee type.
           val (fields, resultTy) = BinderOps.freshCtorFields(h, family.args, fieldRefs)
           val ctorValue = Value.canonicalizeProof(
-            Packed.foldCtor(h, fields, resultTy).getOrElse(VCtor(h, fields, resultTy))
+            VCtor(h, fields, resultTy)
           )
           val ctorRefinable = refinableIn(ctorValue, ctorValue.synDeps -- scrutTpe.synDeps)
           val valueRefinable = rootRefinable(scrut) ++ ctorRefinable
@@ -107,17 +107,12 @@ object MatchChecker {
         if (args.length != br.argRefs.length) fail(ArityMismatch(args.length, br.argRefs.length))
         // Proof recovery stores recursive proof fields shallowly. Crossing the pattern boundary exposes one such
         // field, so put it into the canonical form for its exact type. A field's type is its local's type at its
-        // binder, so it is confined there (spec §4.2).
+
         val branchEnv = br.argRefs.zip(args).foldLeft(envWithScrut) { case (curEnv, (ref, argVal)) =>
-          requireInScope(argVal.tpe, curEnv)
+
           curEnv.putLocal(ref, Value.canonicalizeProof(argVal))
         }
         val branchRes = checkTerm(br.body, expectedTy, branchEnv)
-        // Each field is released to the ledger at the branch's extent (spec §6.1), a wildcard's included, and an unused
-        // one is reported at its pattern variable.
-        br.patternVars.zip(args).foreach { case (patternVar, argVal) =>
-          Ledger.requireUsedOnce(patternVar.ref, argVal.tpe, patternVar.span, Vector(branchRes.residual))
-        }
         br.copy(body = branchRes.residual)
       }
     }
@@ -134,9 +129,6 @@ object MatchChecker {
     }
     val inductiveName = inductiveFamily.head.name
     val inductiveMeta = inductiveFamily.meta
-    // Outside a sealed family's module no match opens its values, so no case, `.short` form included, names its
-    // constructors (spec §7.1).
-    Sealing.requireAccessible(inductiveMeta.seal, None, t.span)
     val inductiveCtorNames = inductiveMeta.constructorNames
     val cases = t.cases.map { c =>
       val candidates =

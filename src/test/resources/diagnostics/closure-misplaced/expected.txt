@@ -1,4 +1,0 @@
-
-<root>/main.rac:1:22: error: Failed to parse module <root>/main.rac: A closure prefixes a whole function type; parenthesize a nested one
-def apply (f: Nat -> { kind = lin } Nat -> Nat): Nat := f(0, 0)
-                     ^

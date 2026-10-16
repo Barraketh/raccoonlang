@@ -233,7 +233,7 @@ object Parser {
         }
     }
 
-    /** Tuple flattener. Kinda ugly, but what can you do */
+    /** Combine parser results while flattening nested tuples. */
     private trait TupleCombine extends DefaultCombine {
       type CA[A, B, O] = Combine.Aux[A, B, O]
 

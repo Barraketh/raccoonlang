@@ -114,33 +114,14 @@ class MatchRefinementTests extends munit.FunSuite with TestSupport {
       |opaque def double (n: Peano): Peano := n
       |""".stripMargin + declarations
 
-  test("a stuck index equation leaves a field at the scrutinee's lifetime parameter") {
+  test("a stuck index equation preserves the field's type parameter") {
     def program(body: String): String =
       stuckIndex(
         s"""
-           |inductive L (l: Lifetime) : Type { scope = l }
-           | | mk : L(l)
-           |
-           |inductive W (l: Lifetime) indices (n: Peano) : Type { scope = l }
-           | | mk (h: L(l)) : W(l, Peano.zero)
-           |
-           |def f {S: Lifetime}(n: Peano)(w: W(S, double(n))): L(S) := match w returning L(S) with
-           | | .mk h => $body
-           |""".stripMargin
-      )
-
-    typecheckDecls(program("h"))
-    typecheckDecls(program("(fun (u: Tick): L(S) => h)(Tick.tick)"))
-  }
-
-  test("a stuck index equation leaves a field at the scrutinee's kind parameter") {
-    def program(body: String): String =
-      stuckIndex(
-        s"""
-           |inductive H {k: Kind}(A: Type { kind = k }) indices (n: Peano) : Type { kind = k }
+           |inductive H (A: Type ) indices (n: Peano) : Type
            | | mk (x: A) : H(A, Peano.zero)
            |
-           |def f {k: Kind}{A: Type { kind = k }}(n: Peano)(w: H(A, double(n))): A := match w returning A with
+           |def f {A: Type }(n: Peano)(w: H(A, double(n))): A := match w returning A with
            | | .mk x => $body
            |""".stripMargin
       )
@@ -153,11 +134,11 @@ class MatchRefinementTests extends munit.FunSuite with TestSupport {
     def program(result: String, body: String): String =
       stuckIndex(
         s"""
-           |inductive V {S: Lifetime}(A: Type { scope = S }) indices (n: Peano) : Type { scope = S }
+           |inductive V (A: Type ) indices (n: Peano) : Type
            | | nil : V(A, Peano.zero)
            | | cons (m: Peano)(head: A)(tail: V(A, m)) : V(A, Peano.succ(m))
            |
-           |def headOr {S: Lifetime}{A: Type { scope = S }}(B: Type)(k: Peano)(d: $result)(v: V(A, double(k))): $result :=
+           |def headOr {A: Type }(B: Type)(k: Peano)(d: $result)(v: V(A, double(k))): $result :=
            |  match v returning $result with
            |  | .nil => d
            |  | .cons m h t => $body

@@ -42,15 +42,10 @@ object ValueKey {
     val Proof = 13
     val ConstId = 16
     val LocalId = 17
-    val Packed = 18
     val LevelParamAtom = 19
     val LevelIMaxAtom = 20
     val SortParameter = 21
     val Large = 22
-    val KindTpe = 23
-    val LifetimeTpe = 24
-    val Kind = 25
-    val Lifetime = 26
   }
 
   private val SeedHi = -7046029254386353131L
@@ -159,25 +154,14 @@ object ValueKey {
     mixLong(cur, sortedTerms.length.toLong)
   }
 
-  /** A set of variables in ascending id order, so the key depends on the set and not on how it was built. */
-  private def mixVars(key: Key, vars: DepSet): Key = {
-    var cur = key
-    vars.foreach(id => cur = mixLong(cur, id.toLong))
-    mixLong(cur, vars.size.toLong)
-  }
-
   def orderKey(v: Value): Key = v match {
-    case Value.LevelTpe           => tag(Tag.LevelTpe)
-    case Value.KindTpe            => tag(Tag.KindTpe)
-    case Value.LifetimeTpe        => tag(Tag.LifetimeTpe)
-    case Value.SortParameter      => tag(Tag.SortParameter)
-    case Value.Large              => tag(Tag.Large)
-    case level: Value.Level       => levelKey(level.terms, level.c)
-    case kind: Value.Kind         => mixVars(mixLong(tag(Tag.Kind), if (kind.isLin) 1L else 0L), kind.vars)
-    case lifetime: Value.Lifetime => mixVars(tag(Tag.Lifetime), lifetime.vars)
-    case sort: Value.VSort        =>
-      // Every field explicitly: two sorts at one level differ when their kinds or scopes do.
-      mixKey(mixKey(mixKey(tag(Tag.Sort), sort.level.key), sort.kind.key), sort.scope.key)
+    case Value.LevelTpe      => tag(Tag.LevelTpe)
+    case Value.SortParameter => tag(Tag.SortParameter)
+    case Value.Large         => tag(Tag.Large)
+    case level: Value.Level  => levelKey(level.terms, level.c)
+    case sort: Value.VSort   =>
+      // A sort is determined by its universe level.
+      mixKey(tag(Tag.Sort), sort.level.key)
     case Value.VConst(n, _, _) => mixString(tag(Tag.Const), n)
     case Value.Var(_, id, _)   => mixLong(tag(Tag.Var), id.toLong)
     case Value.VApp(h, args, tpe, _) =>
@@ -190,18 +174,7 @@ object ValueKey {
       valueIdKey(tag(Tag.Lam), id)
     case m: Value.NeutralThunk =>
       valueIdKey(tag(Tag.NeutralThunk), m.id)
-    case p: Value.VPi =>
-      // The closure explicitly, not through the captures: it is part of the function type's identity (spec §2.5).
-      mixKey(
-        mixKey(mixLong(valueIdKey(tag(Tag.Pi), p.id), p.binders.length.toLong), p.closureKind.key),
-        p.closureScope.key
-      )
-    case p: Value.VPacked =>
-      val codecId = p.codec match {
-        case Value.NatCodec         => 1L
-        case _: Value.CharListCodec => 2L
-      }
-      mixKey(p.codec.mixPayloadKey(mixLong(tag(Tag.Packed), codecId), p.payload), p.tpe.key)
+    case p: Value.VPi => mixLong(valueIdKey(tag(Tag.Pi), p.id), p.binders.length.toLong)
     // A nullary constructor is already a value in constructor form: a global lookup hands back the
     // bare head where `evalRef` hands back `VCtor(h, [], tpe)`. Both spellings denote the same
     // value, so the bare head keys exactly as that application would, or defEq's key fast path

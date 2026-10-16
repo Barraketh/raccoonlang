@@ -1,9 +1,9 @@
 package com.raccoonlang
 
 /**
- * Levels are second-class (spec §2.2, §2.4, §8): `Level` is not a type, a level variable is bound only by a
- * declaration's header or a family parameter, a level stands only at a parameter position, and a function type that
- * binds a level is large. Each rule has an admitted program and the smallest mutation that reaches its diagnostic.
+ * Levels are second-class: `Level` is not a type, a level variable is bound only by a declaration's header or a family
+ * parameter, a level stands only at a parameter position, and a function type that binds a level is large. Each rule
+ * has an admitted program and the smallest mutation that reaches its diagnostic.
  */
 class SecondClassLevelTests extends munit.FunSuite with TestSupport {
 

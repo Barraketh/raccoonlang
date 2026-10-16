@@ -1,4 +1,0 @@
-sealed struct Box : Type
- | mk (n: Nat) : Box
-
-def box (n: Nat): Box := Box.mk(n)

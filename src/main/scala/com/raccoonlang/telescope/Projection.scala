@@ -12,15 +12,15 @@ import scala.collection.mutable
  *   - `compile` pattern-matches the *evaluated* types of the non-implicit binders (as patterns over the implicits'
  *     fresh vars) and produces a per-implicit `Spec` — which provided argument to start from and the path to walk.
  *     Every position used is rigid (irreducible head applications, no-confusion constructor fields, sort fields and
- *     levels, Pi closures and domains), so following the same path on the actual arguments at any later time re-derives
- *     the value. Projection is a *choice*, not a proof: application checking re-verifies every argument against its
- *     instantiated binder type, so soundness never rests on injectivity of these positions.
+ *     levels, Pi domains), so following the same path on the actual arguments at any later time re-derives the value.
+ *     Projection is a *choice*, not a proof: application checking re-verifies every argument against its instantiated
+ *     binder type, so soundness never rests on injectivity of these positions.
  *   - `project` follows a Spec against actual argument values. It is the single implementation used by check-time
  *     application, run-world residual evaluation, and check-world evaluation of checked syntax (match motives,
  *     termination measures, lambda-body quoting).
  *
- * Determinism: positions are visited breadth-first from the roots, leftmost root first, with closures last; the first
- * path found for an implicit wins everywhere (both worlds compile from the same telescope).
+ * Determinism: positions are visited breadth-first from the roots, leftmost root first, the first path found for an
+ * implicit wins everywhere (both worlds compile from the same telescope).
  */
 object Projection {
 
@@ -39,22 +39,8 @@ object Projection {
     /** VSort -> its level. */
     case object SortLevel extends Step
 
-    /** VSort -> its kind; it recovers a kind variable only when the kind is exactly that variable. */
-    case object SortKind extends Step
-
-    /** VSort -> its scope; it recovers a lifetime variable only when the scope is exactly that variable. */
-    case object SortScope extends Step
-
     /** Level of the exact shape u + k -> u (single atom, no constant), mirroring unifyLevels. */
     final case class LevelOffset(k: Int) extends Step
-
-    /** VPi -> its closure kind; it recovers a kind variable only when the closure kind is exactly that variable. */
-    case object PiClosureKind extends Step
-
-    /**
-     * VPi -> its closure scope; it recovers a lifetime variable only when the closure scope is exactly that variable.
-     */
-    case object PiClosureScope extends Step
 
     /** VPi -> evaluated domain of binder idx; valid only when independent of earlier binders. */
     final case class PiDomain(idx: Int) extends Step
@@ -90,16 +76,14 @@ object Projection {
    * Compile projection specs for a freshened telescope. The first `familyParams` binders are a constructor telescope's
    * synthesized family params: their author never wrote the braces, so when unforced they are demoted to explicit
    * instead of erroring. Everywhere else — defs, axioms, lambdas, and constructor binders the user wrote — an unforced
-   * implicit throws NonForcedImplicitParam. `site` is where the telescope is written: a path reads a sealed
-   * constructor's field only inside its family's module (spec §7.1).
+   * implicit throws NonForcedImplicitParam.
    */
-  def compile(binders: Vector[BinderInput], familyParams: Int, site: Span): Vector[BinderResult] =
-    compileDemotable(binders, (0 until familyParams).toSet, site)
+  def compile(binders: Vector[BinderInput], familyParams: Int): Vector[BinderResult] =
+    compileDemotable(binders, (0 until familyParams).toSet)
 
   private def compileDemotable(
       binders: Vector[BinderInput],
-      demotable: Set[Int],
-      site: Span
+      demotable: Set[Int]
   ): Vector[BinderResult] = {
     if (binders.forall(!_.isImplicit))
       return binders.map(_ => BinderResult(isImplicit = false, projection = None))
@@ -111,19 +95,16 @@ object Projection {
         case Var(_, id, _) => Some(id)
         case level: Level =>
           Level.singleVariableOffset(level).collect { case (id, 0) => id }
-        case kind: Kind         => Kind.singleVariable(kind)
-        case lifetime: Lifetime => Lifetime.singleVariable(lifetime)
-        case _                  => None
+        case _ => None
       }
 
     val holeOfVar = mutable.Map.empty[VarId, Int]
     val proofHoles = Vector.newBuilder[(Int, Value)]
-    // A token is never read off a type, since no type contains one (spec §3.2): an implicit of linear type has no hole,
-    // so it is never forced.
+
     binders.zipWithIndex.foreach { case (b, idx) =>
       if (b.isImplicit) {
         if (Sorts.isProposition(b.fresh.tpe)) proofHoles += idx -> b.fresh.tpe
-        else if (!Linearity.isLinear(b.fresh.tpe)) b.holeId.foreach(id => holeOfVar.update(id, idx))
+        else b.holeId.foreach(id => holeOfVar.update(id, idx))
       }
     }
     val proofHolesByType = proofHoles.result()
@@ -135,11 +116,6 @@ object Projection {
     val demoted = mutable.Set.empty[Int]
     val solved = mutable.LinkedHashMap.empty[Int, (Int, Vector[Step])]
     val queue = mutable.ArrayDeque.empty[(Int, Vector[Step], Value)]
-    // A closure is read only once nothing else is left to visit. It is the one part of a function type that a lambda
-    // derives from its captures, so it is the part an argument most often gets wrong; an implicit read there would turn
-    // that into a mismatch wherever else the implicit occurs, while one read elsewhere leaves the argument's own check
-    // to report the closure.
-    val closures = mutable.ArrayDeque.empty[(Int, Vector[Step], Value)]
 
     def isRoot(idx: Int): Boolean = !binders(idx).isImplicit || demoted(idx)
 
@@ -194,11 +170,9 @@ object Projection {
               v match {
                 case sort: VSort =>
                   queue.append((root, steps :+ Step.SortLevel, sort.level))
-                  queue.append((root, steps :+ Step.SortKind, sort.kind))
-                  queue.append((root, steps :+ Step.SortScope, sort.scope))
 
                 case VCtor(head, stored, tpe) =>
-                  if (head.noConfusion && Sealing.accessible(familySeal(tpe), site))
+                  if (head.noConfusion)
                     stored.zipWithIndex.foreach { case (field, idx) =>
                       queue.append((root, steps :+ Step.CtorField(head.name, idx), field))
                     }
@@ -214,8 +188,6 @@ object Projection {
                   queue.append((root, steps :+ Step.Tpe, p.tpe))
 
                 case pi: VPi =>
-                  closures.append((root, steps :+ Step.PiClosureKind, pi.closureKind))
-                  closures.append((root, steps :+ Step.PiClosureScope, pi.closureScope))
                   pi.binders.indices.foreach { idx =>
                     independentPiDomain(pi, idx).foreach { domain =>
                       queue.append((root, steps :+ Step.PiDomain(idx), domain))
@@ -237,8 +209,8 @@ object Projection {
     }
 
     def drain(): Unit =
-      while (queue.nonEmpty || closures.nonEmpty) {
-        val (root, steps, v) = if (queue.nonEmpty) queue.removeHead() else closures.removeHead()
+      while (queue.nonEmpty) {
+        val (root, steps, v) = queue.removeHead()
         visit(root, steps, v)
       }
 
@@ -287,13 +259,6 @@ object Projection {
     }
   }
 
-  /** The seal of the family a constructor value belongs to, read off its type. */
-  private def familySeal(ctorTpe: Value): Option[Sealing.Seal] =
-    ctorTpe match {
-      case InductiveFamilyValue(instance) => instance.meta.seal
-      case other => wtf(s"A constructor value has the type $other, which is no family instance")
-    }
-
   /**
    * Domain of binder `idx`, evaluated under fresh earlier binders; None when it depends on them (such a position is not
    * stable across instantiations). Indices are into the Pi's own binder group: grouping is part of the type's identity,
@@ -331,8 +296,7 @@ object Projection {
             env = firstEnv,
             binders = remaining,
             synDeps = pi.synDeps,
-            classifier0 =
-              () => Interpreter.piClassifierFromChecked(remaining, fullEnv, out, pi.closureKind, pi.closureScope)
+            classifier0 = () => Interpreter.piClassifierFromChecked(remaining, fullEnv, out)
           )
         )
       }
@@ -382,35 +346,11 @@ object Projection {
               case other       => Left(s"expected a sort, got $other")
             }
 
-          case Step.SortKind =>
-            v match {
-              case sort: VSort => Right(sort.kind)
-              case other       => Left(s"expected a sort, got $other")
-            }
-
-          case Step.SortScope =>
-            v match {
-              case sort: VSort => Right(sort.scope)
-              case other       => Left(s"expected a sort, got $other")
-            }
-
           case Step.LevelOffset(k) =>
             toLevel(v).flatMap { l =>
               if (k == 0) Right(l)
               else if (Level.geq(l, k)) Right(Level.addOffset(l, -k))
               else Left(s"level $l does not cover offset $k")
-            }
-
-          case Step.PiClosureKind =>
-            v match {
-              case pi: VPi => Right(pi.closureKind)
-              case other   => Left(s"expected a function type, got $other")
-            }
-
-          case Step.PiClosureScope =>
-            v match {
-              case pi: VPi => Right(pi.closureScope)
-              case other   => Left(s"expected a function type, got $other")
             }
 
           case Step.PiDomain(idx) =>

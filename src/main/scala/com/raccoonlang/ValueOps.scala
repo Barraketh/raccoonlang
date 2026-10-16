@@ -23,8 +23,6 @@ object ValueOps {
       val rebuilt = resolved match {
         case _: ParameterTpe | SortParameter | Large => resolved
         case level: Level                            => materializeParameter(level)
-        case kind: Kind                              => materializeParameter(kind)
-        case lifetime: Lifetime                      => materializeParameter(lifetime)
         case sort: VSort                             => materializeClassifier(sort)
         case Var(name, id, tpe)                      => Var(name, id, materialize(tpe))
         case VConst(name, constType, tpe)            => VConst(name, constType, materialize(tpe))
@@ -32,13 +30,7 @@ object ValueOps {
           val materializedHead = materialize(head)
           val materializedArgs = args.map(materialize(_))
           val materializedTpe = materialize(tpe)
-          (materializedHead, blockedOn) match {
-            case (h: ConstructorHead, blockers) if blockers.isEmpty =>
-              Packed
-                .foldCtor(h, materializedArgs, materializedTpe)
-                .getOrElse(VApp(materializedHead, materializedArgs, materializedTpe, blockedOn))
-            case _ => VApp(materializedHead, materializedArgs, materializedTpe, blockedOn)
-          }
+          VApp(materializedHead, materializedArgs, materializedTpe, blockedOn)
         case NeutralThunk(term, env, id, tpe, blockedOn) =>
           NeutralThunk(
             term,
@@ -55,9 +47,6 @@ object ValueOps {
           VLam(materializePi(tpe), materializeId(id), materializeLamBody(body))
         case p: VProof =>
           VProof(materialize(p.tpe))
-        // A packed literal's type is closed (VPacked requires it), so it never reaches here:
-        // `mayNeedMaterialization` has already returned false for anything with no dependencies.
-        case p: VPacked => p
       }
       // Deferred collapse: a type may resolve to a proposition only once its metas solve
       // (e.g. u := 0); the proof policy applies at that point (docs/kernel.md#proofs-and-elimination). Deferred struct
@@ -70,7 +59,7 @@ object ValueOps {
     private def mayNeedMaterialization(value: Value)(implicit eqStore: EqStore): Boolean =
       value.synDeps.intersects(eqStore.solvedIds)
 
-    /** A level, kind or lifetime, which resolves to a normal form of the same sort parameter. */
+    /** A level resolves to another normalized level. */
     private def materializeParameter[P <: Value: ClassTag](parameter: P)(implicit eqStore: EqStore): P =
       Interpreter.resolveInEqStore(parameter, eqStore) match {
         case normal: P => normal
@@ -82,9 +71,7 @@ object ValueOps {
         case sort: VSort =>
           if (mayNeedMaterialization(sort))
             Sorts.sort(
-              materializeParameter(sort.level),
-              materializeParameter(sort.kind),
-              materializeParameter(sort.scope)
+              materializeParameter(sort.level)
             )
           else sort
         case Large => Large
@@ -96,8 +83,6 @@ object ValueOps {
       val store = eqStore
       pi.copy(
         env = materializeEnv(pi.env),
-        closureKind = materializeParameter(pi.closureKind),
-        closureScope = materializeParameter(pi.closureScope),
         synDeps = materializeDeps(pi.synDeps),
         id = materializeId(pi.id),
         classifier0 = () => materializeClassifier(pi.tpe)(store)

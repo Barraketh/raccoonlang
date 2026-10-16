@@ -34,7 +34,7 @@ class ResidualizationTests extends munit.FunSuite {
           Interpreter.evalDecl(decl, curEnv)
         }
         last match {
-          case CoreAst.Decl.ConstDecl(_, _, ty, CoreAst.ConstBody.TermBody(term), _, _) =>
+          case CoreAst.Decl.ConstDecl(_, _, ty, CoreAst.ConstBody.TermBody(term), _) =>
             TypeChecker.checkTerm(term, TypeChecker.checkDeclType(ty, env).value, env).residual
           case other => fail(s"Expected a term definition, got $other")
         }
@@ -50,8 +50,8 @@ class ResidualizationTests extends munit.FunSuite {
           Interpreter.evalDecl(decl, curEnv)
         }
         val ty = last match {
-          case CoreAst.Decl.ConstDecl(_, _, ty, _, _, _) => ty
-          case other                                     => fail(s"Expected a definition, got $other")
+          case CoreAst.Decl.ConstDecl(_, _, ty, _, _) => ty
+          case other                                  => fail(s"Expected a definition, got $other")
         }
         TypeChecker.checkDeclType(ty, env).residual
 
@@ -276,7 +276,7 @@ class ResidualizationTests extends munit.FunSuite {
         assert(implicitBinder.isImplicit, "expected leading binder to stay implicit in the residual")
         assert(implicitBinder.projection.isDefined, "expected forced implicit binder to carry a projection spec")
         implicitBinder.ty match {
-          case CA.Term.Sort(CA.Term.FormOp(CA.Form.LevelOne, _, _), _, _, _) =>
+          case CA.Term.Sort(CA.Term.FormOp(CA.Form.LevelOne, _, _), _) =>
           case other => fail(s"Expected Type binder annotation, got $other")
         }
         val explicitBinder = pi.binders(1)
@@ -345,8 +345,8 @@ class ResidualizationTests extends munit.FunSuite {
       case pi: CA.Term.Pi =>
         assert(!pi.binders.head.isImplicit, "expected explicit binder to stay explicit in the residual")
         pi.binders.head.ty match {
-          case CA.Term.Sort(CA.Term.FormOp(CA.Form.LevelOne, _, _), _, _, _) =>
-          case other => fail(s"Expected Type binder, got $other")
+          case CA.Term.Sort(CA.Term.FormOp(CA.Form.LevelOne, _, _), _) =>
+          case other                                                   => fail(s"Expected Type binder, got $other")
         }
         pi.out match {
           case CA.Term.LocalRef(outRef, _) => assertEquals(outRef, pi.binders.head.localRef)
@@ -372,7 +372,7 @@ class ResidualizationTests extends munit.FunSuite {
           case other                         => fail(s"Expected Level binder, got $other")
         }
         pi.out match {
-          case CA.Term.Sort(CA.Term.LocalRef(outRef, _), _, _, _) =>
+          case CA.Term.Sort(CA.Term.LocalRef(outRef, _), _) =>
             assertEquals(outRef, uRef)
           case other => fail(s"Expected codomain to reuse universe level, got $other")
         }
@@ -436,9 +436,8 @@ class ResidualizationTests extends munit.FunSuite {
 
     def walk(term: CA.Term): Unit = {
       term match {
-        case _: CA.Term.GlobalRef | _: CA.Term.LocalRef | _: CA.Term.NatLit | _: CA.Term.StrLit | _: CA.Term.Select |
-            _: CA.Term.App | _: CA.Term.Pi | _: CA.Term.Body | _: CA.Term.Lam | _: CA.Term.Match | _: CA.Term.Sort |
-            _: CA.Term.FormOp =>
+        case _: CA.Term.GlobalRef | _: CA.Term.LocalRef | _: CA.Term.Select | _: CA.Term.App | _: CA.Term.Pi |
+            _: CA.Term.Body | _: CA.Term.Lam | _: CA.Term.Match | _: CA.Term.Sort | _: CA.Term.FormOp =>
         case other => fail(s"Residual contains a non-syntax node: $other")
       }
       CA.children(term).foreach(walk)

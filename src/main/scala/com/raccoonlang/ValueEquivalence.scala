@@ -99,19 +99,8 @@ object ValueEquivalence {
         case _ => false
       }
 
-    /**
-     * Whether a key mismatch leaves the equation open. `Value.needsStructuralDefEq` is the one enumeration of the value
-     * forms whose key is incomplete — a key that cannot see extensionality, proof irrelevance or structure eta decides
-     * nothing when it differs. The mixed packed/constructor pair is the specified one-layer peel rule; canonical
-     * packed-vs-packed comparison remains key-only.
-     */
     private def keysAreInconclusive(a: Value, b: Value): Boolean =
-      a.needsStructuralDefEq || b.needsStructuralDefEq || ((a, b) match {
-        // During construction of the bundled Prelude, closures can retain a constructor-form Nat
-        // created before all fold seams are active.
-        case (_: VPacked, VCtor(_, _, _)) | (VCtor(_, _, _), _: VPacked) => true
-        case _                                                           => false
-      })
+      a.needsStructuralDefEq || b.needsStructuralDefEq
 
     // Unsolvable, but not refutable: safe for elaboration to give up on, unsound to prune a match case on.
     private def stuck(v1: Value, v2: Value): Result = Left(UnifyFailure(v1, v2, apart = false))
@@ -158,7 +147,7 @@ object ValueEquivalence {
     // Grouping is part of a function type's identity: two Pis are related binder-by-binder within their
     // single groups, and differing group counts are a failure to derive `≡` (stuck), never apartness.
     // `(a:A)(b:B) -> C` and `(a:A) -> (b:B) -> C` are different types and do not relate here. So is the
-    // closure: closure kinds and scopes compare exactly (spec §2.5).
+
     private def tryUnifyPis(pi1: VPi, pi2: VPi, eqStore: EqStore, ctx: Ctx): Either[UnifyFailure, PiUnification] = {
       if (
         pi1.binders.length != pi2.binders.length ||
@@ -168,13 +157,7 @@ object ValueEquivalence {
 
       val innerCtx = ctx.enterNonInvertibleFrame
       val watermark = FreshVar.currentId
-      // A closure mismatch is reported at the two function types, whose closures say where they differ.
-      var curStore =
-        tryUnify(pi1.closureKind, pi2.closureKind, eqStore, innerCtx)
-          .flatMap(tryUnify(pi1.closureScope, pi2.closureScope, _, innerCtx)) match {
-          case Right(closureStore) => closureStore
-          case Left(_)             => return Left(UnifyFailure(pi1, pi2, apart = false))
-        }
+      var curStore = eqStore
       var env1 = pi1.env
       var env2 = pi2.env
       val sharedVars = Vector.newBuilder[Value]
@@ -329,30 +312,6 @@ object ValueEquivalence {
       }
     }
 
-    /**
-     * A kind or lifetime equation (spec §6.2), between normal forms that differ. A variable alone on one side, not
-     * occurring in the other, links to the other side; when both sides are variables, the later-bound one links to the
-     * earlier-bound one. Every other equation is stuck, and none is apart: no two kinds or lifetimes are provably
-     * unequal.
-     */
-    private def unifyParameters(
-        a: Value,
-        aVar: Option[VarId],
-        b: Value,
-        bVar: Option[VarId],
-        meta: EqStore,
-        ctx: Ctx
-    ): Result = {
-      (aVar.map(_ -> b).toVector ++ bVar.map(_ -> a))
-        .sortBy { case (id, _) => id }(Ordering[VarId].reverse)
-        .collectFirst {
-          case (id, other) if ctx.canLinkForced && meta.isRefinable(id) && !meta.occurs(id, other) =>
-            meta.addLink(id, other)
-        }
-        .map(Right(_))
-        .getOrElse(stuck(a, b))
-    }
-
     private def tryLinkVar(v: Var, other: Value, meta: EqStore, ctx: Ctx): Result = {
       val m1 =
         if (!v.tpe.synDeps.intersects(meta.refinable) && defEq(other.tpe, v.tpe)) meta
@@ -376,25 +335,6 @@ object ValueEquivalence {
     private def tryLinkVarToPreferredRepresentative(v1: Var, v2: Var, meta: EqStore, ctx: Ctx): Result = {
       val (toLink, representative) = if (v1.id > v2.id) (v1, v2) else (v2, v1)
       tryLinkVar(toLink, representative, meta, ctx)
-    }
-
-    private def unifyPeeled(
-        packed: VPacked,
-        head: ConstructorHead,
-        ctor: Value,
-        meta: EqStore,
-        ctx: Ctx,
-        packedOnLeft: Boolean
-    ): Result = {
-      val (name, decoded) = packed.codec.decodeHead(packed)
-      if (name != head.name) {
-        if (head.noConfusion) apart(packed, ctor) else stuck(packed, ctor)
-      } else if (decoded.length != head.totalArity - head.numErasedFamilyArgs) stuck(packed, ctor)
-      else {
-        val peeled = VCtor(head, decoded, packed.tpe)
-        if (packedOnLeft) tryUnify(peeled, ctor, meta, ctx)
-        else tryUnify(ctor, peeled, meta, ctx)
-      }
     }
 
     /**
@@ -505,16 +445,6 @@ object ValueEquivalence {
           if (h1.noConfusion && h2.noConfusion) apart(a, b)
           else stuck(a, b)
 
-        case (p1: VPacked, p2: VPacked) if p1.codec == p2.codec =>
-          if (p1.codec.payloadEquals(p1.payload, p2.payload)) tryUnify(p1.tpe, p2.tpe, meta, ctx)
-          else if (p1.codec.refutesUnequalPayloads) apart(p1, p2)
-          else stuck(p1, p2)
-
-        case (p: VPacked, other @ VCtor(head, _, _)) =>
-          unifyPeeled(p, head, other, meta, ctx, packedOnLeft = true)
-        case (other @ VCtor(head, _, _), p: VPacked) =>
-          unifyPeeled(p, head, other, meta, ctx, packedOnLeft = false)
-
         // Deliberately NOT a refutation: different inductive family heads (bare or applied) are only
         // definitionally distinct. Propositional generativity is not assumed — propext can equate
         // Prop-valued families (And T T = Or T T), so head clashes fall through to stuck.
@@ -594,22 +524,7 @@ object ValueEquivalence {
             .map(Right(_))
             .getOrElse(stuck(l1, l2))
 
-        // Kinds and lifetimes are equal exactly when their normal forms are (spec §2.3); otherwise only a link can
-        // solve the equation.
-        case (k1: Kind, k2: Kind) =>
-          if (k1 == k2) Right(meta)
-          else unifyParameters(k1, Kind.singleVariable(k1), k2, Kind.singleVariable(k2), meta, ctx)
-        case (l1: Lifetime, l2: Lifetime) =>
-          if (l1 == l2) Right(meta)
-          else unifyParameters(l1, Lifetime.singleVariable(l1), l2, Lifetime.singleVariable(l2), meta, ctx)
-
-        // Two sorts are equal when their levels, kinds and scopes are (spec §2.5).
-        case (s1: VSort, s2: VSort) =>
-          for {
-            afterLevel <- tryUnify(s1.level, s2.level, meta, ctx)
-            afterKind <- tryUnify(s1.kind, s2.kind, afterLevel, ctx)
-            afterScope <- tryUnify(s1.scope, s2.scope, afterKind, ctx)
-          } yield afterScope
+        case (s1: VSort, s2: VSort) => tryUnify(s1.level, s2.level, meta, ctx)
 
         // Unify FreshVars through ctx. Basic idea: FreshVars can point at things through context
         // unify creates a ctx of pointers. We only create pointers from the top of the chain

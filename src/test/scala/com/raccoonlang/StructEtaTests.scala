@@ -103,7 +103,7 @@ class StructEtaTests extends munit.FunSuite with TestSupport {
   }
 
   test("axiom eta: a prelude axiom of struct type is its constructor of projections") {
-    // Only the trusted prelude declares axioms (spec §7.3).
+
     val prelude =
       TestSupport.preludeAssuming(TestSupport.testPreludeSource, natAndPair + "\naxiom a : Pair(Peano, Peano)\n")
     typecheckDecls("def eta : Eq(Pair(Peano, Peano), a, Pair.mk(a.fst, a.snd)) := Eq.refl(a)\n", prelude)

@@ -1,30 +1,12 @@
 package com.raccoonlang
 
 /**
- * Siblings of a `mutual` block at their own sorts (spec §5.1): each family is checked against its own declared sort,
- * and a sibling is read by its declared classifier. Where siblings hold each other, the per-field bounds force
- * compatible sorts and name the field. Everything computed for a whole block (proof recovery, the `Prop` elimination
- * restriction, structural descent, structure eta, positivity, literal layouts) reads each family's own sort.
+ * Siblings of a `mutual` block at their own sorts: each family is checked against its own declared sort, and a sibling
+ * is read by its declared classifier. Where siblings hold each other, the per-field bounds force compatible sorts and
+ * name the field. Everything computed for a whole block (proof recovery, the `Prop` elimination restriction, structural
+ * descent, structure eta, positivity, literal layouts) reads each family's own sort.
  */
 class MutualSiblingSortTests extends munit.FunSuite with TestSupport {
-
-  /** A linear token that holds an unrestricted factory of tokens; a function type is at its closure kind. */
-  private val tokens =
-    """
-      |mutual {
-      |  inductive Tok : Type { kind = lin }
-      |   | mk (next: Factory) : Tok
-      |
-      |  inductive Factory : Type
-      |   | mk (make: Unit -> Tok) : Factory
-      |}
-      |
-      |def eat (t: Tok): Nat := match t returning Nat with
-      | | Tok.mk n => 0
-      |
-      |def mint (f: Factory): Tok := match f returning Tok with
-      | | Factory.mk make => make(Unit.unit)
-      |""".stripMargin
 
   /** A data type and a proposition about it, each holding the other. */
   private val trees =
@@ -38,50 +20,6 @@ class MutualSiblingSortTests extends munit.FunSuite with TestSupport {
       |   | intro (witness: Tree) : Balanced
       |}
       |""".stripMargin
-
-  test("a linear family and an unrestricted factory of it share a block, and its tokens stay linear") {
-    typecheckDecls(
-      tokens +
-        """
-          |def once (f: Factory): Nat := eat(mint(f))
-          |
-          |def each (f: Factory): Nat := Nat.add(eat(mint(f)), eat(mint(f)))
-          |
-          |def forward (t: Tok): Factory := match t returning Factory with
-          | | Tok.mk n => n
-          |""".stripMargin
-    )
-    val twice = tokens + "\ndef twice (f: Factory): Nat := {\n  let t := mint(f)\n  Nat.add(eat(t), eat(t))\n}\n"
-    assertEquals(expectOnly[LinearReused](typecheckDecls(twice)), LinearReused("t"))
-    // The factory's function is unrestricted, so it cannot hand out one token many times.
-    expectOnly[TypeMismatch](
-      typecheckDecls(tokens + "\ndef smuggle (t: Tok): Factory := Factory.mk(fun (u: Unit): Tok => t)\n")
-    )
-  }
-
-  test("siblings holding each other are bounded at each field") {
-    def block(first: String, firstField: String, second: String, secondField: String): String =
-      s"""
-         |mutual {
-         |  inductive A : $first
-         |   | mk (b: $firstField) : A
-         |   | stop : A
-         |
-         |  inductive B : $second
-         |   | mk (a: $secondField) : B
-         |}
-         |""".stripMargin
-
-    val kinds = expectOnly[KindExceeded](typecheckDecls(block("Type { kind = lin }", "B", "Type", "A")))
-    assertEquals((kinds.declaration, kinds.part), ("Family B", "field B.mk.a : A"))
-    val levels = expectOnly[InductiveUniverseTooSmall](
-      typecheckDecls(block("Type", "B", "Sort { level = succ(one) }", "A"))
-    )
-    assertEquals((levels.inductive, levels.where), ("A", "A.mk.b"))
-    // A proposition holds no linear field, a linear sibling's included.
-    val proposition = expectOnly[KindExceeded](typecheckDecls(block("Type { kind = lin }", "B", "Prop", "A")))
-    assertEquals(proposition.part, "field B.mk.a : A")
-  }
 
   test("a proposition holding a data sibling eliminates like any proposition holding data") {
     val size =
@@ -164,11 +102,11 @@ class MutualSiblingSortTests extends munit.FunSuite with TestSupport {
     assert(ValueEquivalence.defEq(result, runProgram("{ 10 }")))
   }
 
-  test("structural recursion crosses siblings at different kinds, but not a propositional sibling's proof") {
+  test("structural recursion crosses data siblings but cannot descend through a proof") {
     val spent = runProgram(
       """
         |mutual {
-        |  inductive Tok : Type { kind = lin }
+        |  inductive Tok : Type
         |   | mk (next: Factory) : Tok
         |   | last : Tok
         |
@@ -251,7 +189,7 @@ class MutualSiblingSortTests extends munit.FunSuite with TestSupport {
     assertEquals((error.ctor, error.field), ("T.mk", "f"))
   }
 
-  test("the Nat literal layout holds when Nat shares a block with a propositional sibling") {
+  test("numerals work when Nat shares a block with a propositional sibling") {
     val natDecl = "inductive Nat : Type\n | zero : Nat\n | succ (_: Nat) : Nat\n"
     assert(TestSupport.bundledPreludeSource.contains(natDecl))
     val mutualNat =
@@ -269,9 +207,6 @@ class MutualSiblingSortTests extends munit.FunSuite with TestSupport {
       TestSupport.bundledPreludeSource.replace(natDecl, mutualNat),
       Set(Prelude.ImportPath)
     )
-    runProgram("{ Nat.succ(41) }", prelude) match {
-      case packed: Value.VPacked => assertEquals(packed.natValue, Some(BigInt(42)))
-      case other                 => fail(s"Expected a packed Nat, got $other")
-    }
+    assertEquals(PrettyPrinter.print(runProgram("{ Nat.succ(41) }", prelude)), "42")
   }
 }

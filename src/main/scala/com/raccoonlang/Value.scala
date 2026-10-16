@@ -124,8 +124,7 @@ object Value {
       case v if etaDecomposable(v) => true
       case app: VApp =>
         app.head.needsStructuralDefEq || app.args.exists(_.needsStructuralDefEq) || app.tpe.needsStructuralDefEq
-      case p: VPacked => !p.codec.canonical
-      case _          => false
+      case _ => false
     }
 
   type VarId = Int
@@ -194,9 +193,8 @@ object Value {
           }
         // Everything else is either leaf-like or reaches vars only through its type. Sorts are
         // excluded explicitly: the type of a sort at `u` is the sort at `u+1`, an infinite ascent with the same deps.
-        case _: VSort | Large | SortParameter | _: ParameterTpe | _: Level | _: Kind | _: Lifetime |
-            _: ConstructorHead =>
-        case other => walk(other.tpe)
+        case _: VSort | Large | SortParameter | _: ParameterTpe | _: Level | _: ConstructorHead =>
+        case other                                                                              => walk(other.tpe)
       }
     }
 
@@ -221,18 +219,11 @@ object Value {
     }
   }
 
-  /**
-   * A sort parameter: `Level`, `Kind` or `Lifetime` (spec §2.2). None is a type: no sort contains it, so a variable of
-   * one is bound only at the binder sites the checker admits, and an expression of one stands only where that parameter
-   * is expected.
-   */
   sealed trait ParameterTpe extends TopLevelValue {
     final override def tpe: Value = SortParameter
   }
 
   case object LevelTpe extends ParameterTpe
-  case object KindTpe extends ParameterTpe
-  case object LifetimeTpe extends ParameterTpe
 
   /**
    * The classifier of the sort parameters. It is not a sort, so nothing it classifies is a type; it classifies itself,
@@ -249,10 +240,10 @@ object Value {
   sealed trait Classifier extends Value
 
   /**
-   * The classifier of a function type that binds a level (spec §2.4). It is internal: no program writes it or binds a
-   * variable of it, and it is not a sort, so a large type fits no position that requires a type. Only a declaration's
-   * own type is large, so it is used only applied. `Large` classifies itself; nothing quantifies over it, so no
-   * hierarchy above it is needed.
+   * The classifier of a function type that binds a level. It is internal: no program writes it or binds a variable of
+   * it, and it is not a sort, so a large type fits no position that requires a type. Only a declaration's own type is
+   * large, so it is used only applied. `Large` classifies itself; nothing quantifies over it, so no hierarchy above it
+   * is needed.
    */
   case object Large extends TopLevelValue with Classifier {
     override def tpe: Value = Large
@@ -436,133 +427,29 @@ object Value {
   }
 
   /**
-   * A kind in normal form (spec §2.3): `Kind.lin`, or a set of kind variables, the empty set being `Kind.unr`. Built
-   * only by the constructors below, so structural equality is definitional equality and the set is canonical at birth.
-   */
-  final class Kind private (val isLin: Boolean, val vars: DepSet) extends Value {
-    override def tpe: Value = KindTpe
-    override def synDeps: DepSet = vars
-
-    def isUnr: Boolean = !isLin && vars.isEmpty
-
-    if (!isUnr) Kind.nonUnrBuilt = true
-
-    private val cachedHashCode: Int = 31 * vars.hashCode() + isLin.hashCode()
-
-    override def equals(obj: Any): Boolean =
-      obj match {
-        case other: Kind => cachedHashCode == other.cachedHashCode && isLin == other.isLin && vars == other.vars
-        case _           => false
-      }
-
-    override def hashCode(): Int = cachedHashCode
-  }
-
-  object Kind {
-    private var nonUnrBuilt = false
-
-    /**
-     * Whether a kind other than `unr` has been built. Until one is, no type is linear, since a type's kind is a kind
-     * that was built: the linearity fast path. Like FreshVar, it assumes a single checking thread.
-     */
-    def anyNonUnr: Boolean = nonUnrBuilt
-
-    val unr: Kind = new Kind(isLin = false, DepSet.empty)
-    // Lazy, so that no program that never names it builds it.
-    lazy val lin: Kind = new Kind(isLin = true, DepSet.empty)
-
-    def variable(id: VarId): Kind = new Kind(isLin = false, DepSet(id))
-
-    /** `lin` absorbs, and otherwise the variable sets unite: `join(unr, k) = k`, `join(lin, k) = lin`. */
-    def join(kinds: Iterable[Kind]): Kind =
-      if (kinds.exists(_.isLin)) lin
-      else
-        kinds.foldLeft(unr) { (acc, k) =>
-          if (k.vars.isEmpty) acc else if (acc.vars.isEmpty) k else new Kind(isLin = false, acc.vars ++ k.vars)
-        }
-
-    /** `outer` contains `inner` when `outer` is `lin`, or `inner` is a set of variables each of which is in `outer`. */
-    def contains(outer: Kind, inner: Kind): Boolean =
-      outer.isLin || (!inner.isLin && (inner.vars -- outer.vars).isEmpty)
-
-    /** The kind variable this kind is exactly, as refinement and forcing recognize it. */
-    def singleVariable(k: Kind): Option[VarId] =
-      if (!k.isLin && k.vars.size == 1) Some(k.vars.max) else None
-  }
-
-  /**
-   * A lifetime in normal form (spec §2.3): the set of its lifetime variables, the empty set being `Lifetime.empty`.
-   * Built only by the constructors below, so structural equality is definitional equality and the set is canonical at
-   * birth.
-   */
-  final class Lifetime private (val vars: DepSet) extends Value {
-    override def tpe: Value = LifetimeTpe
-    override def synDeps: DepSet = vars
-
-    def isEmpty: Boolean = vars.isEmpty
-
-    private val cachedHashCode: Int = vars.hashCode()
-
-    override def equals(obj: Any): Boolean =
-      obj match {
-        case other: Lifetime => cachedHashCode == other.cachedHashCode && vars == other.vars
-        case _               => false
-      }
-
-    override def hashCode(): Int = cachedHashCode
-  }
-
-  object Lifetime {
-    val empty: Lifetime = new Lifetime(DepSet.empty)
-
-    def variable(id: VarId): Lifetime = new Lifetime(DepSet(id))
-
-    /** Set union: associative, commutative, idempotent, with `union(empty, x) = x`. */
-    def union(lifetimes: Iterable[Lifetime]): Lifetime =
-      lifetimes.foldLeft(empty) { (acc, l) =>
-        if (l.isEmpty) acc else if (acc.isEmpty) l else new Lifetime(acc.vars ++ l.vars)
-      }
-
-    /** `outer` contains `inner` when every element of `inner` is one of `outer`. */
-    def contains(outer: Lifetime, inner: Lifetime): Boolean = (inner.vars -- outer.vars).isEmpty
-
-    /** `l` less the variables `ids`: a function type's scope without the lifetimes its own group binds (spec §2.4). */
-    def less(l: Lifetime, ids: DepSet): Lifetime =
-      if (!l.vars.intersects(ids)) l else new Lifetime(l.vars -- ids)
-
-    /** The lifetime variable this lifetime is exactly, as refinement and forcing recognize it. */
-    def singleVariable(l: Lifetime): Option[VarId] =
-      if (l.vars.size == 1) Some(l.vars.max) else None
-  }
-
-  /**
    * A sort, built only by `Sorts`, which also answers every question about which sort it is. There is no extractor and
    * no structural equality: two sorts are compared only by conversion, so `==` on a sort is a kernel bug and throws
    * rather than silently answering false.
    */
-  final class VSort private[raccoonlang] (val level: Level, val kind: Kind, val scope: Lifetime) extends Classifier {
-    override lazy val tpe: Value = Sorts.sort(Level.succ(level), Kind.unr, scope)
+  final class VSort private[raccoonlang] (val level: Level) extends Classifier {
+    override lazy val tpe: Value = Sorts.sort(Level.succ(level))
 
-    override lazy val synDeps: DepSet = level.synDeps ++ kind.synDeps ++ scope.synDeps
+    override lazy val synDeps: DepSet = level.synDeps
 
     override def equals(obj: Any): Boolean = wtf(s"Sort $this compared structurally; compare sorts by conversion")
     override def hashCode(): Int = wtf(s"Sort $this hashed structurally; sorts are never collection keys")
   }
 
-  // The classifier is a thunk, not a stored sort: a Pi's universe depends on the env it is
+  // The classifier is a thunk rather than a stored sort: a Pi's universe depends on the env it is
   // evaluated in (level-polymorphic binder types), so residuals carry no classifier and each VPi
   // instance derives its own from its binders and codomain (Interpreter.piClassifier). A Pi that
   // binds a level is `Large`.
   // Binders are the checked CoreAst.Binder nodes themselves: a VPi is its syntax plus a closure.
-  // `closureKind` and `closureScope` are the function type's closure (spec §1) in normal form; they are part of its
-  // identity, so its key mixes them in and conversion compares them exactly. Structural `==` is meaningless on a
-  // value holding functions, so it throws, as on a sort.
+
   case class VPi(
       env: Env,
       binders: Vector[CoreAst.Binder],
       codomain: Env => Value,
-      closureKind: Kind,
-      closureScope: Lifetime,
       synDeps: DepSet,
       id: ValueId,
       classifier0: () => Classifier,
@@ -577,9 +464,9 @@ object Value {
 
     /**
      * Whether this Pi's values are proofs — exactly when its codomain is Prop-valued. For a small Pi that is also
-     * exactly when the classifier is Prop (impredicativity); a large Pi into a proposition is proof-valued as well
-     * (spec §2.4). Kept separate from `tpe` so the proof canonicalization checks that run on every lambda creation and
-     * env binding need only a codomain evaluation, not the per-binder universe walk of the full classifier.
+     * exactly when the classifier is Prop (impredicativity); a large Pi into a proposition is proof-valued as well .
+     * Kept separate from `tpe` so the proof canonicalization checks that run on every lambda creation and env binding
+     * need only a codomain evaluation, not the per-binder universe walk of the full classifier.
      */
     lazy val isPropValued: Boolean = {
       knownPropValued.getOrElse {
@@ -684,192 +571,6 @@ object Value {
     require(Sorts.isProposition(tpe), s"VProof requires a proposition, got a value of $tpe")
 
     override lazy val synDeps: DepSet = tpe.synDeps
-  }
-
-  /**
-   * A packed representation codec (docs/kernel.md#trusted-bootstrap-and-native-values): one type's compact host-side
-   * representation for ground data. The set is closed and kernel-curated by design — each codec is trusted code inside
-   * defeq.
-   */
-  sealed abstract class PackedCodec {
-
-    /** Every ground value of the type is packed; no ground constructor-headed value exists. */
-    def canonical: Boolean
-
-    /** One constructor layer of the payload: canonical constructor name plus stored arguments. */
-    def decodeHead(v: VPacked): (String, Vector[Value])
-
-    /** Strict order realized by constructor-field steps on decodings; well-founded. */
-    def strictlyLess(candidate: VPacked, root: VPacked): Boolean
-
-    /** Unequal payloads decode to a derivable constructor clash at finite depth. */
-    def refutesUnequalPayloads: Boolean
-
-    /** Whether this codec owns this sealed payload variant. */
-    private[raccoonlang] def acceptsPayload(payload: PackedPayload): Boolean
-
-    /** Semantic payload equality. Codec compatibility is checked by the caller. */
-    private[raccoonlang] def payloadEquals(left: PackedPayload, right: PackedPayload): Boolean
-
-    /** Mix the complete payload into a trusted value key. */
-    private[raccoonlang] def mixPayloadKey(key: ValueKey.Key, payload: PackedPayload): ValueKey.Key
-  }
-
-  sealed trait PackedPayload
-
-  final class NatPayload private[Value] (val value: BigInt) extends PackedPayload
-
-  final class CharListPayload private[Value] (private val scalars0: Vector[Int]) extends PackedPayload {
-    private[raccoonlang] def scalars: Vector[Int] = scalars0
-  }
-
-  private[raccoonlang] object PackedPayload {
-    def natValue(payload: PackedPayload): BigInt = payload match {
-      case nat: NatPayload    => nat.value
-      case _: CharListPayload => wtf("Nat codec received a CharList payload")
-    }
-
-    def charScalars(payload: PackedPayload): Vector[Int] = payload match {
-      case _: NatPayload          => wtf("CharList codec received a Nat payload")
-      case chars: CharListPayload => chars.scalars
-    }
-  }
-
-  /** Nat as arbitrary-precision integers (docs/kernel.md#natural-numbers). */
-  case object NatCodec extends PackedCodec {
-    val familyName = "Nat"
-    val zeroName = "Nat.zero"
-    val succName = "Nat.succ"
-
-    override def canonical: Boolean = true
-
-    override def decodeHead(v: VPacked): (String, Vector[Value]) = {
-      val value = PackedPayload.natValue(v.payload)
-      if (value == 0) (zeroName, Vector.empty)
-      else (succName, Vector(VPacked.nat(value - 1, v.tpe)))
-    }
-
-    override def strictlyLess(candidate: VPacked, root: VPacked): Boolean =
-      PackedPayload.natValue(candidate.payload) < PackedPayload.natValue(root.payload)
-
-    override def refutesUnequalPayloads: Boolean = true
-
-    override private[raccoonlang] def acceptsPayload(payload: PackedPayload): Boolean =
-      payload match {
-        case _: NatPayload      => true
-        case _: CharListPayload => false
-      }
-
-    override private[raccoonlang] def payloadEquals(left: PackedPayload, right: PackedPayload): Boolean =
-      PackedPayload.natValue(left) == PackedPayload.natValue(right)
-
-    override private[raccoonlang] def mixPayloadKey(key: ValueKey.Key, payload: PackedPayload): ValueKey.Key =
-      ValueKey.mixBytes(key, PackedPayload.natValue(payload).toByteArray)
-  }
-
-  final class CharListCodec private[raccoonlang] (
-      val natTpe: Value,
-      val charTpe: Value,
-      val listCharTpe: Value,
-      val charOfNat: Value
-  ) extends PackedCodec {
-    require(Vector(natTpe, charTpe, listCharTpe, charOfNat).forall(_.synDeps.isEmpty), "String layout must be closed")
-
-    override def canonical: Boolean = false
-
-    override def decodeHead(v: VPacked): (String, Vector[Value]) =
-      PackedPayload.charScalars(v.payload) match {
-        case head +: _ =>
-          val char = Interpreter.evalApply(charOfNat, Vector(VPacked.nat(BigInt(head), natTpe)))
-          ("List.cons", Vector(char, VPacked.charListTail(v)))
-        case _ => ("List.nil", Vector.empty)
-      }
-
-    override def strictlyLess(candidate: VPacked, root: VPacked): Boolean = {
-      val left = PackedPayload.charScalars(candidate.payload)
-      val right = PackedPayload.charScalars(root.payload)
-      left.length < right.length && right.endsWith(left)
-    }
-
-    override def refutesUnequalPayloads: Boolean = false
-
-    override private[raccoonlang] def acceptsPayload(payload: PackedPayload): Boolean =
-      payload match {
-        case _: NatPayload      => false
-        case _: CharListPayload => true
-      }
-
-    override private[raccoonlang] def payloadEquals(left: PackedPayload, right: PackedPayload): Boolean =
-      PackedPayload.charScalars(left) == PackedPayload.charScalars(right)
-
-    override private[raccoonlang] def mixPayloadKey(key: ValueKey.Key, payload: PackedPayload): ValueKey.Key = {
-      val scalars = PackedPayload.charScalars(payload)
-      var cur = ValueKey.mixKey(key, listCharTpe.key)
-      cur = ValueKey.mixLong(cur, scalars.length.toLong)
-      scalars.foreach(scalar => cur = ValueKey.mixLong(cur, scalar.toLong & 0xffffffffL))
-      cur
-    }
-  }
-
-  sealed abstract class ValidatedStringLayout private[raccoonlang] {
-    def stringTpe: Value
-    def charListCodec: CharListCodec
-    private[raccoonlang] def eval(scalars: Vector[Int]): Value
-  }
-
-  final class SourceStringLayout private[raccoonlang] (
-      val stringTpe: Value,
-      val stringMk: ConstructorHead,
-      val charListCodec: CharListCodec
-  ) extends ValidatedStringLayout {
-    override private[raccoonlang] def eval(scalars: Vector[Int]): Value =
-      Interpreter.evalApply(stringMk, Vector(VPacked.charList(charListCodec, scalars)))
-  }
-
-  /** A closed packed literal. Construction is restricted to the validated factories below. */
-  final class VPacked private (
-      val codec: PackedCodec,
-      private[raccoonlang] val payload: PackedPayload,
-      val tpe: Value
-  ) extends Value {
-    require(codec.acceptsPayload(payload), "Packed codec/payload mismatch")
-    require(tpe.synDeps.isEmpty, s"VPacked requires a closed type, got dependencies ${tpe.synDeps}")
-    require(!Sorts.isProposition(tpe), s"VPacked requires a non-propositional type, got $tpe")
-
-    override lazy val synDeps: DepSet = tpe.synDeps
-
-    private[raccoonlang] def natValue: Option[BigInt] = codec match {
-      case NatCodec         => Some(PackedPayload.natValue(payload))
-      case _: CharListCodec => None
-    }
-
-    private[raccoonlang] def charScalars: Option[Vector[Int]] = codec match {
-      case NatCodec         => None
-      case _: CharListCodec => Some(PackedPayload.charScalars(payload))
-    }
-  }
-
-  object VPacked {
-    private[raccoonlang] def nat(value: BigInt, tpe: Value): VPacked = {
-      require(value >= 0, s"Packed Nat payload must be non-negative: $value")
-      require(tpe.synDeps.isEmpty, s"Packed Nat type must be closed, got dependencies ${tpe.synDeps}")
-      new VPacked(NatCodec, new NatPayload(value), tpe)
-    }
-
-    private[raccoonlang] def charList(codec: CharListCodec, scalars: Vector[Int]): VPacked = {
-      require(scalars.forall(UnicodeScalarString.isScalar), "Packed string contains a non-Unicode scalar")
-      new VPacked(codec, new CharListPayload(scalars), codec.listCharTpe)
-    }
-
-    private[raccoonlang] def charListTail(parent: VPacked): VPacked =
-      parent.codec match {
-        case codec: CharListCodec =>
-          val scalars = PackedPayload.charScalars(parent.payload)
-          if (scalars.nonEmpty) new VPacked(codec, new CharListPayload(scalars.tail), codec.listCharTpe)
-          else wtf("Cannot decode the tail of an empty packed CharList")
-        case NatCodec => wtf("CharList tail requested from a packed Nat")
-      }
-
   }
 
   /**
@@ -1017,7 +718,7 @@ object Value {
 
   /**
    * The checked identity of an inductive block: its key and the source parameters the block-wide positivity fixed point
-   * admitted. The native positivity walker nests through a previously declared family by reading these.
+   * admitted. The positivity walker nests through a previously declared family by reading these.
    */
   final case class CheckedInductiveBlockSchema(
       key: InductiveBlockKey,
@@ -1026,14 +727,13 @@ object Value {
     validatePositiveParams()
   }
 
-  /** A family's checked metadata. `seal` is present when the family is sealed to its module (Sealing). */
+  /** A family's checked constructors, positivity, projection and proof metadata. */
   final case class InductiveMeta(
       constructors: Vector[ConstructorMeta],
       familyArity: Int,
       block: InductiveBlockDescriptor,
       projectionInfo: Option[ProjectionInfo],
-      proofRecovery: Option[ProofRecoveryInfo],
-      seal: Option[Sealing.Seal]
+      proofRecovery: Option[ProofRecoveryInfo]
   ) {
     require(familyArity >= block.key.numParams, "Inductive family arity must contain the common parameter prefix")
     require(projectionInfo.isEmpty || constructors.length == 1, "Only one-constructor families can be projected")
@@ -1078,21 +778,11 @@ object Value {
       }
   }
 
-  /**
-   * One constructor layer of a value that is already in constructor form: the canonical constructor name and the
-   * arguments it stores. A `VCtor` answers with its head name and stored fields; a `VPacked` answers with its codec's
-   * decoding of one layer (`decodeHead`). Nothing else is in constructor form.
-   *
-   * The two representations are interchangeable exactly here — every consumer that dispatches on "which constructor is
-   * this, and what did it store" (match evaluation and checking, positional projection, constructor-field projection
-   * steps, structural-subterm descent) needs the name and the args and nothing more. Consumers that need the
-   * `ConstructorHead` object itself (arity, no-confusion, its telescope) must keep matching `VCtor` directly.
-   */
+  /** The head name and stored fields of an ordinary constructor application. */
   object ConstructorForm {
     def unapply(value: Value): Option[(String, Vector[Value])] =
       value match {
         case VCtor(head, storedArgs, _) => Some((head.name, storedArgs))
-        case p: VPacked                 => Some(p.codec.decodeHead(p))
         case _                          => None
       }
   }

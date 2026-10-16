@@ -1,3 +1,0 @@
-def keep {u: Level}{k: Kind}(A: Sort { level = u, kind = k })(x: A): A := x
-
-{ Nat.zero }
