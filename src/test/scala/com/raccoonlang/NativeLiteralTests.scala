@@ -357,6 +357,33 @@ class NativeLiteralTests extends munit.FunSuite with TestSupport {
     assert(store.isRefinable(n.id))
   }
 
+  test("blt eagerly decides symbolic constructor bounds before conversion") {
+    val env = Prelude.default.checkedEnv
+    val nat = env("Nat")
+    val n = FreshVar.freshVar("n", nat)
+    val zero = VPacked.nat(0, nat)
+    val blt = env("Nat.blt")
+    for (offset <- Vector(BigInt(1), BigInt(256), BigInt(257), BigInt(9216), (BigInt(1) << 100) + 37)) {
+      val positive = Packed.natPrefix(n, offset, nat)
+      assertEquals(ctorName(Interpreter.evalApply(blt, Vector(zero, positive))), "Bool.true")
+      assertEquals(ctorName(Interpreter.evalApply(blt, Vector(positive, zero))), "Bool.false")
+    }
+    assertEquals(ctorName(Interpreter.evalApply(blt, Vector(n, zero))), "Bool.false")
+  }
+
+  test("blt computes under Boolean elimination and dependent Nat refinement") {
+    typecheckDecls(
+      """
+        |def nested (m: Nat): Eq(Bool, Bool.not(Nat.blt(0, Nat.succ(m))), Bool.false) := Eq.refl(Bool.false)
+        |def notPositive (n: Nat)(h: Eq(Bool, Bool.not(Nat.blt(0, n)), Bool.true)): Eq(Nat, n, 0) := {
+        |  match n returning Eq(Nat, n, 0) with
+        |  | Nat.zero => Eq.refl(0)
+        |  | Nat.succ m => False.elimP(Bool.falseNeTrue(h), Eq(Nat, Nat.succ(m), 0))
+        |}
+        |""".stripMargin
+    )
+  }
+
   test("blt delegates mixed successors to validated ble and converts after grounding") {
     val env = Prelude.default.checkedEnv
     val nat = env("Nat")

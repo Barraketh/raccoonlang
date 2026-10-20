@@ -42,4 +42,27 @@ class ScalarCapabilityTests extends munit.FunSuite {
     )
     assertEquals(Packed.scalarNatCapability(lookalike, env), None)
   }
+
+  test("symbolic blt rejects copied, non-native, wrong-operation and foreign-Nat ble heads") {
+    val bltSource = Packed.nativeEquation(env("Nat.blt").asInstanceOf[VLam]).get.source
+    val ble = env("Nat.ble").asInstanceOf[VLam]
+    val separateContext = Prelude.fromPath(Paths.get("src/test/resources/NativeScalarPrelude.rac")).checkedEnv
+    val candidates = Vector(
+      ble.copy(),
+      Packed.nativeEquation(ble).get.source,
+      env("Nat.beq"),
+      separateContext("Nat.ble")
+    )
+    val nat = env("Nat")
+    val zero = VPacked.nat(0, nat)
+    val positive = Packed.natPrefix(FreshVar.freshVar("n", nat), 1, nat)
+    candidates.foreach { candidate =>
+      val replaced = env.copy(globals = env.globals.updated("Nat.ble", GlobalBinding.Strict(candidate)))
+      val blt = Packed.nativeOp("Nat.blt", bltSource, replaced)
+      Interpreter.evalApply(blt, Vector(zero, positive)) match {
+        case app: VApp => assert(app.head eq blt)
+        case other     => fail(s"Expected a residual blt for an unvalidated ble, got $other")
+      }
+    }
+  }
 }

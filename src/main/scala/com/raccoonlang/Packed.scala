@@ -66,22 +66,21 @@ object Packed {
         }
   }
 
-  /** Never identifies an operation by its printed name or an unvalidated lookalike lambda. */
-  private[raccoonlang] def scalarNatCapability(lam: VLam, env: Env): Option[ScalarNatCapability] =
+  /** Owner-checked native identity, independent of literal-layout finalization and runtime optimization flags. */
+  private def nativeScalarCapability(lam: VLam): Option[ScalarNatCapability] =
     lam.body match {
-      case native: LamBody.Native =>
-        native.scalarCapability match {
-          case present @ Some(capability)
-              if opsEnabled.value && !isResidualNativeHead(lam) && capability.belongsTo(lam) =>
-            env.nativeLiterals.natLayout match {
-              case Some(layout) if layout.natTpe.asInstanceOf[AnyRef] eq capability.natTpe.asInstanceOf[AnyRef] =>
-                present
-              case _ => None
-            }
-          case _ => None
-        }
-      case _ => None
+      case native: LamBody.Native => native.scalarCapability.filter(_.belongsTo(lam))
+      case _                      => None
     }
+
+  /** Scalar execution also requires the current environment's literal layout and enabled optimization path. */
+  private[raccoonlang] def scalarNatCapability(lam: VLam, env: Env): Option[ScalarNatCapability] =
+    if (!opsEnabled.value || isResidualNativeHead(lam)) None
+    else
+      nativeScalarCapability(lam).filter(capability =>
+        env.nativeLiterals.natLayout
+          .exists(layout => layout.natTpe.asInstanceOf[AnyRef] eq capability.natTpe.asInstanceOf[AnyRef])
+      )
 
   /** The kernel-owned identity, result kind, and equation of one native Nat operation. */
   sealed abstract class NativeNatOpSpec private[Packed] (val name: String) {
@@ -289,7 +288,7 @@ object Packed {
     lazy val validatedBle: Option[VLam] =
       env.globals.get("Nat.ble").map(_.value(env)).collect {
         case lam: VLam
-            if scalarNatCapability(lam, env).exists(capability =>
+            if nativeScalarCapability(lam).exists(capability =>
               capability.kind == ScalarNatKind.Ble &&
                 (capability.natTpe.asInstanceOf[AnyRef] eq nat.asInstanceOf[AnyRef])
             ) =>
