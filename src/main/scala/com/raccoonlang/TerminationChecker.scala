@@ -31,8 +31,8 @@ object TerminationChecker {
           val decreasedAt = refsWithIndices.find { case (ref, idx) =>
             val root = nativeEnv.apply(ref)
             val candidate = callArgs(idx)
-            if (isStrictSubterm(candidate, root, nativeEnv.normalizers)) true
-            else if (ValueEquivalence.defEq(candidate, root, nativeEnv.normalizers, propIrrelevant = false)) false
+            if (isStrictSubterm(candidate, root)) true
+            else if (ValueEquivalence.defEq(candidate, root)) false
             else
               throw NonDecreasingRecursiveCall(
                 name,
@@ -51,7 +51,7 @@ object TerminationChecker {
           val currentMeasure = Interpreter.evalTerm(quoted, nativeEnv)
           val callEnv = BinderOps.instantiateFull(vpi.binders, vpi.env, args)
           val candidate = Interpreter.evalTerm(quoted, callEnv)
-          if (!isStrictSubterm(candidate, currentMeasure, nativeEnv.normalizers))
+          if (!isStrictSubterm(candidate, currentMeasure))
             throw NonDecreasingRecursiveCall(name, "measure does not structurally decrease", None)
         }
     }
@@ -73,12 +73,12 @@ object TerminationChecker {
     )
   }
 
-  private def isStrictSubterm(candidate: Value, root: Value, normalizers: Normalizers.NormalizerMap): Boolean =
+  private def isStrictSubterm(candidate: Value, root: Value): Boolean =
     root match {
       case VCtor(_, fields, _) =>
         fields.exists { field =>
-          ValueEquivalence.defEq(candidate, field, normalizers, propIrrelevant = false) ||
-          isStrictSubterm(candidate, field, normalizers)
+          ValueEquivalence.defEq(candidate, field) ||
+          isStrictSubterm(candidate, field)
         }
       case _ => false
     }

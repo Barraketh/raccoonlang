@@ -49,8 +49,9 @@ Note that at this point I have done 0 optimization - these performance wins are 
     - Branch refinement for indexed families / dependent pattern matching. Supports equality proofs.
     - Validates exhaustiveness checking: missing, duplicate, and unreachable branches
 - Cumulative universes, first-class `Level`, `Sort(u)`, universe validation, and sort unification
-    - `Prop` is `Sort(Level.zero)`; `Type` is `Sort(Level.one)`
+    - `Type` is `Sort(Level.zero)`; `Prop : Type` is separate from the `Sort(u)` hierarchy
     - Impredicative Prop with proof irrelevance and controlled large elimination
+    - Universe polymorphism ranges over Type levels only; propositions cannot be carriers for `Eq`, `DecidableEq`, or `Subsingleton`
 - Extensible definitional equality through type-driven expression normalization
 - Namespaces, file imports, dotted names, and scoped `open`
 - Type patterns

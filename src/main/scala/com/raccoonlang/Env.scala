@@ -1,11 +1,9 @@
 package com.raccoonlang
 
-import com.raccoonlang.Normalizers.NormalizerMap
 import org.roaringbitmap.RoaringBitmap
 
 trait Env {
   def locals: Vector[Binding]
-  def normalizers: Normalizers.NormalizerMap
 
   def apply(name: String): Value
 
@@ -38,8 +36,6 @@ trait Env {
       globalInstanceValues(key)
     )
 
-  def useNormalizer(n: Value.Normalizer): Env
-
   def localBinding(ref: CoreAst.LocalRef): Binding
 }
 
@@ -49,8 +45,7 @@ object Env {
       globals = Map.empty,
       locals = Vector.empty,
       globalInstances = InstanceRegistry.empty,
-      localInstances = Map.empty,
-      normalizers = Map.empty
+      localInstances = Map.empty
     )
 }
 
@@ -84,8 +79,7 @@ final case class TypecheckEnv(
     globals: Map[String, GlobalBinding],
     locals: Vector[Binding],
     globalInstances: InstanceRegistry,
-    localInstances: Map[String, Vector[CoreAst.LocalRef]],
-    normalizers: Normalizers.NormalizerMap
+    localInstances: Map[String, Vector[CoreAst.LocalRef]]
 ) extends Env {
   override def apply(name: String): Value =
     globals.get(name).map(_.value(this)).getOrElse(throw NotFound(name))
@@ -142,12 +136,6 @@ final case class TypecheckEnv(
   override def globalInstanceValues(key: String): Vector[Value] =
     globalInstances.get(key)
 
-  override def useNormalizer(n: Value.Normalizer): Env = {
-    if (normalizers.contains(n.carrierKey)) throw DuplicateNormalizer(n.carrierKey)
-
-    copy(normalizers = normalizers + (n.carrierKey -> n))
-  }
-
   override def localBinding(ref: CoreAst.LocalRef): Binding = {
     if (ref.id >= 0 && ref.id < locals.length) locals(ref.id)
     else throw NotFound(s"${ref.name}#${ref.id}")
@@ -160,7 +148,6 @@ trait DelegatingEnv extends Env {
   def base: Env
   def updateBase(newBase: Env): Env
 
-  override def normalizers: NormalizerMap = base.normalizers
   override def apply(name: String): Value = base.apply(name)
   override def localInstanceRefs(key: String): Vector[CoreAst.LocalRef] = base.localInstanceRefs(key)
   override def globalInstanceValues(key: String): Vector[Value] = base.globalInstanceValues(key)
@@ -176,7 +163,6 @@ trait DelegatingEnv extends Env {
       residualPolicy: LocalResidualPolicy
   ): Env =
     updateBase(base.putLocal(ref, value, instanceKey, residualPolicy))
-  override def useNormalizer(n: Value.Normalizer): Env = updateBase(base.useNormalizer(n))
 
   override lazy val locals: Vector[Binding] = base.locals.map(b => localBinding(b.ref))
 }

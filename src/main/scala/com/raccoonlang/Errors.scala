@@ -27,7 +27,7 @@ object TypeError {
     case e: CannotLinkToBottom              => e.copy(span = Some(sp))
     case e: VarAlreadyLinked                => e.copy(span = Some(sp))
     case e: TypeMismatch                    => e.copy(span = Some(sp))
-    case e: DuplicateNormalizer             => e.copy(span = Some(sp))
+    case e: PropositionAsTypeCarrier        => e.copy(span = Some(sp))
     case e: InvalidConstructorResult        => e.copy(span = Some(sp))
     case e: InvalidErasedConstructorBinder  => e.copy(span = Some(sp))
     case e: NonUniformInductiveParam        => e.copy(span = Some(sp))
@@ -157,8 +157,8 @@ final case class TypeMismatch(expected: Value, actual: Value, span: Option[Span]
   val msg: String = s"Type mismatch: expected type: $expected, actual: $actual"
 }
 
-final case class DuplicateNormalizer(n: Normalizers.CarrierKey, span: Option[Span] = None) extends TypeError {
-  override val msg: String = s"Normalizer for $n is already defined"
+final case class PropositionAsTypeCarrier(span: Option[Span] = None) extends TypeError {
+  override val msg: String = "Expected a Type carrier, but got a proposition (of sort Prop)"
 }
 
 final case class NotALevel(v1: Value, span: Option[Span] = None) extends TypeError {

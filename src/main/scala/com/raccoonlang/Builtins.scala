@@ -50,7 +50,6 @@ private object Builtins {
   private val entries: Map[String, Entry] =
     Map(
       "Sort" -> SortEntry,
-      "add_normalizer" -> Native((_, _, args) => Normalizers.add_normalizer(args.head.tpe +: args)),
       "Level.succ" -> Native { (_, _, args) =>
         Level.succ(Interpreter.getLevel(args.head))
       },

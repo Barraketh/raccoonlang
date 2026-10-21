@@ -28,36 +28,71 @@ class SubsingletonTests extends munit.FunSuite {
       Interpreter.run(parse(src))
     }
 
-  test("propositions have a Subsingleton witness") {
+  private val unitInstance =
+    """
+      |def unitEq (a: Unit)(b: Unit): Eq(Unit, a, b) := {
+      |  match a returning Eq(Unit, a, b) with
+      |  | Unit.unit => {
+      |    match b returning Eq(Unit, Unit.unit, b) with
+      |    | Unit.unit => Eq.refl(Unit.unit)
+      |  }
+      |}
+      |
+      |def instance unitSubsingleton : Subsingleton(Unit) := Subsingleton.intro(Unit, unitEq)
+      |""".stripMargin
+
+  test("Type carriers can have an explicit Subsingleton witness") {
     typecheckDecls(
-      """
-        |def trueSubsingleton : Subsingleton(True) := propSubsingleton(True)
-        |""".stripMargin
+      unitInstance +
+        """
+          |def unitWitness : Subsingleton(Unit) := unitSubsingleton
+          |""".stripMargin
     )
   }
 
-  test("generic proposition Subsingleton instance participates in derive") {
+  test("Subsingleton instances for Type carriers participate in derive") {
     typecheckDecls(
-      """
-        |def derived : Subsingleton(True) := derive[Subsingleton(True)]
-        |""".stripMargin
+      unitInstance +
+        """
+          |def derived : Subsingleton(Unit) := derive[Subsingleton(Unit)]
+          |""".stripMargin
     )
   }
 
-  test("Subsingleton.elim proves equality between proofs of the same proposition") {
+  test("Subsingleton.elim proves equality between values of a Type carrier") {
     val res =
       runProgram(
-        """
-          |{
-          |  Subsingleton.elim(derive[Subsingleton(True)])(True.intro, True.intro)
-          |}
-          |""".stripMargin
+        unitInstance +
+          """
+            |{
+            |  Subsingleton.elim(derive[Subsingleton(Unit)])(Unit.unit, Unit.unit)
+            |}
+            |""".stripMargin
       )
 
     res.tpe match {
-      case Value.VApp(Value.VConst("Eq", _, _), Vector(Value.VConst("True", _, _), _, _), _, _) =>
-      case other => fail(s"Expected equality proof over True, got $other")
+      case Value.VApp(Value.VConst("Eq", _, _), Vector(Value.VConst("Unit", _, _), _, _), _, _) =>
+      case other => fail(s"Expected equality proof over Unit, got $other")
     }
+  }
+
+  test("propositions cannot be Subsingleton carriers") {
+    val error = assertTypeError[PropositionAsTypeCarrier](
+      """
+        |def bad : Subsingleton(True) := derive[Subsingleton(True)]
+        |""".stripMargin
+    )
+
+    assertEquals(error.getMessage, "Expected a Type carrier, but got a proposition (of sort Prop)")
+    assert(error.span.nonEmpty)
+  }
+
+  test("propositions cannot be DecidableEq carriers") {
+    assertTypeError[PropositionAsTypeCarrier](
+      """
+        |def bad : DecidableEq(False) := derive[DecidableEq(False)]
+        |""".stripMargin
+    )
   }
 
   test("ordinary data types are not subsingletons without an instance") {

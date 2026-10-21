@@ -4,16 +4,11 @@ import com.raccoonlang.Value._
 import com.raccoonlang.telescope.BinderOps
 
 object ValueEquivalence {
-  def defEq(
-      v1: Value,
-      v2: Value,
-      normalizerMap: Normalizers.NormalizerMap,
-      propIrrelevant: Boolean
-  ): Boolean =
-    DefEq.defEq(v1, v2)(normalizerMap, propIrrelevant)
+  def defEq(v1: Value, v2: Value): Boolean =
+    DefEq.defEq(v1, v2)
 
-  def unify(v1: Value, v2: Value, meta: EqStore, normalizerMap: Normalizers.NormalizerMap): EqStore =
-    tryUnify(v1, v2, meta, normalizerMap) match {
+  def unify(v1: Value, v2: Value, meta: EqStore): EqStore =
+    tryUnify(v1, v2, meta) match {
       case Right(eqStore)           => eqStore
       case Left((failed1, failed2)) => throw UnificationFailed(failed1, failed2)
     }
@@ -21,23 +16,22 @@ object ValueEquivalence {
   def tryUnify(
       v1: Value,
       v2: Value,
-      meta: EqStore,
-      normalizerMap: Normalizers.NormalizerMap
+      meta: EqStore
   ): Either[(Value, Value), EqStore] =
-    Unify.tryUnify(v1, v2, meta)(normalizerMap)
+    Unify.tryUnify(v1, v2, meta)
 
   private object DefEq {
     case class RelatedPis(vars: Vector[Value], out1: Value, out2: Value)
 
-    def relatePis(pi1: VPi, pi2: VPi)(implicit normalizerMap: Normalizers.NormalizerMap): Option[RelatedPis] = {
+    def relatePis(pi1: VPi, pi2: VPi): Option[RelatedPis] = {
       if (pi1.binders.zip(pi2.binders).exists { case (b1, b2) => b1.isInstance != b2.isInstance })
         return None
 
       val nextEnv1 = BinderOps.freshen(pi1)
       val sharedVars = pi1.binders.map(binder => nextEnv1(binder.localRef))
       val nextEnv2 =
-        try BinderOps.checkAndInstantiate(pi2.binders, pi2.env, sharedVars, normalizerMap)
-        catch { case _: TypeMismatch => return None }
+        try BinderOps.checkAndInstantiate(pi2.binders, pi2.env, sharedVars)
+        catch { case _: TypeMismatch | _: PropositionAsTypeCarrier => return None }
 
       val out1 = pi1.codomain(nextEnv1)
       val out2 = pi2.codomain(nextEnv2)
@@ -45,38 +39,19 @@ object ValueEquivalence {
       Some(RelatedPis(sharedVars, out1, out2))
     }
 
-    private def defEqPi(pi1: VPi, pi2: VPi)(implicit
-        normalizerMap: Normalizers.NormalizerMap,
-        propIrrelevant: Boolean
-    ): Option[Vector[Value]] =
+    private def defEqPi(pi1: VPi, pi2: VPi): Option[Vector[Value]] =
       relatePis(pi1, pi2) match {
         case Some(related) if defEq(related.out1, related.out2) => Some(related.vars)
         case _                                                  => None
       }
 
-    private def defEqLamId(id1: ValueId, id2: ValueId)(implicit
-        normalizerMap: Normalizers.NormalizerMap,
-        propIrrelevant: Boolean
-    ): Boolean = {
+    private def defEqLamId(id1: ValueId, id2: ValueId): Boolean = {
       (id1, id2) match {
         case (ValueId.Const(n1), ValueId.Const(n2)) if n1 == n2 => true
         case (l1: ValueId.LocalId, l2: ValueId.LocalId)
             if l1.nodeId == l2.nodeId && l1.captures.length == l2.captures.length =>
           l1.captures.zip(l2.captures).forall { case (v1, v2) => defEq(v1, v2) }
         case _ => false
-      }
-    }
-
-    def getNormalizerF(v1: Value, v2: Value)(implicit normalizerMap: Normalizers.NormalizerMap): Value => Value = {
-      val key1 = Normalizers.getCarrierKey(v1.tpe)
-      val key2 = Normalizers.getCarrierKey(v2.tpe)
-      val normalizer =
-        if (key1 == key2) key1.flatMap(normalizerMap.get)
-        else None
-
-      normalizer match {
-        case Some(n) => (v: Value) => n.normalize(v)
-        case None    => (v: Value) => v
       }
     }
 
@@ -87,28 +62,17 @@ object ValueEquivalence {
       a.needsStructuralDefEq || b.needsStructuralDefEq
 
     private def typeLivesInProp(tpe: Value): Boolean =
-      tpe match {
-        case PropTpe => false
-        case tpe0 =>
-          tpe0.tpe match {
-            case PropTpe => true
-            case _       => false
-          }
+      tpe.tpe match {
+        case PropTpe => true
+        case _       => false
       }
 
-    private def proofIrrelevant(a: Value, b: Value)(implicit
-        normalizerMap: Normalizers.NormalizerMap,
-        propIrrelevant: Boolean
-    ): Boolean =
-      propIrrelevant && typeLivesInProp(a.tpe) && defEq(a.tpe, b.tpe)
+    private def proofIrrelevant(a: Value, b: Value): Boolean =
+      typeLivesInProp(a.tpe) && defEq(a.tpe, b.tpe)
 
-    private def defEqStructural(a: Value, b: Value)(implicit
-        normalizerMap: Normalizers.NormalizerMap,
-        propIrrelevant: Boolean
-    ): Boolean =
+    private def defEqStructural(a: Value, b: Value): Boolean =
       (a, b) match {
         case (PropTpe, PropTpe)                               => true
-        case (NormalizerType, NormalizerType)                 => true
         case (LevelTpe, LevelTpe)                             => true
         case (l1: Level, l2: Level)                           => l1 == l2 || Level.leq(l1, l2) && Level.leq(l2, l1)
         case (s1: VSort, s2: VSort)                           => defEq(s1.level, s2.level)
@@ -139,29 +103,16 @@ object ValueEquivalence {
         case _                                              => false
       }
 
-    def defEq(v1: Value, v2: Value)(implicit
-        normalizerMap: Normalizers.NormalizerMap,
-        propIrrelevant: Boolean
-    ): Boolean = {
-      if (sameValueObject(v1, v2)) true
-      else if (proofIrrelevant(v1, v2)) true
-      else {
-        val normalizerF = getNormalizerF(v1, v2)
-
-        val a = normalizerF(v1)
-        val b = normalizerF(v2)
-
-        sameValueObject(a, b) || a.key == b.key || (shouldTryStructuralDefEq(a, b) && defEqStructural(a, b))
-      }
+    def defEq(v1: Value, v2: Value): Boolean = {
+      sameValueObject(v1, v2) || proofIrrelevant(v1, v2) ||
+      v1.key == v2.key || (shouldTryStructuralDefEq(v1, v2) && defEqStructural(v1, v2))
     }
   }
 
   private object Unify {
     private type Result = Either[(Value, Value), EqStore]
 
-    private def tryUnifyPis(pi1: VPi, pi2: VPi, eqStore: EqStore)(implicit
-        normalizerMap: Normalizers.NormalizerMap
-    ): Either[(Value, Value), (EqStore, Vector[Value])] = {
+    private def tryUnifyPis(pi1: VPi, pi2: VPi, eqStore: EqStore): Either[(Value, Value), (EqStore, Vector[Value])] = {
       DefEq.relatePis(pi1, pi2) match {
         case None => Left((pi1, pi2))
         case Some(related) =>
@@ -172,9 +123,7 @@ object ValueEquivalence {
       }
     }
 
-    private def tryUnifyNeutralThunks(v1: NeutralThunk, v2: NeutralThunk, meta: EqStore)(implicit
-        normalizerMap: Normalizers.NormalizerMap
-    ): Result =
+    private def tryUnifyNeutralThunks(v1: NeutralThunk, v2: NeutralThunk, meta: EqStore): Result =
       tryUnify(v1.tpe, v2.tpe, meta) match {
         case Left(failed) => Left(failed)
         case Right(m1) =>
@@ -217,16 +166,14 @@ object ValueEquivalence {
 
     }
 
-    private def tryLinkVar(v: Var, other: Value, meta: EqStore)(implicit
-        normalizerMap: Normalizers.NormalizerMap
-    ): Result = {
+    private def tryLinkVar(v: Var, other: Value, meta: EqStore): Result = {
+      // Infer classifier levels before cumulativity: Sort(0) fits even an otherwise unsolved level.
       val m1 =
-        if (TypeChecker.sortLeq(other.tpe, v.tpe)) meta
-        else
-          tryUnify(v.tpe, other.tpe, meta) match {
-            case Left(failed) => return Left(failed)
-            case Right(next)  => next
-          }
+        tryUnify(v.tpe, other.tpe, meta) match {
+          case Right(next)                                      => next
+          case Left(_) if TypeChecker.sortLeq(other.tpe, v.tpe) => meta
+          case Left(failed)                                     => return Left(failed)
+        }
       if (m1.occurs(v.id, other)) Left((v, other))
       else Right(m1.addLink(v.id, other))
     }
@@ -235,9 +182,7 @@ object ValueEquivalence {
      * This specifically handles wildcard vars during pattern matching. The problem is that wildcard vars never actually
      * get stored in Env, so they can't be properly quoted. This forces us to prefer the other var as the representative
      */
-    private def tryLinkVarToPreferredRepresentative(v1: Var, v2: Var, meta: EqStore)(implicit
-        normalizerMap: Normalizers.NormalizerMap
-    ): Result = {
+    private def tryLinkVarToPreferredRepresentative(v1: Var, v2: Var, meta: EqStore): Result = {
       val v1Anonymous = v1.name == "_"
       val v2Anonymous = v2.name == "_"
       val (toLink, representative) =
@@ -249,17 +194,11 @@ object ValueEquivalence {
       tryLinkVar(toLink, representative, meta)
     }
 
-    def tryUnify(v1: Value, v2: Value, meta: EqStore)(implicit
-        normalizerMap: Normalizers.NormalizerMap
-    ): Result = {
-      val resolved1 = ValueOps.materialize(v1, meta)
-      val resolved2 = ValueOps.materialize(v2, meta)
-      val normalizerF = DefEq.getNormalizerF(resolved1, resolved2)(normalizerMap)
+    def tryUnify(v1: Value, v2: Value, meta: EqStore): Result = {
+      val a = ValueOps.materialize(v1, meta)
+      val b = ValueOps.materialize(v2, meta)
 
-      val a = normalizerF(resolved1)
-      val b = normalizerF(resolved2)
-
-      if (DefEq.defEq(a, b)(normalizerMap, propIrrelevant = true)) return Right(meta)
+      if (DefEq.defEq(a, b)) return Right(meta)
 
       (a, b) match {
 

@@ -286,14 +286,14 @@ object PrettyPrinter {
   }
 
   def print(value: Value): String = value match {
-    case Value.PropTpe                              => "Prop"
-    case Value.VSort(lvl) if lvl == Value.Level.one => "Type"
-    case Value.VSort(lvl)                           => s"Sort($lvl)"
-    case Value.KernelObject                         => "KernelObject"
-    case level: Value.Level                         => s"Level(${level.atoms}, ${level.c})"
-    case pi: Value.VPi                              => "VPi"
-    case Value.VConst(name, _, _)                   => name
-    case Value.ConstructorHead(name, _, _, _)       => name
+    case Value.PropTpe                               => "Prop"
+    case Value.VSort(lvl) if lvl == Value.Level.zero => "Type"
+    case Value.VSort(lvl)                            => s"Sort($lvl)"
+    case Value.KernelObject                          => "KernelObject"
+    case level: Value.Level                          => s"Level(${level.atoms}, ${level.c})"
+    case pi: Value.VPi                               => "VPi"
+    case Value.VConst(name, _, _)                    => name
+    case Value.ConstructorHead(name, _, _, _)        => name
     case Value.VCtor(head, fields, _) =>
       val headStr = print(head)
       if (fields.isEmpty) headStr
@@ -302,8 +302,6 @@ object PrettyPrinter {
     case v: Value.VLam          => s"func#${v.id}"
     case Value.Var(name, id, _) => s"$name#$id"
     case s: Value.NeutralThunk  => s"match#${s.id}"
-    case Value.NormalizerType   => "Normalizer"
-    case n: Value.Normalizer    => s"Normalizer ${n.name}"
     case LevelTpe               => s"Level"
   }
 

@@ -46,9 +46,9 @@ class PropTests extends munit.FunSuite {
     case Value.ConstructorHead(n, _, _, _) => SConst(n)
     case Value.VCtor(h, fields, _) =>
       if (fields.isEmpty) SConst(h.name) else SApp(SConst(h.name), fields.toList.map(toShape))
-    case Value.VConst(n, _, _)  => SConst(n)
+    case Value.VConst(n, _, _)     => SConst(n)
     case Value.VApp(h, args, _, _) => SApp(toShape(h), args.toList.map(toShape))
-    case other                  => SConst(other.toString)
+    case other                     => SConst(other.toString)
   }
 
   private val zeroS = SConst("Nat.zero")
@@ -57,7 +57,7 @@ class PropTests extends munit.FunSuite {
   // Universe / Pi-formation tests for Prop
   // ---------------------------------------------------------------------------
 
-  test("Prop is Sort 0 and has type Type") {
+  test("Prop is separate from Sort 0 and has type Type") {
     val res = runProgram(
       """
         |{ Prop }
@@ -70,19 +70,20 @@ class PropTests extends munit.FunSuite {
     }
 
     res.tpe match {
-      case VSort(u) => assertEquals(u, Value.Level.one)
+      case VSort(u) => assertEquals(u, Value.Level.zero)
       case other    => fail(s"Expected Prop : Type, got: $other")
     }
+    assertNotEquals(res: Value, VSort(Value.Level.zero): Value)
   }
 
-  test("Pi into Prop from Type stays in Prop (internal imax behavior)") {
+  test("quantification over Type into a proposition stays in Prop") {
     val res = runProgram(
       """
         |inductive Nat : Type
         | | zero : Nat
         | | succ (_: Nat) : Nat
         |
-        |{ (A: Type) -> Prop }
+        |{ (A: Type) -> (x: A) -> Eq(A, x, x) }
         |""".stripMargin
     )
 
@@ -94,14 +95,14 @@ class PropTests extends munit.FunSuite {
     assertEquals(res.tpe, PropTpe)
   }
 
-  test("Dependent Pi into Prop stays in Prop") {
+  test("dependent quantification into a proposition stays in Prop") {
     val res = runProgram(
       """
         |inductive Nat : Type
         | | zero : Nat
         | | succ (_: Nat) : Nat
         |
-        |{ (A: Type) -> (x: A) -> Prop }
+        |{ (A: Type) -> (p: A -> Prop) -> (x: A) -> p(x) }
         |""".stripMargin
     )
 
@@ -133,7 +134,7 @@ class PropTests extends munit.FunSuite {
     }
 
     res.tpe match {
-      case VSort(u) => assertEquals(u, Value.Level.one)
+      case VSort(u) => assertEquals(u, Value.Level.zero)
       case other    => fail(s"Expected (P: Prop) -> Nat to live in Type, got: $other")
     }
   }
@@ -169,6 +170,51 @@ class PropTests extends munit.FunSuite {
     typecheckDecls(p)
   }
 
+  test("Eq accepts Prop itself as a Type carrier") {
+    typecheckDecls(
+      """
+        |inductive True : Prop
+        | | intro : True
+        |
+        |def sameProposition : Eq(Prop, True, True) := Eq.refl(True)
+        |""".stripMargin
+    )
+  }
+
+  test("Eq rejects propositions as carriers") {
+    val source = "def bad (P: Prop)(p: P): Eq(P, p, p) := Eq.refl(p)\n"
+    LanguageParser.parseProgram(source) match {
+      case Success(value, _, _) =>
+        val core = Elaborator.elab(value, Prelude.test)
+        intercept[PropositionAsTypeCarrier] { Interpreter.run(core, Prelude.test) }
+      case err: Failure => fail(s"Failed to parse: $err")
+    }
+  }
+
+  test("Type carrier binders reject propositions with explicit or inferred levels") {
+    val declarations =
+      """
+        |inductive True : Prop
+        | | intro : True
+        |
+        |""".stripMargin
+    val cases = Vector(
+      "def f (A: Type): Type := A\n{ f(True) }",
+      "def f (u: Level)(A: Sort(u)): Sort(u) := A\n{ f(Level.zero, True) }",
+      "def f (A: Sort($u)): Sort(u) := A\n{ f(True) }",
+      "def f (x: $A in Sort($u)): A := x\n{ f(True.intro) }"
+    )
+
+    cases.foreach { source =>
+      LanguageParser.parseProgram(declarations + source) match {
+        case Success(value, _, _) =>
+          val core = Elaborator.elab(value, Prelude.test)
+          intercept[PropositionAsTypeCarrier] { Interpreter.run(core, Prelude.test) }
+        case err: Failure => fail(s"Failed to parse: $err")
+      }
+    }
+  }
+
   test("Proof irrelevance: distinct proofs of the same proposition are definitionally equal") {
     val p =
       """
@@ -176,7 +222,10 @@ class PropTests extends munit.FunSuite {
         | | left : Amb
         | | right : Amb
         |
-        |def sameProof (p: Amb): Eq(Amb, p, Amb.right) := Eq.refl(p)
+        |inductive Witness indices (p: Amb) : Type
+        | | mk : Witness(Amb.left)
+        |
+        |def sameProof (p: Amb): Witness(p) := Witness.mk
         |""".stripMargin
 
     typecheckDecls(p)
@@ -247,15 +296,15 @@ class PropTests extends munit.FunSuite {
     typecheckDecls(p)
   }
 
-  test("Elimination from Prop into Prop is allowed (Exists returns a proposition)") {
+  test("Elimination from Exists into a proposition is allowed") {
     val p =
       """
         |inductive Exists (A: Type)(p: A -> Prop) : Prop
         | | intro {A: Type}{p: A -> Prop} (w: A)(pw: p(w)) : Exists(A, p)
         |
-        |def unpackToProp (A: Type)(p: A -> Prop)(h: Exists(A, p)): Prop := {
-        |  match h returning Prop with
-        |  | Exists.intro w pw => p(w)
+        |def unpackToProp (A: Type)(p: A -> Prop)(h: Exists(A, p))(Q: Prop)(f: (x: A) -> p(x) -> Q): Q := {
+        |  match h returning Q with
+        |  | Exists.intro w pw => f(w, pw)
         |}
         |""".stripMargin
 
@@ -289,6 +338,26 @@ class PropTests extends munit.FunSuite {
         intercept[PropEliminationRestricted] { Interpreter.run(core, Prelude.test) }
       case err: Failure =>
         fail(s"Failed to parse: $err, ${p.substring(err.curIdx)}")
+    }
+  }
+
+  test("Negative: elimination from Exists into the universe Prop is rejected") {
+    val source =
+      """
+        |inductive Exists (A: Type)(p: A -> Prop) : Prop
+        | | intro {A: Type}{p: A -> Prop} (w: A)(pw: p(w)) : Exists(A, p)
+        |
+        |def bad (A: Type)(p: A -> Prop)(h: Exists(A, p)): Prop := {
+        |  match h returning Prop with
+        |  | Exists.intro w pw => p(w)
+        |}
+        |""".stripMargin
+
+    LanguageParser.parseProgram(source) match {
+      case Success(value, _, _) =>
+        val core = Elaborator.elab(value, Prelude.test)
+        intercept[PropEliminationRestricted] { Interpreter.run(core, Prelude.test) }
+      case err: Failure => fail(s"Failed to parse: $err")
     }
   }
 

@@ -31,19 +31,16 @@ object Value {
       case _                => value
     }
 
-  private def isKnownProof(value: Value): Boolean =
-    value.tpe match {
-      case PropTpe => false
-      case tpe     => tpe.tpe == PropTpe
-    }
-
-  private[raccoonlang] def needsStructuralDefEq(value: Value): Boolean =
-    isKnownProof(value) || (value match {
+  private[raccoonlang] def needsStructuralDefEq(value: Value): Boolean = {
+    // If this is a proof then we fall back to structural
+    (value.tpe.tpe == PropTpe) ||
+    (value match {
       case _: VPi | _: VLam | _: NeutralThunk => true
       case app: VApp =>
         app.head.needsStructuralDefEq || app.args.exists(_.needsStructuralDefEq) || app.tpe.needsStructuralDefEq
       case _ => false
     })
+  }
 
   sealed trait UpdatableType {
     def withTpe(tpe: Value): Value
@@ -159,14 +156,19 @@ object Value {
 
   }
 
-  case class VSort(level: Level) extends Value {
+  sealed trait Universe extends Value
+
+  case class VSort(level: Level) extends Universe {
     override def tpe: Value = VSort(Level.succ(level))
 
     override lazy val synDeps: DepSet = level.synDeps
   }
 
-  final val PropTpe: VSort = VSort(Level.zero)
-  final val TypeTpe: VSort = VSort(Level.one)
+  final val TypeTpe: VSort = VSort(Level.zero)
+
+  case object PropTpe extends Universe with TopLevelValue {
+    override def tpe: Value = TypeTpe
+  }
 
   sealed trait CaptureType
   case object StructuralCapture extends CaptureType
@@ -199,7 +201,7 @@ object Value {
       codomain: Env => Value,
       synDeps: DepSet,
       id: ValueId,
-      tpe: VSort
+      tpe: Universe
   ) extends Value
     with UpdatableType {
     require(binders.nonEmpty, "VPi requires at least one binder")
@@ -207,8 +209,8 @@ object Value {
     override def toString: String = "VPi"
 
     override def withTpe(tpe: Value): Value = tpe match {
-      case u: VSort => this.copy(tpe = u)
-      case _        => throw WTF(s"Cannot update Pi type to $tpe")
+      case u: Universe => this.copy(tpe = u)
+      case _           => throw WTF(s"Cannot update Pi type to $tpe")
     }
   }
 
@@ -298,22 +300,6 @@ object Value {
     def numErased: Int = erasedFamilyArgIndexes.length
 
     override def withTpe(tpe: Value): Value = this.copy(tpe = tpe)
-  }
-
-  object NormalizerType extends TopLevelValue {
-    override def tpe: Value = TypeTpe
-  }
-
-  trait Normalizer extends TopLevelValue {
-    def carrierKey: Normalizers.CarrierKey
-
-    def dependencies: Vector[Value]
-
-    def normalize(v: Value): Value
-
-    def name: String
-
-    override val tpe: Value = NormalizerType
   }
 
   final case class ConstructorMeta(shortName: String, canonicalName: String)

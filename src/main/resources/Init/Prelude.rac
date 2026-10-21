@@ -6,8 +6,6 @@ namespace Level {
   def max (l1: Level)(l2: Level): Level := builtin
 }
 
-def add_normalizer (zero: $A in Type)(add: A -> A -> A): Normalizer := builtin
-
 def id (x: $A in Sort($u)): A := x
 
 def const (x: $A in Sort($u))(y: $B in Sort($v)): A := x
@@ -31,7 +29,12 @@ namespace Eq {
     | Eq.refl z => h
   }
 
-  def mp (p: Eq(Prop, $a, $b))(h: a): b := Eq.subst(p, Level.zero, fun (x: Prop): Prop => x, h)
+  def substProp (p: Eq($A, $x, $y))(motive: A -> Prop)(h: motive(x)): motive(y) := {
+    match p returning motive(y) with
+    | Eq.refl z => h
+  }
+
+  def mp (p: Eq(Prop, $a, $b))(h: a): b := Eq.substProp(p, fun (x: Prop): Prop => x, h)
 
   def mpr (p: Eq(Prop, $a, $b))(h: b): a := Eq.mp(Eq.symm(p), h)
 }
@@ -450,24 +453,6 @@ namespace DecidableEq {
 
 def decEq [self: DecidableEq($A)](a: A)(b: A): Decidable(Eq(A, a, b)) := DecidableEq.decEq(self)(a, b)
 
-namespace False {
-  def decEq (a: False)(b: False): Decidable(Eq(False, a, b)) := falseElim(a, Decidable(Eq(False, a, b)))
-}
-
-def instance falseDecidableEq : DecidableEq(False) := DecidableEq.mk(False, False.decEq)
-
-namespace True {
-  def decEq (a: True)(b: True): Decidable(Eq(True, a, b)) := {
-    match a returning Decidable(Eq(True, a, b)) with
-    | True.intro => {
-      match b returning Decidable(Eq(True, True.intro, b)) with
-      | True.intro => Decidable.isTrue(Eq.refl(True.intro))
-    }
-  }
-}
-
-def instance trueDecidableEq : DecidableEq(True) := DecidableEq.mk(True, True.decEq)
-
 namespace Unit {
   def decEq (a: Unit)(b: Unit): Decidable(Eq(Unit, a, b)) := {
     match a returning Decidable(Eq(Unit, a, b)) with
@@ -557,5 +542,3 @@ def instance natLT : LT(Nat) := LT.mk(Nat, Nat.lt)
 
 struct Subsingleton (A: Sort($u)) : Prop
  | intro {A: Sort($u)} (elim: (a: A) -> (b: A) -> Eq(A, a, b)) : Subsingleton(A)
-
-def instance propSubsingleton (P: Prop): Subsingleton(P) := Subsingleton.intro(P, fun (a: P)(b: P): Eq(P, a, b) => Eq.refl(a))

@@ -21,32 +21,27 @@ object TypeChecker {
     }
   }
 
-  def checkFits(actual: Value, expected: Value, normalizerMap: Normalizers.NormalizerMap): Unit =
-    if (!ValueEquivalence.defEq(actual, expected, normalizerMap, propIrrelevant = true) && !sortLeq(actual, expected))
+  def checkFits(actual: Value, expected: Value): Unit = {
+    if (actual == PropTpe && expected.isInstanceOf[VSort])
+      throw PropositionAsTypeCarrier()
+    if (!ValueEquivalence.defEq(actual, expected) && !sortLeq(actual, expected))
       throw TypeMismatch(expected, actual)
+  }
 
-  def checkType(value: Value, tyVal: Value, normalizerMap: Normalizers.NormalizerMap): Unit =
-    checkFits(value.tpe, tyVal, normalizerMap)
+  def checkType(value: Value, tyVal: Value): Unit =
+    checkFits(value.tpe, tyVal)
 
-  def getUniverse(value: Value): VSort = {
+  def getUniverse(value: Value): Universe = {
     value.tpe match {
-      case u: VSort => u
-      case _        => throw NotAType(value.tpe)
+      case u: Universe => u
+      case _           => throw NotAType(value.tpe)
     }
   }
 
-  def isPropValue(value: Value): Boolean = value match {
-    case PropTpe => true
-    case _       => false
-  }
-
-  def isPropValuedType(value: Value): Boolean =
-    isPropValue(value) || getUniverse(value) == PropTpe
-
-  private def checkApplyValue(fn: Value, args: Vector[Value], normalizerMap: Normalizers.NormalizerMap): Value =
+  private def checkApplyValue(fn: Value, args: Vector[Value]): Value =
     fn.tpe match {
       case pi: VPi =>
-        BinderOps.checkAndInstantiate(pi.binders, pi.env, args, normalizerMap)
+        BinderOps.checkAndInstantiate(pi.binders, pi.env, args)
         Interpreter.evalApply(fn, args)
       case _ => throw CannotApplyNonFunction(fn)
     }
@@ -114,17 +109,16 @@ object TypeChecker {
     val outV = checkedOut.value
     val freshArgs = vBinders.map(binder => binderEnv(binder.localRef))
     val classifier =
-      if (isPropValuedType(outV)) PropTpe
-      else {
-        getUniverse(outV) match {
-          case VSort(outLevel) =>
-            val domLevels: Vector[Level] = freshArgs
-              .map(v => getUniverse(v.tpe))
-              .collect { case VSort(level) => level }
+      getUniverse(outV) match {
+        case PropTpe => PropTpe
+        case VSort(outLevel) =>
+          val domLevels: Vector[Level] = freshArgs
+            .map(v => getUniverse(v.tpe))
+            .collect { case VSort(level) => level }
 
-            VSort(Level.max(domLevels :+ outLevel))
-        }
+          VSort(Level.max(domLevels :+ outLevel))
       }
+
     val checkedPi =
       EA.Term.Pi(checkedBinders, checkedOut.residual, classifier, pi.span)
     CheckedPi(evalPi(checkedPi, env, vBinders), binderEnv, outV, checkedPi)
@@ -135,7 +129,7 @@ object TypeChecker {
       case t: CA.Term.TApp =>
         val fn = checkTypeTerm(t.fn, env)
         val args = t.args.map(arg => checkTypeTerm(arg, env))
-        val value = checkApplyValue(fn.value, args.map(_.value), env.normalizers)
+        val value = checkApplyValue(fn.value, args.map(_.value))
         val residual = EA.Term.App(fn.residual, args.map(_.residual), t.span)
         CheckedTypeTerm(value, residual)
       case CA.Term.TSelect(base, field, span) =>
@@ -168,7 +162,7 @@ object TypeChecker {
         .map { tyTerm =>
           val checkedTy = checkTypeTerm(tyTerm, curEnv)
           val tyV = checkedTy.value
-          checkType(checkedValue.value, tyV, curEnv.normalizers)
+          checkType(checkedValue.value, tyV)
           resTyTerm = Some(checkedTy.residual)
           Value.ascribe(checkedValue.value, tyV)
         }
@@ -199,20 +193,11 @@ object TypeChecker {
 
     val selectorName = s"$indName.$field"
     val selector = env(selectorName)
-    (selectorName, checkApplyValue(selector, Vector(baseValue), env.normalizers))
+    (selectorName, checkApplyValue(selector, Vector(baseValue)))
   }
 
   private def checkLam(l: CA.Term.Lam, env: Env): CheckedTerm = {
-    val envWithNormalizers = l.uses.foldLeft(env) { case (curEnv, nextUse) =>
-      val normalizer = checkTerm(nextUse.normalizer, curEnv).value
-      normalizer match {
-        case n: Value.Normalizer => curEnv.useNormalizer(n)
-        case _ =>
-          throw TypeMismatch(normalizer, NormalizerType)
-      }
-    }
-
-    val checkedVpi = checkPi(l.ty, envWithNormalizers)
+    val checkedVpi = checkPi(l.ty, env)
     val vpi = checkedVpi.vpi
     val bodyEnv = checkedVpi.bodyEnv
 
@@ -235,7 +220,7 @@ object TypeChecker {
       case _               => checkTerm(l.body, recurEnv)
     }
 
-    checkType(checkedBody.value, checkedVpi.outTy, recurEnv.normalizers)
+    checkType(checkedBody.value, checkedVpi.outTy)
     rejectStoredAppHeadOnlyRefs(checkedBody.residual, recurEnv)
     val checkedLam =
       EA.Term.Lam(
@@ -277,7 +262,7 @@ object TypeChecker {
         case app: CA.Term.App =>
           val checkedFn = checkTerm(app.fn, env)
           val checkedArgs = app.args.map(arg => checkTerm(arg, env))
-          val value = checkApplyValue(checkedFn.value, checkedArgs.map(_.value), env.normalizers)
+          val value = checkApplyValue(checkedFn.value, checkedArgs.map(_.value))
           val residual = EA.Term.App(checkedFn.residual, checkedArgs.map(_.residual), app.span)
           CheckedTerm(value, residual)
         case derive: CA.Term.Derive =>

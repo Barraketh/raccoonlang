@@ -69,8 +69,7 @@ object InductiveChecks {
 
         case _: ConstructorHead => !target.mayOccurIn(value)
 
-        case _: Level | LevelTpe | _: Normalizer | NormalizerType | _: VLam | _: VSort | _: Var | _: VConst | PropTpe |
-            KernelObject =>
+        case _: Level | LevelTpe | _: VLam | _: VSort | _: Var | _: VConst | PropTpe | KernelObject =>
           !target.mayOccurIn(value)
       }
 
@@ -105,8 +104,7 @@ object InductiveChecks {
 
         case _: ConstructorHead => true
 
-        case _: Level | LevelTpe | _: Normalizer | NormalizerType | _: VLam | _: VSort | _: Var | _: VConst | PropTpe |
-            KernelObject =>
+        case _: Level | LevelTpe | _: VLam | _: VSort | _: Var | _: VConst | PropTpe | KernelObject =>
           true
       }
 
@@ -134,8 +132,8 @@ object InductiveChecks {
         freshArgs.forall(arg => sameFamilyArgsDoNotContain(inductiveName, target, arg.tpe)) &&
         sameFamilyArgsDoNotContain(inductiveName, target, pi.codomain(freshEnv))
 
-      case _: ConstructorHead | _: Level | LevelTpe | _: Normalizer | NormalizerType | _: VLam | _: VSort | _: Var |
-          _: VConst | PropTpe | KernelObject =>
+      case _: ConstructorHead | _: Level | LevelTpe | _: VLam | _: VSort | _: Var | _: VConst | PropTpe |
+          KernelObject =>
         true
     }
 
@@ -216,8 +214,8 @@ object InductiveChecks {
     }
 
     TypeChecker.getType(header.resultTy, envWithFamilyBinders) match {
-      case v: VSort => v
-      case other    => throw InductiveTypeNotASort(other, Some(header.resultTy.span))
+      case v: Universe => v
+      case other       => throw InductiveTypeNotASort(other, Some(header.resultTy.span))
     }
 
     // Determine whether this inductive is a valid struct (after computing universe)
@@ -272,7 +270,7 @@ object InductiveChecks {
 
         if (witnesses.length != 1) throw error
 
-        if (!ValueEquivalence.defEq(outputArg, witnesses.head, fieldsEnv.normalizers, propIrrelevant = true))
+        if (!ValueEquivalence.defEq(outputArg, witnesses.head))
           throw error
       }
 

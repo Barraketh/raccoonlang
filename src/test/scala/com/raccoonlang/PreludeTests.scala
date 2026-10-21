@@ -54,7 +54,10 @@ class PreludeTests extends munit.FunSuite {
         |def rightProof : True := And.right(andProof)
         |
         |def trueOr : Or(True, False) := Or.inl(False, True.intro)
-        |def fromOr : True := Or.elim(trueOr, True, fun (h: True): True => h, fun (h: False): True => falseElim(h, True))
+        |def falseToTrue (h: False): True := {
+        |  match h returning True with
+        |}
+        |def fromOr : True := Or.elim(trueOr, True, fun (h: True): True => h, falseToTrue)
         |
         |def trueIff : Iff(True, True) := Iff.intro(True, True, fun (h: True): True => h, fun (h: True): True => h)
         |def iffForward : True := Iff.mp(trueIff)(True.intro)
@@ -88,7 +91,7 @@ class PreludeTests extends munit.FunSuite {
         |def existsBool : Exists(Bool, isTrue) := Exists.intro(Bool, isTrue, Bool.true, True.intro)
         |def nonemptyNat : Nonempty(Nat) := Nonempty.intro(Nat.zero)
         |def subtypeBool : Subtype(Bool, isTrue) := Subtype.mk(Bool, isTrue, Bool.true, True.intro)
-        |def sigmaNat : Sigma(Nat, Level.one, boolFamily) := Sigma.mk(Nat, Level.one, boolFamily, Nat.zero, Bool.true)
+        |def sigmaNat : Sigma(Nat, Level.zero, boolFamily) := Sigma.mk(Nat, Level.zero, boolFamily, Nat.zero, Bool.true)
         |""".stripMargin
     )
   }
@@ -104,11 +107,27 @@ class PreludeTests extends munit.FunSuite {
           |
           |def symmProof : Eq(Nat, Nat.zero, Nat.zero) := Eq.symm(Eq.refl(Nat.zero))
           |def transProof : Eq(Nat, Nat.zero, Nat.zero) := Eq.trans(Eq.refl(Nat.zero), Eq.refl(Nat.zero))
-          |def substValue : Nat := Eq.subst(Eq.refl(Nat.zero), Level.one, natFamily, Nat.zero)
+          |def substValue : Nat := Eq.subst(Eq.refl(Nat.zero), Level.zero, natFamily, Nat.zero)
           |def congrArgProof : Eq(Nat, Nat.succ(Nat.zero), Nat.succ(Nat.zero)) := congrArg(Eq.refl(Nat.zero), Nat, succNat)
           |
           |{
           |  congrFun(Nat, Nat, idNat, idNat, funEq, Nat.zero)
+          |}
+          |""".stripMargin
+      )
+
+    assertEquals(ctorName(res), "Eq.refl")
+  }
+
+  test("Prelude proposition substitution transports dependent proofs and reduces") {
+    val res =
+      runProgram(
+        """
+          |def transportProof (p: Eq($A, $x, $y))(motive: A -> Prop)(h: motive(x)): motive(y) := Eq.substProp(p, motive, h)
+          |def selfEq (n: Nat): Prop := Eq(Nat, n, n)
+          |
+          |{
+          |  transportProof(Eq.refl(Nat.zero), selfEq, Eq.refl(Nat.zero))
           |}
           |""".stripMargin
       )

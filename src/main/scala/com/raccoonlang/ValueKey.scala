@@ -40,10 +40,9 @@ object ValueKey {
     val NeutralThunk = 10
     val Pi = 11
     val ConstructorHead = 12
-    val NormalizerType = 14
-    val Normalizer = 15
-    val ConstId = 16
-    val LocalId = 17
+    val ConstId = 13
+    val LocalId = 14
+    val PropTpe = 15
   }
 
   private val SeedHi = -7046029254386353131L
@@ -147,9 +146,5 @@ object ValueKey {
       mixLong(valueIdKey(tag(Tag.Pi), p.id), p.binders.length.toLong)
     case Value.ConstructorHead(n, _, _, _) =>
       mixString(tag(Tag.ConstructorHead), n)
-    case Value.NormalizerType =>
-      tag(Tag.NormalizerType)
-    case n: Value.Normalizer =>
-      mixString(tag(Tag.Normalizer), n.name)
   }
 }

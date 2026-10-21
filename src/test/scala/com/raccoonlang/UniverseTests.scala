@@ -55,7 +55,7 @@ class UniverseTests extends munit.FunSuite {
     }
   }
 
-  test("Type is Sort Level.one and has type Sort Level.succ(Level.one)") {
+  test("Type is Sort Level.zero and has type Sort Level.one") {
     val p =
       """
         |{ Type }
@@ -63,13 +63,13 @@ class UniverseTests extends munit.FunSuite {
 
     val res = runProgram(p)
     res match {
-      case Value.VSort(lvl) => assertEquals(lvl, Value.Level.one)
-      case other            => fail(s"Expected Type (Sort 1), got: $other")
+      case Value.VSort(lvl) => assertEquals(lvl, Value.Level.zero)
+      case other            => fail(s"Expected Type (Sort 0), got: $other")
     }
 
     res.tpe match {
-      case Value.VSort(u1) => assertEquals(u1, Value.Level.succ(Value.Level.one))
-      case other           => fail(s"Expected the type of Type to be Sort 2, got: $other")
+      case Value.VSort(u1) => assertEquals(u1, Value.Level.one)
+      case other           => fail(s"Expected the type of Type to be Sort 1, got: $other")
     }
   }
 
@@ -84,8 +84,8 @@ class UniverseTests extends munit.FunSuite {
 
     val res = runProgram(p)
     res match {
-      case Value.VSort(lvl) => assertEquals(lvl, Value.Level.one)
-      case other            => fail(s"Expected Sort 1 value (Type), got: $other")
+      case Value.VSort(lvl) => assertEquals(lvl, Value.Level.zero)
+      case other            => fail(s"Expected Sort 0 value (Type), got: $other")
     }
   }
 
@@ -107,7 +107,7 @@ class UniverseTests extends munit.FunSuite {
     }
   }
 
-  test("Cumulativity: Sort 1 fits into Sort 2 via let ascription (using Type)") {
+  test("Cumulativity: Type fits into Sort 2 via let ascription") {
     val p =
       """
         |{
@@ -118,8 +118,8 @@ class UniverseTests extends munit.FunSuite {
 
     val res = runProgram(p)
     res match {
-      case Value.VSort(lvl) => assertEquals(lvl, Value.Level.one)
-      case other            => fail(s"Expected Sort 1 value, got: $other")
+      case Value.VSort(lvl) => assertEquals(lvl, Value.Level.zero)
+      case other            => fail(s"Expected Sort 0 value, got: $other")
     }
   }
 
@@ -163,16 +163,13 @@ class UniverseTests extends munit.FunSuite {
   test("Pi formation level: (A: Prop)(x: A) -> A has type Prop") {
     val p =
       """
-        |{ fun (A: Sort(Level.zero))(x: A): A => x }
+        |{ fun (A: Prop)(x: A): A => x }
         |""".stripMargin
 
     val res = runProgram(p)
     res match {
       case Value.VLam(pi, _, _, _) =>
-        pi.tpe match {
-          case Value.VSort(u) => assertEquals(u, Value.Level.zero)
-          case other          => fail(s"Expected Pi type to live in Prop, got: $other")
-        }
+        assertEquals(pi.tpe, Value.PropTpe)
       case other => fail(s"Expected a lambda, got: $other")
     }
   }
@@ -186,8 +183,25 @@ class UniverseTests extends munit.FunSuite {
     val res = runProgram(p)
     res match {
       case Value.LevelTpe =>
-        assertEquals(res.tpe, VSort(Value.Level.one))
+        assertEquals(res.tpe, VSort(Value.Level.zero))
       case other => fail(s"Expected Level type, got: $other")
+    }
+  }
+
+  test("Type-polymorphic identity stays in Type when its level is zero") {
+    val res = runProgram("{ (A: Sort(Level.zero)) -> (x: A) -> A }\n")
+
+    assertEquals(res.tpe, VSort(Value.Level.one))
+  }
+
+  test("quoting universes preserves Prop and Type levels") {
+    val env = Interpreter.initialWorlds(Prelude.test).runEnv
+    val context = ValueQuote.quoteContext(env)
+    val universes = Vector(Value.PropTpe, Value.TypeTpe, VSort(Value.Level.one))
+
+    universes.foreach { universe =>
+      val quoted = ValueQuote.quoteType(universe, context, Span(0, 0))
+      assertEquals(Interpreter.evalTypeTerm(quoted, env), universe)
     }
   }
 
@@ -309,8 +323,7 @@ class UniverseTests extends munit.FunSuite {
     val solved = ValueEquivalence.unify(
       VSort(Value.Level.mk(u.id)),
       VSort(Value.Level.const(1)),
-      eqStore,
-      Map.empty
+      eqStore
     )
 
     assertEquals(solved.subst(u.id), Value.Level.const(1))
@@ -324,8 +337,7 @@ class UniverseTests extends munit.FunSuite {
       ValueEquivalence.unify(
         Value.VSort(Value.Level.of(Map(u.id -> 1), 0)),
         Value.VSort(Value.Level.zero),
-        eqStore,
-        Map.empty
+        eqStore
       )
     }
   }

@@ -296,7 +296,7 @@ object Interpreter {
             lazy val checked = TypeChecker.checkTerm(term, checkEnv)
             lazy val checkedTy = TypeChecker.getType(ty, checkEnv)
             lazy val checkValue = {
-              TypeChecker.checkType(checked.value, checkedTy, checkEnv.normalizers)
+              TypeChecker.checkType(checked.value, checkedTy)
               val bodyV = Value.ascribe(checked.value, checkedTy)
               unfoldStrategy match {
                 case Some(_) => bodyV
@@ -348,7 +348,6 @@ object Interpreter {
     val baseEnv =
       Env.empty
         .putGlobal("Type", TypeTpe)
-        .putGlobal("Normalizer", NormalizerType)
         .putGlobal("Level", LevelTpe)
         .putGlobal("Level.zero", Level.zero)
         .putGlobal("Level.one", Level.one)

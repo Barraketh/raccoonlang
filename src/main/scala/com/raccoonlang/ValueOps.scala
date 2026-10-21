@@ -29,12 +29,11 @@ object ValueOps {
       if (!mayNeedMaterialization(resolved)) return resolved
 
       resolved match {
-        case LevelTpe | KernelObject | PropTpe | NormalizerType => resolved
-        case n: Normalizer                                      => n
-        case level: Level                                       => materializeLevel(level)
-        case VSort(level)                                       => VSort(materializeLevel(level))
-        case Var(name, id, tpe)                                 => Var(name, id, materialize(tpe))
-        case VConst(name, constType, tpe)                       => VConst(name, constType, materialize(tpe))
+        case LevelTpe | KernelObject | PropTpe => resolved
+        case level: Level                      => materializeLevel(level)
+        case VSort(level)                      => VSort(materializeLevel(level))
+        case Var(name, id, tpe)                => Var(name, id, materialize(tpe))
+        case VConst(name, constType, tpe)      => VConst(name, constType, materialize(tpe))
         case VApp(head, args, tpe, blockerId) =>
           VApp(materialize(head), args.map(materialize(_)), materialize(tpe), blockerId)
         case NeutralThunk(term, env, id, tpe, blockerId) =>
@@ -63,9 +62,10 @@ object ValueOps {
         case other    => throw NotALevel(other)
       }
 
-    private def materializeUniverse(value: VSort)(implicit eqStore: EqStore): VSort =
+    private def materializeUniverse(value: Universe)(implicit eqStore: EqStore): Universe =
       materialize(value) match {
         case u: VSort => u
+        case PropTpe  => PropTpe
         case other    => throw NotAType(other)
       }
 

@@ -1,6 +1,6 @@
 package com.raccoonlang
 
-import com.raccoonlang.Value.VSort
+import com.raccoonlang.Value.Universe
 
 // Checked AST. Instance search expressions have already been resolved, and all local names are CoreAst.LocalRef slots.
 object ElabAst {
@@ -47,7 +47,7 @@ object ElabAst {
 
     final case class App(fn: Term, args: Vector[Term], span: Span) extends Term with TypeTerm
 
-    final case class Pi(binders: Vector[Binder], out: TypeTerm, classifier: VSort, span: Span)
+    final case class Pi(binders: Vector[Binder], out: TypeTerm, classifier: Universe, span: Span)
       extends Term
       with TypeTerm {
       require(binders.nonEmpty, "Pi requires at least one binder")
