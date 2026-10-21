@@ -7,11 +7,14 @@ import com.raccoonlang.{CoreAst => CA}
 /** Termination checking uses a temporary raw-recursive value installed as a local while checking the body. */
 object TerminationChecker {
   def rawRecursiveSelf(name: String, vpi: VPi, spec: CA.DecreaseSpec, bodyEnv: Env, isStable: Boolean): VLam = {
-    def requireInductiveMetric(value: Value, span: Span): Unit =
+    def requireInductiveMetric(value: Value, span: Span): Unit = {
+      if (TypeChecker.getUniverse(value.tpe) == PropTpe)
+        throw InvalidDecreaseSpec("decrease metrics must live in Type; proofs in Prop cannot be used", Some(span))
       value.tpe match {
         case ConstSpine(VConst(_, Inductive(_), _), _) =>
         case _ => throw InvalidDecreaseSpec(s"decrease metric ${value} must have an inductive type", Some(span))
       }
+    }
 
     val checkDecrease: (Vector[Value], Env) => Unit = spec match {
       case CA.DecreaseSpec.Lexicographic(args, sp) =>
@@ -77,8 +80,9 @@ object TerminationChecker {
     root match {
       case VCtor(_, fields, _) =>
         fields.exists { field =>
-          ValueEquivalence.defEq(candidate, field) ||
-          isStrictSubterm(candidate, field)
+          // Proof fields cannot expose data subterms, since proof irrelevance hides their structure.
+          TypeChecker.getUniverse(field.tpe) != PropTpe &&
+          (ValueEquivalence.defEq(candidate, field) || isStrictSubterm(candidate, field))
         }
       case _ => false
     }
