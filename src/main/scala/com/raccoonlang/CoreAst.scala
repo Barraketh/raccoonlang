@@ -4,20 +4,6 @@ package com.raccoonlang
 object CoreAst {
   final case class LocalRef(id: Int, name: String)
 
-  sealed trait UnfoldStrategy
-  object UnfoldStrategy {
-    // Unfold computation as far as you can and return the result. This is the default for term definitions.
-    case object Inline extends UnfoldStrategy
-
-    // Try to unfold, but if the result is blocked and does not have a stable head then treat as opaque (which will
-    // return a blocked VApp(thisFn, args), with a stable head since thisFn is stable. The goal of this strategy is to
-    // allow normalizers to rewrite expressions - if foo calls bar calls baz, and the normalizer only knows about foo,
-    // then even if baz gets blocked, I want to return a blocked VApp(foo, ...). Technically this information should
-    // probably live on the normalizer itself, but that's more complicated to implement, so for now it will be a property
-    // of the function, and we'll see if it causes any trouble.
-    case object Stable extends UnfoldStrategy
-  }
-
   sealed trait Ast {
     def span: Span
 
@@ -114,7 +100,6 @@ object CoreAst {
         body: Term,
         span: Span,
         name: Option[String],
-        isStable: Boolean,
         recursion: Option[Recursion]
     ) extends Term
 
@@ -190,7 +175,6 @@ object CoreAst {
   object Decl {
     // Constant: name : type [:= value]. None means explicitly opaque; term definitions otherwise default to Inline.
     final case class ConstDecl(
-        unfoldStrategy: Option[UnfoldStrategy],
         name: String,
         ty: TypeTerm,
         body: ConstBody,

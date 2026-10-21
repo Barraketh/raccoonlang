@@ -20,7 +20,6 @@ private object Builtins {
           VLam(
             preciseType,
             ValueId.Const(name),
-            isStable = true,
             LamBody.Native((args, _) => VSort(Interpreter.getLevel(args.head)), Env.empty, isRawRecursive = false)
           )
         case pi: VPi => throw ArityMismatch(1, pi.binders.length, Some(span))
@@ -39,7 +38,6 @@ private object Builtins {
             VLam(
               pi,
               ValueId.Const(name),
-              isStable,
               LamBody.Native((args, _) => run(self, pi, args), Env.empty, isRawRecursive = false)
             )
           self

@@ -49,13 +49,12 @@ object ValueQuote {
             ElabAst.Let(reindex(l.localRef), l.ty.map(inlineTypeTerm), inlineTerm(l.value), l.span, l.isInstance)
           }
           ElabAst.Term.Body(nextLets, inlineTerm(res), bodySpan)
-        case ElabAst.Term.Lam(ty, body, lamSpan, name, isStable, recursiveSelf) =>
+        case ElabAst.Term.Lam(ty, body, lamSpan, name, recursiveSelf) =>
           ElabAst.Term.Lam(
             inlineTypeTerm(ty).asInstanceOf[ElabAst.Term.Pi],
             inlineTerm(body),
             lamSpan,
             name,
-            isStable,
             recursiveSelf
           )
         case ElabAst.Term.Match(scrut, motive, cases, matchSpan) =>
@@ -233,7 +232,7 @@ object ValueQuote {
           case ValueId.Const(globalName) => Some(globalName)
           case _                         => term.name
         }
-        ElabAst.Term.Lam(opened.term, bodyTerm, span, name, lam.isStable, term.recursiveSelf)
+        ElabAst.Term.Lam(opened.term, bodyTerm, span, name, term.recursiveSelf)
       case (_, LamBody.Native(_, _, _)) => throw CannotQuoteValue(lam, "native lambda has no quoted syntax", Some(span))
     }
   }

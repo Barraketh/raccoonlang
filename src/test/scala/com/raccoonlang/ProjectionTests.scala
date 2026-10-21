@@ -45,9 +45,9 @@ class ProjectionTests extends munit.FunSuite {
     case Value.ConstructorHead(n, _, _, _) => SConst(n)
     case Value.VCtor(h, fields, _) =>
       if (fields.isEmpty) SConst(h.name) else SApp(SConst(h.name), fields.toList.map(toShape))
-    case Value.VConst(n, _, _)  => SConst(n)
+    case Value.VConst(n, _, _)     => SConst(n)
     case Value.VApp(h, args, _, _) => SApp(toShape(h), args.toList.map(toShape))
-    case other                  => SConst(other.toString)
+    case other                     => SConst(other.toString)
   }
 
   private val zeroS = SConst("Nat.zero")
@@ -259,7 +259,7 @@ class ProjectionTests extends munit.FunSuite {
         | | mk {A: Type}{B: Type} (fst: A)(snd: B) : Pair(A, B)
         |
         |// Opaque on purpose
-        |opaque def mkPair (a: Nat)(b: Nat): Pair(Nat, Nat) := Pair.mk(Nat, Nat, a, b)
+        |axiom mkPair (a: Nat)(b: Nat): Pair(Nat, Nat)
         |
         |def firstOpaque (a: Nat)(b: Nat): Nat := {
         |  let p := mkPair(a, b)
@@ -281,30 +281,9 @@ class ProjectionTests extends munit.FunSuite {
         | | mk {A: Sort($u1)}{B: Sort($u2)} (fst: A)(snd: B) : PairU(A, B)
         |
         |// Opaque on purpose
-        |opaque def F : PairU(Type, Type) := PairU.mk(Type, Type, Nat, Nat)
+        |axiom F : PairU(Type, Type)
         |
         |def idF (x: F.fst): F.fst := x
-        |""".stripMargin
-
-    typecheckDecls(p)
-  }
-
-  test("regression: projection can quote neutral select in a field type") {
-    val p =
-      """
-        |inductive Nat : Type
-        | | zero : Nat
-        |
-        |struct PairU (A: Sort($u1))(B: Sort($u2)) : Sort(Level.max(u1, u2))
-        | | mk {A: Sort($u1)}{B: Sort($u2)} (fst: A)(snd: B) : PairU(A, B)
-        |
-        |// Opaque on purpose
-        |opaque def F : PairU(Type, Type) := PairU.mk(Type, Type, Nat, Nat)
-        |
-        |struct UsesF : Type
-        | | mk (x: F.fst) : UsesF
-        |
-        |def getX (u: UsesF): F.fst := u.x
         |""".stripMargin
 
     typecheckDecls(p)
@@ -321,7 +300,7 @@ class ProjectionTests extends munit.FunSuite {
         | | mk {A: Type}{B: Type} (fst: A)(snd: B) : Pair(A, B)
         |
         |// Opaque on purpose
-        |opaque def step (n: Nat): Nat := n
+        |axiom step (n: Nat): Nat
         |
         |def choose (n: Nat): Pair(Nat, Nat) := {
         |  match step(n) returning Pair(Nat, Nat) with

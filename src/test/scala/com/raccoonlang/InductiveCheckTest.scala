@@ -9,9 +9,9 @@ class InductiveCheckTest extends munit.FunSuite {
       case err: Failure => fail(s"Failed to parse: $err, ${src.substring(err.curIdx)}")
     }
 
-  private def elabAndRun(src: String): Interpreter.Worlds =
-    elab(src).decls.foldLeft(Interpreter.initialWorlds(Prelude.test)) { case (curWorlds, decl) =>
-      Interpreter.evalDecl(decl, curWorlds)
+  private def elabAndRun(src: String): Env =
+    elab(src).decls.foldLeft(Interpreter.initialEnv(Prelude.test)) { case (env, decl) =>
+      Interpreter.evalDecl(decl, env)
     }
 
   private def elabAndTypecheck(src: String): Unit = {
@@ -89,7 +89,7 @@ class InductiveCheckTest extends munit.FunSuite {
   test("Non-strict positivity: aligned universes under other constructor F args (Wrap u (Bad u))") {
     val p =
       """
-        |opaque def Wrap(A: Sort(Level.zero)): Sort(Level.zero) := A
+        |axiom Wrap(A: Sort(Level.zero)): Sort(Level.zero)
         |
         |inductive Bad : Sort(Level.zero)
         | | con(x: Wrap(Bad)): Bad
@@ -241,7 +241,7 @@ class InductiveCheckTest extends munit.FunSuite {
         |
         |""".stripMargin
 
-    elabAndRun(p).checkEnv("Box") match {
+    elabAndRun(p).apply("Box") match {
       case Value.VConst(_, Value.Inductive(meta), _) =>
         assertEquals(meta.positiveArgs, DepSet(1))
       case other => fail(s"Expected Box to be an inductive head, got $other")
@@ -284,7 +284,7 @@ class InductiveCheckTest extends munit.FunSuite {
         |
         |""".stripMargin
 
-    elabAndRun(p).checkEnv("Higher") match {
+    elabAndRun(p).apply("Higher") match {
       case Value.VConst(_, Value.Inductive(meta), _) =>
         assertEquals(meta.positiveArgs, DepSet.empty)
       case other => fail(s"Expected Higher to be an inductive head, got $other")
@@ -297,7 +297,7 @@ class InductiveCheckTest extends munit.FunSuite {
         |struct TypeBox (A: Type) : Sort(Level.succ(Level.one))
         | | mk {A: Type} (T: Type) : TypeBox(A)
         |
-        |opaque def typeBox (A: Type): TypeBox(A) := TypeBox.mk(A, A)
+        |axiom typeBox (A: Type): TypeBox(A)
         |
         |inductive Box (A: Type)(F: (typeBox(A).T)) : Type
         | | mk {A: Type}{F: (typeBox(A).T)} : Box(A, F)

@@ -121,22 +121,8 @@ object Interpreter {
       case pi: VPi =>
         val envWithArgs = getEnvWithArgs(pi, pi.env, vArgs)
         fn match {
-          case lam @ VLam(_, _, isStable, _) =>
-            val res = runLam(lam, vArgs)
-            (isStable, res) match {
-              case (true, blocked @ Blocked(blockerId)) =>
-                blocked match {
-                  case VBlockedApp(VLam(_, _, true, _), _, _, _) => res
-                  case _                                         => VBlockedApp(fn, vArgs, blocked.tpe, blockerId)
-                }
-              case (true, stuck: NeutralThunk) if stuck.blockerId.isEmpty =>
-                lam.id match {
-                  case ValueId.Const(name) => VApp(VConst(name, Symbol, lam.tpe), vArgs, stuck.tpe)
-                  case _                   => res
-                }
-              case _ => res
-            }
-          case h: VConst => VApp(h, vArgs, pi.codomain(envWithArgs))
+          case lam @ VLam(_, _, _) => runLam(lam, vArgs)
+          case h: VConst           => VApp(h, vArgs, pi.codomain(envWithArgs))
           case h: ConstructorHead =>
             val resultTy = pi.codomain(envWithArgs)
             VCtor(h, vArgs.drop(h.numErased), resultTy)
@@ -163,7 +149,7 @@ object Interpreter {
         ValueId.LocalId(l.span.nodeId, captureVals)
 
     }
-    VLam(vpi, id, l.isStable, LamBody.Core(l, RuntimeEnv.closeForEval(env, capturedIndexes)))
+    VLam(vpi, id, LamBody.Core(l, RuntimeEnv.closeForEval(env, capturedIndexes)))
   }
 
   def runLam(lam: VLam, args: Vector[Value]): Value = {
@@ -265,86 +251,56 @@ object Interpreter {
     evalTerm(body.res, newEnv)
   }
 
-  case class Worlds(checkEnv: Env, runEnv: Env)
-
   private def putGlobal(env: Env, name: String, value: Value, isInstance: Boolean): Env =
     env.putGlobal(name, value, if (isInstance) Some(InstanceSearch.instanceKey(name, value)) else None)
 
-  def evalDecl(decl: Decl, worlds: Worlds): Worlds = {
+  def evalDecl(decl: Decl, env: Env): Env = {
     decl match {
-      case Decl.ConstDecl(unfoldStrategy, name, ty, body, span, isInstance, lazyGlobal) =>
+      case Decl.ConstDecl(name, ty, body, span, isInstance, lazyGlobal) =>
         body match {
           case CoreAst.ConstBody.Builtin(_) =>
-            if (unfoldStrategy.nonEmpty) throw WTF("Builtin declarations cannot be stable", Some(span))
             if (isInstance) throw WTF("Builtin declarations cannot be instances", Some(span))
             def value(env: Env): Value = Builtins.instantiate(name, TypeChecker.getType(ty, env), span)
-            if (lazyGlobal)
-              Worlds(
-                worlds.checkEnv.putLazyGlobal(name, () => value(worlds.checkEnv)),
-                worlds.runEnv.putLazyGlobal(name, () => value(worlds.runEnv))
-              )
-            else
-              Worlds(
-                putGlobal(worlds.checkEnv, name, value(worlds.checkEnv), isInstance),
-                putGlobal(worlds.runEnv, name, value(worlds.runEnv), isInstance)
-              )
+            if (lazyGlobal) {
+              env.putLazyGlobal(name, () => value(env))
+            } else {
+              putGlobal(env, name, value(env), isInstance)
+            }
 
           case CoreAst.ConstBody.TermBody(term) =>
             if (lazyGlobal && isInstance) throw WTF("Lazy global instances are not supported", Some(span))
-            val checkEnv = worlds.checkEnv
-            val runEnv = worlds.runEnv
-            lazy val checked = TypeChecker.checkTerm(term, checkEnv)
-            lazy val checkedTy = TypeChecker.getType(ty, checkEnv)
+
+            lazy val checked = TypeChecker.checkTerm(term, env)
+            lazy val checkedTy = TypeChecker.getType(ty, env)
             lazy val checkValue = {
               TypeChecker.checkType(checked.value, checkedTy)
-              val bodyV = Value.ascribe(checked.value, checkedTy)
-              unfoldStrategy match {
-                case Some(_) => bodyV
-                case None    => VConst(name, Symbol, checkedTy)
-              }
+              Value.ascribe(checked.value, checkedTy)
             }
-            lazy val runTy = TypeChecker.getType(ty, runEnv)
-            lazy val runtimeValue =
-              unfoldStrategy match {
-                case Some(_) => Value.ascribe(evalTerm(checked.residual, runEnv), runTy)
-                case None    => VConst(name, Symbol, runTy)
-              }
-            if (lazyGlobal)
-              Worlds(checkEnv.putLazyGlobal(name, () => checkValue), runEnv.putLazyGlobal(name, () => runtimeValue))
-            else
-              Worlds(
-                putGlobal(checkEnv, name, checkValue, isInstance),
-                putGlobal(runEnv, name, runtimeValue, isInstance)
-              )
+
+            if (lazyGlobal) env.putLazyGlobal(name, () => checkValue)
+            else putGlobal(env, name, checkValue, isInstance)
         }
 
       case Decl.AxiomDecl(name, ty, _, isInstance) =>
-        val tyV = TypeChecker.getType(ty, worlds.checkEnv)
+        val tyV = TypeChecker.getType(ty, env)
         val checkValue = VConst(name, Symbol, tyV)
-        val nextCheckEnv = putGlobal(worlds.checkEnv, name, checkValue, isInstance)
+        putGlobal(env, name, checkValue, isInstance)
 
-        val runtimeTyV = TypeChecker.getType(ty, worlds.runEnv)
-        val runtimeValue = VConst(name, Symbol, runtimeTyV)
-        val nextRunEnv = putGlobal(worlds.runEnv, name, runtimeValue, isInstance)
-
-        Worlds(nextCheckEnv, nextRunEnv)
-
-      case d: Decl.InductiveDecl => InductiveChecks.evalInductiveDecl(d, worlds)
+      case d: Decl.InductiveDecl => InductiveChecks.evalInductiveDecl(d, env)
 
     }
 
   }
 
   def run(p: Program, prelude: Prelude.Config = Prelude.default): Option[Value] = {
-    val worlds =
-      p.decls.foldLeft(initialWorlds(prelude)) { case (curWorlds, decl) => evalDecl(decl, curWorlds) }
+    val env =
+      p.decls.foldLeft(initialEnv(prelude)) { case (curWorlds, decl) => evalDecl(decl, curWorlds) }
     p.body.map { b =>
-      val checked = TypeChecker.checkTerm(b, worlds.checkEnv)
-      evalTerm(checked.residual, worlds.runEnv)
+      TypeChecker.checkTerm(b, env).value
     }
   }
 
-  private[raccoonlang] def initialWorlds(prelude: Prelude.Config = Prelude.default): Worlds = {
+  private[raccoonlang] def initialEnv(prelude: Prelude.Config = Prelude.default): Env = {
     val baseEnv =
       Env.empty
         .putGlobal("Type", TypeTpe)
@@ -353,8 +309,8 @@ object Interpreter {
         .putGlobal("Level.one", Level.one)
         .putGlobal("Prop", PropTpe)
 
-    prelude.core.decls.foldLeft(Worlds(baseEnv, baseEnv)) { case (curWorlds, decl) =>
-      evalDecl(decl, curWorlds)
+    prelude.core.decls.foldLeft(baseEnv) { case (curEnv, decl) =>
+      evalDecl(decl, curEnv)
     }
   }
 }

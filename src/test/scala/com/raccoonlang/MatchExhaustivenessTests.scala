@@ -76,7 +76,7 @@ class MatchExhaustivenessTests extends munit.FunSuite {
         | | succ (_: Nat) : Nat
         |
         |// Opaque on purpose: evaluator will keep this as a Symbol head
-        |opaque def g (n: Nat): Nat := Nat.zero
+        |axiom g (n: Nat): Nat
         |
         |def bad (n: Nat): Nat := {
         |  // scrutinee is neutral/opaque application: g n
@@ -96,7 +96,7 @@ class MatchExhaustivenessTests extends munit.FunSuite {
         | | zero : Nat
         | | succ (_: Nat) : Nat
         |
-        |opaque def g (n: Nat): Nat := n
+        |axiom g (n: Nat): Nat
         |
         |def ok (n: Nat): Nat := {
         |  match g(n) with

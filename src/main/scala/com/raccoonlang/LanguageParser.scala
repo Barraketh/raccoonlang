@@ -1,6 +1,5 @@
 package com.raccoonlang
 
-import com.raccoonlang.CoreAst.UnfoldStrategy
 import com.raccoonlang.Parser._
 import com.raccoonlang.SurfaceAst.Command.Decl.{AxiomDecl, ConstDecl, InductiveDecl}
 import com.raccoonlang.SurfaceAst.Command._
@@ -280,9 +279,6 @@ object LanguageParser {
       }
   }
 
-  private def explicitUnfoldStrategy: Parser[Option[UnfoldStrategy]] =
-    kw("opaque").!.map(_ => None) | kw("stable").!.map(_ => Some(UnfoldStrategy.Stable))
-
   private def constBody(implicit sourceId: Option[SourceId]): Parser[ConstBody] =
     kwTight("builtin").!.flatSpanned(sourceId).map { case (_, span) => ConstBody.Builtin(span) } |
       term.map(ConstBody.TermBody.apply)
@@ -308,16 +304,11 @@ object LanguageParser {
 
   // (opaque | stable)? def instance? foo (a: A)[b: B](c : C): D := body
   private def constP(implicit sourceId: Option[SourceId]): Parser[ConstDecl] =
-    (explicitUnfoldStrategy.? ~ kw("def") ~/ kw("instance").!.? ~ declHeader ~ decreasesP.? ~
+    (kw("def") ~/ kw("instance").!.? ~ declHeader ~ decreasesP.? ~
       (sym(":=") ~/ skipAllWs ~ constBody))
       .flatSpanned(sourceId)
-      .map { case (explicitStrategy, instanceOpt, header, decreases, body, span) =>
-        val default = body match {
-          case ConstBody.Builtin(_)  => None
-          case ConstBody.TermBody(_) => Some(UnfoldStrategy.Inline)
-        }
+      .map { case (instanceOpt, header, decreases, body, span) =>
         ConstDecl(
-          explicitStrategy.getOrElse(default),
           header,
           decreases,
           body,

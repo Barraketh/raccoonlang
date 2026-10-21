@@ -1,7 +1,5 @@
 package com.raccoonlang
 
-import com.raccoonlang.CoreAst.UnfoldStrategy
-
 import scala.annotation.tailrec
 
 object Elaborator {
@@ -422,7 +420,6 @@ object Elaborator {
           )
 
         SA.Command.Decl.ConstDecl(
-          Some(UnfoldStrategy.Stable),
           selectorHeader,
           decreases = None,
           SA.ConstBody.TermBody(body),
@@ -737,7 +734,6 @@ object Elaborator {
       bodyEnv: ResolveEnv,
       body: SA.Term,
       name: Option[String],
-      isStable: Boolean,
       recursion: Option[CA.Recursion],
       span: Span,
       outerEnv: ResolveEnv
@@ -763,7 +759,7 @@ object Elaborator {
       case _ => (Vector.empty[SA.Use], body)
     }
     val checkedUses = uses.map(use => CA.Use(elabTerm(use.normalizer, outerEnv), use.span))
-    CA.Term.Lam(pi, checkedUses, elabTerm(newBody, bodyEnv), span, name, isStable, recursion)
+    CA.Term.Lam(pi, checkedUses, elabTerm(newBody, bodyEnv), span, name, recursion)
   }
 
   private def elabDecreaseRef(name: String, span: Span, env: ResolveEnv): CA.LocalRef =
@@ -798,7 +794,7 @@ object Elaborator {
       val header = elabHeader(l.header, env)
       header.ty match {
         case pi: CA.Term.Pi =>
-          elabLam(pi, header.bodyEnv, l.body, None, isStable = false, None, l.span, env)
+          elabLam(pi, header.bodyEnv, l.body, None, None, l.span, env)
         case _ => throw new RuntimeException("WTF")
       }
     case b: SA.Term.Body =>
@@ -879,7 +875,6 @@ object Elaborator {
                     bodyHeaderEnv,
                     term,
                     Some(nameText),
-                    c.unfoldStrategy.contains(UnfoldStrategy.Stable),
                     recursion,
                     c.span,
                     envWithSelf
@@ -892,7 +887,7 @@ object Elaborator {
             }
         }
         (
-          CA.Decl.ConstDecl(c.unfoldStrategy, nameText, header.ty, body, c.span, c.isInstance, c.lazyGlobal),
+          CA.Decl.ConstDecl(nameText, header.ty, body, c.span, c.isInstance, c.lazyGlobal),
           envWithSelf
         )
       case c: SurfaceAst.Command.Decl.AxiomDecl =>

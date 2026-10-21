@@ -132,7 +132,7 @@ class UniverseTests extends munit.FunSuite {
         |  | zero: Nat
         |  | succ (_: Nat) : Nat
         |
-        |opaque def up2 (u: Level)(A: Sort(u)): Sort(Level.succ(Level.succ(u))) := A
+        |axiom up2 (u: Level)(A: Sort(u)): Sort(Level.succ(Level.succ(u)))
         |
         |{ up2(Level.one, Nat) }
         |""".stripMargin
@@ -168,7 +168,7 @@ class UniverseTests extends munit.FunSuite {
 
     val res = runProgram(p)
     res match {
-      case Value.VLam(pi, _, _, _) =>
+      case Value.VLam(pi, _, _) =>
         assertEquals(pi.tpe, Value.PropTpe)
       case other => fail(s"Expected a lambda, got: $other")
     }
@@ -195,7 +195,7 @@ class UniverseTests extends munit.FunSuite {
   }
 
   test("quoting universes preserves Prop and Type levels") {
-    val env = Interpreter.initialWorlds(Prelude.test).runEnv
+    val env = Interpreter.initialEnv(Prelude.test)
     val context = ValueQuote.quoteContext(env)
     val universes = Vector(Value.PropTpe, Value.TypeTpe, VSort(Value.Level.one))
 

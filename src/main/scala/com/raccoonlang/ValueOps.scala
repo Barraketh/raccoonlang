@@ -48,8 +48,8 @@ object ValueOps {
           ctor.copy(tpe = materialize(ctor.tpe))
         case pi: VPi =>
           materializePi(pi)
-        case VLam(tpe, id, isStable, body) =>
-          VLam(materializePi(tpe), materializeId(id), isStable, materializeLamBody(body))
+        case VLam(tpe, id, body) =>
+          VLam(materializePi(tpe), materializeId(id), materializeLamBody(body))
       }
     }
 

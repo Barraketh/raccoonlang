@@ -138,7 +138,7 @@ object ValueKey {
         case _: Value.ConstructorHead => mixKey(appKey, tpe.key)
         case _                        => appKey
       }
-    case Value.VLam(_, id, _, _) =>
+    case Value.VLam(_, id, _) =>
       valueIdKey(tag(Tag.Lam), id)
     case m: Value.NeutralThunk =>
       valueIdKey(tag(Tag.NeutralThunk), m.id)

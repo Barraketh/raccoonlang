@@ -77,7 +77,7 @@ object TypeChecker {
             loop(l.value, appHead = false)
           }
           loop(res, appHead = false)
-        case EA.Term.Lam(_, _, _, _, _, _) =>
+        case EA.Term.Lam(_, _, _, _, _) =>
         case EA.Term.Match(scrut, motive, cases, _) =>
           loop(scrut, appHead = false)
           motive.foreach(loop(_, appHead = false))
@@ -210,7 +210,7 @@ object TypeChecker {
       l.recursion match {
         case Some(CA.Recursion(ref, decreaseSpec)) =>
           val name = l.name.getOrElse(throw WTF("Recursive lambda must have a name", Some(l.span)))
-          val recursiveSelf = TerminationChecker.rawRecursiveSelf(name, vpi, decreaseSpec, bodyEnv, l.isStable)
+          val recursiveSelf = TerminationChecker.rawRecursiveSelf(name, vpi, decreaseSpec, bodyEnv)
           bodyEnv.putLocal(ref, recursiveSelf, residualPolicy = LocalResidualPolicy.AppHeadOnly(name))
         case None => bodyEnv
       }
@@ -228,7 +228,6 @@ object TypeChecker {
         checkedBody.residual,
         l.span,
         l.name,
-        l.isStable,
         l.recursion.map(_.selfRef)
       )
     CheckedTerm(Interpreter.evalLam(checkedLam, vpi, env), checkedLam)

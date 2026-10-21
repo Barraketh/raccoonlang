@@ -1,7 +1,6 @@
 package com.raccoonlang
 
 import com.raccoonlang.CoreAst._
-import com.raccoonlang.Interpreter.Worlds
 import com.raccoonlang.Value._
 import com.raccoonlang.telescope.BinderOps
 
@@ -178,7 +177,7 @@ object InductiveChecks {
     }
   }
 
-  def evalInductiveDecl(decl: Decl.InductiveDecl, worlds: Worlds): Worlds = {
+  def evalInductiveDecl(decl: Decl.InductiveDecl, env: Env): Env = {
     // All direct Value matches in this function and its private helpers
     // rely on EqStore.empty: no Vars are solved in this pass.
 
@@ -189,8 +188,7 @@ object InductiveChecks {
       else Term.Pi(header.binders, decl.header.resultTy, decl.header.span)
     }
 
-    val inductiveTypeCheck = TypeChecker.getType(ty, worlds.checkEnv)
-    val inductiveTypeRun = TypeChecker.getType(ty, worlds.runEnv)
+    val inductiveTypeCheck = TypeChecker.getType(ty, env)
 
     val initialPositiveArgs = DepSet.from(0 until header.arity)
     val initialMeta =
@@ -203,7 +201,7 @@ object InductiveChecks {
 
     val inductivedHead = VConst(name, Inductive(initialMeta), inductiveTypeCheck)
 
-    val checkEnvWithInductive = worlds.checkEnv.putGlobal(name, inductivedHead)
+    val checkEnvWithInductive = env.putGlobal(name, inductivedHead)
     val envWithFamilyBinders = {
       inductiveTypeCheck match {
         case pi: VPi =>
@@ -317,12 +315,8 @@ object InductiveChecks {
     val meta = initialMeta.copy(positiveArgs = positiveArgs)
 
     val inductiveHeadCheck = VConst(name, Inductive(meta), inductiveTypeCheck)
-    val inductiveHeadRun = VConst(name, Inductive(meta), inductiveTypeRun)
 
     // Only after all constructor checks succeed do we add the decl to the environments.
-    val nextCheckEnv = installInductive(decl, worlds.checkEnv, inductiveHeadCheck)
-    val nextRunEnv = installInductive(decl, worlds.runEnv, inductiveHeadRun)
-
-    Worlds(nextCheckEnv, nextRunEnv)
+    installInductive(decl, env, inductiveHeadCheck)
   }
 }

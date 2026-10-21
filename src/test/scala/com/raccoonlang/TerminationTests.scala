@@ -51,7 +51,7 @@ class TerminationTests extends munit.FunSuite {
     val p =
       natDecls +
         """
-          |stable def add (a: Nat)(b: Nat): Nat decreases structural(b) := {
+          |def add (a: Nat)(b: Nat): Nat decreases structural(b) := {
           |  match b with
           |  | Nat.zero => a
           |  | Nat.succ x => add(Nat.succ(a), x)
@@ -145,7 +145,7 @@ class TerminationTests extends munit.FunSuite {
           | | nil {A: Type} : List(A)
           | | cons {A: Type} (tail: List(A)) (head: A) : List(A)
           |
-          |stable def length (A: Type)(xs: List(A)): Nat decreases structural(xs) := {
+          |def length (A: Type)(xs: List(A)): Nat decreases structural(xs) := {
           |  match xs returning Nat with
           |  | List.nil => Nat.zero
           |  | List.cons tail _ => Nat.succ(length(A, tail))
@@ -424,7 +424,7 @@ class TerminationTests extends munit.FunSuite {
     val p =
       natDecls +
         """
-          |opaque def opaqueApply (h: Nat -> Nat)(n: Nat): Nat := h(n)
+          |axiom opaqueApply (h: Nat -> Nat)(n: Nat): Nat
           |
           |def bad (n: Nat): Nat decreases structural(n) := {
           |  let x := opaqueApply(bad, n)

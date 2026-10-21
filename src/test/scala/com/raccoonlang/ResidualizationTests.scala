@@ -9,11 +9,11 @@ class ResidualizationTests extends munit.FunSuite {
     LanguageParser.parseProgram(src) match {
       case Success(value, _, _) =>
         val core = Elaborator.elab(value, Prelude.test)
-        val worlds = core.decls.foldLeft(Interpreter.initialWorlds(Prelude.test)) { case (curWorlds, decl) =>
-          Interpreter.evalDecl(decl, curWorlds)
+        val env = core.decls.foldLeft(Interpreter.initialEnv(Prelude.test)) { case (curEnv, decl) =>
+          Interpreter.evalDecl(decl, curEnv)
         }
         val body = core.body.getOrElse(fail("Program has no body"))
-        val checked = TypeChecker.checkTerm(body, worlds.checkEnv)
+        val checked = TypeChecker.checkTerm(body, env)
         Checked(checked.value, checked.residual)
 
       case err: Failure => fail(s"Failed to parse: $err, ${src.substring(err.curIdx)}")
@@ -36,7 +36,7 @@ class ResidualizationTests extends munit.FunSuite {
       case EA.Term.Body(lets, res, _) =>
         lets.exists(l => l.ty.exists(ty => containsGlobal(ty, name)) || containsGlobal(l.value, name)) ||
         containsGlobal(res, name)
-      case EA.Term.Lam(ty, body, _, _, _, _) =>
+      case EA.Term.Lam(ty, body, _, _, _) =>
         containsGlobal(ty, name) ||
         containsGlobal(body, name)
       case EA.Term.Match(scrut, motive, cases, _) =>
@@ -101,7 +101,7 @@ class ResidualizationTests extends munit.FunSuite {
           | | true : Bool
           | | false : Bool
           |
-          |opaque def opaqueBool (b: Bool): Bool := b
+          |axiom opaqueBool (b: Bool): Bool
           |
           |def choose (b: Bool): Nat := {
           |  match b returning Nat with
@@ -153,7 +153,7 @@ class ResidualizationTests extends munit.FunSuite {
           |""".stripMargin
 
     resultTerm(checkBody(p).term) match {
-      case EA.Term.Lam(_, body, _, _, _, _) =>
+      case EA.Term.Lam(_, body, _, _, _) =>
         assert(containsGlobal(body, "id"))
         assert(containsGlobal(body, "Nat.zero"))
       case other => fail(s"Expected literal lambda body, got $other")
@@ -169,7 +169,7 @@ class ResidualizationTests extends munit.FunSuite {
           | | false : Bool
           |
           |def id (n: Nat): Nat := n
-          |opaque def opaqueBool (b: Bool): Bool := b
+          |axiom opaqueBool (b: Bool): Bool
           |
           |{
           |  match opaqueBool(Bool.true) returning Nat with
@@ -195,7 +195,7 @@ class ResidualizationTests extends munit.FunSuite {
           | | false : Bool
           |
           |def idBool (b: Bool): Bool := b
-          |opaque def opaqueBool (b: Bool): Bool := b
+          |axiom opaqueBool (b: Bool): Bool
           |
           |{
           |  match idBool(opaqueBool(Bool.true)) returning Nat with

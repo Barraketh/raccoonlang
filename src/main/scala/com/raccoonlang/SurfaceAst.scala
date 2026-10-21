@@ -1,7 +1,5 @@
 package com.raccoonlang
 
-import com.raccoonlang.CoreAst.UnfoldStrategy
-
 // Surface AST for RaccoonLang.  Will be elaborated into CoareAst
 object SurfaceAst {
 
@@ -158,7 +156,6 @@ object SurfaceAst {
     object Decl {
       // Constant: name : type [:= value]. None means explicitly opaque; term definitions otherwise default to Inline.
       final case class ConstDecl(
-          unfoldStrategy: Option[UnfoldStrategy],
           header: DeclHeader,
           decreases: Option[DecreaseSpec],
           body: ConstBody,

@@ -13,9 +13,9 @@ class TypeClassTests extends munit.FunSuite {
   private def typecheckProgram(src: String): Unit =
     Interpreter.run(parseProgram(src), Prelude.test)
 
-  private def compileWorlds(src: String): Interpreter.Worlds =
-    parseProgram(src).decls.foldLeft(Interpreter.initialWorlds(Prelude.test)) { case (worlds, decl) =>
-      Interpreter.evalDecl(decl, worlds)
+  private def compileEnv(src: String): Env =
+    parseProgram(src).decls.foldLeft(Interpreter.initialEnv(Prelude.test)) { case (curEnv, decl) =>
+      Interpreter.evalDecl(decl, curEnv)
     }
 
   private def namedValue(env: Env, name: String): Value =
@@ -59,7 +59,7 @@ class TypeClassTests extends munit.FunSuite {
       |""".stripMargin
 
   test("derive parses to CoreAst only and checks to the unfolded resolved instance") {
-    val worlds = compileWorlds(
+    val env = compileEnv(
       prelude +
         """
           |def instance natEq : DecEq(Nat) := DecEq.mk(Nat, Bool.true)
@@ -76,7 +76,7 @@ class TypeClassTests extends munit.FunSuite {
     ).body.getOrElse(fail("Program has no body"))
     assert(body.isInstanceOf[CoreAst.Term.Derive])
 
-    val term = TypeChecker.checkTerm(body, worlds.checkEnv).residual
+    val term = TypeChecker.checkTerm(body, env).residual
 
     term match {
       case ElabAst.Term.App(ElabAst.Term.GlobalRef("DecEq.mk", _), args, _) if args.length == 2 =>
@@ -101,7 +101,7 @@ class TypeClassTests extends munit.FunSuite {
   }
 
   test("checked term carries resolved instance result so runtime evaluation does not search") {
-    val worlds = compileWorlds(
+    val env = compileEnv(
       prelude +
         """
           |def instance natEq : DecEq(Nat) := DecEq.mk(Nat, Bool.true)
@@ -125,9 +125,9 @@ class TypeClassTests extends munit.FunSuite {
           |{ useNatEq }
           |""".stripMargin
     ).body.getOrElse(fail("Program has no body"))
-    val checkedTerm = TypeChecker.checkTerm(body, worlds.checkEnv).residual
+    val checkedTerm = TypeChecker.checkTerm(body, env).residual
 
-    val runEnvWithoutSearch = new NoSearchEnv(worlds.runEnv)
+    val runEnvWithoutSearch = new NoSearchEnv(env)
     assertEquals(ctorName(Interpreter.evalTerm(checkedTerm, runEnvWithoutSearch)), "DecEq.mk")
 
   }
@@ -496,13 +496,12 @@ class TypeClassTests extends munit.FunSuite {
   }
 
   test("instance search does not refine caller equality variables") {
-    val worlds = compileWorlds(
+    val env = compileEnv(
       prelude +
         """
           |def instance natEq : DecEq(Nat) := DecEq.mk(Nat, Bool.true)
           |""".stripMargin
     )
-    val env = worlds.runEnv
 
     val a = FreshVar.freshVar("A", Value.TypeTpe)
     val aRef = CoreAst.LocalRef(env.locals.length, "A")

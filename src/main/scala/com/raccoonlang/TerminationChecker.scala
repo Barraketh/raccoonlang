@@ -6,7 +6,7 @@ import com.raccoonlang.{CoreAst => CA}
 
 /** Termination checking uses a temporary raw-recursive value installed as a local while checking the body. */
 object TerminationChecker {
-  def rawRecursiveSelf(name: String, vpi: VPi, spec: CA.DecreaseSpec, bodyEnv: Env, isStable: Boolean): VLam = {
+  def rawRecursiveSelf(name: String, vpi: VPi, spec: CA.DecreaseSpec, bodyEnv: Env): VLam = {
     def requireInductiveMetric(value: Value, span: Span): Unit = {
       if (TypeChecker.getUniverse(value.tpe) == PropTpe)
         throw InvalidDecreaseSpec("decrease metrics must live in Type; proofs in Prop cannot be used", Some(span))
@@ -62,7 +62,6 @@ object TerminationChecker {
     VLam(
       vpi,
       ValueId.Const(name),
-      isStable,
       LamBody.Native(
         (args, nativeEnv) => {
           checkDecrease(args, nativeEnv)

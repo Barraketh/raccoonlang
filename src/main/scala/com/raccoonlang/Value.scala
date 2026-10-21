@@ -268,7 +268,6 @@ object Value {
   case class VLam(
       tpe: VPi,
       id: ValueId,
-      isStable: Boolean,
       body: LamBody
   ) extends Value {
     override lazy val synDeps: DepSet = {
