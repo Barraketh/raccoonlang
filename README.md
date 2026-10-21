@@ -57,7 +57,6 @@ Note that at this point I have done 0 optimization - these performance wins are 
 - Type classes with `def instance`, `let instance`, `[f: Foo]` instance binders, and explicit `derive[Foo]`
   search
 - Structs / Projections
-- Quotients
 - JVM CLI plus Scala Native build
 
 ## A few concrete examples
@@ -350,4 +349,3 @@ runs GraalVM `native-image`.
 ## Next Planned Features
 
 - Mutually-recursive inductives
-- Full Prelude quotient API surface
