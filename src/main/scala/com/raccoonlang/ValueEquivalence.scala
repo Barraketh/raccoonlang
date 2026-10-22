@@ -4,26 +4,41 @@ import com.raccoonlang.Value._
 import com.raccoonlang.telescope.BinderOps
 
 object ValueEquivalence {
+  sealed trait UnificationFailure {
+    def left: Value
+    def right: Value
+  }
+
+  object UnificationFailure {
+    final case class Contradiction(left: Value, right: Value) extends UnificationFailure
+    final case class Stuck(left: Value, right: Value) extends UnificationFailure
+  }
+
   def defEq(v1: Value, v2: Value): Boolean =
     DefEq.defEq(v1, v2)
 
+  private def isProof(value: Value): Boolean =
+    value.tpe.tpe == PropTpe
+
   def unify(v1: Value, v2: Value, meta: EqStore): EqStore =
     tryUnify(v1, v2, meta) match {
-      case Right(eqStore)           => eqStore
-      case Left((failed1, failed2)) => throw UnificationFailed(failed1, failed2)
+      case Right(eqStore) => eqStore
+      case Left(failure)  => throw UnificationFailed(failure.left, failure.right)
     }
 
+  /**
+   * Unify only through structure whose injectivity entails the resulting equalities. A Stuck result cannot justify
+   * omitting a match branch, and failed attempts expose no partial substitutions.
+   */
   def tryUnify(
       v1: Value,
       v2: Value,
-      meta: EqStore
-  ): Either[(Value, Value), EqStore] =
-    Unify.tryUnify(v1, v2, meta)
+      store: EqStore
+  ): Either[UnificationFailure, EqStore] =
+    Unify.tryUnify(v1, v2, store)
 
   private object DefEq {
-    case class RelatedPis(vars: Vector[Value], out1: Value, out2: Value)
-
-    def relatePis(pi1: VPi, pi2: VPi): Option[RelatedPis] = {
+    private def defEqPi(pi1: VPi, pi2: VPi): Option[Vector[Value]] = {
       if (pi1.binders.zip(pi2.binders).exists { case (b1, b2) => b1.isInstance != b2.isInstance })
         return None
 
@@ -36,14 +51,8 @@ object ValueEquivalence {
       val out1 = pi1.codomain(nextEnv1)
       val out2 = pi2.codomain(nextEnv2)
 
-      Some(RelatedPis(sharedVars, out1, out2))
+      if (defEq(out1, out2)) Some(sharedVars) else None
     }
-
-    private def defEqPi(pi1: VPi, pi2: VPi): Option[Vector[Value]] =
-      relatePis(pi1, pi2) match {
-        case Some(related) if defEq(related.out1, related.out2) => Some(related.vars)
-        case _                                                  => None
-      }
 
     private def defEqLamId(id1: ValueId, id2: ValueId): Boolean = {
       (id1, id2) match {
@@ -61,14 +70,8 @@ object ValueEquivalence {
     private def shouldTryStructuralDefEq(a: Value, b: Value): Boolean =
       a.needsStructuralDefEq || b.needsStructuralDefEq
 
-    private def typeLivesInProp(tpe: Value): Boolean =
-      tpe.tpe match {
-        case PropTpe => true
-        case _       => false
-      }
-
     private def proofIrrelevant(a: Value, b: Value): Boolean =
-      typeLivesInProp(a.tpe) && defEq(a.tpe, b.tpe)
+      isProof(a) && defEq(a.tpe, b.tpe)
 
     private def defEqStructural(a: Value, b: Value): Boolean =
       (a, b) match {
@@ -110,38 +113,11 @@ object ValueEquivalence {
   }
 
   private object Unify {
-    private type Result = Either[(Value, Value), EqStore]
+    import UnificationFailure._
 
-    private def tryUnifyPis(pi1: VPi, pi2: VPi, eqStore: EqStore): Either[(Value, Value), (EqStore, Vector[Value])] = {
-      DefEq.relatePis(pi1, pi2) match {
-        case None => Left((pi1, pi2))
-        case Some(related) =>
-          tryUnify(related.out1, related.out2, eqStore) match {
-            case Right(nextEqStore) => Right((nextEqStore, related.vars))
-            case Left(failed)       => Left(failed)
-          }
-      }
-    }
+    private type Result = Either[UnificationFailure, EqStore]
 
-    private def tryUnifyNeutralThunks(v1: NeutralThunk, v2: NeutralThunk, meta: EqStore): Result =
-      tryUnify(v1.tpe, v2.tpe, meta) match {
-        case Left(failed) => Left(failed)
-        case Right(m1) =>
-          if (v1.id.captures.length != v2.id.captures.length) Left((v1, v2))
-          else {
-            var curMeta = m1
-            val captures = v1.id.captures.zip(v2.id.captures)
-            val iter = captures.iterator
-            while (iter.hasNext) {
-              val (p1, p2) = iter.next()
-              tryUnify(p1, p2, curMeta) match {
-                case Left(failed) => return Left(failed)
-                case Right(next)  => curMeta = next
-              }
-            }
-            Right(curMeta)
-          }
-      }
+    private def stuck(left: Value, right: Value): Result = Left(Stuck(left, right))
 
     // Broad idea: we can unify (v + k) = other as v = other - k.  Everything else fails.
     private def unifyLevels(l1: Level, l2: Level, meta: EqStore): Option[EqStore] = {
@@ -154,18 +130,6 @@ object ValueEquivalence {
       } else None
     }
 
-    private def tryUnifySorts(v1: VSort, v2: VSort, meta: EqStore): Result = {
-      (v1.level, v2.level) match {
-        case (l1: Level, l2: Level) =>
-          unifyLevels(l1, l2, meta)
-            .orElse(unifyLevels(l2, l1, meta))
-            .map(Right(_))
-            .getOrElse(Left((l1, l2)))
-        case _ => Left((v1, v2))
-      }
-
-    }
-
     private def tryLinkVar(v: Var, other: Value, meta: EqStore): Result = {
       // Infer classifier levels before cumulativity: Sort(0) fits even an otherwise unsolved level.
       val m1 =
@@ -174,13 +138,12 @@ object ValueEquivalence {
           case Left(_) if TypeChecker.sortLeq(other.tpe, v.tpe) => meta
           case Left(failed)                                     => return Left(failed)
         }
-      if (m1.occurs(v.id, other)) Left((v, other))
+      if (m1.occurs(v.id, other)) Left(Stuck(v, other))
       else Right(m1.addLink(v.id, other))
     }
 
     /**
-     * This specifically handles wildcard vars during pattern matching. The problem is that wildcard vars never actually
-     * get stored in Env, so they can't be properly quoted. This forces us to prefer the other var as the representative
+     * Prefer named vars because anonymous fields lack local slots for quotation.
      */
     private def tryLinkVarToPreferredRepresentative(v1: Var, v2: Var, meta: EqStore): Result = {
       val v1Anonymous = v1.name == "_"
@@ -194,53 +157,50 @@ object ValueEquivalence {
       tryLinkVar(toLink, representative, meta)
     }
 
+    private def tryUnifyPairs(pairs: Vector[(Value, Value)], meta: EqStore): Result = {
+      var current = meta
+      val iter = pairs.iterator
+      while (iter.hasNext) {
+        val (left, right) = iter.next()
+        tryUnify(left, right, current) match {
+          case Left(failure) => return Left(failure)
+          case Right(next)   => current = next
+        }
+      }
+      Right(current)
+    }
+
+    private def sameInductiveFamily(left: Value, right: Value): Boolean =
+      (left, right) match {
+        case (InductiveFamilyValue(f1), InductiveFamilyValue(f2)) => f1.head.name == f2.head.name
+        case _                                                    => false
+      }
+
     def tryUnify(v1: Value, v2: Value, meta: EqStore): Result = {
       val a = ValueOps.materialize(v1, meta)
       val b = ValueOps.materialize(v2, meta)
 
       if (DefEq.defEq(a, b)) return Right(meta)
+      if (isProof(a) && isProof(b)) return tryUnify(a.tpe, b.tpe, meta)
 
       (a, b) match {
 
-        case (p1: VPi, p2: VPi) if p1.binders.length == p2.binders.length =>
-          tryUnifyPis(p1, p2, meta) match {
-            case Right((nextMeta, _)) => Right(nextMeta)
-            case Left(failed)         => Left(failed)
-          }
-        case (l1: VLam, l2: VLam) if l1.tpe.binders.length == l2.tpe.binders.length =>
-          // We know that the id check failed - falling back to extensional unification
-          tryUnifyPis(l1.tpe, l2.tpe, meta) match {
-            case Left(failed) => Left(failed)
-            case Right((nextMeta, sharedVars)) =>
-              val mappedVars = sharedVars.map(arg => ValueOps.materialize(arg, nextMeta))
-              val res1 = Interpreter.runLam(ValueOps.materialize(l1, nextMeta).asInstanceOf[VLam], mappedVars)
-              val res2 = Interpreter.runLam(ValueOps.materialize(l2, nextMeta).asInstanceOf[VLam], mappedVars)
-              tryUnify(res1, res2, nextMeta)
-          }
-        case (v1: VApp, v2: VApp) if v1.args.length == v2.args.length =>
-          tryUnify(v1.head, v2.head, meta) match {
-            case Left(failed) => Left(failed)
-            case Right(m0) =>
-              var curMeta = m0
-              val args = v1.args.zip(v2.args)
-              val iter = args.iterator
-              while (iter.hasNext) {
-                val (arg1, arg2) = iter.next()
-                tryUnify(arg1, arg2, curMeta) match {
-                  case Left(failed) => return Left(failed)
-                  case Right(next)  => curMeta = next
-                }
-              }
-              tryUnify(v1.tpe, v2.tpe, curMeta) // Important for constructors
-          }
+        case (VCtor(h1, fields1, result1), VCtor(h2, fields2, result2)) =>
+          if (h1.name != h2.name) {
+            if (sameInductiveFamily(result1, result2)) Left(Contradiction(a, b))
+            else stuck(a, b)
+          } else if (fields1.length != fields2.length) stuck(a, b)
+          else tryUnifyPairs(fields1.zip(fields2) :+ (result1 -> result2), meta)
 
-        case (v1: NeutralThunk, v2: NeutralThunk) if v1.id.nodeId == v2.id.nodeId =>
-          tryUnifyNeutralThunks(v1, v2, meta)
+        case (InductiveFamilyValue(f1), InductiveFamilyValue(f2)) =>
+          if (f1.head.name != f2.head.name || f1.args.length != f2.args.length) stuck(a, b)
+          else tryUnifyPairs(f1.args.zip(f2.args) :+ (a.tpe -> b.tpe), meta)
 
-        case (s1: VSort, s2: VSort) => tryUnifySorts(s1, s2, meta)
+        case (VSort(l1), VSort(l2)) =>
+          unifyLevels(l1, l2, meta)
+            .orElse(unifyLevels(l2, l1, meta))
+            .toRight(Stuck(l1, l2))
 
-        // Unify FreshVars through ctx. Basic idea: FreshVars can point at things through context
-        // unify creates a ctx of pointers. We only create pointers from the top of the chain
         case (v1: Var, v2: Var) if meta.isRefinable(v1.id) && meta.isRefinable(v2.id) =>
           tryLinkVarToPreferredRepresentative(v1, v2, meta)
 
@@ -250,7 +210,7 @@ object ValueEquivalence {
         // Symmetric: link unlinked Var (right) to non-Var value
         case (other, v: Var) if meta.isRefinable(v.id) => tryLinkVar(v, other, meta)
 
-        case _ => Left((a, b))
+        case _ => stuck(a, b)
       }
     }
   }

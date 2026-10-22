@@ -32,8 +32,10 @@ object MatchChecker {
       ctorNames: Vector[String],
       env: Env
   ): Vector[ReachableCtor] = {
-    def tryUnify(left: Value, right: Value, refinable: DepSet): Option[EqStore] =
-      ValueEquivalence.tryUnify(left, right, EqStore.empty.allow(refinable)).toOption
+    import ValueEquivalence.UnificationFailure._
+
+    def tryUnify(left: Value, right: Value, refinable: DepSet) =
+      ValueEquivalence.tryUnify(left, right, EqStore.empty.allow(refinable))
 
     def rootRefinable(value: Value): DepSet =
       value match {
@@ -50,13 +52,20 @@ object MatchChecker {
           val valueRefinable = rootRefinable(scrut) ++ ctorValue.synDeps
           val typeRefinable = scrutTpe.synDeps ++ ctorValue.synDeps
 
-          val branchEqStore =
-            tryUnify(scrut, ctorValue, valueRefinable)
-              .orElse(tryUnify(resultTy, scrutTpe, typeRefinable))
+          val valueRefinement = tryUnify(scrut, ctorValue, valueRefinable)
+          val refinement = valueRefinement match {
+            case Left(_: Stuck) => tryUnify(resultTy, scrutTpe, typeRefinable)
+            case other          => other
+          }
+          val branchStore = refinement match {
+            case Right(store)           => Some(store)
+            case Left(_: Contradiction) => None
+            case Left(_: Stuck)         => Some(EqStore.empty)
+          }
 
-          branchEqStore.map { branchStore =>
-            val refinedResultTy = ValueOps.materialize(scrutTpe, branchStore)
-            ReachableCtor(ctorName, h, fieldArgs, refinedResultTy, branchStore)
+          branchStore.map { store =>
+            val refinedResultTy = ValueOps.materialize(scrutTpe, store)
+            ReachableCtor(ctorName, h, fieldArgs, refinedResultTy, store)
           }
 
         case _ => throw UnknownConstructor(ctorName, inductiveName)
