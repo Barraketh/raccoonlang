@@ -309,4 +309,75 @@ class InductiveCheckTest extends munit.FunSuite {
 
     intercept[NonStrictlyPositive] { elabAndTypecheck(p) }
   }
+
+  private val lambdaContainerDecls =
+    """
+      |inductive False : Prop
+      |
+      |inductive True : Prop
+      | | intro : True
+      |
+      |inductive Higher (F: Prop -> Prop) : Prop
+      | | mk {F: Prop -> Prop} (p: F(True)) : Higher(F)
+      |""".stripMargin
+
+  test("Negative recursive occurrences hidden in lambda closures are rejected in Prop and Type") {
+    for (classifier <- Vector("Prop", "Type")) {
+      val source = lambdaContainerDecls +
+        s"""
+           |def negative (A: $classifier): Prop -> Prop := fun (unused: Prop): Prop => (h: A) -> False
+           |
+           |inductive Bad : $classifier
+           | | mk (p: Higher(negative(Bad))) : Bad
+           |""".stripMargin
+
+      intercept[NonStrictlyPositive] { elabAndTypecheck(source) }
+    }
+  }
+
+  test("Lambda bodies are checked even in positive family argument positions") {
+    val source = lambdaContainerDecls +
+      """
+        |def negative (A: Prop): Prop -> Prop := fun (unused: Prop): Prop => (h: A) -> False
+        |
+        |inductive Tag (F: Prop -> Prop) : Prop
+        | | mk {F: Prop -> Prop} : Tag(F)
+        |
+        |inductive Hidden (A: Prop) : Prop
+        | | mk {A: Prop} (p: Tag(negative(A))) : Hidden(A)
+        |""".stripMargin
+
+    elabAndRun(source)("Hidden") match {
+      case Value.VConst(_, Value.Inductive(meta), _) => assertEquals(meta.positiveArgs, DepSet.empty)
+      case other                                     => fail(s"Expected Hidden to be an inductive head, got $other")
+    }
+
+    intercept[NonStrictlyPositive] {
+      elabAndTypecheck(source + "\ninductive Bad : Prop\n | mk (p: Hidden(Bad)) : Bad\n")
+    }
+  }
+
+  test("Recursive occurrences hidden in a lambda in the family's own arguments are rejected") {
+    val source = lambdaContainerDecls +
+      """
+        |def negative (A: Prop): Prop -> Prop := fun (unused: Prop): Prop => (h: A) -> False
+        |
+        |inductive Bad (F: Prop -> Prop) : Prop
+        | | mk {F: Prop -> Prop} (p: Bad(negative(Bad(F)))) : Bad(F)
+        |""".stripMargin
+
+    intercept[NonStrictlyPositive] { elabAndTypecheck(source) }
+  }
+
+  test("Lambda arguments without recursive occurrences remain allowed") {
+    elabAndTypecheck(
+      lambdaContainerDecls +
+        """
+          |def constant (A: Prop): Prop -> Prop := fun (unused: Prop): Prop => A
+          |
+          |inductive Good : Prop
+          | | mk (p: Higher(constant(True))) : Good
+          |""".stripMargin
+    )
+  }
 }

@@ -15,14 +15,17 @@ object MatchChecker {
       branchEqStore: EqStore
   )
 
-  private def freshCtorArgsAndResult(head: ConstructorHead): (Vector[Value], Value) =
+  private final case class FreshCtor(fieldArgs: Vector[Value], captures: Vector[Value], resultTy: Value)
+
+  private def freshCtor(head: ConstructorHead): FreshCtor =
     head.tpe match {
       case pi: VPi =>
         val fresh = BinderOps.freshen(pi)
         val args = pi.binders.map(binder => fresh(binder.localRef))
-        (args, pi.codomain(fresh))
+        val captures = pi.binders.flatMap(_.captures).map(capture => fresh(capture.localRef))
+        FreshCtor(args.drop(head.numErased), captures, pi.codomain(fresh))
 
-      case _ => (Vector.empty, head.tpe)
+      case _ => FreshCtor(Vector.empty, Vector.empty, head.tpe)
     }
 
   /**
@@ -70,8 +73,7 @@ object MatchChecker {
     ctorNames.flatMap { ctorName =>
       env(ctorName) match {
         case h: ConstructorHead =>
-          val (freshArgs, resultTy) = freshCtorArgsAndResult(h)
-          val fieldArgs = freshArgs.drop(h.numErased)
+          val FreshCtor(fieldArgs, _, resultTy) = freshCtor(h)
           val ctorValue = VCtor(h, fieldArgs, resultTy)
           val valueRefinable = rootRefinable(scrut) ++ ctorValue.synDeps
           val typeRefinable = scrutTpe.synDeps ++ ctorValue.synDeps
@@ -106,10 +108,8 @@ object MatchChecker {
     if (reachable.length > 1) return false
 
     val only = reachable.head
-    val (args1, res1) = freshCtorArgsAndResult(only.head)
-    val (args2, res2) = freshCtorArgsAndResult(only.head)
-    val fields1 = args1.drop(only.head.numErased)
-    val fields2 = args2.drop(only.head.numErased)
+    val FreshCtor(fields1, captures1, res1) = freshCtor(only.head)
+    val FreshCtor(fields2, captures2, res2) = freshCtor(only.head)
 
     val refinable0 = DepSet.unionAll(scrutTpe.synDeps, res1.synDeps, res2.synDeps)
 
@@ -122,13 +122,15 @@ object MatchChecker {
       }
     }
 
-    fields1.zip(fields2).forall { case (f1, f2) =>
+    // Type-pattern captures are implicit constructor arguments, including when
+    // hidden in a proof field's type. They must already agree after result
+    // refinement; no extra equations may equate otherwise independent choices.
+    (fields1 ++ captures1).zip(fields2 ++ captures2).forall { case (f1, f2) =>
       val mf1 = ValueOps.materialize(f1, startEq)
       val mf2 = ValueOps.materialize(f2, startEq)
-      TypeChecker.getUniverse(mf1.tpe) match {
-        case PropTpe => true
-        case _       => ValueEquivalence.defEq(mf1, mf2)
-      }
+      // Proof irrelevance applies only at the same proposition. defEq erases
+      // proof values after comparing their types, while data must agree too.
+      ValueEquivalence.defEq(mf1.tpe, mf2.tpe) && ValueEquivalence.defEq(mf1, mf2)
     }
   }
 

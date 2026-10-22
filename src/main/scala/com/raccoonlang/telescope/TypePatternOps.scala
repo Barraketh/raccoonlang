@@ -255,16 +255,31 @@ object TypePatternOps {
       env: Env,
       binder: VBinder,
       actual: Value
+  ): Env = bindValueAndCheckWith(env, binder, actual, TypeChecker.checkType)
+
+  private[telescope] def bindValueForDefEq(env: Env, binder: VBinder, actual: Value): Env =
+    bindValueAndCheckWith(
+      env,
+      binder,
+      actual,
+      (value, expected) => if (!ValueEquivalence.defEq(value.tpe, expected)) throw TypeMismatch(expected, value.tpe)
+    )
+
+  private def bindValueAndCheckWith(
+      env: Env,
+      binder: VBinder,
+      actual: Value,
+      checkType: (Value, Value) => Unit
   ): Env = {
     val openedEnv = openCaptures(env, binder.captures, actual.tpe)
     val expectedTy = Interpreter.evalTypeTerm(binder.expectedTy, openedEnv)
     binder.ty match {
       case EBinderType.ConstrainedCapture(_, constraint, _) =>
         val constraintTy = Interpreter.evalTypeTerm(compileType(constraint), openedEnv)
-        TypeChecker.checkType(expectedTy, constraintTy)
+        checkType(expectedTy, constraintTy)
       case _ =>
     }
-    TypeChecker.checkType(actual, expectedTy)
+    checkType(actual, expectedTy)
     openedEnv.putLocal(binder.localRef, actual)
   }
 

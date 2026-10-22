@@ -501,6 +501,103 @@ class PropTests extends munit.FunSuite {
     assertEquals(toShape(res), zeroS)
   }
 
+  private val proofCaptureDecls =
+    """
+      |inductive Bool : Type
+      | | f : Bool
+      | | t : Bool
+      |
+      |inductive Holds (b: Bool) : Prop
+      | | intro {b: Bool} : Holds(b)
+      |
+      |def getIndex (p: Holds($b)): Bool := b
+      |""".stripMargin
+
+  test("Large elimination rejects an unforced data capture in a proof field's type") {
+    val source = proofCaptureDecls +
+      """
+        |inductive Packed : Prop
+        | | intro (p: Holds($b)) : Packed
+        |
+        |def extract (p: Packed): Bool := {
+        | match p returning Bool with
+        | | Packed.intro h => getIndex(h)
+        |}
+        |""".stripMargin
+
+    LanguageParser.parseProgram(source) match {
+      case Success(value, _, _) =>
+        val core = Elaborator.elab(value, Prelude.test)
+        intercept[PropEliminationRestricted] { Interpreter.run(core, Prelude.test) }
+      case err: Failure => fail(s"Failed to parse: $err")
+    }
+  }
+
+  test("Large elimination rejects an unforced proposition captured from a proof field") {
+    val source =
+      """
+        |inductive Packed : Prop
+        | | intro (p: $P in Prop) : Packed
+        |
+        |def proposition (p: $P in Prop): Prop := P
+        |
+        |def extract (p: Packed): Prop := {
+        | match p returning Prop with
+        | | Packed.intro h => proposition(h)
+        |}
+        |""".stripMargin
+
+    LanguageParser.parseProgram(source) match {
+      case Success(value, _, _) =>
+        val core = Elaborator.elab(value, Prelude.test)
+        intercept[PropEliminationRestricted] { Interpreter.run(core, Prelude.test) }
+      case err: Failure => fail(s"Failed to parse: $err")
+    }
+  }
+
+  test("Large elimination allows proof captures determined by the scrutinee index") {
+    val source = proofCaptureDecls +
+      """
+        |inductive Packed indices (b: Bool) : Prop
+        | | intro (p: Holds($b)) : Packed(b)
+        |
+        |def extract (p: Packed($b)): Bool := {
+        | match p returning Bool with
+        | | Packed.intro h => getIndex(h)
+        |}
+        |
+        |extract(Packed.intro(Holds.intro(Bool.t)))
+        |""".stripMargin
+
+    assertEquals(PrettyPrinter.print(runProgram(source)), "Bool.t")
+  }
+
+  test("Proof fields with fixed types allow large elimination, and hidden captures allow Prop elimination") {
+    typecheckDecls(
+      proofCaptureDecls +
+        """
+          |inductive True : Prop
+          | | intro : True
+          |
+          |inductive Fixed (b: Bool) : Prop
+          | | intro {b: Bool} (p: Holds(b)) : Fixed(b)
+          |
+          |inductive Packed : Prop
+          | | intro (p: Holds($b)) : Packed
+          |
+          |def fixed (p: Fixed($b)): Bool := {
+          | match p returning Bool with
+          | | Fixed.intro h => getIndex(h)
+          |}
+          |
+          |def forget (p: Packed): True := {
+          | match p returning True with
+          | | Packed.intro h => True.intro
+          |}
+          |""".stripMargin
+    )
+  }
+
   test("Negative: large elimination from Prop with unforced Type-valued field is rejected") {
     val p =
       """

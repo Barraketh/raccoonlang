@@ -38,15 +38,30 @@ object ValueEquivalence {
     Unify.tryUnify(v1, v2, store)
 
   private object DefEq {
+    private def sameBinderShape(left: VBinder, right: VBinder): Boolean =
+      left.isInstance == right.isInstance && left.captures.length == right.captures.length &&
+        left.captures.zip(right.captures).forall { case (a, b) =>
+          a.root == b.root && a.path == b.path && a.captureType == b.captureType
+        }
+
     private def defEqPi(pi1: VPi, pi2: VPi): Option[Vector[Value]] = {
-      if (pi1.binders.zip(pi2.binders).exists { case (b1, b2) => b1.isInstance != b2.isInstance })
+      // Matching one telescope's fresh arguments against another proves only
+      // inclusion unless their capture operations also agree. For example,
+      // Sort($u) and Sort(succ($v)) admit different universe domains.
+      if (
+        pi1.binders.length != pi2.binders.length ||
+        !pi1.binders.zip(pi2.binders).forall { case (b1, b2) => sameBinderShape(b1, b2) }
+      )
         return None
 
       val nextEnv1 = BinderOps.freshen(pi1)
       val sharedVars = pi1.binders.map(binder => nextEnv1(binder.localRef))
       val nextEnv2 =
-        try BinderOps.checkAndInstantiate(pi2.binders, pi2.env, sharedVars)
-        catch { case _: TypeMismatch | _: PropositionAsTypeCarrier => return None }
+        try BinderOps.instantiateForDefEq(pi2.binders, pi2.env, sharedVars)
+        catch {
+          case _: TypeMismatch | _: PropositionAsTypeCarrier | _: FailedToOpenCapture | _: InvalidLevelSubtraction =>
+            return None
+        }
 
       val out1 = pi1.codomain(nextEnv1)
       val out2 = pi2.codomain(nextEnv2)

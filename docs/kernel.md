@@ -1,5 +1,20 @@
 # Kernel rules
 
+## Function-type equality
+
+Function types compare binder domains and constrained-capture classifiers by
+exact definitional equality. Universe cumulativity is available when checking
+ordinary arguments, but does not identify function domains such as `Type` and
+`Sort(Level.one)`.
+
+Corresponding binders must have the same instance markers and capture
+operations: capture roots, projection paths, and level subtraction offsets.
+Names may differ. After opening one telescope on fresh arguments, the checker
+instantiates the other with those same arguments using exact checking, then
+compares their codomains. Requiring matching capture operations is conservative;
+in particular, `Sort($u)` and `Sort(Level.succ($v))` admit different domains and
+cannot be equated by successfully matching an argument in just one direction.
+
 ## Nominal Type families
 
 Fully applied, Type-valued inductive families obey these nominal principles:
@@ -78,8 +93,20 @@ Prop families are exempt from this size check. Stored fields of Type families
 retain their stricter classifier-level bound. Both Type and Prop families remain
 subject to strict positivity checks.
 
+Function-valued family arguments must be free of the positivity target, even in
+an otherwise positive argument position. The checker inspects both a lambda's
+type and its body opened on fresh arguments. A blocked computation that might
+contain the target cannot establish absence. This also applies when computing
+which family arguments are positive and when excluding recursion inside a
+family's own arguments.
+
 ### Current limits
 
 Instance search does not infer candidate arguments through Prop-family
 applications. For a reachable constructor, large elimination requires complete
 result refinement; unresolved equations can reject otherwise valid matches.
+After refinement, two fresh copies must agree on the types and values of stored
+fields and type-pattern captures. Proof values compare by proof irrelevance
+only at the same proposition; a proof field cannot hide an unforced data or
+proposition capture. Captures determined by the scrutinee's parameters or
+indices remain eligible for large elimination.

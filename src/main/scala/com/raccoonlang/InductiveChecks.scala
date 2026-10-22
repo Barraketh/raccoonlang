@@ -66,6 +66,19 @@ object InductiveChecks {
     }
   }
 
+  private def lambdaDoesNotContain(target: PositivityTarget, lam: VLam): Boolean = {
+    // A function-valued family argument has no assumed variance. Its type alone
+    // cannot reveal occurrences captured in the body, so require absence in
+    // both the type and the body opened on fresh arguments. Blocked results use
+    // the conservative occurrence rules below, including for named heads that
+    // synDeps (which tracks only local variables) cannot detect.
+    doesNotOccur(target, lam.tpe) && {
+      val fresh = BinderOps.freshen(lam.tpe)
+      val args = lam.tpe.binders.map(binder => fresh(binder.localRef))
+      doesNotOccur(target, Interpreter.runLam(lam, args))
+    }
+  }
+
   private def doesNotOccur(target: PositivityTarget, value: Value): Boolean =
     if (target.isDirectOccurrence(value)) false
     else
@@ -89,7 +102,9 @@ object InductiveChecks {
 
         case _: ConstructorHead => !target.mayOccurIn(value)
 
-        case _: Level | LevelTpe | _: VLam | _: VSort | _: Var | _: VConst | PropTpe | KernelObject =>
+        case lam: VLam => lambdaDoesNotContain(target, lam)
+
+        case _: Level | LevelTpe | _: VSort | _: Var | _: VConst | PropTpe | KernelObject =>
           !target.mayOccurIn(value)
       }
 
@@ -124,7 +139,9 @@ object InductiveChecks {
 
         case _: ConstructorHead => true
 
-        case _: Level | LevelTpe | _: VLam | _: VSort | _: Var | _: VConst | PropTpe | KernelObject =>
+        case lam: VLam => lambdaDoesNotContain(target, lam)
+
+        case _: Level | LevelTpe | _: VSort | _: Var | _: VConst | PropTpe | KernelObject =>
           true
       }
 
@@ -152,8 +169,9 @@ object InductiveChecks {
         freshArgs.forall(arg => sameFamilyArgsDoNotContain(inductiveName, target, arg.tpe)) &&
         sameFamilyArgsDoNotContain(inductiveName, target, pi.codomain(freshEnv))
 
-      case _: ConstructorHead | _: Level | LevelTpe | _: VLam | _: VSort | _: Var | _: VConst | PropTpe |
-          KernelObject =>
+      case lam: VLam => lambdaDoesNotContain(target, lam)
+
+      case _: ConstructorHead | _: Level | LevelTpe | _: VSort | _: Var | _: VConst | PropTpe | KernelObject =>
         true
     }
 
