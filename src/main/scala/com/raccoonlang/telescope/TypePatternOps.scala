@@ -265,7 +265,7 @@ object TypePatternOps {
       case _ =>
     }
     TypeChecker.checkType(actual, expectedTy)
-    openedEnv.putLocal(binder.localRef, Value.ascribe(actual, expectedTy))
+    openedEnv.putLocal(binder.localRef, actual)
   }
 
 }

@@ -25,11 +25,6 @@ sealed trait TopLevelValue extends Value {
 }
 
 object Value {
-  def ascribe(value: Value, tpe: Value): Value =
-    value match {
-      case u: UpdatableType => u.withTpe(tpe)
-      case _                => value
-    }
 
   private[raccoonlang] def needsStructuralDefEq(value: Value): Boolean = {
     // If this is a proof then we fall back to structural
@@ -40,10 +35,6 @@ object Value {
         app.head.needsStructuralDefEq || app.args.exists(_.needsStructuralDefEq) || app.tpe.needsStructuralDefEq
       case _ => false
     })
-  }
-
-  sealed trait UpdatableType {
-    def withTpe(tpe: Value): Value
   }
 
   type VarId = Int
@@ -202,27 +193,17 @@ object Value {
       synDeps: DepSet,
       id: ValueId,
       tpe: Universe
-  ) extends Value
-    with UpdatableType {
+  ) extends Value {
     require(binders.nonEmpty, "VPi requires at least one binder")
 
     override def toString: String = "VPi"
-
-    override def withTpe(tpe: Value): Value = tpe match {
-      case u: Universe => this.copy(tpe = u)
-      case _           => throw WTF(s"Cannot update Pi type to $tpe")
-    }
   }
 
-  case class VConst(name: String, constType: ConstType, tpe: Value) extends Value with UpdatableType {
+  case class VConst(name: String, constType: ConstType, tpe: Value) extends Value {
     override lazy val synDeps: DepSet = tpe.synDeps
-
-    override def withTpe(tpe: Value): Value = this.copy(tpe = tpe)
   }
 
-  case class VApp(head: Value, args: Vector[Value], tpe: Value, blockerId: Option[VarId] = None)
-    extends Value
-    with UpdatableType {
+  case class VApp(head: Value, args: Vector[Value], tpe: Value, blockerId: Option[VarId] = None) extends Value {
     override lazy val synDeps: DepSet = {
       val res = DepSet.newBuilder
       res.unionInPlace(head.synDeps)
@@ -241,13 +222,10 @@ object Value {
         )
       case _ =>
     }
-
-    override def withTpe(tpe: Value): Value = this.copy(tpe = tpe)
   }
 
   case class NeutralThunk(term: ElabAst.Term.Match, env: Env, id: ValueId.LocalId, tpe: Value, blockerId: Option[VarId])
-    extends Value
-    with UpdatableType {
+    extends Value {
     override lazy val synDeps: DepSet = {
       val res = DepSet.newBuilder
       res.unionInPlace(envDeps(env))
@@ -255,14 +233,10 @@ object Value {
       id.captures.foreach(v => res.unionInPlace(v.synDeps))
       res.result()
     }
-
-    override def withTpe(tpe: Value): Value = this.copy(tpe = tpe)
   }
 
-  case class Var(name: String, id: VarId, tpe: Value) extends Value with UpdatableType {
+  case class Var(name: String, id: VarId, tpe: Value) extends Value {
     override lazy val synDeps: DepSet = tpe.synDeps + id
-
-    override def withTpe(tpe: Value): Value = this.copy(tpe = tpe)
   }
 
   case class VLam(
@@ -288,8 +262,7 @@ object Value {
   }
 
   case class ConstructorHead(name: String, erasedFamilyArgIndexes: Vector[Int], totalArity: Int, tpe: Value)
-    extends TopLevelValue
-    with UpdatableType {
+    extends TopLevelValue {
     require(erasedFamilyArgIndexes.forall(_ >= 0), "Constructor erased family arg indexes must be non-negative")
     require(
       erasedFamilyArgIndexes.distinct.length == erasedFamilyArgIndexes.length,
@@ -297,8 +270,6 @@ object Value {
     )
 
     def numErased: Int = erasedFamilyArgIndexes.length
-
-    override def withTpe(tpe: Value): Value = this.copy(tpe = tpe)
   }
 
   final case class ConstructorMeta(shortName: String, canonicalName: String)

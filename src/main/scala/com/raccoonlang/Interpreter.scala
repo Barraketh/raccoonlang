@@ -163,13 +163,7 @@ object Interpreter {
           case Some(ref) => bodyEnv.putLocal(ref, lam)
           case None      => bodyEnv
         }
-        val res = evalTerm(term.body, recurEnv)
-        res match {
-          case u: UpdatableType =>
-            val tpe = lam.tpe.codomain(bodyEnv)
-            u.withTpe(tpe)
-          case _ => res
-        }
+        evalTerm(term.body, recurEnv)
     }
   }
 
@@ -240,13 +234,8 @@ object Interpreter {
   def evalBody(body: ETerm.Body, env: Env): Value = {
     val newEnv = body.lets.foldLeft(env) { case (curEnv, l) =>
       val res = evalTerm(l.value, curEnv)
-      val withTpe = (res, l.ty) match {
-        case (u: UpdatableType, Some(ty)) =>
-          u.withTpe(evalTypeTerm(ty, curEnv))
-        case _ => res
-      }
-      val instanceKey = if (l.isInstance) Some(InstanceSearch.instanceKey(l.localRef.name, withTpe)) else None
-      curEnv.putLocal(l.localRef, withTpe, instanceKey)
+      val instanceKey = if (l.isInstance) Some(InstanceSearch.instanceKey(l.localRef.name, res)) else None
+      curEnv.putLocal(l.localRef, res, instanceKey)
     }
     evalTerm(body.res, newEnv)
   }
@@ -272,13 +261,10 @@ object Interpreter {
 
             lazy val checked = TypeChecker.checkTerm(term, env)
             lazy val checkedTy = TypeChecker.getType(ty, env)
-            lazy val checkValue = {
-              TypeChecker.checkType(checked.value, checkedTy)
-              Value.ascribe(checked.value, checkedTy)
-            }
+            TypeChecker.checkType(checked.value, checkedTy)
 
-            if (lazyGlobal) env.putLazyGlobal(name, () => checkValue)
-            else putGlobal(env, name, checkValue, isInstance)
+            if (lazyGlobal) env.putLazyGlobal(name, () => checked.value)
+            else putGlobal(env, name, checked.value, isInstance)
         }
 
       case Decl.AxiomDecl(name, ty, _, isInstance) =>

@@ -164,7 +164,7 @@ object TypeChecker {
           val tyV = checkedTy.value
           checkType(checkedValue.value, tyV)
           resTyTerm = Some(checkedTy.residual)
-          Value.ascribe(checkedValue.value, tyV)
+          checkedValue.value
         }
         .getOrElse(checkedValue.value)
 
