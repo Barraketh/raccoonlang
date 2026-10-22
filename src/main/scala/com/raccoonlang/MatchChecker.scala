@@ -25,6 +25,30 @@ object MatchChecker {
       case _ => (Vector.empty, head.tpe)
     }
 
+  /**
+   * A constructor branch must inhabit the scrutinee's declared fiber. Its result telescope therefore supplies equations
+   * between the corresponding family arguments, including for Prop families. These are premises of indexed elimination,
+   * not consequences of injectivity of the family as a type-valued expression.
+   */
+  private def refineConstructorResult(
+      constructorResult: Value,
+      scrutineeType: Value,
+      store: EqStore
+  ): Either[ValueEquivalence.UnificationFailure, EqStore] = {
+    val result = ValueOps.materialize(constructorResult, store)
+    val scrutinee = ValueOps.materialize(scrutineeType, store)
+    (result, scrutinee) match {
+      case (InductiveFamilyValue(ctorFamily), InductiveFamilyValue(scrutineeFamily))
+          if ctorFamily.head.name == scrutineeFamily.head.name &&
+            ctorFamily.args.length == scrutineeFamily.args.length =>
+        val equations = ctorFamily.args.zip(scrutineeFamily.args) :+ (result.tpe -> scrutinee.tpe)
+        equations.foldLeft[Either[ValueEquivalence.UnificationFailure, EqStore]](Right(store)) {
+          case (current, (left, right)) => current.flatMap(ValueEquivalence.tryUnify(left, right, _))
+        }
+      case _ => throw WTF("Constructor result does not belong to the scrutinee's inductive family")
+    }
+  }
+
   private def computeReachableCtors(
       scrut: Value,
       scrutTpe: Value,
@@ -54,8 +78,9 @@ object MatchChecker {
 
           val valueRefinement = tryUnify(scrut, ctorValue, valueRefinable)
           val refinement = valueRefinement match {
-            case Left(_: Stuck) => tryUnify(resultTy, scrutTpe, typeRefinable)
-            case other          => other
+            case Left(_: Stuck) =>
+              refineConstructorResult(resultTy, scrutTpe, EqStore.empty.allow(typeRefinable))
+            case other => other
           }
           val branchStore = refinement match {
             case Right(store)           => Some(store)
@@ -90,9 +115,8 @@ object MatchChecker {
 
     val startEq = {
       val start = EqStore.empty.allow(refinable0)
-      ValueEquivalence
-        .tryUnify(res1, scrutTpe, start)
-        .flatMap(eq1 => ValueEquivalence.tryUnify(res2, scrutTpe, eq1)) match {
+      refineConstructorResult(res1, scrutTpe, start)
+        .flatMap(eq1 => refineConstructorResult(res2, scrutTpe, eq1)) match {
         case Right(eqStore) => eqStore
         case Left(_)        => return false
       }

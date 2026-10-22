@@ -33,6 +33,7 @@ object TypeError {
     case e: NonUniformInductiveParam        => e.copy(span = Some(sp))
     case e: NotALevel                       => e.copy(span = Some(sp))
     case e: InductiveUniverseTooSmall       => e.copy(span = Some(sp))
+    case e: FamilyArgumentTooLarge          => e.copy(span = Some(sp))
     case e: NonStrictlyPositive             => e.copy(span = Some(sp))
     case e: InductiveTypeNotASort           => e.copy(span = Some(sp))
     case e: PatternCaptureNeedsExpectedType => e.copy(span = Some(sp))
@@ -216,6 +217,15 @@ final case class InductiveUniverseTooSmall(
 ) extends TypeError {
   override val msg: String =
     s"Inductive $inductive lives in Sort $inductiveUniverse, but $where has type $fieldTy : Sort $fieldUniverse"
+}
+
+final case class FamilyArgumentTooLarge(
+    inductive: String,
+    argument: String,
+    level: Value.Level,
+    span: Option[Span] = None
+) extends TypeError {
+  override def msg: String = s"Family $inductive argument $argument requires the family to live in Sort $level or above"
 }
 
 final case class InductiveTypeNotASort(tpe: Value, span: Option[Span]) extends TypeError {

@@ -44,6 +44,7 @@ Note that at this point I have done 0 optimization - these performance wins are 
 
 - Inductive families with explicit params, indices, and erased constructor binders
     - Validates positivity, universes, constructor result shape, and uniform params
+    - [Nominal Type-family rules](docs/kernel.md#nominal-type-families) with argument size checks
 - Termination checking of recursive functions
 - Dependent pattern matching
     - Branch refinement for indexed families / dependent pattern matching. Supports equality proofs.

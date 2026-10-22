@@ -6,6 +6,27 @@ import com.raccoonlang.telescope.BinderOps
 
 object InductiveChecks {
 
+  // A family label stores an argument value. A universe argument costs its own
+  // level, while a Pi domain costs its full classifier (the function's graph).
+  private def familyArgumentLevel(tpe: Value): Level = tpe match {
+    case LevelTpe | PropTpe => Level.zero
+    case VSort(level)       => level
+    case pi: VPi if pi.tpe != PropTpe =>
+      val fresh = BinderOps.freshen(pi)
+      val domainLevels = pi.binders.map { binder =>
+        TypeChecker.getUniverse(fresh(binder.localRef).tpe) match {
+          case PropTpe      => Level.zero
+          case VSort(level) => level
+        }
+      }
+      Level.max(domainLevels :+ familyArgumentLevel(pi.codomain(fresh)))
+    case other =>
+      TypeChecker.getUniverse(other) match {
+        case PropTpe      => Level.zero
+        case VSort(level) => level
+      }
+  }
+
   // ------------ Occurrence and Positivity ------------
 
   // A positivity target is the thing whose occurrences we are checking.
@@ -211,7 +232,7 @@ object InductiveChecks {
       }
     }
 
-    TypeChecker.getType(header.resultTy, envWithFamilyBinders) match {
+    val familyUniverse = TypeChecker.getType(header.resultTy, envWithFamilyBinders) match {
       case v: Universe => v
       case other       => throw InductiveTypeNotASort(other, Some(header.resultTy.span))
     }
@@ -231,6 +252,15 @@ object InductiveChecks {
         case pi: VPi => pi.binders.map(binder => envWithFamilyBinders(binder.localRef))
         case _       => Vector.empty[Value]
       }
+    familyUniverse match {
+      case PropTpe => // Impredicative Prop families have no nominal principles.
+      case VSort(level) =>
+        header.binders.zip(familyArgs).foreach { case (binder, argument) =>
+          val required = familyArgumentLevel(argument.tpe)
+          if (!Level.leq(required, level))
+            throw FamilyArgumentTooLarge(name, binder.name, required, Some(binder.span))
+        }
+    }
     var positiveArgs = positiveArgIndexes(familyArgs, familyArgs.map(_.tpe))
 
     decl.ctors.foreach { ctor =>

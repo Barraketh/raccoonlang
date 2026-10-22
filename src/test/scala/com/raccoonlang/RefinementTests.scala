@@ -28,6 +28,10 @@ class RefinementTests extends munit.FunSuite {
       |axiom axiomG (n: N): N
       |axiom F (n: N): Type
       |
+      |axiom Unknown : Type
+      |
+      |axiom proofFunction (n: N): Hold(N.z)
+      |
       |inductive Vec (A: Type) indices (n: N): Type
       | | nil {A: Type}: Vec(A, N.z)
       | | cons {A: Type} (n: N) (tail: Vec(A, n)) (head: A): Vec(A, N.s(n))
@@ -40,6 +44,12 @@ class RefinementTests extends munit.FunSuite {
       |
       |def identityN (n: N): N := n
       |def constantN (n: N): N := N.z
+      |
+      |def pickType (n: N): Type := {
+      |  match n returning Type with
+      |  | N.z => N
+      |  | N.s k => At(k)
+      |}
       |""".stripMargin
 
   private lazy val env: Env = {
@@ -102,7 +112,7 @@ class RefinementTests extends munit.FunSuite {
     expectContradiction(ValueEquivalence.tryUnify(atZ, atSz, EqStore.empty))
 
     val otherZ = applyGlobal("Other", z)
-    expectStuck(ValueEquivalence.tryUnify(atZ, otherZ, EqStore.empty))
+    expectContradiction(ValueEquivalence.tryUnify(atZ, otherZ, EqStore.empty))
   }
 
   test("axiom applications, occurs checks, levels, and blocked captures stay inconclusive") {
@@ -156,6 +166,49 @@ class RefinementTests extends munit.FunSuite {
 
     expectStuck(ValueEquivalence.tryUnify(left, right, start))
     assertEquals(start.force(x), x)
+  }
+
+  test("nominal apartness does not refute opaque types, rigid variables, or blocked type computations") {
+    val nType = env("N")
+    val n = FreshVar.freshVar("n", nType)
+    val unknownType = FreshVar.freshVar("A", Value.TypeTpe)
+    val blockedType = applyGlobal("pickType", n)
+    assert(blockedType.isInstanceOf[NeutralThunk])
+
+    for (unknown <- Vector(env("Unknown"), applyGlobal("F", n), unknownType, blockedType, Value.LevelTpe)) {
+      expectStuck(ValueEquivalence.tryUnify(nType, unknown, EqStore.empty))
+      expectStuck(ValueEquivalence.tryUnify(unknown, nType, EqStore.empty))
+    }
+    expectStuck(ValueEquivalence.tryUnify(n, global("N.z"), EqStore.empty))
+    expectStuck(ValueEquivalence.tryUnify(global("N.z"), n, EqStore.empty))
+
+    ValueEquivalence.tryUnify(nType, unknownType, EqStore.empty.allow(DepSet(unknownType.id))) match {
+      case Right(store)  => assertEquals(store.force(unknownType), nType)
+      case Left(failure) => fail(s"Expected a refinable type variable to link, got $failure")
+    }
+  }
+
+  test("partial family heads and constructor functions supply no rigid-form contradiction") {
+    for (
+      (left, right) <- Vector(
+        (env("At"), env("Other")),
+        (env("At"), env("F")),
+        (env("N.s"), env("identityN")),
+        (env("N.s"), env("constantN"))
+      )
+    ) {
+      expectStuck(ValueEquivalence.tryUnify(left, right, EqStore.empty))
+      expectStuck(ValueEquivalence.tryUnify(right, left, EqStore.empty))
+    }
+  }
+
+  test("proposition-valued Pis and primitive levels remain inconclusive") {
+    val proposition = applyGlobal("Hold", global("N.z"))
+    val propositionPi = env("proofFunction").tpe
+    expectStuck(ValueEquivalence.tryUnify(proposition, propositionPi, EqStore.empty))
+    expectStuck(ValueEquivalence.tryUnify(propositionPi, proposition, EqStore.empty))
+    expectStuck(ValueEquivalence.tryUnify(Level.zero, Level.one, EqStore.empty))
+    expectStuck(ValueEquivalence.tryUnify(Value.PropTpe, Value.TypeTpe, EqStore.empty))
   }
 
   test("unknown indexed constructors remain reachable for coverage and Prop elimination") {
@@ -281,7 +334,7 @@ class RefinementTests extends munit.FunSuite {
     intercept[TypeMismatch] { typecheckDecls(source) }
   }
 
-  test("proof equality refines propositions before inspecting proof constructors or payloads") {
+  test("proof equality supplies no injectivity through proposition families or proof payloads") {
     val x = FreshVar.freshVar("x", env("N"))
     val y = FreshVar.freshVar("y", env("N"))
     val z = global("N.z")
@@ -291,28 +344,10 @@ class RefinementTests extends munit.FunSuite {
     val otherY = applyGlobal("Hold.other", y)
     val refinable = EqStore.empty.allow(x.synDeps ++ y.synDeps)
 
-    val sameConstructor = ValueEquivalence.tryUnify(introX, introY, refinable) match {
-      case Right(store)  => store
-      case Left(failure) => fail(s"Expected proof irrelevance after refining proposition indices, got $failure")
-    }
-    assert(
-      ValueEquivalence.defEq(
-        ValueOps.materialize(introX, sameConstructor),
-        ValueOps.materialize(introY, sameConstructor)
-      )
-    )
-
-    val differentConstructors = ValueEquivalence.tryUnify(introX, otherY, refinable) match {
-      case Right(store)  => store
-      case Left(failure) => fail(s"Expected proof irrelevance across proof constructors, got $failure")
-    }
-    assert(
-      ValueEquivalence.defEq(
-        ValueOps.materialize(introX, differentConstructors),
-        ValueOps.materialize(otherY, differentConstructors)
-      )
-    )
-
+    expectStuck(ValueEquivalence.tryUnify(introX, introY, refinable))
+    expectStuck(ValueEquivalence.tryUnify(introX, otherY, refinable))
+    assertEquals(refinable.subst, Map.empty[Value.VarId, Value])
+    assert(ValueEquivalence.defEq(introX, applyGlobal("Hold.other", x)))
     expectStuck(ValueEquivalence.tryUnify(introX, introY, EqStore.empty))
     expectStuck(ValueEquivalence.tryUnify(introX, otherY, EqStore.empty))
   }
@@ -334,10 +369,13 @@ class RefinementTests extends munit.FunSuite {
         |inductive Packed : Type
         | | mk (p: $P in Prop): Packed
         |
+        |inductive True : Prop
+        | | intro : True
+        |
         |def bad (x: B)(y: B)(h: Eq(Packed,
         |  Packed.mk(Hold.intro(x, N.z)),
-        |  Packed.mk(Hold.intro(y, N.s(N.z))))): N := {
-        |  match h returning N with
+        |  Packed.mk(Hold.intro(y, N.s(N.z))))): True := {
+        |  match h returning True with
         |}
         |
         |bad(B.f, B.f, Eq.refl(Packed.mk(Hold.intro(B.f, N.z))))
@@ -347,12 +385,12 @@ class RefinementTests extends munit.FunSuite {
 
     val explicitRefl =
       source.replace(
-        "  match h returning N with\n}",
-        "  match h returning N with\n  | Eq.refl packed => N.z\n}"
+        "  match h returning True with\n}",
+        "  match h returning True with\n  | Eq.refl packed => True.intro\n}"
       )
     runProgram(explicitRefl) match {
-      case Value.VCtor(head, _, _) => assertEquals(head.name, "N.z")
-      case other                   => fail(s"Expected N.z from the explicit Eq.refl branch, got $other")
+      case Value.VCtor(head, _, _) => assertEquals(head.name, "True.intro")
+      case other                   => fail(s"Expected True.intro from the explicit Eq.refl branch, got $other")
     }
   }
 }

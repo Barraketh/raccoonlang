@@ -176,6 +176,25 @@ object ValueEquivalence {
         case _                                                    => false
       }
 
+    private sealed trait RigidForm
+    private case object DataConstructor extends RigidForm
+    private case object TypeFamily extends RigidForm
+    private case object FunctionType extends RigidForm
+    private case object TypeUniverse extends RigidForm
+
+    // Exhaustive over Value: adding a representation requires deciding whether
+    // it supplies no-confusion evidence. Partial family/constructor heads are
+    // functions; ordinary applications, symbols and blocked matches are opaque.
+    private def rigidForm(value: Value): Option[RigidForm] = value match {
+      case VCtor(_, _, _) if !isProof(value)                        => Some(DataConstructor)
+      case InductiveFamilyValue(_) if value.tpe.isInstanceOf[VSort] => Some(TypeFamily)
+      case pi: VPi  => if (pi.tpe == PropTpe) None else Some(FunctionType)
+      case _: VSort => Some(TypeUniverse)
+      case _: Var | _: NeutralThunk | _: VLam | _: VConst | _: VApp | _: ConstructorHead => None
+      // Level arithmetic and these primitive forms have no nominal apartness rule.
+      case _: Level | LevelTpe | PropTpe | KernelObject => None
+    }
+
     def tryUnify(v1: Value, v2: Value, meta: EqStore): Result = {
       val a = ValueOps.materialize(v1, meta)
       val b = ValueOps.materialize(v2, meta)
@@ -193,7 +212,8 @@ object ValueEquivalence {
           else tryUnifyPairs(fields1.zip(fields2) :+ (result1 -> result2), meta)
 
         case (InductiveFamilyValue(f1), InductiveFamilyValue(f2)) =>
-          if (f1.head.name != f2.head.name || f1.args.length != f2.args.length) stuck(a, b)
+          if (a.tpe == PropTpe || b.tpe == PropTpe) stuck(a, b)
+          else if (f1.head.name != f2.head.name || f1.args.length != f2.args.length) Left(Contradiction(a, b))
           else tryUnifyPairs(f1.args.zip(f2.args) :+ (a.tpe -> b.tpe), meta)
 
         case (VSort(l1), VSort(l2)) =>
@@ -210,7 +230,15 @@ object ValueEquivalence {
         // Symmetric: link unlinked Var (right) to non-Var value
         case (other, v: Var) if meta.isRefinable(v.id) => tryLinkVar(v, other, meta)
 
-        case _ => stuck(a, b)
+        case _ =>
+          (rigidForm(a), rigidForm(b)) match {
+            case (None, _) | (_, None) => stuck(a, b)
+            // Two Pis have no injectivity rule. Other equal-form pairs were
+            // handled structurally above; classification alone cannot refute them.
+            case (Some(left), Some(right)) if left == right => stuck(a, b)
+            // The remaining canonical forms are disjoint by no-confusion/N3.
+            case (Some(_), Some(_)) => Left(Contradiction(a, b))
+          }
       }
     }
   }

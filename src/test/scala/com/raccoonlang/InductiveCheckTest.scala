@@ -259,7 +259,7 @@ class InductiveCheckTest extends munit.FunSuite {
     intercept[NonStrictlyPositive] { elabAndTypecheck(p) }
   }
 
-  test("Nested non-positive: recursive occurrence in constructor-valued family argument") {
+  test("Oversized constructor-valued index is rejected before checking nested recursion") {
     val p =
       """
         |inductive BoxType : Sort(Level.succ(Level.one))
@@ -270,7 +270,7 @@ class InductiveCheckTest extends munit.FunSuite {
         |
         |""".stripMargin
 
-    intercept[NonStrictlyPositive] { elabAndTypecheck(p) }
+    intercept[FamilyArgumentTooLarge] { elabAndTypecheck(p) }
   }
 
   test("Nested metadata: unknown type-function head forbids dependent family argument") {
@@ -279,7 +279,7 @@ class InductiveCheckTest extends munit.FunSuite {
         |inductive Nat : Type
         | | zero : Nat
         |
-        |inductive Higher (F: Type -> Type) : Type
+        |inductive Higher (F: Type -> Type) : Sort(Level.one)
         | | mk {F: Type -> Type} (x: F(Nat)) : Higher(F)
         |
         |""".stripMargin
