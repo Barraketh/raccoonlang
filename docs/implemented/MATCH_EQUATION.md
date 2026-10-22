@@ -43,8 +43,8 @@ The same form gives proofs the equation F2 asks for, in place of a mirror defini
 - **No indices.** The scrutinee's family has no indices, so `C(p̄, x̄)` has type `T` in every case and the equation is
   well typed without refinement. An indexed family is `MatchEquationIndexed`, located at `h`. Allowing it is an
   extension: the equation would be stated at the case's refined type.
-- **`h` is a proof, used freely.** It is a local of a proposition, so it is unrestricted, and it is confined like any
-  local by its type's scope.
+- **`h` is a proof, used freely.** It is a local of a proposition, so it is unrestricted and may be used throughout
+  the case where it is bound.
 - **No rewriting.** The motive and other hypotheses are not rewritten by the equation. A proof that needs `e` replaced
   uses `h` with `Eq.subst` for data or `Eq.substP` for propositions. Rewriting the goal is a larger feature, and a separate one.
 - **Evaluation.** A case runs only when the scrutinee's value is `C` applied to the fields' values. There `h`'s

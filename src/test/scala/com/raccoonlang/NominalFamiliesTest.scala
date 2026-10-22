@@ -208,9 +208,8 @@ class NominalFamiliesTest extends munit.FunSuite with TestSupport {
       case Right(_)      => fail("Expected a stuck equation")
     }
     stuck(Sorts.Prop, Sorts.Type)
-    stuck(Sorts.Type, Sorts.sort(Level.one, Kind.unr, Lifetime.empty))
-    stuck(Sorts.Type, Sorts.sort(Level.zero, Kind.lin, Lifetime.empty))
-    stuck(Sorts.Type, Sorts.sort(Level.zero, Kind.unr, Lifetime.variable(FreshVar.freshVar("l", LifetimeTpe).id)))
+    stuck(Sorts.Type, Sorts.sort(Level.one, Kind.unr))
+    stuck(Sorts.Type, Sorts.sort(Level.zero, Kind.lin))
     expectTypeError[MissingCase]("def f (h: Eq(Prop, True, Bool -> True)): False := { match h returning False with\n}")
   }
 }

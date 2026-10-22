@@ -57,6 +57,7 @@ class ParseErrorTests extends munit.FunSuite {
 
   test("Prop has no level or kind fields") {
     everywhere("Prop { @level = Level.zero }", "Misplaced field level: Prop fixes the level")
+    everywhere("Prop { @scope = Nat.zero }", "Unknown field scope")
   }
 
   test("a function type's closure is a field list without a level, before the group's first domain") {
@@ -77,7 +78,15 @@ class ParseErrorTests extends munit.FunSuite {
     expectParseError(lambda("@{}"), "Empty field list")
     expectParseError(lambda("{ @level = Level.one }"), "Misplaced field level: a closure has no level")
     expectParseError(lambda("{ @size = 1 }"), "Unknown field size")
-    expectParseError(lambda("{ scope = Lifetime.empty, @scope = Lifetime.empty }"), "Repeated field scope")
+    expectParseError(lambda("{ @scope = Nat.zero }"), "Unknown field scope")
+  }
+
+  test("lifetime scope syntax and fields are gone, while their words are ordinary identifiers") {
+    assert(LanguageParser.parseProgram("def f : Nat := scope l => 0\n").isInstanceOf[Failure])
+    everywhere("Type { @scope = Nat.zero }", "Unknown field scope")
+    everywhere("{ @scope = Nat.zero } Nat -> Nat", "Unknown field scope")
+    expectParses("def scope (Lifetime: Nat): Nat := Lifetime\n")
+    expectParses("def Lifetime : Type := Nat\n")
   }
 
   // A match stands only where a term does: a type's grammar has none, so a header, a binder or a field cannot hold one.

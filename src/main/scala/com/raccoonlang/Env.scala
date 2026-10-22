@@ -13,7 +13,6 @@ object Env {
       baseLocals = SeqMap.empty,
       nativeLiterals = NativeLiteralState.empty,
       equality = Left("no prelude has finished loading"),
-      openAtoms = DepSet.empty,
       sealedMembers = Map.empty,
       runtimeLocals = SeqMap.empty,
       runtimeFrames = Vector.empty,
@@ -26,11 +25,10 @@ object Env {
   private val assertionsEnabled: Boolean =
     java.lang.Boolean.parseBoolean(System.getProperty("raccoon.envAssertions", "true"))
 
-  // An atom is not a variable: a global may hold one, as a closure that names its scope's binder does (spec §4.2), or a
-  // type computed under a scope does; the type checker keeps any type that names it inside the scope.
+  // Global values must not retain unresolved local variables.
   private[raccoonlang] def assertClosedGlobal(value: Value): Unit =
-    if (assertionsEnabled && (value.synDeps -- Atoms.all).nonEmpty)
-      wtf(s"Global value must be closed, but has free vars ${value.synDeps -- Atoms.all}")
+    if (assertionsEnabled && value.synDeps.nonEmpty)
+      wtf(s"Global value must be closed, but has free vars ${value.synDeps}")
 
   // Proof-representation invariant (docs/kernel.md#proofs-and-elimination): every value of known-propositional type
   // is a fixed point of canonicalizeProof. This includes reconstructed constructors as well as
@@ -79,9 +77,6 @@ object GlobalBinding {
 // Runtime/checking environment for resolved terms. Source-name scoping is handled by the elaborator before terms
 // reach this layer; local lookup uses the resolved LocalRef as the map key.
 //
-// `openAtoms` is checker-only: the atoms whose `scope` binders enclose the position being checked (spec §4.2). It is
-// lexical, so only the checker opens one, and closing an env over a value drops them, since evaluation never checks.
-//
 // `sealedMembers` is checker-only too: each constructor and selector of a sealed family, by global name, with its
 // family's seal, which the checker consults where a global name is resolved (Sealing).
 //
@@ -92,7 +87,6 @@ final case class Env(
     private[raccoonlang] val baseLocals: SeqMap[CoreAst.LocalRef, Value],
     nativeLiterals: NativeLiteralState,
     equality: Either[String, MatchEquation.ValidatedEquality],
-    private[raccoonlang] val openAtoms: DepSet,
     private[raccoonlang] val sealedMembers: Map[String, Sealing.Seal],
     private[raccoonlang] val runtimeLocals: SeqMap[CoreAst.LocalRef, Value] = SeqMap.empty,
     private[raccoonlang] val runtimeFrames: Vector[RuntimeSlotFrame] = Vector.empty,
@@ -298,8 +292,7 @@ final case class Env(
         baseLocals = SeqMap.empty,
         runtimeLocals = SeqMap.empty,
         runtimeFrames = Vector.empty,
-        runtimeOrder = Vector.empty,
-        openAtoms = DepSet.empty
+        runtimeOrder = Vector.empty
       )
     capturedRefs.foreach { ref =>
       if (!containsLocal(ref))
@@ -313,8 +306,7 @@ final case class Env(
       baseLocals = capturedLocals,
       runtimeLocals = SeqMap.empty,
       runtimeFrames = Vector.empty,
-      runtimeOrder = Vector.empty,
-      openAtoms = DepSet.empty
+      runtimeOrder = Vector.empty
     )
   }
 
@@ -323,10 +315,6 @@ final case class Env(
     if (!globals.contains(name)) wtf(s"Sealed member $name is not a global")
     copy(sealedMembers = sealedMembers + (name -> seal))
   }
-
-  /** The body of a `scope` term, checked: its binder denotes the atom, which is open there. */
-  private[raccoonlang] def openScope(ref: CoreAst.LocalRef, atom: Value.Lifetime): Env =
-    putLocal(ref, atom).copy(openAtoms = openAtoms ++ atom.vars)
 
   private[raccoonlang] def installStringLayout(layout: Value.ValidatedStringLayout): Env =
     nativeLiterals.stringLayout match {

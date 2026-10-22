@@ -1,0 +1,8 @@
+import buffer.Program
+
+def useForeignRoot {r: Type}{other: Type}{frame: Type}
+    (ctx: Buffer.Ctx(r, frame))(value: Buffer.Val32(other, frame))
+    : Pair(Buffer.Ctx(r, frame), Buffer.Val32(r, frame)) :=
+  Buffer.add32(ctx, value, value)
+
+{ Unit.unit }

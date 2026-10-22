@@ -1,5 +1,12 @@
 # Type programs: values that do not compute their types
 
+> **Historical proposal.** This document predates removal of Raccoon's
+> `Lifetime` and sort-scope feature. Any lifetime or scope forms mentioned in
+> the proposal are unsupported and do not describe current semantics. See the
+> [language reference](../language.md) and [kernel reference](../kernel.md).
+> The original source is available from baseline `81759785` with
+> `git show 81759785:docs/proposals/TYPE_PROGRAMS.md`.
+
 Status: proposal, 2026-10-05. Not implemented.
 
 Scope: type-checking speed. This proposal builds on

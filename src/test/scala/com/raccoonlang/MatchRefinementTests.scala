@@ -112,26 +112,6 @@ class MatchRefinementTests extends munit.FunSuite with TestSupport {
       | | tick : Tick
       |""".stripMargin + declarations
 
-  test("a stuck index equation leaves a field at the scrutinee's lifetime parameter") {
-    def program(body: String): String =
-      stuckIndex(
-        s"""
-           |inductive L (l: Lifetime) : Type { scope = l }
-           | | mk : L(l)
-           |
-           |inductive W (l: Lifetime) indices (n: Peano) : Type { scope = l }
-           | | mk (h: L(l)) : W(l, Peano.zero)
-           |
-           |def f {S: Lifetime}(double: (n: Peano) -> Peano)(n: Peano)(w: W(S, double(n))): L(S) :=
-           |  match w returning L(S) with
-           | | .mk h => $body
-           |""".stripMargin
-      )
-
-    typecheckDecls(program("h"))
-    typecheckDecls(program("(fun (u: Tick): L(S) => h)(Tick.tick)"))
-  }
-
   test("a stuck index equation leaves a field at the scrutinee's kind parameter") {
     def program(body: String): String =
       stuckIndex(
@@ -153,11 +133,11 @@ class MatchRefinementTests extends munit.FunSuite with TestSupport {
     def program(result: String, body: String): String =
       stuckIndex(
         s"""
-           |inductive V {S: Lifetime}(A: Type { scope = S }) indices (n: Peano) : Type { scope = S }
+           |inductive V (A: Type) indices (n: Peano) : Type
            | | nil : V(A, Peano.zero)
            | | cons (m: Peano)(head: A)(tail: V(A, m)) : V(A, Peano.succ(m))
            |
-           |def headOr {S: Lifetime}{A: Type { scope = S }}(B: Type)(double: (n: Peano) -> Peano)(k: Peano)(d: $result)
+           |def headOr {A: Type}(B: Type)(double: (n: Peano) -> Peano)(k: Peano)(d: $result)
            |    (v: V(A, double(k))): $result :=
            |  match v returning $result with
            |  | .nil => d

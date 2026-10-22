@@ -17,10 +17,10 @@ class PairExpressionTests extends munit.FunSuite with TestSupport {
   /** A linear token and its consumer. */
   private val tokens =
     """
-      |inductive Tok (l: Lifetime) : Type { kind = lin, scope = l }
-      | | mk : Tok(l)
+      |inductive Tok : Type { kind = lin }
+      | | mk : Tok
       |
-      |def burn {l: Lifetime}(t: Tok(l)): Nat := match t returning Nat with
+      |def burn (t: Tok): Nat := match t returning Nat with
       | | Tok.mk => 1
       |""".stripMargin
 
@@ -60,16 +60,16 @@ class PairExpressionTests extends munit.FunSuite with TestSupport {
   test("a linear component makes a linear pair") {
     def program(body: String): String =
       tokens +
-        "def spend {l: Lifetime}(p: Pair(Tok(l), Nat)): Nat := match p returning Nat with\n" +
+        "def spend (p: Pair(Tok, Nat)): Nat := match p returning Nat with\n" +
         " | Pair.mk t n => Nat.add(burn(t), n)\n\n" +
-        s"def use {l: Lifetime}(t: Tok(l)): Nat := {\n  let p := (t, 2)\n  $body\n}\n"
-    evaluatesTo(program("spend(p)") + "{ scope l => use(Tok.mk(l)) }\n", "3")
+        s"def use (t: Tok): Nat := {\n  let p := (t, 2)\n  $body\n}\n"
+    evaluatesTo(program("spend(p)") + "{ use(Tok.mk) }\n", "3")
     assertEquals(expectOnly[LinearReused](typecheckDecls(program("Nat.add(spend(p), spend(p))"))), LinearReused("p"))
     assertEquals(expectOnly[LinearUnused](typecheckDecls(program("0"))), LinearUnused("p"))
     // Each component is a use of what it mentions.
     assertEquals(
       expectOnly[LinearReused](
-        typecheckDecls(tokens + "def two {l: Lifetime}(t: Tok(l)): Pair(Tok(l), Tok(l)) := (t, t)\n")
+        typecheckDecls(tokens + "def two (t: Tok): Pair(Tok, Tok) := (t, t)\n")
       ),
       LinearReused("t")
     )
@@ -79,16 +79,16 @@ class PairExpressionTests extends munit.FunSuite with TestSupport {
     val defs =
       tokens +
         """
-          |def wrap {k: Kind}{S: Lifetime}{A: Type { kind = k, scope = S }}(a: A): Pair(A, Nat) := (a, 0)
+          |def wrap {k: Kind}{A: Type { kind = k }}(a: A): Pair(A, Nat) := (a, 0)
           |
-          |def unwrap {k: Kind}{S: Lifetime}{A: Type { kind = k, scope = S }}(p: Pair(A, Nat)): A := {
+          |def unwrap {k: Kind}{A: Type { kind = k }}(p: Pair(A, Nat)): A := {
           |  let (a, _) := p
           |  a
           |}
           |
-          |def spend {l: Lifetime}(t: Tok(l)): Nat := burn(unwrap(wrap(t)))
+          |def spend (t: Tok): Nat := burn(unwrap(wrap(t)))
           |""".stripMargin
-    evaluatesTo(defs + "{ Nat.add(unwrap(wrap(3)), scope l => spend(Tok.mk(l))) }\n", "4")
+    evaluatesTo(defs + "{ Nat.add(unwrap(wrap(3)), spend(Tok.mk)) }\n", "4")
     // A value at a kind variable may be linear, so the pair holding it is used once.
     assertEquals(
       expectOnly[LinearUnused](

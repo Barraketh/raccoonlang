@@ -1,13 +1,13 @@
-inductive Tok (l: Lifetime) : Type { kind = lin, scope = l }
- | mk : Tok(l)
+inductive Tok : Type { kind = lin }
+ | mk : Tok
 
-inductive Two (l: Lifetime) : Type { kind = lin, scope = l }
- | mk (a: Tok(l)) (b: Tok(l)) : Two(l)
+inductive Two : Type { kind = lin }
+ | mk (a: Tok) (b: Tok) : Two
 
-def eat {l: Lifetime}(t: Tok(l)): Nat := match t returning Nat with
+def eat (t: Tok): Nat := match t returning Nat with
  | Tok.mk => 0
 
-def first {l: Lifetime}(w: Two(l)): Nat := match w returning Nat with
+def first (w: Two): Nat := match w returning Nat with
  | Two.mk a b => Nat.add(eat(a),
      0)
 

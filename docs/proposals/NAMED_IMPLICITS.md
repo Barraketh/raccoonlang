@@ -1,5 +1,13 @@
 # Naming an implicit argument
 
+> **Historical proposal.** This proposal predates removal of Raccoon's
+> `Lifetime` and sort-scope feature. Any lifetime, scope, or `withLease`
+> examples and rules describe the older language, not current behavior. See
+> the [language reference](../language.md) and
+> [kernel reference](../kernel.md). The original source is available from
+> baseline `81759785` with
+> `git show 81759785:docs/proposals/NAMED_IMPLICITS.md`.
+
 Status: **proposal** (2026-10-01), not implemented. A quality-of-life feature for the GPU encoding
 (`gpu/encoding/NOTES.md`, "Readability refactor": the `first`/`rest` wrappers). It is the escape hatch the forced-implicit
 design kept for when projection is not enough: implicit arguments written as source syntax.

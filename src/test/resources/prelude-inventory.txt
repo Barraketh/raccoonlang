@@ -1,11 +1,11 @@
 axioms
-  Quot : {u: Level} -> {S: Lifetime} -> {Sr: Lifetime} -> {Sq: Lifetime} -> (A: Type { level = u, scope = S }) -> (r: { scope = Sr } A -> A -> Prop { scope = Sq }) -> Type { level = u, scope = Lifetime.union(S, Lifetime.union(Sr, Sq)) }
-  Quot.sound : {u: Level} -> {S: Lifetime} -> {Sr: Lifetime} -> {Sq: Lifetime} -> {A: Type { level = u, scope = S }} -> (a: A) -> (b: A) -> (r: { scope = Sr } A -> A -> Prop { scope = Sq }) -> (h: r(a, b)) -> Eq(Quot(A, r), Quot.mk(r, a), Quot.mk(r, b))
+  Quot : {u: Level} -> (A: Type { level = u }) -> (r: A -> A -> Prop) -> Type { level = u }
+  Quot.sound : {u: Level} -> {A: Type { level = u }} -> (a: A) -> (b: A) -> (r: A -> A -> Prop) -> (h: r(a, b)) -> Eq(Quot(A, r), Quot.mk(r, a), Quot.mk(r, b))
 builtins
   Buffer.Native.executeEncoded : (program: List(Nat)) -> (inputs: List(List(Nat))) -> Pair(Nat, List(List(Nat)))
-  Quot.mk : {u: Level} -> {S: Lifetime} -> {Sr: Lifetime} -> {Sq: Lifetime} -> {A: Type { level = u, scope = S }} -> (r: { scope = Sr } A -> A -> Prop { scope = Sq }) -> (a: A) -> Quot(A, r)
-  Quot.lift : {u: Level} -> {v: Level} -> {S: Lifetime} -> {T: Lifetime} -> {Sr: Lifetime} -> {Sq: Lifetime} -> {Sf: Lifetime} -> {Ss: Lifetime} -> {A: Type { level = u, scope = S }} -> {r: { scope = Sr } A -> A -> Prop { scope = Sq }} -> (q: Quot(A, r)) -> (B: Type { level = v, scope = T }) -> (f: { scope = Sf } A -> B) -> (sound: { scope = Ss } (a: A) -> (b: A) -> (h: r(a, b)) -> Eq(B, f(a), f(b))) -> B
-  Quot.ind : {u: Level} -> {S: Lifetime} -> {Sr: Lifetime} -> {Sq: Lifetime} -> {Sm: Lifetime} -> {Sc: Lifetime} -> {Sk: Lifetime} -> {A: Type { level = u, scope = S }} -> {r: { scope = Sr } A -> A -> Prop { scope = Sq }} -> (q: Quot(A, r)) -> (motive: { scope = Sc } (q: Quot(A, r)) -> Prop { scope = Sm }) -> (mk: { scope = Sk } (a: A) -> motive(Quot.mk(r, a))) -> motive(q)
+  Quot.mk : {u: Level} -> {A: Type { level = u }} -> (r: A -> A -> Prop) -> (a: A) -> Quot(A, r)
+  Quot.lift : {u: Level} -> {v: Level} -> {A: Type { level = u }} -> {r: A -> A -> Prop} -> (q: Quot(A, r)) -> (B: Type { level = v }) -> (f: A -> B) -> (sound: (a: A) -> (b: A) -> (h: r(a, b)) -> Eq(B, f(a), f(b))) -> B
+  Quot.ind : {u: Level} -> {A: Type { level = u }} -> {r: A -> A -> Prop} -> (q: Quot(A, r)) -> (motive: (q: Quot(A, r)) -> Prop) -> (mk: (a: A) -> motive(Quot.mk(r, a))) -> motive(q)
 native operations
   Nat.sub
   Nat.add

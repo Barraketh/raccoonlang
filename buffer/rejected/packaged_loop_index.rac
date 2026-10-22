@@ -1,0 +1,16 @@
+import buffer.Program
+
+inductive LoopIndexBox (r: Type): Type { level = Level.one }
+ | pack {frame: Type}(index: Buffer.Val32(r, frame)): LoopIndexBox(r)
+
+def packageLoopIndex {r: Type}{frame: Type}(index: Buffer.Val32(r, frame)): LoopIndexBox(r) :=
+  LoopIndexBox.pack(index)
+
+def usePackagedLoopIndex {r: Type}{frame: Type}
+    (ctx: Buffer.Ctx(r, frame))(packed: LoopIndexBox(r))
+    : Pair(Buffer.Ctx(r, frame), Buffer.Val32(r, frame)) := {
+  match packed returning Pair(Buffer.Ctx(r, frame), Buffer.Val32(r, frame)) with
+  | LoopIndexBox.pack hidden index => Buffer.add32(ctx, index, index)
+}
+
+{ Unit.unit }

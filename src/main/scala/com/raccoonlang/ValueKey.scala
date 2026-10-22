@@ -47,9 +47,7 @@ object ValueKey {
     val SortParameter = 21
     val Large = 22
     val KindTpe = 23
-    val LifetimeTpe = 24
     val Kind = 25
-    val Lifetime = 26
     val NatPrefix = 27
     val Count = 28
   }
@@ -179,7 +177,6 @@ object ValueKey {
 
   val levelTpe: Key = tag(Tag.LevelTpe)
   val kindTpe: Key = tag(Tag.KindTpe)
-  val lifetimeTpe: Key = tag(Tag.LifetimeTpe)
   val sortParameter: Key = tag(Tag.SortParameter)
   val large: Key = tag(Tag.Large)
 
@@ -200,11 +197,9 @@ object ValueKey {
 
   def kind(isLin: Boolean, vars: DepSet): Key = mixVars(mixLong(tag(Tag.Kind), if (isLin) 1L else 0L), vars)
 
-  def lifetime(vars: DepSet): Key = mixVars(tag(Tag.Lifetime), vars)
-
-  /** Every field explicitly: two sorts at one level differ when their kinds or scopes do. */
-  def sort(isProp: Boolean, level: Value.Level, kind: Value.Kind, scope: Value.Lifetime): Key =
-    mixKey(mixKey(mixKey(mixLong(tag(Tag.Sort), if (isProp) 1 else 0), level.key), kind.key), scope.key)
+  /** Every field explicitly: two data sorts at one level differ when their kinds do. */
+  def sort(isProp: Boolean, level: Value.Level, kind: Value.Kind): Key =
+    mixKey(mixKey(mixLong(tag(Tag.Sort), if (isProp) 1 else 0), level.key), kind.key)
 
   def constant(name: String): Key = mixString(tag(Tag.Const), name)
 
@@ -244,14 +239,12 @@ object ValueKey {
   def pi(
       id: Value.ValueId,
       binders: Vector[CoreAst.Binder],
-      closureKind: Value.Kind,
-      closureScope: Value.Lifetime,
-      mentionedScope: Value.Lifetime
+      closureKind: Value.Kind
   ): Key = {
     val modes = binders.foldLeft(mixLong(valueIdKey(tag(Tag.Pi), id), binders.length.toLong)) { (key, binder) =>
       mixLong(key, modeKey(binder.mode))
     }
-    mixKey(mixKey(mixKey(modes, closureKind.key), closureScope.key), mentionedScope.key)
+    mixKey(modes, closureKind.key)
   }
 
   def packed(codec: Value.PackedCodec, payload: Value.PackedPayload, tpe: Value): Key = {

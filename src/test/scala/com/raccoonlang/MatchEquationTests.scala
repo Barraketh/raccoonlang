@@ -274,7 +274,7 @@ class MatchEquationTests extends munit.FunSuite with TestSupport {
     assertEquals(
       emptyEq,
       MatchEquationUnavailable(
-        "the prelude's `Eq` is not a family of three parameters and two indices whose one constructor is `refl`"
+        "the prelude's `Eq` is not a family of two parameters and two indices whose one constructor is `refl`"
       )
     )
     // A prelude's own declarations are checked before it ends, so they name no equation.

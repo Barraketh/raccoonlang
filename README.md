@@ -16,20 +16,18 @@ The implementation favors:
 Raccoon currently provides:
 
 - dependent functions with forced implicit parameters, whose function types
-  and lambdas carry a closure kind and scope, derived for a lambda from what
-  it captures;
+  and lambdas carry a closure kind, derived for a lambda from the kinds of its
+  captures;
 - evidence parameters, `[h: P]`, whose proposition each call discharges by
   evaluating it when the call is checked, and whose proofs are erased when the
   program runs;
-- `Prop { scope = S }` and `Type { level = u, kind = k, scope = S }`, whose
-  universe levels, kinds and lifetimes are second-class parameters of sorts,
-  families and declarations, normalized and compared exactly;
+- singleton `Prop` and `Type { level = u, kind = k }`, whose universe levels
+  and kinds are second-class parameters of sorts, families and declarations,
+  normalized and compared exactly;
 - strictly positive inductive families with parameters and indices, whose
-  declared kind and scope bound what their values hold;
-- `scope l => e`, which opens a fresh lifetime atom that no type's sort may
-  name outside it;
+  declared kind bounds the linearity of their values;
 - linear types: every local of a type whose kind is not `Kind.unr` is used
-  exactly once on every path through its scope, and no type or proof holds one;
+  exactly once on every control-flow path, and no type or proof contains one;
 - dependent, exhaustive pattern matching with an explicit `returning` motive;
 - checking by synthesis and definitional equality: a term's type never depends
   on where it stands;
@@ -44,7 +42,7 @@ Raccoon currently provides:
 - quotients and axioms, which only the trusted prelude (bundled or
   `--prelude`) declares; every definition computes;
 - compact natural-number literals and trusted native natural-number reduction;
-- a bundled prelude that is polymorphic in lifetimes as well as levels.
+- a bundled prelude that is polymorphic in levels and kinds.
 
 ```raccoon
 inductive Vec {u: Level}(A: Type { level = u }) indices (n: Nat)
@@ -77,9 +75,9 @@ The CLI accepts one entry file:
 sbt "run examples/nats.rac"
 ```
 
-`examples/leases/main.rac` imports the module `examples/leases/Lease.rac` and
-shows scoped leases and linear tokens: what a callback may capture and return,
-what may leave a scope, and the variants the checker rejects.
+`examples/leases/main.rac` imports a sealed token module. Its rank-2 opener
+lends one linear read token to the callback, requires that token back, then
+consumes it before returning the callback's result.
 
 The bundled `Init/Prelude.rac` is loaded automatically. A program may end in an
 expression; if it does, the CLI evaluates and prints the result.

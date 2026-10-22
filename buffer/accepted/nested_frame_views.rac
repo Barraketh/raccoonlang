@@ -1,0 +1,39 @@
+import buffer.Program
+import buffer.Access
+
+def nestedFrameViews: Buffer.Result := {
+  let (program, _) := Buffer.build(Nat, fun (r: Type)(ctx: Buffer.Ctx(r, r)): Pair(Buffer.Ctx(r, r), Nat) => {
+    let (withOffset, offset) := Buffer.const64(ctx, 0)
+    let (withOne, one) := Buffer.const32(withOffset, 1)
+    let (withOutput, _) := Buffer.withOutput(withOne, 8, Nat,
+        fun (outputBrand: Type)(output: Buffer.OutputHandle(r, outputBrand))(owner: Buffer.OutputOwn(r, outputBrand))
+            (outputCtx: Buffer.Ctx(r, r)): Pair(Buffer.Ctx(r, r), Nat) => {
+      let (withCount, count) := Buffer.const32(outputCtx, 1)
+      let (afterOuter, returnedOwner) := Buffer.repeat32(withCount, count, Buffer.fixedOutput(output), owner,
+          fun (outer: Type)(outerView: BufferAccess.View(r, outer))(outerIndex: Buffer.Val32(r, outer))
+              (outerCtx: Buffer.Ctx(r, outer))(outerOwner: Buffer.OutputOwn(r, outputBrand))
+              : Pair(Buffer.Ctx(r, outer), Buffer.OutputOwn(r, outputBrand)) => {
+        let innerCount := Buffer.lift32(outerView, count)
+        let (afterInner, innerOwner) := Buffer.repeat32(outerCtx, innerCount, Buffer.fixedOutput(output), outerOwner,
+            fun (inner: Type)(innerView: BufferAccess.View(outer, inner))(innerIndex: Buffer.Val32(r, inner))
+                (innerCtx: Buffer.Ctx(r, inner))(innerOwner: Buffer.OutputOwn(r, outputBrand))
+                : Pair(Buffer.Ctx(r, inner), Buffer.OutputOwn(r, outputBrand)) => {
+          let rootToInner := BufferAccess.compose(outerView, innerView)
+          let rootOne := Buffer.lift32(rootToInner, one)
+          let outerIndexAtInner := Buffer.lift32(innerView, outerIndex)
+          let (combined, sum) := Buffer.add32(innerCtx, rootOne, outerIndexAtInner)
+          let (widened, wideSum) := Buffer.extend32To64(combined, sum)
+          let offsetAtInner := Buffer.lift64(rootToInner, offset)
+          Buffer.store64Output(widened, output, innerOwner, offsetAtInner, wideSum)
+        })
+        (afterInner, innerOwner)
+      })
+      let exported := Buffer.exportOutput(afterOuter, output, returnedOwner)
+      (exported, Nat.zero)
+    })
+    (withOutput, Nat.zero)
+  })
+  Buffer.run(program, List.nil(List(Nat)))
+}
+
+{ nestedFrameViews }

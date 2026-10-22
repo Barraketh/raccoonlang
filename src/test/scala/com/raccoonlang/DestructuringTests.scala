@@ -134,26 +134,26 @@ class DestructuringTests extends munit.FunSuite with TestSupport {
   test("the scrutinee is a use, and each destructured field is tracked by its own kind") {
     val families =
       """
-        |inductive Tok (l: Lifetime) : Type { kind = lin, scope = l }
-        | | mk : Tok(l)
+        |inductive Tok : Type { kind = lin }
+        | | mk : Tok
         |
-        |inductive Two (l: Lifetime) : Type { kind = lin, scope = l }
-        | | mk (a: Tok(l))(b: Tok(l)) : Two(l)
+        |inductive Two : Type { kind = lin }
+        | | mk (a: Tok)(b: Tok) : Two
         |
-        |inductive Nest (l: Lifetime) : Type { kind = lin, scope = l }
-        | | mk (t: Tok(l))(w: Two(l))(n: Nat) : Nest(l)
+        |inductive Nest : Type { kind = lin }
+        | | mk (t: Tok)(w: Two)(n: Nat) : Nest
         |
-        |def eat {l: Lifetime}(t: Tok(l)): Nat := match t returning Nat with
+        |def eat (t: Tok): Nat := match t returning Nat with
         | | Tok.mk => 1
         |
-        |def drop {l: Lifetime}(w: Two(l)): Nat := match w returning Nat with
+        |def drop (w: Two): Nat := match w returning Nat with
         | | Two.mk a b => Nat.add(eat(a), eat(b))
         |""".stripMargin
     def both(body: String): String =
-      families + s"def both {l: Lifetime}(w: Two(l)): Nat := {\n  let (a, b) := w\n  $body\n}\n"
+      families + s"def both (w: Two): Nat := {\n  let (a, b) := w\n  $body\n}\n"
 
     evaluatesTo(
-      both("Nat.add(eat(a), eat(b))") + "{ scope l => both(Two.mk(Tok.mk(l), Tok.mk(l))) }\n",
+      both("Nat.add(eat(a), eat(b))") + "{ both(Two.mk(Tok.mk, Tok.mk)) }\n",
       "2"
     )
     assertEquals(expectOnly[LinearUnused](typecheckDecls(both("eat(a)"))), LinearUnused("b"))
@@ -166,14 +166,14 @@ class DestructuringTests extends munit.FunSuite with TestSupport {
       expectOnly[LinearReused](typecheckDecls(both("Nat.add(eat(a), Nat.add(eat(b), drop(w)))"))),
       LinearReused("w")
     )
-    val wildcard = families + "def first {l: Lifetime}(w: Two(l)): Nat := {\n  let (a, _) := w\n  eat(a)\n}\n"
+    val wildcard = families + "def first (w: Two): Nat := {\n  let (a, _) := w\n  eat(a)\n}\n"
     assertEquals(expectOnly[LinearUnused](typecheckDecls(wildcard)), LinearUnused("_"))
     assert(reportedAt(wildcard).startsWith("_) := w"))
 
     // Through a nesting, each level consumes what it takes apart, and an unrestricted field is not tracked.
     def nest(pattern: String, body: String): String =
       both("Nat.add(eat(a), eat(b))") +
-        s"def all {l: Lifetime}(x: Nest(l)): Nat := {\n  let $pattern := x\n  $body\n}\n"
+        s"def all (x: Nest): Nat := {\n  let $pattern := x\n  $body\n}\n"
     typecheckDecls(nest("(t, (a, b), n)", "Nat.add(eat(t), Nat.add(eat(a), eat(b)))"))
     typecheckDecls(nest("(t, w, _)", "Nat.add(eat(t), both(w))"))
     assertEquals(

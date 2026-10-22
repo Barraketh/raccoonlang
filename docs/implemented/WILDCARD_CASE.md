@@ -29,8 +29,8 @@ code gains the same, for example a function on `Group` that cares about one cons
   wildcard over a constructor with a linear field is `LinearUnused` at the wildcard, as a written `_` would be.
 - **The residual is the expansion.** The checked match has one case per constructor, each with the wildcard's body.
   Evaluation, conversion, the ledger and the termination checker see only written-out cases. Each expanded case's
-  body is a fresh copy of `e`, with fresh node identities and locals, so a `scope` or lambda inside it is a separate
-  term in each case, as in the written-out match.
+  body is a fresh copy of `e`, with fresh node identities and locals, so every
+  nested term in it is separate in each case, as in the written-out match.
 - **Diagnostics name the constructor.** A failure inside an expanded case says which constructor it was checked for.
 
 ## 3. Why it is safe

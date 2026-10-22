@@ -1,10 +1,10 @@
-inductive Tok (l: Lifetime) : Type { kind = lin, scope = l }
- | mk : Tok(l)
+inductive Tok : Type { kind = lin }
+ | mk : Tok
 
-def eat {l: Lifetime}(t: Tok(l)): Nat := match t returning Nat with
+def eat (t: Tok): Nat := match t returning Nat with
  | Tok.mk => 0
 
-def pick {l: Lifetime}(b: Bool)(t: Tok(l)): Nat := match b returning Nat with
+def pick (b: Bool)(t: Tok): Nat := match b returning Nat with
  | Bool.true => eat(t)
  | Bool.false => 0
 

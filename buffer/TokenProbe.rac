@@ -1,22 +1,24 @@
 import buffer.Program
+import buffer.Access
 
 def incrementProgram: Buffer.Program := {
-  let (program, _) := Buffer.build(Nat, fun (r: Lifetime)(ctx: Buffer.Ctx(r, r)): Pair(Buffer.Ctx(r, r), Nat) => {
+  let (program, _) := Buffer.build(Nat, fun (r: Type)(ctx: Buffer.Ctx(r, r)): Pair(Buffer.Ctx(r, r), Nat) => {
     let (afterInput, _) := Buffer.withInput(ctx, 1, Nat,
-        fun (inputLife: Lifetime)(input: Buffer.InputHandle(r, inputLife))(inputCtx: Buffer.Ctx(r, inputLife))
-            : Pair(Buffer.Ctx(r, inputLife), Nat) => {
+        fun (inputBrand: Type)(input: Buffer.InputHandle(r, inputBrand))(inputCtx: Buffer.Ctx(r, r))
+            : Pair(Buffer.Ctx(r, r), Nat) => {
       let (afterOutput, _) := Buffer.withOutput(inputCtx, 1, Nat,
-          fun (outputLife: Lifetime)(output: Buffer.OutputHandle(r, outputLife))(owner: Buffer.OutputOwn(r, outputLife))
-              (outputCtx: Buffer.Ctx(r, outputLife)): Pair(Buffer.Ctx(r, outputLife), Nat) => {
+          fun (outputBrand: Type)(output: Buffer.OutputHandle(r, outputBrand))(owner: Buffer.OutputOwn(r, outputBrand))
+              (outputCtx: Buffer.Ctx(r, r)): Pair(Buffer.Ctx(r, r), Nat) => {
         let (withOffset, _) := Buffer.const64(outputCtx, 0)
         let (withOne, one) := Buffer.const32(withOffset, 1)
         let (loopCtx, finalOwner) := Buffer.repeat32(withOne, one, Buffer.fixedOutput(output), owner,
-            fun (bodyLife: Lifetime)(index: Buffer.Val32(r, bodyLife))(bodyCtx: Buffer.Ctx(r, bodyLife))
-                (bodyOwner: Buffer.OutputOwn(r, outputLife))
-                : Pair(Buffer.Ctx(r, bodyLife), Buffer.OutputOwn(r, outputLife)) => {
+            fun (frame: Type)(view: BufferAccess.View(r, frame))(index: Buffer.Val32(r, frame))
+                (bodyCtx: Buffer.Ctx(r, frame))(bodyOwner: Buffer.OutputOwn(r, outputBrand))
+                : Pair(Buffer.Ctx(r, frame), Buffer.OutputOwn(r, outputBrand)) => {
+              let bodyOne := Buffer.lift32(view, one)
               let (at, offset) := Buffer.extend32To64(bodyCtx, index)
               let (loaded, byte) := Buffer.load8Input(at, input, offset)
-              let (added, incremented) := Buffer.add32(loaded, byte, one)
+              let (added, incremented) := Buffer.add32(loaded, byte, bodyOne)
               Buffer.store8Output(added, output, bodyOwner, offset, incremented)
             })
         let finished := Buffer.exportOutput(loopCtx, output, finalOwner)

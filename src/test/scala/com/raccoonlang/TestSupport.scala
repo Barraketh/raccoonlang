@@ -111,28 +111,15 @@ object TestSupport {
    */
   val FixtureStack: Long = 4L << 20
 
-  /**
-   * The sealed Lease and Tok capabilities of spec §5.1 and `withLease` of spec §4.4, with the module's helpers, which
-   * alone make and consume them: `issue` mints a token for a lease's holder, in the lease's lifetime, and `burn`
-   * consumes one.
-   */
-  val leaseModule: String =
+  /** A sealed linear token and its public issue/consume helpers for sealing and ledger tests. */
+  val tokenModule: String =
     """
-      |sealed inductive Lease (l: Lifetime) : Type { scope = l }
-      | | mk : Lease(l)
+      |sealed inductive Tok : Type { kind = lin }
+      | | mk : Tok
       |
-      |sealed inductive Tok (l: Lifetime) : Type { kind = lin, scope = l }
-      | | mk : Tok(l)
+      |def issue (u: Unit): Tok := Tok.mk
       |
-      |def withLease {k: Kind}{S: Lifetime}{A: Type { kind = k, scope = S }}{kf: Kind}{Sf: Lifetime}
-      |    (f: { kind = kf, scope = Sf } (l: Lifetime) -> Lease(l) -> A): A :=
-      |  scope l => f(l, Lease.mk(l))
-      |
-      |def issue {l: Lifetime}(h: Lease(l)): Tok(l) := Tok.mk(l)
-      |
-      |def useLease {l: Lifetime}(h: Lease(l)): Nat := 2
-      |
-      |def burn {l: Lifetime}(t: Tok(l)): Nat := match t returning Nat with
+      |def burn (t: Tok): Nat := match t returning Nat with
       | | .mk => 1
       |""".stripMargin
 

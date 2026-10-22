@@ -1,10 +1,10 @@
-inductive Tok (l: Lifetime) : Type { kind = lin, scope = l }
- | mk : Tok(l)
+inductive Tok : Type { kind = lin }
+ | mk : Tok
 
-def eat {l: Lifetime}(t: Tok(l)): Nat := match t returning Nat with
+def eat (t: Tok): Nat := match t returning Nat with
  | Tok.mk => 0
 
-def twice {l: Lifetime}(t: Tok(l)): Nat := {
+def twice (t: Tok): Nat := {
   let delayed := fun (u: Unit): Nat => eat(t)
   Nat.add(delayed(Unit.unit), delayed(Unit.unit))
 }

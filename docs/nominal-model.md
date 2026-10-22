@@ -16,13 +16,13 @@ designated labels. U_n is a set in V_{n+1}, although U_n is not in V_n. Every el
 
 Use pairwise disjoint finite tags in labels:
 
-* Type universe: (Type, n, normalized-kind, normalized-scope), extension U_n.
-* Prop sort: a separate Prop tag with scope, extension the two truth values. It is data at Type_0; an individual
+* Type universe: (Type, n, normalized-kind), extension U_n.
+* Prop sort: a separate Prop tag, extension the two truth values. It is data at Type_0; an individual
   proposition is a truth value, without a nominal family label.
-* Type-valued Pi: (Pi, binder-group modes and count, closure kind, closure scope, mentioned scope, interpreted domain
+* Type-valued Pi: (Pi, binder-group modes and count, closure kind, interpreted domain
   telescope, interpreted codomain family). Domain/codomain components are semantic values, not source identities.
 * Type family instance F(a): (Family, declaration identity F, full semantic argument tuple a). Include phantom
-  arguments, level/kind/lifetime parameters, and dependent proof arguments modulo proof irrelevance.
+  arguments, level/kind parameters, and dependent proof arguments modulo proof irrelevance.
 * Quot: a separate primitive label may be used, but no nominal principle is asserted for it or for arbitrary
   axiomatically supplied types.
 
@@ -70,7 +70,7 @@ syntactic condition for Small_n, not a test that the entire extension of T lies 
    telescope argument. A universe in domain position is charged by its classifier (succ m), not by m; this is why Type_0
    -> Type_0 fails at level zero.
 4. Other typed T: its classifier level <= n gives El(T) in V_n, and transitivity yields every element in V_n.
-5. Level/kind/lifetime parameters are kernel annotations, not object types; their valuations are natural levels and
+5. Level/kind parameters are kernel annotations, not object types; their valuations are natural levels and
    bounded finite normalized annotations, which fit every V_n. They must be exempt from TypeChecker.getUniverse, not
    mistaken for large data domains.
 
@@ -98,11 +98,10 @@ types at the universe in which a Type family instance is compared.
   quotient classes get equal labels. Value keys are an implementation optimization and never enter semantic labels. The
   existing fixed-width-hash equality shortcut is a pre-existing implementation proof gap, explicitly outside this
   repair; key assertions are empirical validation and do not establish mathematical collision freedom.
-* Kinds/scopes can share universe extensions while distinct universe annotation labels distinguish them. Erasing usage
-  discipline is enough for consistency; this model does not by itself prove linear resource preservation or lifetime
-  confinement. Lifetime variables are interpreted by valuations; unequal open normal forms may still coincide after
-  substitution, so they do not provide apartness. Keep the existing T1–T5 trusted-prelude obligations and no
-  lifetime/kind refutations.
+* Kinds can share universe extensions while distinct universe annotation labels distinguish them. Erasing usage
+  discipline is enough for consistency; this model does not by itself prove linear resource preservation. Kind
+  variables are interpreted by valuations; unequal open normal forms may still coincide after substitution, so they do
+  not provide apartness. Keep the trusted-prelude obligations and do not add kind refutations.
 * Sealing restricts eliminator access and does not alter denotation or nominal principles. Only the prelude's sealing
   obligation prevents abstract inhabitants; it is independent of logical consistency.
 * A universe-polymorphic declaration denotes a metatheoretic family indexed by level valuations. Level quantification is
@@ -193,7 +192,7 @@ Value cases and the preceding-field context. The proof uses the fact that all im
 elaborated, provisional current-block constructors are unavailable, and only the cases below can consume a dependent
 local. It does not assert that `doesNotOccur`'s bare Var case examines its type.
 
-* **VSort and annotations:** fixed grades/kinds/scopes are constructor-checked; a certified positive parameter is
+* **VSort and annotations:** fixed levels/kinds are constructor-checked; a certified positive parameter is
   forbidden in the declared sort. A sort-valued variable is a fixed Type/Prop argument. If a field itself stores an
   arbitrary universe value, its candidate domain is the whole smaller U_m at grade >= succ(m), not a rho-selected
   recursive carrier. Ordinary family data cannot be used as a sort: its declared family type is not a universe former.
@@ -216,7 +215,7 @@ local. It does not assert that `doesNotOccur`'s bare Var case examines its type.
 * **VPi:** freshen the telescope and apply the induction at every candidate argument. Every domain is checked
   `doesNotOccur`; the codomain is checked positive. A following domain depending on a positive earlier binder is also a
   domain of this same Pi and therefore checked, not only the initial domain. Proof domains whose truth depends on rho
-  are negative as domains and rejected. Fixed lifetime domains are unchanged under valuations at this point. These facts
+  are negative as domains and rejected. Fixed type-parameter domains are unchanged under valuations at this point. These facts
   give exactly A3's fixed-domain premise.
 * **InductiveFamilyValue:** direct current-block applications become slots and must keep the common parameter prefix and
   nonrecursive index expressions. Earlier-family applications use only final certified positive *parameter* slots; all
@@ -445,8 +444,8 @@ accepted Nonempty example is modeled without a new language restriction.
 This is an informal written relative-consistency construction for the stated calculus and an audited consistent prelude.
 Its proof premises are the explicit typed positivity/declaration rules; absence of a contradiction discovered in testing
 is not evidence for them. A future mechanical fundamental lemma would have to formalize these derivations and the match
-equations. The construction does not establish operational canonicity, resource preservation, lifetime confinement, all
-trusted-prelude obligations or every implementation shortcut. The two-Long ValueKey equal-hash shortcut is a
+equations. The construction does not establish operational canonicity, resource preservation, all trusted-prelude
+obligations or every implementation shortcut. The two-Long ValueKey equal-hash shortcut is a
 pre-existing implementation gap outside the repair; no collision-free hashing axiom is added. Constructor exclusions
 now require local refutations checked by the ordinary typechecker, using a conservative constructor-hypothesis
 schema and private checked proof helpers. The N1–N3 premise factory instantiates the principles justified here; its

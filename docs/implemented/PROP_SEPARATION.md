@@ -41,14 +41,13 @@ generically fails when run at a `Prop` instance, because an implicit read throug
 Two sort formers, both keywords:
 
 ```text
-Type { level = e, kind = k, scope = S }   // data: level e, kind k, scope S; each field optional
-Prop { scope = S }                        // propositions: scope S; no level, no kind
+Type { level = e, kind = k }   // data: level e and kind k; each field optional
+Prop                            // propositions: no level or kind
 ```
 
-- `Type`'s omitted fields are `level = Level.zero`, `kind = Kind.unr`, `scope = Lifetime.empty`. So `Type` alone is
+- `Type`'s omitted fields are `level = Level.zero` and `kind = Kind.unr`. So `Type` alone is
   today's `Type` (`Sort { level = Level.one }`), renumbered: **data levels start at zero**.
-- `Prop` takes only `scope`. A `level` or `kind` field on `Prop` is a parse error: a proposition's proofs are always
-  unrestricted.
+- `Prop` has no fields. A `level` or `kind` field on it is a parse error: a proposition's proofs are always unrestricted.
 - `Sort` is no longer a keyword. Every `Sort { level = e }` in today's sources becomes `Type { level = e′ }` (§6.2).
 - Levels: `Level.zero`, `Level.one`, `Level.succ(e)`, `Level.max(e, e)` and variables. `Level.imax` is removed: it
   existed only to let a function type's level be zero when its codomain is.
@@ -57,8 +56,8 @@ Typing of sorts:
 
 | Sort | Its type |
 |---|---|
-| `Prop { scope = S }` | `Type { scope = S }` |
-| `Type { level = e, kind = k, scope = S }` | `Type { level = succ(e), scope = S }` |
+| `Prop` | `Type` |
+| `Type { level = e, kind = k }` | `Type { level = succ(e) }` |
 
 `Prop` is a type (at level zero), so `Eq(Prop, P, Q)` and `P : Prop` binders are unchanged.
 
@@ -66,11 +65,10 @@ Typing of sorts:
 
 A function type's sort is decided by its codomain's sort, which is known when the type is formed:
 
-- **Codomain in `Prop`:** the function type is in `Prop { scope = … }`, whatever its domain (impredicativity). Its
-  closure kind must be `Kind.unr`. Its scope is computed as today.
-- **Codomain in `Type { level = b }`:** the function type is in `Type { level = max(a, b), kind = …, scope = … }`,
-  where `a` is the domain's level, or `Level.zero` when the domain is a proposition. Kind and scope are computed as
-  today.
+- **Codomain in `Prop`:** the function type is in `Prop`, whatever its domain (impredicativity). Its closure kind must
+  be `Kind.unr`.
+- **Codomain in `Type { level = b }`:** the function type is in `Type { level = max(a, b), kind = … }`, where `a` is
+  the domain's level, or `Level.zero` when the domain is a proposition. Its kind is the written closure kind.
 
 There is no conditional level: the "imax fold" over binder groups (`Interpreter.piClassifierFromChecked`), the cache
 of classifications that cannot flip (`stablePiPropClassification`) and the per-instance `VPi.isPropValued` become one
@@ -111,7 +109,7 @@ proposition" gets a two-valued answer that no later substitution changes, so re-
 became zero, and the check/run gap of §1, cannot arise. (Re-canonicalizing a proof whose *proposition* sharpens, such
 as `Eq.refl` reconstructed once its sides resolve, stays.)
 
-New in the kernel (~60–100 lines): the `Prop` sort value (a scope only; keys and printing mix in the tag; `Prop` against
+New in the kernel (~60–100 lines): the `Prop` sort value (keys and printing mix in the tag; `Prop` against
 `Type` is stuck in unification, never linked), the `Prop` sort term in parser and elaborator, the function-type rule
 of §3, the field rule of §4, and implicit projection of a level from a sort failing cleanly on `Prop`, which has none.
 

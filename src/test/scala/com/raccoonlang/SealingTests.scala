@@ -6,7 +6,7 @@ package com.raccoonlang
  * declarations once inside the module, appended to it, and once outside it, in an entry file that imports it.
  */
 class SealingTests extends munit.FunSuite with TestSupport {
-  import TestSupport.leaseModule
+  import TestSupport.tokenModule
 
   /**
    * A sealed struct with a module-made value, an unsealed family indexed by it, and a module definition that forces an
@@ -107,7 +107,7 @@ class SealingTests extends munit.FunSuite with TestSupport {
     // Apartness of the sealed constructor's fields prunes the only branch, and the family's kind makes a Tok linear.
     outside(sealedBox, "def apart (h: Eq(Box, box(1), box(2))): Nat := match h returning Nat with\n")
     assertEquals(
-      expectOnly[LinearUnused](outside(leaseModule, "def drop {l: Lifetime}(t: Tok(l)): Nat := 0\n")),
+      expectOnly[LinearUnused](outside(tokenModule, "def drop (t: Tok): Nat := 0\n")),
       LinearUnused("t")
     )
   }
@@ -124,17 +124,14 @@ class SealingTests extends munit.FunSuite with TestSupport {
     expectOnly[SealedConstructor](outside(sealedBox, eta))
   }
 
-  test("sealed Lease and Tok are made only by their module, whose helpers any module may call") {
-    val callers =
-      """
-        |def unscoped : Nat := withLease(fun (l: Lifetime)(h: Lease(l)): Nat => 0)
-        |def burned : Nat := withLease(fun (l: Lifetime)(h: Lease(l)): Nat => burn(issue(h)))
-        |{ Nat.add(unscoped, burned) }
-        |""".stripMargin
-    assertEquals(outside(leaseModule, callers).map(PrettyPrinter.print), Some("1"))
-    val mint = "def mint {l: Lifetime}(h: Lease(l)): Nat := burn(Tok.mk(l))\n"
-    sealedUse(leaseModule, mint, SealedConstructor("Tok", Some("Tok.mk")))
-    val consume = "def eat {l: Lifetime}(t: Tok(l)): Nat := match t returning Nat with\n | .mk => 0\n"
-    sealedUse(leaseModule, consume, SealedConstructor("Tok", None))
+  test("a sealed linear token is made only by its module, whose helpers any module may call") {
+    assertEquals(
+      outside(tokenModule, "{ burn(issue(Unit.unit)) }\n").map(PrettyPrinter.print),
+      Some("1")
+    )
+    val mint = "def mint (u: Unit): Tok := Tok.mk\n"
+    sealedUse(tokenModule, mint, SealedConstructor("Tok", Some("Tok.mk")))
+    val consume = "def eat (t: Tok): Nat := match t returning Nat with\n | .mk => 0\n"
+    sealedUse(tokenModule, consume, SealedConstructor("Tok", None))
   }
 }

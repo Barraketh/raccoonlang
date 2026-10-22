@@ -11,7 +11,7 @@ package com.raccoonlang
 // never mention them. A lambda's derived closure field is likewise empty until the checker derives it.
 // `Match.wildcard` exists only before checking, which expands it (MatchChecker).
 //
-// A Pi, lambda, match and `scope` carry their node identity (NodeId) as a field of their own, with no default: whoever
+// A Pi, lambda and match carry their node identity (NodeId) as a field of their own, with no default: whoever
 // makes one of these nodes allocates it a fresh identity, and whoever rebuilds one, as the checker does with its
 // residual, keeps the identity of the node it rebuilds (docs/kernel.md#value-identity).
 
@@ -85,7 +85,7 @@ object CoreAst {
     // Projection: base[field]
     final case class Select(base: Term, field: String, span: Span) extends Term
 
-    // Pi { kind = k, scope = S } (x: A) -> B x
+    // Pi { kind = k } (x: A) -> B x
     //
     // No classifier field: a Pi's universe is env-dependent (level-polymorphic binder types), so it is derived at
     // evaluation time (Interpreter.piClassifier), never baked in. `knownPropValued` is only a checker-filled cache of
@@ -135,12 +135,11 @@ object CoreAst {
     final case class Body(lets: Vector[Let], res: Term, span: Span) extends Term
 
     /**
-     * A data sort at `level`, `kind` and `scope`. `Type` defaults to `Level.zero`, and an omitted `kind` or `scope` to
-     * `Kind.unr` or `Lifetime.empty`.
+     * A data sort at `level` and `kind`. `Type` defaults to `Level.zero` and `Kind.unr`.
      */
-    final case class Sort(level: Term, kind: Term, scope: Term, span: Span) extends Term
+    final case class Sort(level: Term, kind: Term, span: Span) extends Term
 
-    final case class Prop(scope: Term, span: Span) extends Term
+    final case class Prop(span: Span) extends Term
 
     /** A sort parameter's form applied to all of its arguments, as `Level.succ(u)`; a nullary form has none. */
     final case class FormOp(form: Form, args: Vector[Term], span: Span) extends Term {
@@ -172,13 +171,6 @@ object CoreAst {
     }
 
     /**
-     * `scope l => body` (spec §4.1): `ref` denotes the atom this term opens, which its node identity names (Atoms), in
-     * checking and evaluation alike. A residual keeps the term's node identity, so re-evaluating it opens the same
-     * atom.
-     */
-    final case class Scope(ref: CoreAst.LocalRef, body: Term, span: Span, id: NodeId) extends Term
-
-    /**
      * A match's cases, then its wildcard case if it has one. Checking expands a wildcard into the cases it stands for,
      * so a residual has none. `equation` is the local every case binds after its fields to the equation between the
      * scrutinee and the case's constructor applied to them, where `match h : e` names it
@@ -198,23 +190,16 @@ object CoreAst {
 
   }
 
-  /**
-   * A function type's or lambda's closure (spec §1): its kind, how its values may be applied, and its scope, what they
-   * hold. A written function type has no body to derive a closure from, so an omitted field of one is the least,
-   * `Kind.unr` or `Lifetime.empty`; what its code captures is its mentioned scope, not its closure.
-   */
-  final case class Closure(kind: ClosureField, scope: ClosureField) {
-    def terms: Vector[Term] = Vector(kind, scope).flatMap(_.term)
+  /** A function type's or lambda's closure kind: how its values may be applied. */
+  final case class Closure(kind: ClosureField) {
+    def terms: Vector[Term] = kind.term.toVector
   }
 
   object Closure {
 
     /** The closure of a function type that writes none, and of every declaration's own type (spec §3.3). */
     def unrestricted(span: Span): Closure =
-      Closure(
-        ClosureField.Written(Term.FormOp(Form.KindUnr, Vector.empty, span)),
-        ClosureField.Written(Term.FormOp(Form.LifetimeEmpty, Vector.empty, span))
-      )
+      Closure(ClosureField.Written(Term.FormOp(Form.KindUnr, Vector.empty, span)))
   }
 
   sealed trait ClosureField {
@@ -233,9 +218,9 @@ object CoreAst {
 
     /**
      * A lambda's omitted field as checked (spec §8): the captures it is derived from. Evaluation reads them where the
-     * lambda stands and derives the field from their types' sorts (spec §4.3). A capture that contributes `Kind.unr` or
-     * `Lifetime.empty` to the field as checking saw it is left out, since every instantiation keeps that. The captures
-     * are among the lambda's body refs, so the lambda's own closure env binds them; they are not subterms of its type.
+     * lambda stands and derives the field from their types' sorts. A capture that contributes `Kind.unr` to the field
+     * as checking saw it is left out, since every instantiation keeps that. The captures are among the lambda's body
+     * refs, so the lambda's own closure env binds them; they are not subterms of its type.
      */
     final case class Derived(captures: Vector[LocalRef]) extends ClosureField {
       override def term: Option[Term] = None
@@ -253,9 +238,7 @@ object CoreAst {
   object Parameter {
     case object Level extends Parameter("Level")
     case object Kind extends Parameter("Kind")
-    case object Lifetime extends Parameter("Lifetime")
-
-    val all: Vector[Parameter] = Vector(Level, Kind, Lifetime)
+    val all: Vector[Parameter] = Vector(Level, Kind)
   }
 
   /**
@@ -275,9 +258,6 @@ object CoreAst {
     case object KindUnr extends Form(Parameter.Kind, "unr", 0)
     case object KindLin extends Form(Parameter.Kind, "lin", 0)
     case object KindJoin extends Form(Parameter.Kind, "join", 2)
-    case object LifetimeEmpty extends Form(Parameter.Lifetime, "empty", 0)
-    case object LifetimeUnion extends Form(Parameter.Lifetime, "union", 2)
-
     val all: Vector[Form] =
       Vector(
         LevelZero,
@@ -286,9 +266,7 @@ object CoreAst {
         LevelMax,
         KindUnr,
         KindLin,
-        KindJoin,
-        LifetimeEmpty,
-        LifetimeUnion
+        KindJoin
       )
   }
 
@@ -304,15 +282,14 @@ object CoreAst {
       case _: Term.GlobalRef | _: Term.LocalRef | _: Term.NatLit | _: Term.StrLit =>
         Vector.empty
       case Term.Select(base, _, _)                 => Vector(base)
-      case Term.Sort(level, kind, scope, _)        => Vector(level, kind, scope)
-      case Term.Prop(scope, _)                     => Vector(scope)
+      case Term.Sort(level, kind, _)               => Vector(level, kind)
+      case Term.Prop(_)                            => Vector.empty
       case Term.FormOp(_, args, _)                 => args
       case Term.App(fn, args, evidence, _)         => (fn +: args) ++ evidence
       case Term.Pi(binders, out, closure, _, _, _) => closure.terms ++ binders.map(_.ty) :+ out
       case Term.Body(lets, res, _) =>
         lets.flatMap(let => let.ty.toVector :+ let.value) :+ res
       case Term.Lam(ty, body, _, _, _, _, _) => Vector(ty, body)
-      case Term.Scope(_, body, _, _)         => Vector(body)
       case Term.Match(scrut, motive, cases, wildcard, _, _, _) =>
         Vector(scrut, motive) ++ cases.map(_.body) ++ wildcard.map(_.body)
     }
@@ -348,10 +325,10 @@ object CoreAst {
 
   /**
    * The term written out again: the same syntax, with a fresh node identity for every node that carries one and a fresh
-   * local for every local it binds, its references renamed to match. It shares no identity with `term`, so its
-   * closures, stuck matches and `scope` atoms are its own (docs/kernel.md#value-identity); the locals it mentions
-   * without binding are kept. `term` is elaborated, not checked: it has no derived closure or recursive peer table. A
-   * wildcard's expansion copies its body for each case it stands for (MatchChecker).
+   * local for every local it binds, its references renamed to match. It shares no identity with `term`, so its closures
+   * and stuck matches are its own (docs/kernel.md#value-identity); the locals it mentions without binding are kept.
+   * `term` is elaborated, not checked: it has no derived closure or recursive peer table. A wildcard's expansion copies
+   * its body for each case it stands for (MatchChecker).
    */
   private[raccoonlang] def freshCopy(term: Term): Term = {
     // Local ids are unique to their binder, so one renaming serves the whole term. Each binder is renamed before its
@@ -371,7 +348,7 @@ object CoreAst {
       }
     // A function type's closure stands outside its binders; each binder's type sees the binders before it.
     def pi(written: Term.Pi): Term.Pi = {
-      val closure = Closure(field(written.closure.kind), field(written.closure.scope))
+      val closure = Closure(field(written.closure.kind))
       val binders = written.binders.map { binder =>
         val ty = copy(binder.ty)
         binder.copy(localRef = bind(binder.localRef), ty = ty)
@@ -388,12 +365,12 @@ object CoreAst {
         case _: Term.GlobalRef | _: Term.NatLit | _: Term.StrLit => term
         case Term.LocalRef(ref, span)                            => Term.LocalRef(local(ref), span)
         case Term.Select(base, name, span)                       => Term.Select(copy(base), name, span)
-        case Term.Sort(level, kind, scope, span) => Term.Sort(copy(level), copy(kind), copy(scope), span)
-        case Term.Prop(scope, span)              => Term.Prop(copy(scope), span)
-        case Term.FormOp(form, args, span)       => Term.FormOp(form, args.map(copy), span)
-        case Term.App(fn, args, evidence, span)  => Term.App(copy(fn), args.map(copy), evidence.map(copy), span)
-        case written: Term.Pi                    => pi(written)
-        case Term.Body(lets, res, span)          =>
+        case Term.Sort(level, kind, span)                        => Term.Sort(copy(level), copy(kind), span)
+        case Term.Prop(span)                                     => Term.Prop(span)
+        case Term.FormOp(form, args, span)                       => Term.FormOp(form, args.map(copy), span)
+        case Term.App(fn, args, evidence, span) => Term.App(copy(fn), args.map(copy), evidence.map(copy), span)
+        case written: Term.Pi                   => pi(written)
+        case Term.Body(lets, res, span)         =>
           // A let's value and type stand outside what it binds.
           val copied = lets.map { let =>
             val (ty, value) = (let.ty.map(copy), copy(let.value))
@@ -410,9 +387,6 @@ object CoreAst {
           val recursion = lam.recursion.map(r => Recursion(bind(r.selfRef), decreases(r.decreases)))
           if (lam.recursivePeers.nonEmpty) wtf("A fresh copy of a checked lambda")
           Term.Lam(ty, copy(lam.body), lam.span, NodeId.fresh(), lam.name, recursion)
-        case Term.Scope(ref, body, span, _) =>
-          val fresh = bind(ref)
-          Term.Scope(fresh, copy(body), span, NodeId.fresh())
         case Term.Match(scrut, motive, cases, wildcard, equation, span, _) =>
           val (copiedScrut, copiedMotive) = (copy(scrut), copy(motive))
           val copiedEquation = equation.map(v => PatternVar(bind(v.ref), v.span))

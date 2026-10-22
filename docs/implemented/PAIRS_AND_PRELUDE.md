@@ -43,11 +43,7 @@ keeps these. They are audited, not checked:
 - **T3 Linearity.** A builtin uses each argument whose type is linear, or at a
   kind variable, exactly once on every path. No axiom takes or yields such a
   value, since an axiom has no body to account for it.
-- **T4 Lifetimes.** No axiom makes two distinct lifetimes, or two instances of
-  a family at distinct lifetime arguments, provably equal. No two lifetimes are
-  apart, so such an equation is consistent, yet refinement along it links a
-  lifetime variable and lets a token leave its scope.
-- **T5 Native equations.** Each native operation's declared body agrees with
+- **T4 Native equations.** Each native operation's declared body agrees with
   its host equation, as today.
 
 T1 subsumes nothing: a consistent axiom can still break T2–T4.
@@ -58,13 +54,11 @@ T1 subsumes nothing: a consistent axiom can still break T2–T4.
   `ReservedKernelName`), and only its declarations receive native operations
   and native literal layouts;
 - a native literal layout refuses a sealed family;
-- no prelude declaration's type names an atom, since `LifetimeEscapes` already
-  refuses a global whose type does. The bundled prelude's "every declaration at
-  `Lifetime.empty`, a lifetime variable or a union of them" is a consequence,
-  not a rule.
+- sort annotations contain only universe levels and kinds; the language has no
+  lifetime or scope annotation to audit.
 
-**1.4 The inventory test.** The conformance walk in `PreludeLifetimeTests` is
-replaced by a golden inventory of the bundled prelude's trusted surface: every
+**1.4 The inventory test.** `PreludeInventoryTests` records a golden inventory
+of the bundled prelude's trusted surface: every
 axiom and builtin with its type, every native operation, every native literal
 layout, and every sealed family. Changing any of them changes the golden file,
 so the change is reviewed against §1.2. The bundled prelude's inventory is
@@ -82,17 +76,17 @@ sections restate the bans; each is rewritten to cite §1.2 instead.
 **2.1 Declaration.** The bundled prelude declares:
 
 ```raccoon
-inductive Pair {u: Level}{v: Level}{k1: Kind}{k2: Kind}{S: Lifetime}{T: Lifetime}
-    (A: Type { level = u, kind = k1, scope = S })(B: Type { level = v, kind = k2, scope = T })
-    : Type { level = max(u, v), kind = join(k1, k2), scope = union(S, T) }
+inductive Pair {u: Level}{v: Level}{k1: Kind}{k2: Kind}
+    (A: Type { level = u, kind = k1 })(B: Type { level = v, kind = k2 })
+    : Type { level = max(u, v), kind = join(k1, k2) }
  | mk (fst: A)(snd: B) : Pair(A, B)
 ```
 
-An instance is at the kind and scope its components give it:
-`Pair(Tok(l), Nat)` is at `Type { kind = lin, scope = l }`,
+An instance is at the kind its components give it:
+`Pair(Token(brand), Nat)` is at `Type { kind = lin }`,
 `Pair(Nat, Bool)` at `Type`, and `Pair(Type, Type)` at
 `Type { level = one }`. Every implicit is forced from the constructor's fields,
-so `Pair.mk(a, b)` writes neither the types nor their kinds, levels or scopes.
+so `Pair.mk(a, b)` writes neither the types nor their kinds or levels.
 
 **2.2 Why a new family.** `Prod` is unchanged. Made kind-polymorphic, it would
 lose its selectors: `Prod.fst` binds `snd` and drops it, which is
@@ -306,7 +300,7 @@ those:
    cannot redeclare a prelude name (`AlreadyDefined`), so the families named
    `Pair` today are renamed: 19 declarations across 8 test files,
    `examples/universe_polymorphic_vec.rac`, the `struct` example in
-   `docs/language.md`, and the lifetime-indexed example of
+   `docs/language.md`, and the former scope-indexed example of
    `docs/implemented/LEMUR_ON_RACCOON.md` §6.2 and §7.3.
 2. **Levels.** `Pair` is level-polymorphic in `Type`, as §2.1 declares, and
    holds types at any level. That declaration checks on today's kernel as a

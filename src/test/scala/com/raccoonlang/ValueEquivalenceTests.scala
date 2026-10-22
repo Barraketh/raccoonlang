@@ -11,7 +11,7 @@ class ValueEquivalenceTests extends munit.FunSuite with TestSupport {
   private val binderRef = CoreAst.LocalRef(0, "x")
   private val binder = CoreAst.Binder(binderRef, typeSort, Span(0, 0), CoreAst.BinderSite.Function, BinderMode.Explicit)
   private val env = Env.empty
-  private val typeToTypeClassifier = Sorts.sort(Level.succ(Level.one), Value.Kind.unr, Value.Lifetime.empty)
+  private val typeToTypeClassifier = Sorts.sort(Level.succ(Level.one), Value.Kind.unr)
 
   private def parseBody(source: String): CoreAst.Term =
     LanguageParser.parseProgram(source) match {
@@ -31,8 +31,6 @@ class ValueEquivalenceTests extends munit.FunSuite with TestSupport {
       Vector(binder),
       out,
       Value.Kind.unr,
-      Value.Lifetime.empty,
-      Value.Lifetime.empty,
       deps(captures: _*),
       ValueId.LocalId(id, captures),
       () => typeToTypeClassifier,
@@ -40,8 +38,8 @@ class ValueEquivalenceTests extends munit.FunSuite with TestSupport {
     )
 
   test("sorts compare only by conversion, never structurally") {
-    assert(ValueEquivalence.defEq(Sorts.sort(Level.zero, Value.Kind.unr, Value.Lifetime.empty), Sorts.Type))
-    intercept[InternalError](Sorts.Type == Sorts.sort(Level.one, Value.Kind.unr, Value.Lifetime.empty))
+    assert(ValueEquivalence.defEq(Sorts.sort(Level.zero, Value.Kind.unr), Sorts.Type))
+    intercept[InternalError](Sorts.Type == Sorts.sort(Level.one, Value.Kind.unr))
     intercept[InternalError](Sorts.Prop.hashCode())
   }
 
@@ -66,24 +64,23 @@ class ValueEquivalenceTests extends munit.FunSuite with TestSupport {
     assert(ValueEquivalence.tryUnify(left, right, meta).isLeft)
   }
 
-  test("Pi definitional equality compares what the function types' code captures") {
-    val m = FreshVar.freshValue("m", LifetimeTpe)._2.asInstanceOf[Value.Lifetime]
-    def at(mentioned: Value.Lifetime): VPi =
+  test("Pi definitional equality and keys include the closure kind") {
+    val kind = FreshVar.freshValue("k", KindTpe)._2.asInstanceOf[Value.Kind]
+    def at(closureKind: Value.Kind): VPi =
       VPi(
         env,
         Vector(binder),
         _ => Sorts.Type,
-        Value.Kind.unr,
-        Value.Lifetime.empty,
-        mentioned,
-        mentioned.synDeps,
+        closureKind,
+        closureKind.synDeps,
         ValueId.LocalId(NodeId.fresh(), Vector.empty),
         () => typeToTypeClassifier,
         isPropValued = false
       )
+
     assert(ValueEquivalence.keyAssertionsEnabled)
-    assert(ValueEquivalence.defEq(at(m), at(m)))
-    assert(!ValueEquivalence.defEq(at(m), at(Value.Lifetime.empty)))
+    assert(ValueEquivalence.defEq(at(kind), at(kind)))
+    assert(!ValueEquivalence.defEq(at(kind), at(Value.Kind.unr)))
   }
 
   test("Pi definitional equality distinguishes telescope grouping") {
@@ -94,8 +91,6 @@ class ValueEquivalenceTests extends munit.FunSuite with TestSupport {
       Vector(binder, yBinder),
       _ => Sorts.Type,
       Value.Kind.unr,
-      Value.Lifetime.empty,
-      Value.Lifetime.empty,
       DepSet.empty,
       ValueId.LocalId(NodeId.fresh(), Vector.empty),
       () => typeToTypeClassifier,
@@ -110,16 +105,12 @@ class ValueEquivalenceTests extends munit.FunSuite with TestSupport {
           Vector(yBinder),
           _ => Sorts.Type,
           Value.Kind.unr,
-          Value.Lifetime.empty,
-          Value.Lifetime.empty,
           DepSet.empty,
           ValueId.LocalId(NodeId.fresh(), Vector.empty),
           () => typeToTypeClassifier,
           isPropValued = false
         ),
       Value.Kind.unr,
-      Value.Lifetime.empty,
-      Value.Lifetime.empty,
       DepSet.empty,
       ValueId.LocalId(NodeId.fresh(), Vector.empty),
       () => typeToTypeClassifier,
@@ -146,16 +137,12 @@ class ValueEquivalenceTests extends munit.FunSuite with TestSupport {
           Vector(yBinder),
           _ => Sorts.Type,
           Value.Kind.unr,
-          Value.Lifetime.empty,
-          Value.Lifetime.empty,
           DepSet.empty,
           ValueId.LocalId(NodeId.fresh(), Vector.empty),
           () => typeToTypeClassifier,
           isPropValued = false
         ),
       Value.Kind.unr,
-      Value.Lifetime.empty,
-      Value.Lifetime.empty,
       DepSet.empty,
       ValueId.LocalId(NodeId.fresh(), Vector.empty),
       () => typeToTypeClassifier,
@@ -330,7 +317,7 @@ class ValueEquivalenceTests extends munit.FunSuite with TestSupport {
     val toType = pi(Vector.empty, _ => Sorts.Type, shared)
     assertEquals(toProp.key, toType.key)
     val list = Prelude.default.checkedEnv("List")
-    def listOf(elem: Value): Value = Interpreter.evalApply(list, Vector(Level.succ(Level.one), Lifetime.empty, elem))
+    def listOf(elem: Value): Value = Interpreter.evalApply(list, Vector(Level.succ(Level.one), elem))
     val (left, right) = (listOf(toProp), listOf(toType))
     assertEquals(left.key, right.key)
 

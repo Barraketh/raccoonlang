@@ -914,20 +914,20 @@ object Packed {
       case _                             => false
     }
     val exactTelescope =
-      source.tpe.binders.length == 5 &&
+      source.tpe.binders.length == 4 &&
         source.tpe.binders.map(_.mode) ==
-        Vector(BinderMode.Implicit, BinderMode.Implicit, BinderMode.Implicit, BinderMode.Explicit, BinderMode.Explicit)
+        Vector(BinderMode.Implicit, BinderMode.Implicit, BinderMode.Explicit, BinderMode.Explicit)
     (exactIdentity, exactTelescope, source.body) match {
       case (true, true, LamBody.Core(term, _))
-          if term.ty.binders.length == 5 && term.recursivePeers.length == 1 && term.recursion.exists { recursion =>
+          if term.ty.binders.length == 4 && term.recursivePeers.length == 1 && term.recursion.exists { recursion =>
             term.recursivePeers == Vector(recursion.selfRef -> ListAppendName) &&
             (recursion.decreases match {
-              case CoreAst.DecreaseSpec.Lexicographic(Vector(ref), _) => ref == term.ty.binders(3).localRef
+              case CoreAst.DecreaseSpec.Lexicographic(Vector(ref), _) => ref == term.ty.binders(2).localRef
               case _                                                  => false
             })
           } =>
-        val xs = term.ty.binders(3).localRef
-        val ys = term.ty.binders(4).localRef
+        val xs = term.ty.binders(2).localRef
+        val ys = term.ty.binders(3).localRef
         val self = term.recursion.get.selfRef
         stripEmptyBodies(term.body) match {
           case CoreAst.Term.Match(

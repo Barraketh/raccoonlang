@@ -137,21 +137,20 @@ class UnifiedEvaluatorTests extends munit.FunSuite with TestSupport {
     val term = CTerm.Sort(
       CTerm.NatLit(BigInt(1), span),
       CTerm.GlobalRef("missingKind", span),
-      CTerm.GlobalRef("missingLifetime", span),
       span
     )
     val error = intercept[InternalError](Interpreter.evalTerm(term, fn.tpe.env))
     assert(error.getMessage.contains("non-level"))
   }
 
-  test("Sort validates the kind before its lifetime in both atomic and framed evaluation") {
+  test("Sort validates the kind in both atomic and framed evaluation") {
     val env = identity.tpe.env
     val zero = CTerm.FormOp(CoreAst.Form.LevelZero, Vector.empty, span)
-    val atomic = CTerm.Sort(zero, zero, zero, span)
+    val atomic = CTerm.Sort(zero, zero, span)
     val atomicError = intercept[InternalError](Interpreter.evalTerm(atomic, env))
     assert(atomicError.getMessage.contains("non-kind"))
 
-    val framed = CTerm.Sort(zero, CTerm.NatLit(BigInt(1), span), CTerm.GlobalRef("missingLifetime", span), span)
+    val framed = CTerm.Sort(zero, CTerm.NatLit(BigInt(1), span), span)
     val framedError = intercept[InternalError](Interpreter.evalTerm(framed, env))
     assert(framedError.getMessage.contains("non-kind"))
   }
@@ -190,12 +189,12 @@ class UnifiedEvaluatorTests extends munit.FunSuite with TestSupport {
     )
   }
 
-  test("boxed raw Core restores lexical environments through nested let, scope, match and tail call") {
+  test("boxed raw Core restores lexical environments through nested let, match and tail call") {
     val fn = runProgram(
       """def identity (x: Nat): Nat := x
         |def run (x: Nat): Nat := {
         |  let y := Nat.add(x, 1)
-        |  scope s => {
+        |  {
         |    match Nat.beq(x, 3) returning Nat with
         |    | Bool.true => {
         |      let z := Nat.add(y, 2)
@@ -216,16 +215,22 @@ class UnifiedEvaluatorTests extends munit.FunSuite with TestSupport {
     assertEquals(Interpreter.evalApply(boxed, Vector(three)).key, six.key)
   }
 
-  test("boxed sibling scopes release a reused local before the next argument") {
+  test("boxed sibling let frames release a reused local before the next argument") {
     val fn = identity
     val core = fn.body.asInstanceOf[Value.LamBody.Core]
     val shared = CoreAst.LocalRef(900003, "shared")
-    val first = CTerm.Scope(shared, CTerm.NatLit(BigInt(1), span), span, NodeId.fresh())
-    val second = CTerm.Scope(shared, CTerm.NatLit(BigInt(2), span), span, NodeId.fresh())
+    def localBody(value: BigInt): CTerm.Body =
+      CTerm.Body(
+        Vector(CoreAst.Let(CoreAst.LetPattern.Local(shared), None, CTerm.NatLit(value, span), span)),
+        CTerm.LocalRef(shared, span),
+        span
+      )
+    val first = localBody(1)
+    val second = localBody(2)
     val body = CTerm.App(CTerm.GlobalRef("Nat.add", span), Vector(first, second), Vector.empty, span)
     val fast = fn.copy(body = core.copy(term = core.term.copy(body = body)))
     val boxed =
-      fn.copy(body = core.copy(term = core.term.copy(ty = core.term.ty.copy(knownPropValued = None), body = body)))
+      fast.copy(body = core.copy(term = core.term.copy(ty = core.term.ty.copy(knownPropValued = None), body = body)))
     val zero = Value.VPacked.nat(BigInt(0), fn.tpe.env("Nat"))
     val three = Value.VPacked.nat(BigInt(3), fn.tpe.env("Nat"))
     assertEquals(Interpreter.evalApply(fast, Vector(zero)).key, three.key)

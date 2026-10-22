@@ -196,7 +196,7 @@ class NativeBufferBuiltinsTests extends munit.FunSuite with TestSupport {
   test("a List family with a changed value kind is rejected at the native bridge declaration boundary") {
     val original = env("List").asInstanceOf[VConst]
     val pi = original.tpe.asInstanceOf[VPi]
-    val changedClassifier = Sorts.sort(Value.Level.zero, Kind.lin, Lifetime.empty)
+    val changedClassifier = Sorts.sort(Value.Level.zero, Kind.lin)
     val changedPi = pi.copy(codomain = _ => changedClassifier)
     val changedList = VConst("List", original.constType, changedPi)
     val alteredEnv = env.copy(globals = env.globals.updated("List", GlobalBinding.Strict(changedList)))

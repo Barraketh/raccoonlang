@@ -100,8 +100,8 @@ object InductiveChecks {
               case LamBody.ProofEta                => true
             })
 
-          case _: ConstructorHead | _: Level | _: Kind | _: Lifetime | _: ParameterTpe | SortParameter | Large |
-              _: VSort | _: Var | _: VConst =>
+          case _: ConstructorHead | _: Level | _: Kind | _: ParameterTpe | SortParameter | Large | _: VSort | _: Var |
+              _: VConst =>
             true
 
           case deferred: DeferredEvidence => deferred.escaped
@@ -141,8 +141,8 @@ object InductiveChecks {
                 args.forall(arg => absent(arg.tpe)) && positive(Interpreter.evalApply(lam, args))
             }
 
-          case _: ConstructorHead | _: Level | _: Kind | _: Lifetime | _: ParameterTpe | SortParameter | Large |
-              _: VSort | _: Var | _: VConst =>
+          case _: ConstructorHead | _: Level | _: Kind | _: ParameterTpe | SortParameter | Large | _: VSort | _: Var |
+              _: VConst =>
             true
 
           case deferred: DeferredEvidence => deferred.escaped
@@ -177,8 +177,8 @@ object InductiveChecks {
 
           case prefix: VNatPrefix => absent(prefix.base) && absent(prefix.tpe)
 
-          case _: ConstructorHead | _: Level | _: Kind | _: Lifetime | _: ParameterTpe | SortParameter | Large |
-              _: VSort | _: Var | _: VConst =>
+          case _: ConstructorHead | _: Level | _: Kind | _: ParameterTpe | SortParameter | Large | _: VSort | _: Var |
+              _: VConst =>
             !value.synDeps.contains(id)
 
           case deferred: DeferredEvidence => deferred.escaped
@@ -218,8 +218,8 @@ object InductiveChecks {
                 args.forall(arg => absent(arg.tpe)) && positive(Interpreter.evalApply(lam, args))
             }
 
-          case _: ConstructorHead | _: Level | _: Kind | _: Lifetime | _: ParameterTpe | SortParameter | Large |
-              _: VSort | _: Var | _: VConst =>
+          case _: ConstructorHead | _: Level | _: Kind | _: ParameterTpe | SortParameter | Large | _: VSort | _: Var |
+              _: VConst =>
             true
 
           case deferred: DeferredEvidence => deferred.escaped
@@ -271,8 +271,8 @@ object InductiveChecks {
 
           case VConst(name, Inductive(_), _) if blockNames(name) => false
 
-          case _: ConstructorHead | _: Level | _: Kind | _: Lifetime | _: ParameterTpe | SortParameter | Large |
-              _: VSort | _: Var | _: VConst =>
+          case _: ConstructorHead | _: Level | _: Kind | _: ParameterTpe | SortParameter | Large | _: VSort | _: Var |
+              _: VConst =>
             true
 
           case deferred: DeferredEvidence => deferred.escaped
@@ -525,13 +525,6 @@ object InductiveChecks {
           if (!Level.leq(required, declaredSort.level))
             at(binder.span) { fail(FamilyArgumentTooLarge(decl.header.name, binder.name, required)) }
         }
-      // spec §5.1: the declared scope may mention only the family's parameters, and it names each lifetime parameter,
-      // so it is exactly their union.
-      Sorts.requireNamesLifetimeParameters(
-        s"Family ${decl.header.name}",
-        declaredSort.scope,
-        decl.header.binders.zip(familyArgs)
-      )
       FamilySignature(decl, familyType, declaredSort, familyArgs)
     }
   }
@@ -675,8 +668,7 @@ object InductiveChecks {
             fail(InductiveUniverseTooSmall(name, fieldName, field.tpe, fieldSort.level, constructorUniverse.level))
           }
         // Kind bound (spec §5.1), Prop families included: the declared kind, never derived, contains each field's. A
-        // sibling's field is read by its declared sort, so no fixed point is needed. The field's scope lies within the
-        // declared scope by construction (see checkFamilySignatures).
+        // sibling's field is read by its declared sort, so no fixed point is needed.
         Sorts.requireContains(
           Sorts.KindField,
           s"Family $name",

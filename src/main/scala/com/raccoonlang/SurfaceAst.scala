@@ -43,10 +43,10 @@ object SurfaceAst {
     final case class Select(base: Term, field: String, span: Span) extends Term
 
     /**
-     * Pi `{ kind = k, scope = S } (x: A) -> B x`. An unparenthesised arrow chain is ONE binder group: `(a: A) -> (b: B)
-     * -> C` carries both binders here. Grouping is part of a function type's identity, so a parenthesised Pi in body
-     * position — `(a: A) -> ((b: B) -> C)` — is a nested, separate 1-ary Pi and stays its own node. The closure
-     * prefixes the whole group.
+     * Pi `{ kind = k } (x: A) -> B x`. An unparenthesised arrow chain is ONE binder group: `(a: A) -> (b: B) -> C`
+     * carries both binders here. Grouping is part of a function type's identity, so a parenthesised Pi in body position
+     * — `(a: A) -> ((b: B) -> C)` — is a nested, separate 1-ary Pi and stays its own node. The closure prefixes the
+     * whole group.
      */
     final case class Pi(closure: Closure, binders: Vector[Binder], body: Term, span: Span) extends Term
 
@@ -62,10 +62,10 @@ object SurfaceAst {
     final case class Pair(fst: Term, snd: Term, span: Span) extends Term
 
     /**
-     * A sort former: `Type` with optional level, kind and scope, or `Prop` with only a scope. The fields are the fields
-     * written, if any.
+     * A sort former: `Type` with optional level and kind, or `Prop` with no fields. The fields are the fields written,
+     * if any.
      */
-    final case class Sort(level: SortLevel, kind: Option[Term], scope: Option[Term], span: Span) extends Term
+    final case class Sort(level: SortLevel, kind: Option[Term], span: Span) extends Term
 
     sealed trait SortLevel
     object SortLevel {
@@ -74,11 +74,8 @@ object SurfaceAst {
       final case class Written(level: Term) extends SortLevel
     }
 
-    // Lambda: fun { kind = k, scope = S } (x : A)(y: B): B => body
+    // Lambda: fun { kind = k } (x : A)(y: B): B => body
     final case class Lam(closure: Closure, header: FuncHeader, body: Term, span: Span) extends Term
-
-    // Scope: scope l => body
-    final case class Scope(name: String, body: Term, span: Span) extends Term
 
     /**
      * A match's cases, then its wildcard case if it has one, which is always its last. `match h : e` names its equation
@@ -142,12 +139,12 @@ object SurfaceAst {
   }
 
   /**
-   * A function type's or lambda's closure, as written: its `kind` and `scope` fields, either of which may be omitted.
+   * A function type's or lambda's closure, as written: its `kind` field, which may be omitted.
    */
-  final case class Closure(kind: Option[Term], scope: Option[Term])
+  final case class Closure(kind: Option[Term])
 
   object Closure {
-    val omitted: Closure = Closure(None, None)
+    val omitted: Closure = Closure(None)
   }
 
   case class Binder(name: String, ty: Term, span: Span, mode: BinderMode)

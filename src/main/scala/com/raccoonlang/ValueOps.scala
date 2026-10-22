@@ -76,7 +76,6 @@ object ValueOps {
         case _: ParameterTpe | SortParameter | Large => resolved
         case level: Level                            => materializeParameter(level)
         case kind: Kind                              => materializeParameter(kind)
-        case lifetime: Lifetime                      => materializeParameter(lifetime)
         case sort: VSort                             => materializeClassifier(sort)
         case Var(name, id, tpe)                      => Var(name, id, materialize(tpe))
         case VConst(name, constType, tpe)            => VConst(name, constType, materialize(tpe))
@@ -141,7 +140,7 @@ object ValueOps {
     private def mayNeedMaterialization(value: Value): Boolean =
       value.synDeps.intersects(eqStore.solvedIds)
 
-    /** A level, kind or lifetime, which resolves to a normal form of the same sort parameter. */
+    /** A level or kind, which resolves to a normal form of the same sort parameter. */
     private def materializeParameter[P <: Value: ClassTag](parameter: P): P =
       Interpreter.resolveInEqStore(parameter, this) match {
         case normal: P => normal
@@ -152,13 +151,8 @@ object ValueOps {
       classifier match {
         case sort: VSort =>
           if (mayNeedMaterialization(sort))
-            if (Sorts.isProp(sort)) Sorts.prop(materializeParameter(sort.scope))
-            else
-              Sorts.sort(
-                materializeParameter(sort.level),
-                materializeParameter(sort.kind),
-                materializeParameter(sort.scope)
-              )
+            if (Sorts.isProp(sort)) Sorts.Prop
+            else Sorts.sort(materializeParameter(sort.level), materializeParameter(sort.kind))
           else sort
         case Large => Large
       }
@@ -170,8 +164,6 @@ object ValueOps {
       pi.copy(
         env = materializeEnv(pi.env),
         closureKind = materializeParameter(pi.closureKind),
-        closureScope = materializeParameter(pi.closureScope),
-        mentionedScope = materializeParameter(pi.mentionedScope),
         synDeps = materializeDeps(pi.synDeps),
         id = materializeId(pi.id),
         classifier0 = () => ValueOps.materializeClassifier(originalPi.tpe, store)

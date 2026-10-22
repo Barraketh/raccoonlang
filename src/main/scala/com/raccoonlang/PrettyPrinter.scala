@@ -84,19 +84,18 @@ object PrettyPrinter {
   private def printSort(
       former: String,
       level: Option[Piece],
-      kind: Option[Piece],
-      scope: Option[Piece]
+      kind: Option[Piece]
   ): Vector[Piece] = {
-    val fields = fieldList(level.map("level" -> _).toVector ++ kind.map("kind" -> _) ++ scope.map("scope" -> _))
+    val fields = fieldList(level.map("level" -> _).toVector ++ kind.map("kind" -> _))
     if (fields.isEmpty) Vector(Text(former)) else Text(s"$former ") +: fields
   }
 
   /**
-   * A closure prefix: the fields that are not `Kind.unr` or `Lifetime.empty`, with a trailing space, or nothing. A
-   * lambda's derived field prints as the expression the checker derived, once it has.
+   * A closure prefix: the kind field when it is not `Kind.unr`, with a trailing space, or nothing. A lambda's derived
+   * field prints as the expression the checker derived, once it has.
    */
-  private def printClosure(kind: Option[Piece], scope: Option[Piece]): Vector[Piece] = {
-    val fields = fieldList(kind.map("kind" -> _).toVector ++ scope.map("scope" -> _))
+  private def printClosure(kind: Option[Piece]): Vector[Piece] = {
+    val fields = fieldList(kind.map("kind" -> _).toVector)
     if (fields.isEmpty) Vector.empty else fields :+ Text(" ")
   }
 
@@ -198,8 +197,7 @@ object PrettyPrinter {
       case _: CoreAst.Term.NatLit | _: CoreAst.Term.StrLit | _: CoreAst.Term.Ref | _: CoreAst.Term.App |
           _: CoreAst.Term.Select | _: CoreAst.Term.Sort | _: CoreAst.Term.Prop | _: CoreAst.Term.FormOp =>
         Vector(term(t))
-      case _: CoreAst.Term.Lam | _: CoreAst.Term.Scope | _: CoreAst.Term.Match | _: CoreAst.Term.Body |
-          _: CoreAst.Term.Pi =>
+      case _: CoreAst.Term.Lam | _: CoreAst.Term.Match | _: CoreAst.Term.Body | _: CoreAst.Term.Pi =>
         parens(term(t))
     }
 
@@ -221,7 +219,6 @@ object PrettyPrinter {
         val decrease = recursion.toVector.flatMap(r => Text(" ") +: printDecreaseSpec(r.decreases))
         (Text("fun ") +: printCoreClosure(ty.closure)) ++ printBinders(ty.binders) ++
           Vector(Text(": "), term(ty.out)) ++ decrease ++ Vector(Text(" => "), term(body))
-      case CoreAst.Term.Scope(ref, body, _, _) => Vector(Text(s"scope ${ref.name} => "), term(body))
       case m: CoreAst.Term.Match               => printMatch(m)
       case b: CoreAst.Term.Body                => printBody(b)
       case CoreAst.Term.Select(base, field, _) => printTermAtom(base) :+ Text(s"[$field]")
@@ -233,26 +230,21 @@ object PrettyPrinter {
       case CoreAst.Term.Pi(binders, out, closure, _, _, _) =>
         val bindersPieces = separated(binders.map(b => Later(() => printPiBinder(b))), " -> ")
         printCoreClosure(closure) ++ bindersPieces ++ (Text(" -> ") +: printCodomain(out))
-      case CoreAst.Term.Sort(level, kind, scope, _) =>
+      case CoreAst.Term.Sort(level, kind, _) =>
         val former = "Type"
         val levelField = Option.unless(isForm(level, CoreAst.Form.LevelZero))(term(level))
         printSort(
           former,
           levelField,
-          Option.unless(isForm(kind, CoreAst.Form.KindUnr))(term(kind)),
-          Option.unless(isForm(scope, CoreAst.Form.LifetimeEmpty))(term(scope))
+          Option.unless(isForm(kind, CoreAst.Form.KindUnr))(term(kind))
         )
-      case CoreAst.Term.Prop(scope, _) =>
-        printSort("Prop", None, None, Option.unless(isForm(scope, CoreAst.Form.LifetimeEmpty))(term(scope)))
+      case CoreAst.Term.Prop(_) => printSort("Prop", None, None)
       case CoreAst.Term.FormOp(form, args, _) =>
         Text(form.qualifiedName) +: (if (args.isEmpty) Vector.empty else argList(args.map(term)))
     }
 
     private def printCoreClosure(closure: CoreAst.Closure): Vector[Piece] =
-      printClosure(
-        closure.kind.term.filterNot(isForm(_, CoreAst.Form.KindUnr)).map(term),
-        closure.scope.term.filterNot(isForm(_, CoreAst.Form.LifetimeEmpty)).map(term)
-      )
+      printClosure(closure.kind.term.filterNot(isForm(_, CoreAst.Form.KindUnr)).map(term))
 
     private def printCase(c: CoreAst.Case): Vector[Piece] = {
       val argNames = c.argRefs.map(_.name)
@@ -302,10 +294,6 @@ object PrettyPrinter {
     if (kind.isLin) "Kind.lin"
     else joined(kind.vars, "k", "Kind.unr", "Kind.join")
 
-  /** A lifetime as source syntax; an atom prints as its `scope` binder (spec §4.1). */
-  private def printLifetime(lifetime: Value.Lifetime): String =
-    joined(lifetime.vars, "l", "Lifetime.empty", "Lifetime.union")
-
   /** The variables joined by `form`, nested to the left, `form(form(a, b), c)`, or `empty` when there are none. */
   private def joined(vars: DepSet, prefix: String, empty: String, form: String): String = {
     val names = Vector.newBuilder[String]
@@ -320,8 +308,7 @@ object PrettyPrinter {
   }
 
   /**
-   * A variable of a sort parameter, or an atom, prints as its binder's name, as a `Var` does; only one bound by `_`
-   * prints by id.
+   * A variable of a sort parameter prints as its binder's name, as a `Var` does; only one bound by `_` prints by id.
    */
   private def printParameterVar(id: Value.VarId, prefix: String): String =
     FreshVar.parameterName(id).filter(name => name.nonEmpty && name != "_").getOrElse(s"$prefix#$id")
@@ -335,8 +322,7 @@ object PrettyPrinter {
     val syntax = new SyntaxPrinter(pi.env.locals.get)
     val binders = separated(pi.binders.map(b => Later(() => syntax.printPiBinder(b))), " -> ")
     val closure = printClosure(
-      Option.unless(pi.closureKind.isUnr)(Text(printKind(pi.closureKind))),
-      Option.unless(pi.closureScope.isEmpty)(Text(printLifetime(pi.closureScope)))
+      Option.unless(pi.closureKind.isUnr)(Text(printKind(pi.closureKind)))
     )
     closure ++ binders ++ Vector(Text(" -> "), Later(() => printCodomain(pi.codomain(bodyEnv))))
   }
@@ -479,15 +465,9 @@ object PrettyPrinter {
           if (Sorts.isProp(sort)) ("Prop", None)
           else if (sort.level == Value.Level.zero) ("Type", None)
           else ("Type", Some(Later(() => printLevel(sort.level))))
-        printSort(
-          former,
-          levelField,
-          Option.unless(sort.kind.isUnr)(Text(printKind(sort.kind))),
-          Option.unless(sort.scope.isEmpty)(Text(printLifetime(sort.scope)))
-        )
+        printSort(former, levelField, Option.unless(sort.kind.isUnr)(Text(printKind(sort.kind))))
       case level: Value.Level                      => printLevel(level)
       case kind: Value.Kind                        => Vector(Text(printKind(kind)))
-      case lifetime: Value.Lifetime                => Vector(Text(printLifetime(lifetime)))
       case pi: Value.VPi                           => printPi(pi)
       case Value.VConst(name, _, _)                => Vector(Text(name))
       case Value.ConstructorHead(name, _, _, _, _) => Vector(Text(name))
@@ -518,7 +498,6 @@ object PrettyPrinter {
         else Vector(Text("Nat.add("), Val(p.base), Text(s", ${p.offset})"))
       case Value.LevelTpe      => Vector(Text(CoreAst.Parameter.Level.name))
       case Value.KindTpe       => Vector(Text(CoreAst.Parameter.Kind.name))
-      case Value.LifetimeTpe   => Vector(Text(CoreAst.Parameter.Lifetime.name))
       case Value.SortParameter => Vector(Text("SortParameter"))
       case Value.Large         => Vector(Text("Large"))
     }

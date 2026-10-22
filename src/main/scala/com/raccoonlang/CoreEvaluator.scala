@@ -39,14 +39,13 @@ private[raccoonlang] object CoreEvaluator {
   private final case class Branch(source: CoreAst.Case, body: Node, slots: Vector[Int])
   private final case class PiValue(term: CTerm.Pi, scope: Scope) extends Node
   private final case class LambdaValue(term: CTerm.Lam, scope: Scope) extends Node
-  private final case class Scoped(term: CTerm.Scope, body: Node, slot: Int, scope: Scope) extends Node
-  private final case class Proposition(scopeTerm: Node, scope: Scope) extends Node
+  private case object Proposition extends Node {
+    override val scope: Scope = Scope(Vector.empty, Vector.empty, Map.empty)
+  }
   private final case class SortValue(
       level: Node,
       kind: Node,
-      lifetime: Node,
       levelSlot: Int,
-      kindSlot: Int,
       scope: Scope
   ) extends Node
   private final case class FormValue(form: CoreAst.Form, args: Vector[Node], start: Int, scope: Scope) extends Node
@@ -184,20 +183,13 @@ private[raccoonlang] object CoreEvaluator {
             Matching(m, scrut, branches, scope)
           case pi: CTerm.Pi   => PiValue(pi, scope)
           case lam: CTerm.Lam => LambdaValue(lam, scope)
-          case s: CTerm.Scope =>
-            noteBindings(Vector(s.ref), scope)
-            val (inner, slots) = scope.bind(Vector(s.ref), () => allocate())
-            Scoped(s, node(s.body, inner, tail), slots.head, scope)
-          case CTerm.Prop(lifetime, _) => Proposition(node(lifetime, scope, tail = false), scope)
-          case CTerm.Sort(level, kind, lifetime, _) =>
+          case CTerm.Prop(_)  => Proposition
+          case CTerm.Sort(level, kind, _) =>
             val levelSlot = allocate()
-            val kindSlot = allocate()
             SortValue(
               node(level, scope, tail = false),
               node(kind, scope, tail = false),
-              node(lifetime, scope, tail = false),
               levelSlot,
-              kindSlot,
               scope
             )
           case CTerm.FormOp(form, args, _) =>
@@ -269,18 +261,12 @@ private[raccoonlang] object CoreEvaluator {
       case CTerm.GlobalRef(name, _) => nullaryConstructor(env(name))
       case CTerm.FormOp(form, args, _) if args.isEmpty =>
         Interpreter.evalFormOp(form, Vector.empty)
-      case CTerm.Prop(CTerm.FormOp(form, args, _), _) if args.isEmpty =>
-        Sorts.prop(Interpreter.getLifetime(Interpreter.evalFormOp(form, Vector.empty)))
-      case CTerm.Sort(
-            CTerm.FormOp(levelForm, levelArgs, _),
-            CTerm.FormOp(kindForm, kindArgs, _),
-            CTerm.FormOp(lifetimeForm, lifetimeArgs, _),
-            _
-          ) if levelArgs.isEmpty && kindArgs.isEmpty && lifetimeArgs.isEmpty =>
+      case CTerm.Prop(_) => Sorts.Prop
+      case CTerm.Sort(CTerm.FormOp(levelForm, levelArgs, _), CTerm.FormOp(kindForm, kindArgs, _), _)
+          if levelArgs.isEmpty && kindArgs.isEmpty =>
         val level = Interpreter.getLevel(Interpreter.evalFormOp(levelForm, Vector.empty))
         val kind = Interpreter.getKind(Interpreter.evalFormOp(kindForm, Vector.empty))
-        val lifetime = Interpreter.getLifetime(Interpreter.evalFormOp(lifetimeForm, Vector.empty))
-        Sorts.sort(level, kind, lifetime)
+        Sorts.sort(level, kind)
       case _ => runtime.get().withSession(_.runTerm(term, env))
     }
   def evalApply(fn: Value, args: Vector[Value]): Value = runtime.get().withSession(_.runApply(fn, args, null))
@@ -357,10 +343,8 @@ private[raccoonlang] object CoreEvaluator {
     private val LetValue = 3
     private val MatchScrutinee = 4
     private val Return = 5
-    private val PropLifetime = 6
     private val SortLevel = 7
     private val SortKind = 8
-    private val SortLifetime = 9
     private val FormArgument = 10
     private val RestoreEnv = 11
 
@@ -742,20 +726,8 @@ private[raccoonlang] object CoreEvaluator {
               result = Interpreter.evalLam(term, Interpreter.evalPi(term.ty, env), env)
               localNatType = null
               localBig = null
-            case Scoped(term, body, slot, _) =>
-              if (current.boxed) {
-                push(RestoreEnv, null)
-                savedEnvs(depth - 1) = current.env
-                current.env = current.env.putLocal(term.ref, Atoms.of(term))
-              } else bind(current.base + slot, Atoms.of(term))
-              pc = body
-              result = null
-              localNatType = null
-              localBig = null
-            case p: Proposition =>
-              push(PropLifetime, p)
-              pc = p.scopeTerm
-              result = null
+            case Proposition =>
+              result = Sorts.Prop
               localNatType = null
               localBig = null
             case s: SortValue =>
@@ -934,12 +906,6 @@ private[raccoonlang] object CoreEvaluator {
                 case RestoreEnv =>
                   current.env = savedEnvs(depth)
                   savedEnvs(depth) = null
-                case PropLifetime =>
-                  if ((localNatType ne null) && (result eq null))
-                    result = VPacked.nat(if (localBig eq null) BigInt(localLong) else localBig, localNatType)
-                  result = Sorts.prop(Interpreter.getLifetime(result))
-                  localNatType = null
-                  localBig = null
                 case SortLevel =>
                   val sort = node.asInstanceOf[SortValue]
                   if ((localNatType ne null) && (result eq null))
@@ -954,18 +920,9 @@ private[raccoonlang] object CoreEvaluator {
                   if ((localNatType ne null) && (result eq null))
                     result = VPacked.nat(if (localBig eq null) BigInt(localLong) else localBig, localNatType)
                   Interpreter.getKind(result)
-                  writeValue(current.base + sort.kindSlot, result)
-                  push(SortLifetime, sort)
-                  pc = sort.lifetime
-                  continue = false
-                case SortLifetime =>
-                  val sort = node.asInstanceOf[SortValue]
-                  if ((localNatType ne null) && (result eq null))
-                    result = VPacked.nat(if (localBig eq null) BigInt(localLong) else localBig, localNatType)
                   result = Sorts.sort(
                     Interpreter.getLevel(readValue(current.base + sort.levelSlot)),
-                    Interpreter.getKind(readValue(current.base + sort.kindSlot)),
-                    Interpreter.getLifetime(result)
+                    Interpreter.getKind(result)
                   )
                   localNatType = null
                   localBig = null

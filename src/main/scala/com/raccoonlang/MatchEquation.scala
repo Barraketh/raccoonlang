@@ -19,49 +19,49 @@ object MatchEquation {
 
   /**
    * The prelude's `Eq` if it is exactly the equality family the bundled prelude declares,
-   * `{u: Level}{S: Lifetime}(A: Type { level = u, scope = S }) indices (x: A)(y: A) : Prop { scope = S }`, unsealed,
-   * whose one constructor is `Eq.refl (x: A) : Eq(A, x, x)`, and otherwise why a named equation is unavailable.
+   * `{u: Level}(A: Type { level = u }) indices (x: A)(y: A) : Prop`, unsealed, whose one constructor is
+   * `Eq.refl (x: A) : Eq(A, x, x)`, and otherwise why a named equation is unavailable.
    */
   private[raccoonlang] def validate(env: Env): Either[String, ValidatedEquality] = {
     def global(name: String): Option[Value] = env.globals.get(name).map(_.value(env))
     def require(holds: Boolean, reason: String): Either[String, Unit] = Either.cond(holds, (), reason)
-    val modes = Vector(BinderMode.Implicit, BinderMode.Implicit) ++ Vector.fill(3)(BinderMode.Explicit)
+    val modes = Vector(BinderMode.Implicit) ++ Vector.fill(3)(BinderMode.Explicit)
     for {
       family <- global(familyName).toRight("the prelude declares no `Eq`")
       meta <- family match {
         case VConst(`familyName`, Inductive(meta), _)
-            if meta.familyArity == 5 && meta.block.key.numParams == 3 && meta.constructorNames == Vector(reflName) =>
+            if meta.familyArity == 4 && meta.block.key.numParams == 2 && meta.constructorNames == Vector(reflName) =>
           Right(meta)
         case _ =>
-          Left("the prelude's `Eq` is not a family of three parameters and two indices whose one constructor is `refl`")
+          Left("the prelude's `Eq` is not a family of two parameters and two indices whose one constructor is `refl`")
       }
       _ <- require(meta.seal.isEmpty, "the prelude's `Eq` is sealed")
       pi <- family.tpe match {
         case pi: VPi if pi.binders.map(_.mode) == modes => Right(pi)
-        case _ => Left("the prelude's `Eq` does not bind `{u}{S}(A)(x)(y)` in one group")
+        case _ => Left("the prelude's `Eq` does not bind `{u}(A)(x)(y)` in one group")
       }
       fresh = BinderOps.freshen(pi)
-      (params, indices) = pi.binders.map(binder => fresh(binder.localRef)).splitAt(3)
+      (params, indices) = pi.binders.map(binder => fresh(binder.localRef)).splitAt(2)
       sortParams <- params match {
-        case Vector(level: Level, scope: Lifetime, a) => Right((level, scope, a))
-        case _ => Left("the prelude's `Eq` does not bind `{u: Level}{S: Lifetime}`")
+        case Vector(level: Level, a) => Right((level, a))
+        case _                       => Left("the prelude's `Eq` does not bind `{u: Level}`")
       }
-      (level, scope, a) = sortParams
+      (level, a) = sortParams
       _ <- require(
-        ValueEquivalence.defEq(a.tpe, Sorts.sort(level, Kind.unr, scope)),
-        "the prelude's `Eq` does not range over `A: Type { level = u, scope = S }`"
+        ValueEquivalence.defEq(a.tpe, Sorts.sort(level, Kind.unr)),
+        "the prelude's `Eq` does not range over `A: Type { level = u }`"
       )
       _ <- require(
         indices.forall(index => ValueEquivalence.defEq(index.tpe, a)),
         "the prelude's `Eq` is not over `(x: A)(y: A)`"
       )
       _ <- require(
-        ValueEquivalence.defEq(pi.codomain(fresh), Sorts.prop(scope)),
-        "the prelude's `Eq` is not a `Prop { scope = S }`"
+        ValueEquivalence.defEq(pi.codomain(fresh), Sorts.Prop),
+        "the prelude's `Eq` is not a `Prop`"
       )
       refl <- global(reflName) match {
         case Some(refl: ConstructorHead)
-            if refl.numErasedFamilyArgs == 3 && refl.fieldBinders.map(_.mode) == Vector(BinderMode.Explicit) =>
+            if refl.numErasedFamilyArgs == 2 && refl.fieldBinders.map(_.mode) == Vector(BinderMode.Explicit) =>
           Right(refl)
         case _ => Left("the prelude's `Eq.refl` is not a constructor of one explicit field")
       }
@@ -91,6 +91,6 @@ object MatchEquation {
       case other       => wtf(s"The scrutinee type $tpe is classified by $other, which is not a sort")
     }
     val constructed = Packed.construct(ctor, fields, tpe)
-    Interpreter.evalApply(equality.family, Vector(sort.level, sort.scope, tpe, scrut, constructed))
+    Interpreter.evalApply(equality.family, Vector(sort.level, tpe, scrut, constructed))
   }
 }

@@ -23,7 +23,6 @@ private[raccoonlang] object IdentifierSyntax {
     "measure",
     "indices",
     "in",
-    "scope",
     "Type",
     "Prop"
   )

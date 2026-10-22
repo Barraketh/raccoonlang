@@ -1,5 +1,12 @@
 # Interned values, word values and a bytecode evaluator
 
+> **Historical proposal details.** The bytecode sketch includes `SCOPE` and
+> `Scoped`, which represented Raccoon's removed `Lifetime`/scope feature.
+> Those nodes are not part of the current language or compiler. See the
+> [language reference](../language.md) and [kernel reference](../kernel.md).
+> The original source is available from baseline `81759785` with
+> `git show 81759785:docs/proposals/INTERNED_WORDS_AND_BYTECODE.md`.
+
 Status: proposal, 2026-10-05. Not implemented.
 
 Scope: make type checking, and the evaluation it performs, as fast as possible

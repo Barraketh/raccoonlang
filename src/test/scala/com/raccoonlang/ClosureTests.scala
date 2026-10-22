@@ -2,30 +2,18 @@ package com.raccoonlang
 
 import com.raccoonlang.{CoreAst => CA}
 
-/**
- * Function-type and lambda closures (spec §1, §2.4, §2.5, §2.7, §3.3, §4.3, §8): a closure's kind and scope are part of
- * a function type's identity and its sort, are forced like a sort's fields, and a lambda's are derived from what its
- * body captures or checked against it. Each rule has an admitted program and the smallest mutation that reaches its
- * diagnostic.
- */
+/** Function types retain closure-kind syntax, inference, containment, and conversion. */
 class ClosureTests extends munit.FunSuite with TestSupport {
-
-  /** A family scoped by its lifetime, a linear one, and a consumer of each. */
-  private val families =
+  private val token =
     """
-      |inductive V (l: Lifetime) : Type { scope = l }
-      | | mk : V(l)
+      |inductive Tok : Type { kind = lin }
+      | | mk : Tok
       |
-      |inductive Tok (l: Lifetime) : Type { kind = lin, scope = l }
-      | | mk : Tok(l)
-      |
-      |def useV {l: Lifetime}(v: V(l)): Nat := 0
-      |
-      |def eat {l: Lifetime}(t: Tok(l)): Nat := match t returning Nat with
+      |def eat (t: Tok): Nat := match t returning Nat with
       | | Tok.mk => 0
       |""".stripMargin
 
-  private def withFamilies(decls: String): String = families + "\n" + decls
+  private def withToken(decls: String): String = token + "\n" + decls
 
   private def parseFailure(source: String): String =
     LanguageParser.parseProgram(source) match {
@@ -33,257 +21,186 @@ class ClosureTests extends munit.FunSuite with TestSupport {
       case _: Success[_]          => fail("expected a parse error")
     }
 
-  test("a closure prefixes a function type's group, or a lambda") {
-    typecheckDecls(withFamilies("def f (l: Lifetime)(g: { kind = lin, scope = l } Unit -> Nat): Nat := g(Unit.unit)\n"))
-    typecheckDecls(withFamilies("def f (l: Lifetime)(g: Nat -> ({ scope = l } Unit -> Nat)): Nat := 0\n"))
-    typecheckDecls(withFamilies("def f (l: Lifetime)(g: { scope = l } (u: Unit)(n: Nat) -> Nat): Nat := 0\n"))
-    typecheckDecls(
-      withFamilies("def f (l: Lifetime): { scope = l } Unit -> Nat := fun { scope = l } (u: Unit): Nat => 0\n")
+  test("a closure prefixes a function type or lambda, and only accepts kind") {
+    typecheckDecls("def keep {k: Kind}{A: Type { kind = k }}(x: A): A := x\n")
+    typecheckDecls("def f (g: { kind = lin } Unit -> Nat): Nat := g(Unit.unit)\n")
+    typecheckDecls("def f (u: Unit): Nat := (fun { kind = lin } (v: Unit): Nat => 0)(u)\n")
+    assertEquals(
+      parseFailure("def f : Unit -> Nat := fun { scope = Nat.zero } (u: Unit): Nat => 0\n"),
+      "Unknown field scope"
     )
-    // The token after the first name tells a closure from an implicit binder.
-    typecheckDecls("def keep {kind: Kind}{A: Type { kind = kind }}(x: A): A := x\n")
+    assertEquals(parseFailure("def f (g: { scope = Nat.zero } Unit -> Nat): Nat := 0\n"), "Unknown field scope")
   }
 
-  test("a closure is a parse error before a later domain, as a level field is in one") {
-    def program(domain: String): String = s"def f (g: $domain): Nat := 0\n"
-
+  test("closure prefixes are accepted only before a whole function type") {
     val misplaced = "A closure prefixes a whole function type; parenthesize a nested one"
-    assertEquals(parseFailure(program("Nat -> { kind = lin } Unit -> Nat")), misplaced)
-    assertEquals(parseFailure(program("(n: Nat) -> { kind = lin } (u: Unit) -> Nat")), misplaced)
-    assertEquals(parseFailure(program("{ kind = lin } Nat")), "A closure prefixes a function type")
-    assertEquals(parseFailure(program("{ level = one } Unit -> Nat")), "Misplaced field level: a closure has no level")
-    assertEquals(parseFailure(program("{ size = one } Unit -> Nat")), "Unknown field size")
-    assertEquals(parseFailure(program("{ kind = lin, kind = lin } Unit -> Nat")), "Repeated field kind")
+    assertEquals(parseFailure("def f (g: Nat -> { kind = lin } Unit -> Nat): Nat := 0\n"), misplaced)
+    assertEquals(parseFailure("def f (g: (n: Nat) -> { kind = lin } (u: Unit) -> Nat): Nat := 0\n"), misplaced)
+    assertEquals(parseFailure("def f (g: { kind = lin } Nat): Nat := 0\n"), "A closure prefixes a function type")
+    assertEquals(
+      parseFailure("def f (g: { level = one } Unit -> Nat): Nat := 0\n"),
+      "Misplaced field level: a closure has no level"
+    )
+    assertEquals(parseFailure("def f (g: { size = one } Unit -> Nat): Nat := 0\n"), "Unknown field size")
+    assertEquals(parseFailure("def f (g: { kind = lin, kind = lin } Unit -> Nat): Nat := 0\n"), "Repeated field kind")
     assertEquals(
       parseFailure("def f : Unit -> Nat := fun { level = one } (u: Unit): Nat => 0\n"),
       "Misplaced field level: a closure has no level"
     )
   }
 
-  test("a lambda binds a parameter, so one with none is a parse error") {
+  test("a lambda binds one or more parameters, and empty binder groups are rejected") {
     typecheckDecls("def f : Nat -> Nat := fun (n: Nat): Nat => 0\n")
     assertEquals(parseFailure("def f : Nat -> Nat := fun : Nat => 0\n"), "A lambda binds a parameter")
     assertEquals(parseFailure("def f : Nat -> Nat := fun { kind = unr } : Nat => 0\n"), "A lambda binds a parameter")
   }
 
-  test("a function type's closure is part of its type, compared exactly") {
-    def program(result: String): String =
-      withFamilies(s"def f (l: Lifetime)(g: { scope = l } Unit -> Nat): $result := g\n")
-
-    typecheckDecls(program("{ scope = l } Unit -> Nat"))
-    expectOnly[TypeMismatch](typecheckDecls(program("Unit -> Nat")))
-    expectOnly[TypeMismatch](typecheckDecls(program("{ kind = lin, scope = l } Unit -> Nat")))
-    typecheckDecls("def f {k: Kind}(g: { kind = k } Unit -> Nat): { kind = k } Unit -> Nat := g\n")
-    expectOnly[TypeMismatch](typecheckDecls("def f {k: Kind}(g: { kind = k } Unit -> Nat): Unit -> Nat := g\n"))
-  }
-
-  test("a mismatch between function types that differ in their closures names the closure fields that differ") {
-    def rendered(source: String): String = ErrorRendering.render(expectOnly[TypeMismatch](typecheckDecls(source)), None)
-
-    assertEquals(
-      rendered("def f (l: Lifetime)(g: { scope = l } Unit -> Nat): { kind = lin } Unit -> Nat := g\n"),
-      "type mismatch\n  expected: { kind = Kind.lin } Unit -> Nat\n  actual:   { scope = l } Unit -> Nat\n" +
-        "  closures differ in kind Kind.lin  vs  Kind.unr\n  closures differ in scope Lifetime.empty  vs  l"
-    )
-    // Inside a family instance, at the function types rather than at the instances' sorts.
-    assertEquals(
-      rendered("def f (l: Lifetime)(xs: List(({ scope = l } Unit -> Nat))): List((Unit -> Nat)) := xs\n"),
-      "type mismatch\n  expected: List(Unit -> Nat)\n  actual:   List({ scope = l } Unit -> Nat)\n" +
-        "  differ at: Unit -> Nat  vs  { scope = l } Unit -> Nat\n  closures differ in scope Lifetime.empty  vs  l"
-    )
-    // An implicit forced both by a closure and by a sort is read off the sort, so a lambda written without the closure
-    // its parameter declares is itself the mismatch, rather than the sort of whatever else the implicit governs.
-    assertEquals(
-      rendered("def f {S: Lifetime}(A: Type { scope = S }): BEq(A) := BEq.mk(fun (a: A)(b: A): Bool => Bool.true)\n"),
-      "type mismatch\n  expected: { scope = S } A -> A -> Bool\n  actual:   (a: A) -> (b: A) -> Bool\n" +
-        "  closures differ in scope S  vs  Lifetime.empty"
-    )
-  }
-
-  test("a function type's sort takes its closure's kind and adds its closure's scope") {
-    def program(sort: String): String =
-      withFamilies(
-        s"inductive Holds (l: Lifetime) : $sort\n | mk (f: { kind = lin, scope = l } Unit -> Nat) : Holds(l)\n"
+  test("closure kinds are compared exactly and named in mismatches") {
+    typecheckDecls("def f (g: { kind = lin } Unit -> Nat): { kind = lin } Unit -> Nat := g\n")
+    expectOnly[TypeMismatch](typecheckDecls("def f (g: { kind = lin } Unit -> Nat): Unit -> Nat := g\n"))
+    val mismatch =
+      expectOnly[TypeMismatch](
+        typecheckDecls("def f (g: { kind = lin } Unit -> Nat): { kind = unr } Unit -> Nat := g\n")
       )
-
-    typecheckDecls(program("Type { kind = lin, scope = l }"))
-    expectOnly[KindExceeded](typecheckDecls(program("Type { scope = l }")))
-    // The closure's scope can name only a lifetime parameter, which the family must name in any case (spec §5.1).
-    assertEquals(
-      expectOnly[ScopeExceeded](typecheckDecls(program("Type { kind = lin }"))).part,
-      ContainedPart.LifetimeParameter("l")
-    )
+    val message = ErrorRendering.render(mismatch, None)
+    assert(message.contains("closures differ in kind"), message)
   }
 
-  test("a linear closure into a proposition is KindExceeded") {
+  test("a function type's sort contains its closure kind, while propositions reject linear closures") {
+    typecheckDecls("inductive Holder : Type { kind = lin }\n | mk (f: { kind = lin } Unit -> Nat) : Holder\n")
+    expectOnly[KindExceeded](
+      typecheckDecls("inductive Holder : Type\n | mk (f: { kind = lin } Unit -> Nat) : Holder\n")
+    )
     typecheckDecls("def f (g: Unit -> True): Nat := 0\n")
     expectOnly[KindExceeded](typecheckDecls("def f (g: { kind = lin } Unit -> True): Nat := 0\n"))
-    expectOnly[KindExceeded](typecheckDecls("def f {k: Kind}(g: { kind = k } Unit -> True): Nat := 0\n"))
   }
 
-  test("a closure field forces a variable only when it is exactly that variable") {
-    def program(scope: String): String =
-      withFamilies(s"def f {S: Lifetime}(l: Lifetime)(g: { scope = $scope } Unit -> Nat): Nat := g(Unit.unit)\n")
-
-    typecheckDecls(program("S"))
-    expectOnly[NonForcedImplicitParam](typecheckDecls(program("union(S, l)")))
-  }
-
-  test("a lambda's omitted closure is what its body captures") {
-    def program(capture: String, result: String, body: String): String =
-      withFamilies(s"def f (l: Lifetime)$capture: $result := fun (u: Unit): Nat => $body\n")
-
-    typecheckDecls(program("", "Unit -> Nat", "0"))
-    typecheckDecls(program("(v: V(l))", "{ scope = l } Unit -> Nat", "useV(v)"))
-    typecheckDecls(program("(t: Tok(l))", "{ kind = lin, scope = l } Unit -> Nat", "eat(t)"))
-    expectOnly[TypeMismatch](typecheckDecls(program("(t: Tok(l))", "{ scope = l } Unit -> Nat", "eat(t)")))
-    expectOnly[TypeMismatch](typecheckDecls(program("(v: V(l))", "Unit -> Nat", "useV(v)")))
-    // Where the lambda stands never changes its type: one that captures nothing is not at scope l.
-    expectOnly[TypeMismatch](typecheckDecls(program("", "{ scope = l } Unit -> Nat", "0")))
-  }
-
-  test("a lambda's captures are what its body mentions, not its binder types or result") {
-    val indexed =
-      "inductive P (l: Lifetime) indices (h: V(l)) : Type { scope = l }\n | mk : P(l, V.mk(l))\n\n"
-    def program(body: String): String =
-      withFamilies(indexed + s"def f (l: Lifetime)(v: V(l)): P(l, v) -> Nat := fun (p: P(l, v)): Nat => $body\n")
-
-    typecheckDecls(program("0"))
-    expectOnly[TypeMismatch](typecheckDecls(program("useV(v)")))
-    // A captured type variable carries its sort's scope, and a captured lifetime the lifetime it holds.
+  test("a lambda derives its kind from captures, and written kinds are checked") {
+    typecheckDecls(withToken("def f (t: Tok): { kind = lin } Unit -> Nat := fun (u: Unit): Nat => eat(t)\n"))
+    expectOnly[TypeMismatch](typecheckDecls(withToken("def f (t: Tok): Unit -> Nat := fun (u: Unit): Nat => eat(t)\n")))
+    val exceeded =
+      expectOnly[KindExceeded](
+        typecheckDecls(
+          withToken("def f (t: Tok): Nat := fun { kind = unr } (u: Unit): Nat => Nat.add(eat(t), 1)\n")
+        )
+      )
+    assert(PartialFunction.cond(exceeded.part) { case ContainedPart.Capture("t", _) => true }, exceeded.part)
     typecheckDecls(
-      "def f {S: Lifetime}(A: Type { scope = S }): { scope = S } Unit -> Type { scope = S } := " +
-        "fun (u: Unit): Type { scope = S } => A\n"
-    )
-    def mentioning(result: String): String =
-      withFamilies(s"def f (l: Lifetime): $result := fun (u: Unit): Nat => useV(V.mk(l))\n")
-    typecheckDecls(mentioning("{ scope = l } Unit -> Nat"))
-    expectOnly[TypeMismatch](typecheckDecls(mentioning("Unit -> Nat")))
-  }
-
-  test("a closure derived in a refined branch names a variable by any local bound to it") {
-    def program(motive: String): String =
-      withFamilies(
-        s"""
-           |inductive Two (l: Lifetime)(m: Lifetime) : Type { scope = union(l, m) }
-           | | mk : Two(l, m)
-           |
-           |def f (l: Lifetime)(m: Lifetime)(v: V(m))(p: Eq(Type { scope = union(l, m) }, Two(l, m), Two(m, l)))
-           |    : $motive :=
-           |  match p returning $motive with
-           |  | Eq.refl x => fun (u: Unit): Nat => useV(v)
-           |
-           |def g (l: Lifetime)(v: V(l)): Nat := f(l, l, v, Eq.refl(Two(l, l)))(Unit.unit)
-           |
-           |{ g(Lifetime.empty, V.mk(Lifetime.empty)) }
-           |""".stripMargin
-      )
-
-    // Refinement links `m` to `l`, so the capture `v : V(m)` is at scope `l` in the branch.
-    assert(ValueEquivalence.defEq(runProgram(program("{ scope = l } Unit -> Nat")), runProgram("{ 0 }")))
-    expectOnly[TypeMismatch](typecheckDecls(program("Unit -> Nat")))
-  }
-
-  test("a function-typed capture contributes its closure's kind and its type's scope") {
-    def program(result: String): String =
-      withFamilies(
-        s"def f (l: Lifetime)(g: { kind = lin } V(l) -> Nat)(v: V(l)): $result := fun (u: Unit): Nat => g(v)\n"
-      )
-
-    typecheckDecls(program("{ kind = lin, scope = l } Unit -> Nat"))
-    expectOnly[TypeMismatch](typecheckDecls(program("{ kind = lin } Unit -> Nat")))
-  }
-
-  test("a lambda that captures a linear value into a proposition is KindExceeded") {
-    def program(body: String): String =
-      withFamilies(s"def f (l: Lifetime)(t: Tok(l)): Nat := {\n  let p := fun (u: Unit): True => $body\n  eat(t)\n}\n")
-
-    typecheckDecls(program("True.intro"))
-    expectOnly[KindExceeded](typecheckDecls(program("match t returning True with\n    | Tok.mk => True.intro")))
-  }
-
-  test("a recursive definition's reference to itself is not a capture") {
-    val p =
-      """
-        |def count {u: Level}{A: Type { level = u}}(a: A)(n: Nat): Nat decreases structural(n) :=
-        |  match n returning Nat with
-        |  | Nat.zero => 0
-        |  | Nat.succ m => (fun (x: Nat): Nat => Nat.succ(count(a, m)))(0)
-        |
-        |{ count(Nat.zero, 3) }
-        |""".stripMargin
-    assert(ValueEquivalence.defEq(runProgram(p), runProgram("{ 3 }")))
-  }
-
-  test("a written closure must contain what the lambda captures") {
-    // The block applies `g` once, and consumes the token itself when `g` does not.
-    def program(closure: String, body: String, result: String): String =
-      withFamilies(
-        s"def f (l: Lifetime)(v: V(l))(t: Tok(l)): Nat := {\n  let g := fun $closure (u: Unit): Nat => $body\n  $result\n}\n"
-      )
-
-    typecheckDecls(program("{ kind = lin, scope = l }", "eat(t)", "g(Unit.unit)"))
-    typecheckDecls(program("{ kind = lin, scope = l }", "0", "Nat.add(g(Unit.unit), eat(t))"))
-    val kind = expectOnly[KindExceeded](typecheckDecls(program("{ kind = unr, scope = l }", "eat(t)", "g(Unit.unit)")))
-    assert(PartialFunction.cond(kind.part) { case ContainedPart.Capture("t", _) => true }, kind.part)
-    val scope =
-      expectOnly[ScopeExceeded](typecheckDecls(program("{ kind = lin, scope = empty }", "eat(t)", "g(Unit.unit)")))
-    assert(PartialFunction.cond(scope.part) { case ContainedPart.Capture("t", _) => true }, scope.part)
-    expectOnly[ScopeExceeded](typecheckDecls(program("{ scope = empty }", "useV(v)", "Nat.add(g(Unit.unit), eat(t))")))
-    // Each omitted field is derived on its own.
-    typecheckDecls(program("{ kind = lin }", "eat(t)", "g(Unit.unit)"))
-    typecheckDecls(program("{ scope = l }", "eat(t)", "g(Unit.unit)"))
-  }
-
-  test("a function value is lifted to a larger closure by a lambda") {
-    val lift =
-      "def lift {S: Lifetime}(l: Lifetime)(g: { scope = S } Unit -> Nat): { kind = lin, scope = union(S, l) } " +
-        "Unit -> Nat :=\n  fun { kind = lin, scope = union(S, l) } (u: Unit): Nat => g(u)\n"
-    typecheckDecls(lift)
-    expectOnly[ScopeExceeded](
-      typecheckDecls(
-        "def lift {S: Lifetime}(l: Lifetime)(g: { scope = S } Unit -> Nat): { scope = l } Unit -> Nat :=\n" +
-          "  fun { scope = l } (u: Unit): Nat => g(u)\n"
-      )
+      withToken("def f (t: Tok): Nat := { let g := fun (u: Unit): Nat => 0\n Nat.add(g(Unit.unit), eat(t)) }\n")
     )
   }
 
-  test("a closure-polymorphic parameter accepts lambdas of either kind and forces through their closures") {
-    val p = withFamilies(
+  test("a closure-polymorphic parameter accepts captures of either kind") {
+    val program = withToken(
       """
-        |def app {kf: Kind}{S: Lifetime}(g: { kind = kf, scope = S } Unit -> Nat): Nat := g(Unit.unit)
-        |
-        |def linear (l: Lifetime)(t: Tok(l)): Nat := app(fun (u: Unit): Nat => eat(t))
-        |def scoped (l: Lifetime)(v: V(l)): Nat := app(fun (u: Unit): Nat => useV(v))
-        |def closed (l: Lifetime): Nat := app(fun (u: Unit): Nat => 3)
-        |
-        |{ Nat.add(linear(Lifetime.empty, Tok.mk(Lifetime.empty)), closed(Lifetime.empty)) }
+        |def app {kf: Kind}(g: { kind = kf } Unit -> Nat): Nat := g(Unit.unit)
+        |def captured (t: Tok): Nat := app(fun (u: Unit): Nat => eat(t))
+        |def closed : Nat := app(fun (u: Unit): Nat => 2)
+        |{ Nat.add(captured(Tok.mk), closed) }
         |""".stripMargin
     )
-    assert(ValueEquivalence.defEq(runProgram(p), runProgram("{ 3 }")))
-    // Without the variables, the parameter accepts only an unrestricted, capture-free lambda.
+    assert(ValueEquivalence.defEq(runProgram(program), runProgram("{ 2 }")))
     expectOnly[TypeMismatch](
       typecheckDecls(
-        withFamilies(
-          "def app (g: Unit -> Nat): Nat := g(Unit.unit)\n" +
-            "def linear (l: Lifetime)(t: Tok(l)): Nat := app(fun (u: Unit): Nat => eat(t))\n"
+        withToken(
+          "def app (g: Unit -> Nat): Nat := g(Unit.unit)\ndef f (t: Tok): Nat := app(fun (u: Unit): Nat => eat(t))\n"
         )
       )
     )
   }
 
-  test("a definition's own function type is unrestricted and captures nothing") {
-    def program(ty: String): String =
-      withFamilies(
-        s"def f (l: Lifetime)(t: Tok(l)): Nat := eat(t)\n\n" +
-          s"def h (l: Lifetime)(t: Tok(l)): Nat := {\n  let g : $ty := f\n  g(l, t)\n}\n"
+  test("a closure-kind variable is forced only by an exact closure annotation") {
+    typecheckDecls("def apply {k: Kind}(g: { kind = k } Unit -> Nat): Nat := g(Unit.unit)\n")
+    expectOnly[NonForcedImplicitParam](
+      typecheckDecls(
+        "def bad {k: Kind}(j: Kind)(g: { kind = join(k, j) } Unit -> Nat): Nat := g(Unit.unit)\n"
       )
-
-    typecheckDecls(program("(l: Lifetime) -> Tok(l) -> Nat"))
-    expectOnly[TypeMismatch](typecheckDecls(program("{ kind = lin } (l: Lifetime) -> Tok(l) -> Nat")))
+    )
   }
 
-  /** The header's binders checked, and the definition's body: an inner lambda, checked where it stands. */
+  test("function-typed captures contribute their closure kind, and unrestricted functions can be lifted") {
+    val source =
+      "def lift (g: Unit -> Nat): { kind = lin } Unit -> Nat := " +
+        "fun { kind = lin } (u: Unit): Nat => g(u)\n"
+    typecheckDecls(source)
+    typecheckDecls(
+      withToken(
+        "def use (g: { kind = lin } Nat -> Nat): { kind = lin } Unit -> Nat := " +
+          "fun (u: Unit): Nat => g(0)\n"
+      )
+    )
+    expectOnly[TypeMismatch](
+      typecheckDecls(
+        withToken("def use (g: { kind = lin } Nat -> Nat): Unit -> Nat := fun (u: Unit): Nat => g(0)\n")
+      )
+    )
+  }
+
+  test("recursive references to the definition itself are not captures") {
+    val program =
+      """
+        |def count (n: Nat): Nat decreases structural(n) :=
+        |  match n returning Nat with
+        |  | Nat.zero => 0
+        |  | Nat.succ m => (fun (x: Nat): Nat => Nat.succ(count(m)))(0)
+        |
+        |{ count(3) }
+        |""".stripMargin
+    assert(ValueEquivalence.defEq(runProgram(program), runProgram("{ 3 }")))
+  }
+
+  test("proof lambdas contain no linear captures, while tokens are consumed in data code") {
+    typecheckDecls(
+      withToken(
+        "def closed (t: Tok): Unit -> Nat := " +
+          "(fun (n: Nat): Unit -> Nat => fun (u: Unit): Nat => 0)(eat(t))\n"
+      )
+    )
+    typecheckDecls(
+      withToken(
+        "def ok (t: Tok): Nat := {\n  let p := fun (u: Unit): True => True.intro\n  eat(t)\n}\n"
+      )
+    )
+    expectOnly[KindExceeded](
+      typecheckDecls(
+        withToken(
+          "def bad (t: Tok): Nat := {\n  let p := fun (u: Unit): True => " +
+            "match t returning True with\n  | Tok.mk => True.intro\n  Nat.add(eat(t), 1)\n}\n"
+        )
+      )
+    )
+  }
+
+  test("a derived closure is re-evaluated from the current capture kind") {
+    val declarations = withToken(
+      """
+        |def delay {k: Kind}{A: Type { kind = k }}(x: A): { kind = k } Unit -> A := fun (u: Unit): A => x
+        |def force {k: Kind}{A: Type { kind = k }}(f: { kind = k } Unit -> A): A := f(Unit.unit)
+        |def throughToken (t: Tok): Nat := eat(force(delay(t)))
+        |def throughNat (n: Nat): Nat := force(delay(n))
+        |""".stripMargin
+    )
+    typecheckDecls(declarations)
+
+    def closureKind(term: String): Value.Kind = {
+      val core = Elaborator.elab(parseSurface(declarations + s"\n{ $term }\n"), Prelude.default)
+      val env = core.decls.foldLeft(Prelude.default.checkedEnv)((env, decl) => Interpreter.evalDecl(decl, env))
+      TypeChecker.checkTerm(core.body.getOrElse(fail("Expected a body")), env).value.tpe match {
+        case pi: Value.VPi => pi.closureKind
+        case other         => fail(s"Expected a function type, got $other")
+      }
+    }
+
+    assertEquals(closureKind("delay(Tok.mk)"), Value.Kind.lin)
+    assertEquals(closureKind("delay(0)"), Value.Kind.unr)
+    assert(
+      ValueEquivalence.defEq(
+        runProgram(declarations + "{ Nat.add(throughToken(Tok.mk), throughNat(3)) }"),
+        runProgram("{ 3 }")
+      )
+    )
+  }
+
   private def checkInnerLambda(source: String): (Env, TypeChecker.CheckedTerm) = {
     val core = Elaborator.elab(parseSurface(source), Prelude.default)
     val env =
@@ -296,89 +213,44 @@ class ClosureTests extends munit.FunSuite with TestSupport {
     }
   }
 
-  test("a residual carries a derived closure as its captures, and re-evaluating it gives the checked value") {
+  test("a residual stores its derived closure kind and reevaluates to the checked type") {
     val (env, checked) = checkInnerLambda(
-      withFamilies(
-        "def f (l: Lifetime)(n: Nat)(v: V(l))(t: Tok(l)): { kind = lin, scope = l } Unit -> Nat :=\n" +
-          "  fun (u: Unit): Nat => Nat.add(Nat.add(n, useV(v)), eat(t))\n"
+      withToken(
+        "def f (n: Nat)(t: Tok): { kind = lin } Unit -> Nat :=\n" +
+          "  fun (u: Unit): Nat => Nat.add(Nat.add(n, eat(t)), 1)\n"
       )
     )
     val residual = checked.residual match {
       case lam: CA.Term.Lam => lam
       case other            => fail(s"Expected a lambda residual, got $other")
     }
-    // Each field carries the captures that contribute to it: `n` contributes to neither, and `v` to the scope alone.
     residual.ty.closure match {
-      case CA.Closure(CA.ClosureField.Derived(kind), CA.ClosureField.Derived(scope)) =>
-        assertEquals(kind.map(_.name), Vector("t"))
-        assertEquals(scope.map(_.name), Vector("v", "t"))
-      case other => fail(s"Expected derived closure fields, got $other")
+      case CA.Closure(CA.ClosureField.Derived(kind)) => assertEquals(kind.map(_.name), Vector("t"))
+      case other                                     => fail(s"Expected a derived closure kind, got $other")
     }
-    // The residual prints its derived fields as omitted, as written; the value's type shows the closure.
-    assert(residual.toString.startsWith("fun (u: Unit): Nat => "), residual.toString)
-    assertEquals(checked.value.tpe.toString, "{ kind = Kind.lin, scope = l } (u: Unit) -> Nat")
+    assertEquals(checked.value.tpe.toString, "{ kind = Kind.lin } (u: Unit) -> Nat")
     val reevaluated = Interpreter.evalTerm(residual, env)
     assertEquals(reevaluated.key, checked.value.key)
     assert(ValueEquivalence.defEq(reevaluated, checked.value))
-    assert(ValueEquivalence.defEq(reevaluated.tpe, checked.value.tpe))
   }
 
-  test("a derived closure is derived again from its captures wherever its residual is evaluated") {
-    val delay = withFamilies(
-      """
-        |def delay {k: Kind}{S: Lifetime}{A: Type { kind = k, scope = S }}(x: A): { kind = k, scope = S } Unit -> A :=
-        |  fun (u: Unit): A => x
-        |
-        |def force {kf: Kind}{Sf: Lifetime}{k: Kind}{S: Lifetime}{A: Type { kind = k, scope = S }}
-        |    (g: { kind = kf, scope = Sf } Unit -> A): A := g(Unit.unit)
-        |""".stripMargin
-    )
-    // Checked where it stands after the declarations, since a program's result may not be linear.
-    def closure(term: String): (Value.Kind, Value.Lifetime) = {
-      val core = Elaborator.elab(parseSurface(delay + s"\n{ $term }\n"), Prelude.default)
-      val env = core.decls.foldLeft(Prelude.default.checkedEnv)((env, decl) => Interpreter.evalDecl(decl, env))
-      TypeChecker.checkTerm(core.body.getOrElse(fail("Expected a body")), env).value.tpe match {
-        case pi: Value.VPi => (pi.closureKind, pi.closureScope)
-        case other         => fail(s"Expected a function type, got $other")
-      }
-    }
-
-    // One residual, evaluated at a linear and at an unrestricted capture.
-    assertEquals(closure("delay(Tok.mk(Lifetime.empty))"), (Value.Kind.lin, Value.Lifetime.empty))
-    assertEquals(closure("delay(Nat.zero)"), (Value.Kind.unr, Value.Lifetime.empty))
-    // Forcing reads the closure where the residual was evaluated: at `Tok(l)` it is linear and scoped by `l`.
-    val p = delay +
-      """
-        |def viaTok (l: Lifetime)(t: Tok(l)): Nat := eat(force(delay(t)))
-        |def viaV (l: Lifetime)(v: V(l)): Nat := useV(force(delay(v)))
-        |def viaNat (n: Nat): Nat := force(delay(n))
-        |
-        |{ Nat.add(Nat.add(viaTok(Lifetime.empty, Tok.mk(Lifetime.empty)), viaV(Lifetime.empty, V.mk(Lifetime.empty))), viaNat(3)) }
-        |""".stripMargin
-    assert(ValueEquivalence.defEq(runProgram(p), runProgram("{ 3 }")))
-    // The evaluated lambda's type is the declared result under the instantiation, and nothing else.
-    def program(result: String): String = delay + s"\ndef g (l: Lifetime)(t: Tok(l)): $result := delay(t)\n"
-    typecheckDecls(program("{ kind = lin, scope = l } Unit -> Tok(l)"))
-    expectOnly[TypeMismatch](typecheckDecls(program("{ scope = l } Unit -> Tok(l)")))
-    expectOnly[TypeMismatch](typecheckDecls(program("{ kind = lin } Unit -> Tok(l)")))
-  }
-
-  test("function types differing only in their closures are not convertible") {
+  test("function values differing only in closure kind are not convertible") {
     val (env, checked) = checkInnerLambda(
-      withFamilies("def f (l: Lifetime)(v: V(l)): { scope = l } Unit -> Nat := fun (u: Unit): Nat => useV(v)\n")
+      withToken("def f (t: Tok): { kind = lin } Unit -> Nat := fun (u: Unit): Nat => eat(t)\n")
     )
-    val scoped = checked.value.tpe
-    val closed = Interpreter.evalTerm(
+    val linear = checked.value.tpe
+    val unrestricted = Interpreter.evalTerm(
       checked.residual match {
         case lam: CA.Term.Lam =>
-          val empty = CA.Term.FormOp(CA.Form.LifetimeEmpty, Vector.empty, lam.span)
-          lam.ty.copy(closure = lam.ty.closure.copy(scope = CA.ClosureField.Written(empty)))
+          lam.ty.copy(closure =
+            CA.Closure(CA.ClosureField.Written(CA.Term.FormOp(CA.Form.KindUnr, Vector.empty, lam.span)))
+          )
         case other => fail(s"Expected a lambda residual, got $other")
       },
       env
     )
-    assert(!ValueEquivalence.defEq(scoped, closed))
-    assert(ValueEquivalence.defEq(scoped, Interpreter.evalTerm(checked.residual, env).tpe))
-    intercept[InternalError](scoped == closed)
+    assert(!ValueEquivalence.defEq(linear, unrestricted))
+    assert(ValueEquivalence.defEq(linear, Interpreter.evalTerm(checked.residual, env).tpe))
+    intercept[InternalError](linear == unrestricted)
   }
 }

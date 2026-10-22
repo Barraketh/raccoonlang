@@ -1,5 +1,13 @@
 # Safety problems for the language
 
+> **Historical problem statement.** This document predates removal of
+> Raccoon's `Lifetime` and sort-scope feature. Its lifetime/scope examples and
+> safety gaps are historical; they do not state current language behavior.
+> See the [language reference](../language.md) and
+> [kernel reference](../kernel.md). The original source is available from
+> baseline `81759785` with
+> `git show 81759785:docs/proposals/SAFETY_PROBLEMS.md`.
+
 Status: **problem statement** (2026-10-01). Three problems that the GPU library has run into, where a language feature
 may be the right answer. Each needs design work. This document says what goes wrong today, what we would like to be
 able to say or check, and what makes it hard. It proposes no solutions, though it notes approaches that are known not

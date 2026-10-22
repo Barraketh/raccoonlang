@@ -13,7 +13,7 @@ import scala.util.matching.Regex
 class ArchitectureTests extends munit.FunSuite {
   import ArchitectureTests.Rule
 
-  private val kernelObjects = "(LevelTpe|KindTpe|LifetimeTpe|SortParameter|Large)"
+  private val kernelObjects = "(LevelTpe|KindTpe|SortParameter|Large)"
 
   private val rules = Vector(
     Rule("sorts are built through Sorts, not the removed PropTpe/TypeTpe", raw"\b(PropTpe|TypeTpe)\b".r, Set.empty),
@@ -25,8 +25,13 @@ class ArchitectureTests extends munit.FunSuite {
     ),
     Rule(
       "sort formers and the sort parameters' forms are syntax the kernel owns, never names of globals or builtins",
-      "\"(Sort|Type|Prop|Level\\.(zero|one|succ|max|imax)|Kind\\.(unr|lin|join)|Lifetime\\.(empty|union))\"".r,
+      "\"(Sort|Type|Prop|Level\\.(zero|one|succ|max|imax)|Kind\\.(unr|lin|join))\"".r,
       Set("IdentifierSyntax.scala", "LanguageParser.scala", "PrettyPrinter.scala")
+    ),
+    Rule(
+      "lifetime scope support is absent from the compiler API and kernel",
+      raw"\b(LifetimeTpe|LifetimeEscapes|LifetimeEmpty|LifetimeUnion|ScopeField|closureScope|mentionedScope|openAtoms)\b".r,
+      Set.empty
     ),
     Rule(
       "where a sort parameter, an expression of one or a large type may stand is decided only by the checker's " +
@@ -38,16 +43,6 @@ class ArchitectureTests extends munit.FunSuite {
       "a function type's value is built only by evaluating its syntax, so its closure is always its syntax's",
       raw"\bVPi\(".r,
       Set("Value.scala", "Interpreter.scala")
-    ),
-    Rule(
-      "an atom's confinement is one test, TypeChecker.requireInScope, the only place LifetimeEscapes is raised",
-      raw"\bLifetimeEscapes\(".r,
-      Set("TypeChecker.scala", "Errors.scala", "ErrorRendering.scala")
-    ),
-    Rule(
-      "only the checker confines atoms, at its choke points; evaluation never does",
-      raw"\brequireInScope\(".r,
-      Set("TypeChecker.scala", "MatchChecker.scala")
     ),
     Rule(
       "checking is synthesis plus equality: only TypeChecker.check takes an optional expected type",

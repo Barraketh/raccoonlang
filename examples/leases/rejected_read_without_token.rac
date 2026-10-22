@@ -1,0 +1,6 @@
+// A Lease is not itself permission to read. `read` requires the linear token.
+import Lease
+
+def missingToken {brand: Type}(lease: Lease(brand)): Pair(Token(brand), Nat) := read(lease)
+
+{ missingToken }

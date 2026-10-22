@@ -91,7 +91,7 @@ object Ledger {
     term match {
       case CA.Term.LocalRef(local, span) => if (local == ref) use(span) else none
       case _: CA.Term.GlobalRef | _: CA.Term.NatLit | _: CA.Term.StrLit | _: CA.Term.Select | _: CA.Term.Sort |
-          _: CA.Term.Prop | _: CA.Term.FormOp | _: CA.Term.App | _: CA.Term.Body | _: CA.Term.Scope =>
+          _: CA.Term.Prop | _: CA.Term.FormOp | _: CA.Term.App | _: CA.Term.Body =>
         sequence(ref, CA.children(term))
       case pi: CA.Term.Pi => boundary(ref, pi, pi.refs)
       // A lambda's children are its type and body: its `decreases` clause is not a use (spec §3.2).

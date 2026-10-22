@@ -1,0 +1,6 @@
+import buffer.Access
+
+def reverseView {parent: Type}{child: Type}(view: BufferAccess.View(parent, child))
+    : BufferAccess.View(child, parent) := BufferAccess.View.mk(child, parent)
+
+{ Unit.unit }

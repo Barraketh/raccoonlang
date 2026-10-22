@@ -8,7 +8,7 @@ class ValueOpsTests extends munit.FunSuite with DiagnosticAssertions {
   private val valueType: Value = Sorts.Type
   private val typeRef: CoreAst.Term = CTerm.GlobalRef("Type", span)
   private val typeToTypeClassifier: Value.VSort =
-    Sorts.sort(Level.succ(Level.one), Value.Kind.unr, Value.Lifetime.empty)
+    Sorts.sort(Level.succ(Level.one), Value.Kind.unr)
 
   private def symbolicValue(name: String): VConst =
     VConst(name, Symbol, valueType)
@@ -130,8 +130,6 @@ class ValueOpsTests extends munit.FunSuite with DiagnosticAssertions {
       Vector(binder),
       _ => valueType,
       Value.Kind.unr,
-      Value.Lifetime.empty,
-      Value.Lifetime.empty,
       captured.synDeps,
       ValueId.LocalId(NodeId.fresh(), Vector(captured)),
       () => typeToTypeClassifier,
@@ -177,35 +175,34 @@ class ValueOpsTests extends munit.FunSuite with DiagnosticAssertions {
     assertEquals(Interpreter.evalApply(materialized, Vector(symbolicValue("Arg"))), solution)
   }
 
-  test("materialize rewrites a function type's mentioned scope, which its key counts") {
-    val (id, mentioned) = FreshVar.freshValue("m", LifetimeTpe)
-    val (_, solution) = FreshVar.freshValue("n", LifetimeTpe)
+  test("materialize rewrites a function type's closure kind, which its key counts") {
+    val (id, mentionedValue) = FreshVar.freshValue("k", KindTpe)
+    val mentioned = mentionedValue.asInstanceOf[Kind]
+    val solution = Kind.lin
     val binder =
       CoreAst.Binder(CoreAst.LocalRef(0, "x"), typeRef, span, CoreAst.BinderSite.Function, BinderMode.Explicit)
     val node = NodeId.fresh()
-    def pi(scope: Value): VPi =
+    def pi(kind: Kind): VPi =
       VPi(
         Env.empty.putGlobal("Type", valueType),
         Vector(binder),
         _ => valueType,
-        Value.Kind.unr,
-        Value.Lifetime.empty,
-        scope.asInstanceOf[Value.Lifetime],
-        scope.synDeps,
+        kind,
+        kind.synDeps,
         ValueId.LocalId(node, Vector.empty),
         () => typeToTypeClassifier,
         isPropValued = false
       )
     val materialized =
       ValueOps.materialize(pi(mentioned), EqStore.empty.allow(DepSet(id)).addLink(id, solution)).asInstanceOf[VPi]
-    assertEquals[Value, Value](materialized.mentionedScope, solution)
+    assertEquals(materialized.closureKind: Value, solution)
     assertEquals(materialized.key, pi(solution).key)
     assertNotEquals(pi(mentioned).key, pi(solution).key)
   }
 
   test("materialized Pi classifier stays lazy and resolves in a fresh session when forced") {
     val (levelId, levelValue) = FreshVar.freshValue("u", LevelTpe)
-    val dependentSort = Sorts.sort(levelValue.asInstanceOf[Level], Kind.unr, Lifetime.empty)
+    val dependentSort = Sorts.sort(levelValue.asInstanceOf[Level], Kind.unr)
     val binder = CoreAst.Binder(
       CoreAst.LocalRef(0, "x"),
       typeRef,
@@ -219,8 +216,6 @@ class ValueOpsTests extends munit.FunSuite with DiagnosticAssertions {
       Vector(binder),
       _ => valueType,
       Kind.unr,
-      Lifetime.empty,
-      Lifetime.empty,
       dependentSort.synDeps,
       ValueId.LocalId(NodeId.fresh(), Vector.empty),
       () => {
@@ -252,8 +247,6 @@ class ValueOpsTests extends munit.FunSuite with DiagnosticAssertions {
       Vector(binder),
       _ => valueType,
       Value.Kind.unr,
-      Value.Lifetime.empty,
-      Value.Lifetime.empty,
       DepSet.empty,
       ValueId.LocalId(NodeId.fresh(), Vector.empty),
       () => typeToTypeClassifier,

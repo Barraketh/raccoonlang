@@ -29,8 +29,6 @@ class ConstructorMetadataTests extends munit.FunSuite with TestSupport {
       binders,
       codomain,
       Value.Kind.unr,
-      Value.Lifetime.empty,
-      Value.Lifetime.empty,
       DepSet.empty,
       ValueId.LocalId(NodeId.fresh(), Vector.empty),
       () => classifier,
@@ -80,10 +78,7 @@ class ConstructorMetadataTests extends munit.FunSuite with TestSupport {
 
     def nestedWithClosureRef(ref: CoreAst.LocalRef): CoreAst.Term.Pi = {
       val refTerm = CoreAst.Term.LocalRef(ref, span)
-      val closure = CoreAst.Closure(
-        CoreAst.ClosureField.Written(refTerm),
-        CoreAst.ClosureField.Written(refTerm)
-      )
+      val closure = CoreAst.Closure(CoreAst.ClosureField.Written(refTerm))
       CoreAst.Term.Pi(
         Vector(binder("nested", 72003, BinderMode.Explicit)),
         CoreAst.Term.GlobalRef("Nat", span),
@@ -159,7 +154,7 @@ class ConstructorMetadataTests extends munit.FunSuite with TestSupport {
 
   test("checked constructors reuse uniform family results without mixing indices or nominal owners") {
     val cons = env("List.cons").asInstanceOf[ConstructorHead]
-    val familyArgs = Vector[Value](Value.Level.zero, Value.Lifetime.empty, nat)
+    val familyArgs = Vector[Value](Value.Level.zero, nat)
     val nil = Interpreter.evalApply(env("List.nil"), familyArgs)
     val first = Interpreter.evalApply(cons, familyArgs ++ Vector(VPacked.nat(1, nat), nil))
     val second = Interpreter.evalApply(cons, familyArgs ++ Vector(VPacked.nat(2, nat), nil))

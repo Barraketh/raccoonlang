@@ -1,17 +1,6 @@
 package com.raccoonlang
 
-import com.raccoonlang.Value.{
-  Kind,
-  KindTpe,
-  Large,
-  Level,
-  Lifetime,
-  LifetimeTpe,
-  ParameterTpe,
-  SortParameter,
-  VPi,
-  VSort
-}
+import com.raccoonlang.Value.{Kind, KindTpe, Large, Level, ParameterTpe, SortParameter, VPi, VSort}
 
 /**
  * The one place sorts are built and classified (docs/kernel.md#universes-and-function-types). `VSort` is constructed
@@ -21,20 +10,19 @@ import com.raccoonlang.Value.{
 object Sorts {
 
   /** Data universes start at zero; Prop has a distinct tag and unrestricted proofs. */
-  def sort(level: Level, kind: Kind, scope: Lifetime): VSort = new VSort(false, level, kind, scope)
+  def sort(level: Level, kind: Kind): VSort = new VSort(false, level, kind)
 
-  def prop(scope: Lifetime): VSort = new VSort(true, Level.zero, Kind.unr, scope)
+  val Prop: VSort = new VSort(true, Level.zero, Kind.unr)
 
-  val Prop: VSort = prop(Lifetime.empty)
-  val Type: VSort = sort(Level.zero, Kind.unr, Lifetime.empty)
+  val Type: VSort = sort(Level.zero, Kind.unr)
 
   def isProp(sort: VSort): Boolean = sort.isProp
 
   /**
-   * The sort of the type `tpe`, which says what its values hold: their kind and scope. A large type and a sort
-   * parameter have none, since no sort classifies either, so their values hold nothing. Anything else is not a type,
-   * and asking is a bug. Linearity, confinement, a lambda's captures and propositions read a type's sort here; where a
-   * position requires a type, `TypeChecker.getUniverse` refuses one without a sort instead.
+   * The sort of the type `tpe`, which says what its values hold: their kind. A large type and a sort parameter have
+   * none, since no sort classifies either, so their values hold nothing. Anything else is not a type, and asking is a
+   * bug. Linearity, a lambda's captures and propositions read a type's sort here; where a position requires a type,
+   * `TypeChecker.getUniverse` refuses one without a sort instead.
    */
   def sortOf(tpe: Value): Option[VSort] =
     tpe.tpe match {
@@ -43,7 +31,7 @@ object Sorts {
       case classifier            => wtf(s"The type $tpe is classified by $classifier, which is no classifier")
     }
 
-  /** A sort's kind or its scope: the two fields a function type's closure also has. */
+  /** A sort's kind, also the field a function type's closure carries. */
   sealed abstract class Field[P <: Value](val parameter: ParameterTpe) {
     def of(sort: VSort): P
 
@@ -53,14 +41,13 @@ object Sorts {
     def join(parts: Iterable[P]): P
 
     /**
-     * What a lambda that captures a local holding `value` holds of this field (spec §4.3): its type's sort's, and, for
-     * the scope, the lifetime a local of `Lifetime` holds. A level variable, a kind variable and a recursive
-     * definition's reference to itself, whose type may be large, contribute the least: none is a value the lambda
-     * holds.
+     * What a lambda that captures a local holding `value` holds of this field: its type's sort's kind. A level
+     * variable, a kind variable and a recursive definition's reference to itself, whose type may be large, contribute
+     * the least: none is a value the lambda holds.
      */
     def ofCapture(value: Value): P
 
-    /** `Kind.unr` or `Lifetime.empty`: the unit of the join, and what every substitution keeps. */
+    /** `Kind.unr`: the unit of the join, and what every substitution keeps. */
     def isLeast(part: P): Boolean
 
     def contains(declared: P, part: P): Boolean
@@ -79,30 +66,9 @@ object Sorts {
       KindExceeded(declaration, declared, part, partValue)
   }
 
-  object ScopeField extends Field[Lifetime](LifetimeTpe) {
-    def of(sort: VSort): Lifetime = sort.scope
-    def normalForm(value: Value): Lifetime = Interpreter.getLifetime(value)
-    def join(parts: Iterable[Lifetime]): Lifetime = Lifetime.union(parts)
-    def ofCapture(value: Value): Lifetime =
-      value match {
-        case lifetime: Lifetime => lifetime
-        case other              => sortOf(other.tpe).fold(Lifetime.empty)(_.scope)
-      }
-    def isLeast(part: Lifetime): Boolean = part.isEmpty
-    def contains(declared: Lifetime, part: Lifetime): Boolean = Lifetime.contains(declared, part)
-    private[Sorts] def exceeded(
-        declaration: String,
-        declared: Lifetime,
-        part: ContainedPart,
-        partValue: Lifetime
-    ): TypeError =
-      ScopeExceeded(declaration, declared, part, partValue)
-  }
-
   /**
-   * The one containment rule (spec §2.6): something that declares a kind or scope must contain each of its parts', else
-   * `KindExceeded` or `ScopeExceeded` naming the part, at `site`. A lambda's written closure bounds its captures (spec
-   * §4.3), a family's declared kind its fields' kinds, and its declared scope its lifetime parameters (spec §5.1).
+   * A declaration's kind must contain each part's kind, else `KindExceeded` identifies the part at its source site.
+   * This applies to lambda captures and a family's fields.
    */
   def requireContains[P <: Value](
       field: Field[P],
@@ -113,30 +79,6 @@ object Sorts {
       site: Span
   ): Unit =
     if (!field.contains(declared, partValue)) at(site)(fail(field.exceeded(declaration, declared, part, partValue)))
-
-  /**
-   * A type former, a family or an axiom whose type ends in a sort, names each of its lifetime parameters in its
-   * declared scope (spec §5.1): `parameters` are its binders and the values they stand for. No other binder's type can
-   * name another lifetime, since only a parameter binds one and no atom is open at a declaration, so the declared scope
-   * contains every parameter type's scope too.
-   */
-  def requireNamesLifetimeParameters(
-      declaration: String,
-      declared: Lifetime,
-      parameters: Vector[(CoreAst.Binder, Value)]
-  ): Unit =
-    parameters.foreach {
-      case (binder, lifetime: Lifetime) =>
-        requireContains(
-          ScopeField,
-          declaration,
-          declared,
-          ContainedPart.LifetimeParameter(binder.name),
-          lifetime,
-          binder.span
-        )
-      case (_, _) =>
-    }
 
   /**
    * The type is a proposition: its values are proofs. A type in `Prop` is one, and so is a large function type into a

@@ -3,11 +3,11 @@ package com.raccoonlang
 /**
  * Sealed families (spec §7.1). A sealed family exports its head, parameters, indices and classifier, but its
  * constructors and selectors only to its module, the `.rac` file that declares it. Sealing restricts what a program may
- * write, never what the checker knows (§7.2): kinds, scopes, coverage, apartness and conversion read the full
- * declaration everywhere, and evaluation compares no module. A seal shapes no value: structure eta and proof
- * reconstruction apply to a sealed family as to any other, since only the trusted prelude declares axioms and builtins,
- * and none of them yields a value of a sealed family except by applying its constructors (obligation T2,
- * docs/kernel.md), so every value of one was built from its constructors.
+ * write, never what the checker knows (§7.2): kinds, coverage, apartness and conversion read the full declaration
+ * everywhere, and evaluation compares no module. A seal shapes no value: structure eta and proof reconstruction apply
+ * to a sealed family as to any other, since only the trusted prelude declares axioms and builtins, and none of them
+ * yields a value of a sealed family except by applying its constructors (obligation T2, docs/kernel.md), so every value
+ * of one was built from its constructors.
  *
  * `accessible` is the one decision. The checker asks it where a name is resolved to a constructor or selector (a global
  * reference, a selected field), for a match's scrutinee family, which also covers a case's `.short` form, since that

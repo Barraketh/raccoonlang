@@ -3,8 +3,8 @@ package com.raccoonlang
 import com.raccoonlang.Value.{Kind, VPi, VSort}
 
 /**
- * Which types are linear (spec §3.1): the one answer, read off a type's sort as its scope is, never off a family's
- * fields. The ledger (Ledger) and every later linearity rule ask here.
+ * Which types are linear (spec §3.1): the one answer, read off a type's sort's kind, never off a family's fields. The
+ * ledger (Ledger) and every later linearity rule ask here.
  */
 object Linearity {
 

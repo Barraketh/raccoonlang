@@ -60,7 +60,7 @@ class PropTests extends munit.FunSuite with TestSupport {
       case other  => fail(s"Expected Pi value, got: $other")
     }
 
-    assert(ValueEquivalence.defEq(res.tpe, Sorts.sort(Level.one, Value.Kind.unr, Value.Lifetime.empty)))
+    assert(ValueEquivalence.defEq(res.tpe, Sorts.sort(Level.one, Value.Kind.unr)))
   }
 
   test("Dependent Pi into Prop-the-sort lives in Type at level one") {
@@ -79,7 +79,7 @@ class PropTests extends munit.FunSuite with TestSupport {
       case other  => fail(s"Expected Pi value, got: $other")
     }
 
-    assert(ValueEquivalence.defEq(res.tpe, Sorts.sort(Level.one, Value.Kind.unr, Value.Lifetime.empty)))
+    assert(ValueEquivalence.defEq(res.tpe, Sorts.sort(Level.one, Value.Kind.unr)))
   }
 
   test("Pi over proof binder into Type stays in Type") {

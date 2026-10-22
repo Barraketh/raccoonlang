@@ -147,25 +147,24 @@ class WildcardCaseTests extends munit.FunSuite with TestSupport {
   test("a wildcard over a constructor with a linear field is LinearUnused at the wildcard") {
     val families =
       """
-        |inductive Tok (l: Lifetime) : Type { kind = lin, scope = l }
-        | | mk : Tok(l)
+        |inductive Tok : Type { kind = lin }
+        | | mk : Tok
         |
-        |def eat {l: Lifetime}(t: Tok(l)): Nat := match t returning Nat with
+        |def eat (t: Tok): Nat := match t returning Nat with
         | | Tok.mk => 0
         |
-        |inductive Bag (l: Lifetime) : Type { kind = lin, scope = l }
-        | | empty : Bag(l)
-        | | one (t: Tok(l)) : Bag(l)
+        |inductive Bag : Type { kind = lin }
+        | | empty : Bag
+        | | one (t: Tok) : Bag
         |""".stripMargin
-    val unused =
-      families + "def f {l: Lifetime}(b: Bag(l)): Nat := match b returning Nat with\n | Bag.empty => 0\n | _ => 1\n"
+    val unused = families + "def f (b: Bag): Nat := match b returning Nat with\n | Bag.empty => 0\n | _ => 1\n"
     val diagnostic = interceptDiagnostic(typecheckDecls(unused))
     assertEquals(diagnostic.error, LinearUnused("_"))
     assertEquals(diagnostic.span.map(_.start), Some(unused.indexOf("| _ =>")))
     // A linear local the body uses is used once on the path through each case the wildcard stands for.
     typecheckDecls(
       families + color +
-        "def g {l: Lifetime}(t: Tok(l))(c: Color): Nat := match c returning Nat with\n" +
+        "def g (t: Tok)(c: Color): Nat := match c returning Nat with\n" +
         " | Color.red => eat(t)\n | _ => eat(t)\n"
     )
   }
@@ -213,28 +212,6 @@ class WildcardCaseTests extends munit.FunSuite with TestSupport {
       PrettyPrinter.print(runProgram(source, prelude)),
       "match c returning Nat with | Color.red => 1 | Color.green => 0 | Color.blue => 0 | Color.other _ => 0"
     )
-  }
-
-  // Each case the wildcard stands for has its own copy of the body, as the written-out match has: a `scope` in it opens
-  // a different atom in each case, so the closures two cases return are different functions.
-  test("each case a wildcard stands for has a body of its own") {
-    val prelude = TestSupport.preludeAssuming(TestSupport.bundledPreludeSource, "axiom stuckL (l: Lifetime) : Nat\n")
-    def program(cases: String, name: String): String =
-      color +
-        s"def $name (c: Color): Nat -> Nat := match c returning Nat -> Nat with\n" +
-        " | Color.red => fun (x: Nat): Nat => x\n" +
-        s"$cases\n\n" +
-        s"def same : Eq(Nat -> Nat, $name(Color.green), $name(Color.blue)) := Eq.refl($name(Color.green))\n"
-    val body =
-      "fun (x: Nat): Nat => scope l => {\n   match x returning Nat with\n   | Nat.zero => stuckL(l)\n   | Nat.succ _ => 0\n }"
-    val wildcard = program(s" | _ => $body", "wild")
-    val writtenOut =
-      program(
-        Vector("Color.green", "Color.blue", "Color.other _").map(c => s" | $c => $body").mkString("\n"),
-        "written"
-      )
-    interceptError[TypeMismatch](typecheckDecls(writtenOut, prelude))
-    interceptError[TypeMismatch](typecheckDecls(wildcard, prelude))
   }
 
   // The residual lists its cases in declaration order, so a wildcard match converts with the match written out in

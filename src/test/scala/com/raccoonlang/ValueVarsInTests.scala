@@ -27,8 +27,6 @@ class ValueVarsInTests extends munit.FunSuite {
       binders,
       _ => valueType,
       Kind.unr,
-      Lifetime.empty,
-      Lifetime.empty,
       Value.envDeps(env),
       ValueId.LocalId(NodeId.fresh(), captures),
       () => Sorts.Type,

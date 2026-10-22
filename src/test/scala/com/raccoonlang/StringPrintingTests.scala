@@ -273,14 +273,12 @@ class StringPrintingTests extends munit.FunSuite with TestSupport {
       InductiveTypeNotASort(ab),
       LinearInType(CoreAst.Term.GlobalRef("t", span), ab),
       LinearGlobal(None, ab),
-      LifetimeEscapes("l", ab),
       NonStrictlyPositive("Box", "Box.mk", "a", ab),
       PropEliminationRestricted("Box", ab),
       NonInductiveDecreaseMetric(ab, isProof = true),
       NonInductiveDecreaseMetric(ab, isProof = false)
     ) ++ failures.map(ImplicitReconstructionFailed("A", "f", _)) ++
-      parts.map(KindExceeded("Box", Value.Kind.unr, _, Value.Kind.lin)) ++
-      parts.map(ScopeExceeded("Box", Value.Lifetime.empty, _, Value.Lifetime.empty))
+      parts.map(KindExceeded("Box", Value.Kind.unr, _, Value.Kind.lin))
     errors.foreach { error =>
       val message = ErrorRendering.render(error, strings)
       assert(message.contains("\"ab\"") && !message.contains("String.mk"), message)
@@ -298,7 +296,7 @@ class StringPrintingTests extends munit.FunSuite with TestSupport {
       holdingValues("Errors.scala", "TypeError|ContainedPart") ++
         holdingValues("telescope/Projection.scala", "Failure"),
       (errors ++ parts ++ failures).map(_.productPrefix).toSet --
-        Set("ImplicitReconstructionFailed", "KindExceeded", "ScopeExceeded")
+        Set("ImplicitReconstructionFailed", "KindExceeded")
     )
   }
 

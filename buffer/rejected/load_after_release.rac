@@ -1,0 +1,11 @@
+import buffer.Program
+
+def loadAfterRelease {r: Type}{m: Type}{b: Type}
+    (ctx: Buffer.Ctx(r, m))(handle: Buffer.ScratchHandle(r, b))(owner: Buffer.ScratchOwn(r, b))
+    (offset: Buffer.Val64(r, m))
+    : Pair(Buffer.Ctx(r, m), Pair(Buffer.ScratchOwn(r, b), Buffer.Val32(r, m))) := {
+  let released := Buffer.releaseScratch(ctx, handle, owner)
+  Buffer.load8Scratch(released, handle, owner, offset)
+}
+
+{ Unit.unit }

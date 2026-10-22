@@ -47,11 +47,11 @@ class AxiomTests extends munit.FunSuite with TestSupport {
   }
 
   test("an axiom outside the prelude is UntrustedAxiom whatever its type, spec §7.3's examples and harmless ones") {
-    val both = "inductive Both (l: Lifetime)(m: Lifetime) : Type { scope = union(l, m) }\n | mk : Both(l, m)\n\n"
+    val both = "inductive Both (A: Type)(B: Type) : Type\n | mk : Both(A, B)\n\n"
     Vector(
       "axiom excludedMiddle (P: Prop): Or(P, Not(P))\n" -> "excludedMiddle",
       "axiom eat {A: Type { kind = lin }}(x: A): Unit\n" -> "eat",
-      both + "axiom bothEq (a: Lifetime)(b: Lifetime): Eq(Type { scope = union(a, b) }, Both(a, b), Both(b, a))\n" ->
+      both + "axiom bothEq (a: Type)(b: Type): Eq(Type, Both(a, b), Both(b, a))\n" ->
         "bothEq",
       "axiom a : List(Nat)\n" -> "a"
     ).foreach { case (program, axiom) =>
@@ -59,30 +59,30 @@ class AxiomTests extends munit.FunSuite with TestSupport {
     }
   }
 
-  test("the prelude's Quot binds lifetimes, and the same declaration in a program is UntrustedAxiom") {
+  test("an axiom with a generic result sort is still UntrustedAxiom outside the prelude") {
     val quot =
-      "axiom Quot2 {u: Level}{S: Lifetime}{Sr: Lifetime}{Sq: Lifetime}(A: Type { level = u, scope = S })" +
-        "(r: { scope = Sr } A -> A -> Prop { scope = Sq }): Type { level = u, scope = union(S, union(Sr, Sq)) }\n"
+      "axiom Quot2 {u: Level}{k: Kind}(A: Type { level = u, kind = k })" +
+        "(r: A -> A -> Prop): Type { level = u, kind = k }\n"
     TestSupport.preludeAssuming(TestSupport.bundledPreludeSource, quot).checkedEnv
     assertEquals(expectOnly[UntrustedAxiom](typecheckDecls(quot)), UntrustedAxiom("Quot2"))
   }
 
-  /** A sealed permit its module redeems for a token, and a module function returning one (spec §7.1). */
+  /** A sealed proof its module redeems for a linear token, and a module function returning one (spec §7.1). */
   private val permitModule =
     """
-      |sealed inductive Permit (l: Lifetime) : Prop { scope = l }
-      | | mk : Permit(l)
+      |sealed inductive Permit : Prop
+      | | mk : Permit
       |
-      |sealed inductive Tok (l: Lifetime) : Type { kind = lin, scope = l }
-      | | mk : Tok(l)
+      |sealed inductive Tok : Type { kind = lin }
+      | | mk : Tok
       |
-      |def redeem {l: Lifetime}(p: Permit(l)): Tok(l) := match p returning Tok(l) with
-      | | .mk => Tok.mk(l)
+      |def redeem (p: Permit): Tok := match p returning Tok with
+      | | .mk => Tok.mk
       |
-      |def burn {l: Lifetime}(t: Tok(l)): Nat := match t returning Nat with
+      |def burn (t: Tok): Nat := match t returning Nat with
       | | .mk => 1
       |
-      |def grant (n: Nat): Permit(Lifetime.empty) := Permit.mk(Lifetime.empty)
+      |def grant (n: Nat): Permit := Permit.mk
       |""".stripMargin
 
   test("a proof of a sealed proposition is reconstructed like any other, so the module's match redeems it") {
@@ -91,13 +91,13 @@ class AxiomTests extends munit.FunSuite with TestSupport {
     assertEquals(outside(permitModule, "{ burn(redeem(grant(0))) }").map(PrettyPrinter.print), Some("1"))
     // So is a proof pulled out of another family's field, and one whose proposition computes to Permit.
     val wrapped =
-      "struct Wrapper : Prop\n | mk (p: Permit(Lifetime.empty)) : Wrapper\n\n" +
+      "struct Wrapper : Prop\n | mk (p: Permit) : Wrapper\n\n" +
         "def unwrap (w: Wrapper): Nat := match w returning Nat with\n | .mk p => burn(redeem(p))\n\n" +
         "{ unwrap(Wrapper.mk(grant(1))) }\n"
     assertEquals(outside(permitModule, wrapped).map(PrettyPrinter.print), Some("1"))
     val computed =
-      "def P (n: Nat) : Prop := match n returning Prop with\n | .zero => Permit(Lifetime.empty)\n | .succ _ => True\n\n" +
-        "def at (p: Permit(Lifetime.empty)): P(0) := p\n\n{ burn(redeem(at(grant(2)))) }\n"
+      "def P (n: Nat) : Prop := match n returning Prop with\n | .zero => Permit\n | .succ _ => True\n\n" +
+        "def at (p: Permit): P(0) := p\n\n{ burn(redeem(at(grant(2)))) }\n"
     assertEquals(outside(permitModule, computed).map(PrettyPrinter.print), Some("1"))
   }
 }

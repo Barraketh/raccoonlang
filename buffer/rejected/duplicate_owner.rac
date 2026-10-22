@@ -1,6 +1,6 @@
 import buffer.Program
 
-def duplicate {r: Lifetime}{b: Lifetime}(owner: Buffer.ScratchOwn(r, b))
+def duplicate {r: Type}{b: Type}(owner: Buffer.ScratchOwn(r, b))
     : Pair(Buffer.ScratchOwn(r, b), Buffer.ScratchOwn(r, b)) := Pair.mk(owner, owner)
 
 { Unit.unit }

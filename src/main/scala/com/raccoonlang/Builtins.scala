@@ -63,7 +63,7 @@ private object Builtins {
 
   /**
    * The position of the binder `name` in a builtin's declared type. Builtins locate their arguments by name, so the
-   * prelude may add binders, such as lifetime variables, without moving them.
+   * prelude may add binders without moving them.
    */
   private def binderIndex(pi: VPi, name: String): Int =
     pi.binders.indexWhere(_.name == name) match {

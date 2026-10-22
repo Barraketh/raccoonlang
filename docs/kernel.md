@@ -58,7 +58,7 @@ refinable variables. Its successful rules are:
   registered builtin reduction;
 - structural congruence for values and applications;
 - extensional comparison of lambdas on shared fresh arguments;
-- equality of normal forms for universe levels, kinds and lifetimes, and of
+- equality of normal forms for universe levels and kinds, and of
   sorts field by field;
 - proof irrelevance at definitionally equal propositions;
 - structure eta for eligible non-Prop inductive instances;
@@ -70,7 +70,7 @@ must have the same binder count and binder modes (explicit, implicit or
 evidence) within the current group.
 `(a: A)(b: B) -> C` is not convertible with
 `(a: A) -> ((b: B) -> C)`. Their closures compare exactly too: equal closure
-kinds and equal closure scopes, as normal forms.
+kinds.
 
 Conversion does not include universe cumulativity. Type fitting succeeds by
 definitional equality, not by a general subtyping relation. Checking a term
@@ -92,11 +92,10 @@ solution. In particular:
 - an occurs failure or an equation that has several possible solutions remains
   stuck;
 - level variables link only when normalization leaves a forced solution;
-- a kind or lifetime variable links only when it is alone on one side and does
-  not occur on the other; when both sides are variables, the later-bound one
-  links to the earlier-bound one. An atom is not a variable and never links:
-  admitting a value's ids as refinable leaves its atoms out. Every other kind or
-  lifetime equation, a join or union on both sides included, is stuck;
+- a kind variable links only when it is alone on one side and does not occur on
+  the other; when both sides are variables, the later-bound one links to the
+  earlier-bound one. Every other kind equation, including a join on both sides,
+  is stuck;
 - refinable values at eta-eligible structure types are expanded at the
   refinability boundary, where eta makes the expansion unique.
 
@@ -135,9 +134,9 @@ closed keys: their invertible arguments may contain a nested nominal clash.
 Other conclusive key mismatches retain the stuck fast result.
 
 Proof constructors, quotient constructors, Prop family heads, axiom applications,
-level, kind and lifetime failures, and ordinary unification failures do not
-produce apartness. No two kinds and no two lifetimes are apart, so refinement
-never prunes a branch on one.
+level and kind failures, and ordinary unification failures do not produce
+apartness. No two kinds are apart, so refinement never prunes a branch on a
+kind equation.
 
 ## Nominal Type families
 
@@ -147,8 +146,8 @@ instances of different declarations unequal. N3 separates family instances,
 Type-valued Pi types and Type universes. These principles apply at arbitrary
 depth, including nested Type-family arguments, and to sealed declarations.
 They do not identify structurally identical declarations. Proof arguments are
-compared modulo proof irrelevance; level, kind and lifetime annotations retain
-their existing semantic equality rules.
+compared modulo proof irrelevance; level and kind annotations retain their
+existing semantic equality rules.
 
 Prop families have neither injectivity nor generativity: they may be equal
 under propositional extensionality. Their decomposition during a match is
@@ -160,8 +159,8 @@ are congruence checks: they cannot force links or propagate apartness.
 Axioms, blocked applications and Quot type heads provide no nominal evidence.
 Prop-versus-Type-sort comparisons and every sort-field failure remain stuck.
 N3 applies to a Type-valued Pi, never a proposition-valued Pi. Two universes
-convert only at equal level, kind and scope, but failure to compare those
-fields is not a refutation.
+convert only at equal level and kind, but failure to compare those fields is
+not a refutation.
 
 For a Type family at level `n`, each ordinary parameter and index must satisfy
 this sufficient elementwise bound:
@@ -173,7 +172,7 @@ this sufficient elementwise bound:
 | a Type-valued Pi telescope ending in `B` | maximum of each domain's ordinary classifier level and the recursive bound of `B` |
 | any other ordinary type | its classifier level |
 
-Annotation parameters (Level, Kind, Lifetime) are exempt. Dependent Pi domains
+Annotation parameters (Level and Kind) are exempt. Dependent Pi domains
 and results are checked under the fresh typed telescope. A universe domain
 `Type_m` costs `succ(m)`, whereas a universe argument or codomain costs `m`.
 Thus `List(A: Type): Type` and `Sigma(A: Type)(B: A -> Type): Type` remain
@@ -202,235 +201,81 @@ substitutions.
 
 ## Universes and function types
 
-The sort formers are `Type { level = e, kind = k, scope = S }` for data and
-`Prop { scope = S }` for propositions. Data levels begin at zero; omitted
-fields are `Level.zero`, `Kind.unr` and `Lifetime.empty`. `Prop` has no level
-or kind. The primitive universe equations are:
+The kernel owns two sort formers. `Prop` is a singleton with no fields;
+`Type` has a universe level and a kind:
 
 ```text
-Prop { scope = S } : Type { scope = S }
-Type { level = u, kind = k, scope = S } : Type { level = Level.succ(u), scope = S }
+Prop : Type
+Type { level = u, kind = k } : Type { level = Level.succ(u) }
 ```
 
-`Level`, `Kind` and `Lifetime` are the sort parameters. Their forms,
-`Level.zero`, `Level.one`, `Level.succ`, `Level.max`, `Kind.unr`,
-`Kind.lin`, `Kind.join`, `Lifetime.empty` and `Lifetime.union`, are Core terms
-too, always applied to all of their arguments. The kernel owns the parameters,
-their forms and the sort formers: no declaration introduces them, the prelude
-declares none of them, and no global or builtin carries a form's name.
-
-Every sort parameter expression is normalized at birth, and its only neutrals
-are variables:
-
-- Levels normalize to maxima of offset atoms plus an optional constant.
-- A lifetime is the set of its lifetime variables and atoms (see
-  [Scopes and atoms](#scopes-and-atoms)); `Lifetime.union` is set union.
-- A kind is `Kind.lin` or a set of kind variables, the empty set being
-  `Kind.unr`; `Kind.join` unites the sets, and `Kind.lin` absorbs.
-
-Normalized representation equality is equality of levels, kinds and lifetimes.
-Each normal form is built only by its own constructors, which sort and
-deduplicate, so one implementation of union, join and containment serves the
-checker and the evaluator. A kind or lifetime has no neutral other than a
-variable or an atom, so no two of them are ever apart.
-
-Data sorts admit every kind at every level. Proofs are unrestricted: a
-function type into a proposition must have closure kind `Kind.unr`.
-
-A telescope
+`Level` and `Kind` are second-class sort parameters. Their forms are Core
+terms owned by the kernel, not prelude declarations:
 
 ```text
-{ kind = k, scope = C } (x1 : A1) ... (xn : An) -> B
+Level.zero  Level.one  Level.succ(u)  Level.max(u, v)
+Kind.unr  Kind.lin  Kind.join(k, j)
 ```
 
-that binds no level has the sort
+Levels normalize to maxima of offset variables and constants. A kind is
+`Kind.lin` or a set of kind variables, with the empty set representing
+`Kind.unr`; `join` unites those sets and `Kind.lin` absorbs. Normalized
+representation equality is definitional equality. A level or kind variable is
+a neutral; no other neutrals exist for these parameters.
+
+Data sorts admit every kind at every level. A proposition-valued function has
+sort `Prop` and must have closure kind `Kind.unr`. A type-valued function has
+the kind written by its closure annotation and the maximum level of its domain
+classifiers and codomain. Proposition domains count as level zero. A Pi that
+binds a level is classified by `Large`, since no sort contains that telescope;
+instantiating its binders yields a small type again because its codomain is a
+type. A kind binder does not make a Pi large.
+
+The closure annotation on a function type contains its closure kind:
 
 ```text
-Type { level = max(u1, ..., un, v),
-       kind = k,
-       scope = union(C, S1, ..., Sn, SB, M)
-               less the telescope's own lifetime variables }
+{ kind = k } (x1 : A1) ... (xn : An) -> B
 ```
 
-where each `Ai : Type { level = ui, scope = Si }`,
-`B : Type { level = v, scope = SB }`, and `M` is the function type's mentioned
-scope: what the locals bound outside it that its binder types and codomain
-mention contribute, by the rule a lambda's captures follow below. Those are
-code, evaluated each time the type is instantiated, so the type belongs to
-everything they hold. The closure `{ kind = k, scope = C }` is the function
-type's closure kind and closure scope: how its values may be applied, and what
-they hold. It is evaluated where the Pi
-stands, outside its own binders. A proposition domain contributes level zero. A binder of type `Kind` or `Lifetime`
-contributes neither a level nor a scope. Consequently, a Pi whose codomain is a
-proposition lives in `Prop` at its scope, regardless of its domain universes. A
-codomain equal to the sort `Prop` is different: `Prop` itself lives in `Type`.
+An omitted closure kind is `Kind.unr`. It is part of the function type and
+compares exactly during conversion. A lambda derives its closure kind by
+joining the kinds of the locals its body captures, including locals used in
+types written in the body but excluding its binder types and result type. A
+written closure kind must contain that derived kind; otherwise checking reports
+`KindExceeded` at the field or capture. Each residual lambda retains its
+captures, so re-evaluation derives the same closure kind from the current
+instantiated environment. A definition's own function type is unrestricted,
+regardless of the kinds used in its body.
 
-A written function type has no body to derive a closure from, so the
-elaborator writes an omitted closure field of one as the least, `Kind.unr` or
-`Lifetime.empty`; what its code captures is its mentioned scope, not its
-closure, and a declaration's own type is
-always at that closure. A lambda's closure is part of its type and is decided by
-the lambda alone. Its captures are the locals bound outside it that its body
-mentions, in terms and in types written in the body; its binder types and
-result are not its body, and implicit arguments are never written, so neither
-contributes. Each capture contributes the kind and scope of its type's sort,
-and a local of type `Lifetime` contributes the lifetime it holds to the scope: a
-lambda belongs to every lifetime its code names. A variable of `Level` or `Kind`
-contributes nothing, and neither does a recursive definition's reference to
-itself, which names a global. The lambda's own lifetime binders are not
-captures: its caller supplies them. An omitted closure field is the join of the
-captures' kinds or the union of their scopes; a written one must contain it,
-else `KindExceeded` or `ScopeExceeded` naming a capture it does not contain.
-That test, a family's declared kind against its fields' and a type former's
-declared scope against its lifetime parameters are one containment rule with
-one implementation.
+The sort parameters are not types: their classifiers are not sorts. A binder
+of `Level` or `Kind` is admitted only at a definition or axiom header or a
+family parameter. Function-type and lambda binders, family indices and
+constructor fields must have type-valued types. An expression of a sort
+parameter stands only in a sort field or at an argument position that expects
+that parameter. A reference whose type is `Large` stands only as an application
+head, and a large type is admitted only as a declaration's type. Other
+positions report `NotAType`.
 
-The residual carries a derived field as the captures it is derived from. Every
-evaluation of the lambda, the one checking makes included, reads those captures
-in the environment it is evaluated in and derives the field from their values'
-types' sorts and the lifetimes they hold; one function does it. A capture that
-contributes `Kind.unr` or `Lifetime.empty` to a field as checking saw it is
-left out of that field, since every instantiation keeps it so: a lambda whose
-captures are all unrestricted and unscoped carries none. Sorts commute with
-substitution, so an evaluation derives what checking would derive under that
-instantiation. A function type's mentioned scope is derived by the same
-function, from the locals its binder types and codomain capture, wherever it is
-evaluated. A printed residual shows a
-derived field as omitted, as the source did.
-
-A telescope that binds a level is instead classified by `Large`. A level binder
-changes the universe of everything after it, so no sort contains the Pi. `Large`
-is kernel-internal: it is not a sort, no program writes it, and it classifies
-itself, which is harmless because nothing quantifies over it. A type's
-classifier is therefore a sort or `Large`, and code that reads a Pi's
-classifier handles both. Instantiating a large Pi's binders yields small types
-again: its codomain is always a type. Kind and lifetime binders never make a
-Pi large.
-
-The sort parameters are not types: their classifier is not a sort. Every
-checked term must have a type, except in the positions that admit something
-else:
-
-- a binder of a sort parameter is admitted only where its site allows: a
-  parameter site (a declaration's header, the binders before its `:`, or a
-  family parameter) may bind any sort parameter, a function type's or lambda's
-  binder only a lifetime, and a family index or constructor field none.
-  Everywhere else a binder's type must be a type. The elaborator records each
-  binder's site, so a function type written after a declaration's `:` binds no
-  level;
-- an expression of a sort parameter stands only where a sort parameter is
-  expected: a sort's field and the argument at a binder of a sort parameter,
-  which is checked against that parameter rather than synthesized alone. A term
-  of another type there, another sort parameter's included, is a type mismatch;
-- a reference whose type is large stands only as the head of an application;
-- a large type is admitted only as a declaration's type: a definition, axiom,
-  family or constructor, and a definition's lambda at that type.
-
-Anywhere else a sort parameter, an expression of one, or a large reference is
-`NotAType`, except as the base of a selection `b.f`: only a value of a family
-instance has selectors, so any other base, these included, makes `b.f`
-`NotFound`.
-
-Universes are non-cumulative, and so are kinds and scopes: two sorts are
-convertible only when their levels, kinds and scopes are. A function type's
-mentioned scope is part of its identity, beside its closure, so two function
-types are convertible only when their mentioned scopes are, and a type
-determines its sort. Constructor-field
+Universes and kinds are non-cumulative. Two sorts convert only when their
+level and kind fields are definitionally equal, and a function type's closure
+kind is part of its identity. A type determines its sort. Constructor field
 universe checks enforce the declared inductive's size bound, but they do not
 introduce general sort subsumption.
 
-A sort is `Prop` exactly when it has the proposition tag, and a type is a proposition
-exactly when its sort is `Prop` (a Pi by its codomain, so a large Pi into a
-proposition is one too). The kernel has one definition of each, which the
-checker and proof irrelevance share. Sorts are compared only by conversion.
-
 An implicit binder is accepted only with a compiled projection that recovers
-it from later explicit arguments. A sort's level, kind and scope, and a function
-type's closure kind and closure scope, are projection positions; the kinds and
-scopes recover a variable only when the field is exactly that variable. So are
-a function type's domains, codomain and result where they do not depend on its
-own binders, a proof's proposition, a no-confusion constructor's stored fields,
-and the arguments of an application of a family or of a type former: a trusted
-axiom whose type ends in a sort, such as `Quot`, which names each of its
-lifetime parameters in its declared scope as a family does, else
-`ScopeExceeded` at the axiom. The arguments of any other application, another
-axiom's, a stuck builtin's or a parameter's, are not: such an
-application is a blocked computation, and what its arguments hold is counted by
-no type's sort; so is a checked recursive call. Only a type former's
-application of its whole type, one binder group, is read. A function type's
-mentioned scope is not a position either.
-Positions are searched breadth-first from the explicit arguments, and a closure
-field only once no other position is left: a closure is what a lambda derives
-from its captures, so reading an implicit elsewhere lets a lambda written
-without the closure its parameter declares fail its own check. Only explicit
-binders are roots: an evidence binder is not, supplied or not, since its
-argument is discharged from its proposition (see
-[Evidence arguments](#evidence-arguments)). Checked applications retain only
-explicit arguments. Checking and evaluation
-reconstruct every implicit with the same projection and then check it against
-its instantiated binder type. Constructor family parameters that cannot be
-projected are demoted to explicit arguments; other unforced implicits are
-rejected.
-
-## Scopes and atoms
-
-`scope l => e` is a Core term of its own. It opens an atom: an id in a
-lifetime's set, allocated like a variable's and printed as the `scope`'s
-binder, but not a variable. One registry, shared by checking and evaluation,
-maps the term's node identity to its atom, so two `scope` terms are two
-atoms and one term checked or evaluated any number of times is one atom, a
-recursive call re-entering it included. Both checking and evaluation bind `l`
-to the lifetime holding exactly that atom, and the term denotes its body's
-value. A residual keeps the term with its node identity, so re-evaluating it
-opens the same atom. An atom is never refinable, so refinement never links it,
-and nothing abstracts over it: a function type's scope drops only its own
-binders' variables.
-
-Confinement is the one check an atom needs. A type whose sort's scope names an
-atom whose `scope` does not enclose the position is `LifetimeEscapes`. A type's
-sort is its classifier; a sort's own sort is at the same scope, so a type at a
-type position is confined through its sort, and a large type or a sort
-parameter names no atom. The checker keeps the atoms whose `scope` encloses the
-position in its environment; they are lexical, and closing an environment over
-a value drops them. One test applies the rule, reading the sort's scope and
-nothing else; it returns at once until a program opens an atom. It is applied
-at these choke points:
-
-- every type the checker synthesizes, at the one exit of synthesis, so a
-  `scope`'s own type is tested where its atom is no longer open; this is what
-  keeps the body's type's sort from naming the atom;
-- every type a term is checked against;
-- a binder's type, which is the type of the local it binds, and a pattern
-  field's type;
-- an argument at a binder whose type is a sort, which is itself a type.
-
-Evaluation never makes the check, and needs none: once a `scope` closes,
-nothing can hold, create or use a value whose type's sort names its atom. A
-value reaches an atom only through what it is made of, and each part is
-counted in its type's sort's scope:
-
-- a constructor's fields, through its family's declared scope, which contains
-  every field's and names every lifetime parameter (see
-  [Inductives and matching](#inductives-and-matching));
-- a lambda's captures, through its closure scope;
-- code that names a lifetime, through a lambda's closure scope or a function
-  type's scope (see
-  [Universes and function types](#universes-and-function-types));
-- a type, through its own sort.
-
-Two kinds of value hold an atom their type's sort does not name, and neither
-runs: a computation blocked on an axiom or a builtin, or, while checking, on a
-parameter; and a proof. Nor can an implicit read the atom back
-out of one: a blocked computation's arguments are not projection positions (see
-[Universes and function types](#universes-and-function-types)). So a global
-value may hold an atom only inside a blocked computation or a proof, and never
-a variable. The `scope`'s own type does not name its atom, by the check at its
-exit, and no value bound before the `scope` opened can name it.
-
-A derived closure holds an atom when a capture's type's scope does, or a
-captured lifetime holds it (see
-[Universes and function types](#universes-and-function-types)): either names
-only atoms whose `scope` encloses the lambda.
+it from later explicit arguments. Projection positions include sort levels and
+kinds, function types' closure kinds and independent domains, codomains and
+results, proof propositions, no-confusion constructor fields, and arguments of
+a family or trusted type-former application. The checker does not project
+through arbitrary applications, another axiom, a blocked builtin or a local
+parameter application. A type former is read at its whole type and one binder
+group. Positions are searched breadth-first from explicit arguments. Only
+explicit binders are roots: evidence arguments are discharged from their
+propositions and are not projection roots. Checked applications retain only
+explicit arguments. Checking and evaluation reconstruct each implicit with
+the same projection and validate it against its instantiated binder type.
+Constructor family parameters that cannot be projected are demoted to explicit
+arguments; other unforced implicits are rejected.
 
 ## Linearity
 
@@ -517,14 +362,8 @@ An inductive declaration is installed only after checking:
 - that the family result is a sort;
 - universe bounds for every constructor field, and elementwise argument bounds
   for every ordinary parameter and index of each Type family;
-- kind and scope bounds: the family's declared kind, which is never derived,
-  contains every constructor field's kind, `Prop` families included; and every
-  family, whatever its kind, names each of its lifetime parameters in its
-  scope, so that a lifetime a forced implicit reads off an instance is counted
-  in the instance's sort. The declared scope may mention only parameters, so
-  it is exactly the union of the lifetime parameters. Only a parameter binds a
-  lifetime and no atom is open at a declaration, so every field's, parameter's
-  and index's type's scope lies within it, and none is checked;
+- the family's declared kind, which is never derived, contains every
+  constructor field's kind, `Prop` families included;
 - that every constructor result is the declared family with uniform
   parameters and well-typed indices;
 - strict positivity of recursive occurrences;
@@ -540,8 +379,7 @@ the declared sort can only be a parameter, since no index binds a sort
 parameter.
 
 Atomic mutual-inductive blocks are available through the surface `mutual { ... }`
-form. Every family in a block has the same parameter telescope, so every
-family's scope is the union of the same lifetime parameters. Its level and kind
+form. Every family in a block has the same parameter telescope. Its level and kind
 are its own: each family is checked against its own declared sort, and a
 sibling's field is read by the sibling's. Where siblings hold each other, the
 field bounds force compatible sorts. All provisional family heads are visible while
@@ -624,7 +462,7 @@ scrutinee. Each expanded case is the case written
 out at the wildcard: every field bound to a fresh anonymous local, located at
 the wildcard, and a fresh copy of `e` for its body, with fresh node identities
 and fresh locals for everything `e` binds, so no two cases share a closure, a
-stuck match or a `scope` atom ([Value identity](#value-identity)). Its
+stuck match ([Value identity](#value-identity)). Its
 refinement, its ledger (an unused linear field is `LinearUnused` at the
 wildcard) and the termination check of a recursive call in `e` are that case's.
 A wildcard that stands for no constructor is `RedundantCase`, located at it. A
@@ -975,7 +813,7 @@ module function returned, although the function's body never runs, since the
 proof is reconstructed from its proposition.
 
 Sealing restricts what a program may write, not what the checker knows.
-Kinds, scopes, coverage, apartness and the conversion of values read the full
+Kinds, coverage, apartness and the conversion of values read the full
 declaration in every module, and evaluation compares no module. One function
 decides whether a position may use a sealed family's constructors; the checker
 asks it at those name resolutions, match scrutinees and destructured values,
@@ -1019,8 +857,7 @@ supported for recursive definition blocks.
 ## Evaluation depth
 
 Evaluation is strict. A block's result after its lets, a match's chosen branch,
-a scope's body, and a core lambda's body after its arguments reuse the current
-frame in tail position. Non-tail Core calls and their pending arguments use
+and a core lambda's body after its arguments reuse the current frame in tail position. Non-tail Core calls and their pending arguments use
 explicit reusable frames and continuations. All Core terms use this same
 machine, including terms evaluated during checking. Immutable captures are
 made when a closure, dependent Pi, or neutral thunk escapes a frame. Native
@@ -1055,16 +892,12 @@ prelude's responsibility (obligation T1). Proof axioms still canonicalize
 according to their exact proposition; data axioms remain symbolic.
 
 No rule on an axiom's type could make program axioms safe. An axiom can state
-`False`, from which every value follows, a token or an equation between
-lifetimes included. Even a consistent one can break an abstraction: an axiom
-over a linear type consumes a token without its module, one at a sealed family
-yields a value its module never built, and an equation between two instances
-of a family at different lifetimes is irrefutable, since no two lifetimes are
-apart, yet refinement along it links a lifetime variable and lets a token leave
-its scope. So these are obligations of the trusted bootstrap, T1 to T4 (see
-[Trusted bootstrap and native values](#trusted-bootstrap-and-native-values)),
-and sealing, linearity and confinement hold unconditionally, relative to an
-audited prelude that keeps them.
+`False`, from which every value follows, or a value of a type whose constructors are sealed. Even a consistent axiom can
+break an abstraction by yielding a value its module never constructed or
+consuming a linear value without accounting for it. These are obligations of
+the trusted bootstrap, T1 to T3 (see [Trusted bootstrap and native
+values](#trusted-bootstrap-and-native-values)). Sealing and linearity remain
+conditional on the audited trusted prelude.
 
 The bundled quotient interface is the fixed non-inductive primitive surface:
 
@@ -1072,11 +905,9 @@ The bundled quotient interface is the fixed non-inductive primitive surface:
 - `Quot.mk`, `Quot.lift`, and `Quot.ind` are prelude-only builtins;
 - `Quot.sound` is an axiom identifying related representatives.
 
-`Quot` is an axiom whose type ends in a sort, a type former: its scope, the
-union of the scopes of `A`'s and `r`'s types, is written by hand as part of the
-trusted bootstrap, and checked to name `S`, `Sr` and `Sq`. The builtins
+`Quot` is an axiom whose type ends in a sort, a type former. The builtins
 locate their arguments in their declared types by binder name, so the prelude
-may add binders, such as lifetime variables, without moving them.
+may add binders without changing their lookup.
 
 `Quot.mk` is not a no-confusion constructor. Quotient equality is intentionally
 coarser than representative structure, so quotient values supply neither
@@ -1105,21 +936,16 @@ trusted surface is not checked, so a trusted prelude, bundled or given with
 - **T3 Linearity.** A builtin uses each argument whose type is linear, or at a
   kind variable, exactly once on every path. No axiom takes or yields such a
   value, since an axiom has no body to account for it.
-- **T4 Lifetimes.** No axiom makes two distinct lifetimes, or two instances of
-  a family at distinct lifetime arguments, provably equal. No two lifetimes are
-  apart, so such an equation is consistent, yet refinement along it links a
-  lifetime variable and lets a token leave its scope.
-- **T5 Native equations.** Each native operation's declared body agrees with
+- **T4 Native equations.** Each native operation's declared body agrees with
   its host equation (see [Natural numbers](#natural-numbers)).
 
-T1 subsumes nothing: a consistent axiom can still break T2 to T4.
+Consistency alone does not ensure sealing, linearity, or correct native
+equations.
 
 What the kernel can check about a prelude, it checks. Only a trusted prelude
 declares axioms and builtins (`UntrustedAxiom`, `ReservedKernelName`), and only
 its declarations receive native operations and native literal layouts: a
-module that declares `Nat.add` gets an ordinary definition. A native literal
-layout refuses a sealed family. No prelude declaration's type names an atom, since
-`LifetimeEscapes` refuses any global whose type does.
+module that declares `Nat.add` gets an ordinary definition. A native literal layout refuses a sealed family.
 
 The bundled trusted surface also includes the generic byte-buffer entry point
 `Buffer.Native.executeEncoded` (see [finite native buffer programs](buffer-program.md)).
@@ -1232,7 +1058,7 @@ At the end of prelude loading, the prelude's declaration named `Eq` is
 validated as the equality family: an unsealed
 
 ```text
-Eq {u: Level}{S: Lifetime}(A: Type { level = u, scope = S }) indices (x: A)(y: A) : Prop { scope = S }
+Eq {u: Level}(A: Type { level = u }) indices (x: A)(y: A) : Prop
 Eq.refl (x: A) : Eq(A, x, x)
 ```
 
@@ -1246,8 +1072,7 @@ prelude changes. The family is checked, not trusted, so it adds no obligation.
 ## Value identity
 
 Fast equality keys may prove definitional equality, so every value component
-used to build a key must be semantically identifying. A Pi, lambda, match or
-`scope` node carries an identity of its own. Whoever makes a node allocates it
+used to build a key must be semantically identifying. A Pi, lambda or match node carries an identity of its own. Whoever makes a node allocates it
 a fresh one: the elaborator for each node it elaborates, the inductive checks
 for a family's and a constructor's type, and the kernel for a node it
 fabricates, such as a structure-eta projection or a proof's eta-lambda.
@@ -1269,8 +1094,8 @@ A value's dependency set and whether a mismatch of its key is conclusive are
 computed when it is built. Most values also compute their key then, from
 their own components and their children's already-computed keys; computing or
 publishing them does not recursively walk `Value` children. A key over host
-data rather than values, such as a packed literal's payload or a kind's or
-lifetime's variable set, is hashed by a loop when first read. A packed list's
+data rather than values, such as a packed literal's payload or a kind's variable set, is hashed by a
+loop when first read. A packed list's
 tail is built for each layer decoded, and hashing each as it is built would
 make decoding quadratic. An application's key mixes its head, its arguments
 less its evidence ones (see [Evidence arguments](#evidence-arguments)), their
@@ -1296,13 +1121,11 @@ while the check runs is given the key's verdict at once, as with no check
 running, and its own check is pushed there, so each step decomposes one layer
 and no check uses host stack for depth. Only atoms whose key is their identity are
 exempt: variables (by id), constants and constructor heads (by name), and
-levels (by normal form). Kinds and lifetimes key by their normal forms too, an
-atom by its id, which its `scope` term's node identity determines, but
-their conversion rule compares the normal forms itself, so the assertion checks
-their keys. A sort's key mixes in its level, kind and scope, and a Pi's key its
-closure kind, closure scope, mentioned scope and binder modes, explicitly
+levels and kinds (by normal form). Their conversion rules compare normal
+forms directly, so the assertion checks their keys. A sort's key mixes in its
+level and kind, and a Pi's key its closure kind and binder modes, explicitly
 rather than through its node and captures.
-The kernel singletons `Level`, `Kind`, `Lifetime`, their classifier and `Large`
+The kernel singletons `Level`, `Kind`, their classifier and `Large`
 are equal only to themselves, which object identity decides before any key is
 read.
 
@@ -1334,50 +1157,40 @@ Changes to the checker or evaluator must preserve these rules:
 12. Whether a sort is `Prop` or a type is a proposition has one definition.
 13. A term's type never depends on where it stands: checking is synthesis
     followed by definitional equality with the expected type.
-14. Sorts, levels, kinds and lifetimes are built only by the kernel's own sort
-    former and forms; no global, builtin or prelude declaration names one.
+14. Sorts, levels and kinds are built only by the kernel's own sort former
+    and forms; no global, builtin or prelude declaration names one.
 15. Every checked term has a type, except where the checker's position rules
     admit otherwise: a sort parameter as the type of a binder at a site that
     may bind it, an expression of a sort parameter where one is expected, a
     large reference at an application head, and a large type as a
     declaration's type.
-16. Kinds and lifetimes exist only in normal form, so their structural
-    equality is definitional equality; no two of them are apart.
+16. Kinds exist only in normal form, so their structural equality is
+    definitional equality; no two kinds are apart.
 17. Proposition classification is fixed when a type is formed; substituting
     data levels cannot change it. Proof-valued closures are unrestricted.
-18. A family's kind and scope are declared, never derived. An instance's sort
-    is the declared sort under its arguments, and its declared kind and scope
-    contain whatever a value of it holds or carries in its type; its scope names
-    every lifetime parameter. Each family of a mutual block is checked against
+18. A family's kind is declared, never derived. An instance's sort is the
+    declared sort under its arguments, and its declared kind contains the kinds
+    of its constructor fields. Each family of a mutual block is checked against
     its own declared sort, and a sibling is read by its declared sort.
-19. A function type's closure and mentioned scope are part of its identity
-    and its sort; the mentioned scope is what its binder types' and codomain's
-    captures contribute, by the rule a lambda's captures follow. A lambda's
-    closure is written or derived from its captures' types and the lifetimes
-    they hold alone, never from where the lambda stands, and its residual
-    carries a derived field as those captures.
-20. An atom is opened only by a `scope` term and is determined by that term's
-    node identity, in checking and evaluation alike. It is never refinable and
-    never abstracted, and no type the checker synthesizes, checks against or
-    binds has a sort whose scope names it outside its `scope`; evaluation never
-    checks this. A value, a type's included, holds an atom its type's sort
-    does not name only inside a blocked computation or a proof.
-21. A type is linear exactly when its kind is not `Kind.unr`, and one function
+19. A function type's closure kind is part of its identity. A lambda's closure
+    kind is written or derived from the kinds of the locals its body captures,
+    not from where the lambda stands.
+20. A type is linear exactly when its kind is not `Kind.unr`, and one function
     decides it. Every local bound at a linear type by a lambda, a definition's
     parameters, a `let` or a pattern, `_` included, is used exactly once on
     every path through its binder's checked extent, and no global has a linear
     type.
-22. No term whose type is a sort or a proposition contains a subterm of linear
+21. No term whose type is a sort or a proposition contains a subterm of linear
     type, and no implicit binder of linear type is forced.
-23. Outside a sealed family's module, no checked term names its constructors
+22. Outside a sealed family's module, no checked term names its constructors
     or selectors, matches on a value of it, forces an implicit through its
     constructors' fields, or discharges evidence with its constructors. Sealing
     never changes what conversion, coverage, apartness, structure eta or proof
     reconstruction decide.
-24. Only a trusted prelude declares axioms, builtins, native operations and
+23. Only a trusted prelude declares axioms, builtins, native operations and
     native literal layouts. That trusted surface keeps the audited obligations
-    T1 to T5; every other prelude declaration is checked as one in any module.
-25. An evidence argument is either supplied and convertible with its
+    T1 to T4; every other prelude declaration is checked as one in any module.
+24. An evidence argument is either supplied and convertible with its
     proposition evaluated at the application, or discharged by a constructor
     applied to fields read off that proposition, whose result type is
     convertible with it; discharge invents no field, and reads no expected type
@@ -1385,11 +1198,10 @@ Changes to the checker or evaluator must preserve these rules:
     proposition, and evaluates the proposition only when that proof is looked
     at. An application's dependencies, key and conversion skip its evidence
     arguments, which its head and other arguments determine.
-26. A value's dependencies, key and key conclusiveness are computed when it is
+25. A value's dependencies, key and key conclusiveness are computed when it is
     built, from its children's; no walk over a value computes them.
-27. An implicit is projected only through a value's type, sorts, function
+26. An implicit is projected only through a value's type, sorts, function
     types' closures and independent domains, codomains and results, a proof's
     proposition, no-confusion constructor fields and the arguments of a
     family's application or of a type former's single-group application,
-    never through a blocked computation's arguments. A type former names each
-    of its lifetime parameters in its declared scope.
+    never through a blocked computation's arguments.

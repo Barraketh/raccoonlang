@@ -430,7 +430,7 @@ object Elaborator {
    */
   private def freeIdentifiers(term: SA.Term, bound: Set[String]): Vector[SA.Term.Ident] = {
     def free(part: SA.Term): Vector[SA.Term.Ident] = freeIdentifiers(part, bound)
-    def closure(written: SA.Closure): Vector[SA.Term.Ident] = (written.kind.toVector ++ written.scope).flatMap(free)
+    def closure(written: SA.Closure): Vector[SA.Term.Ident] = written.kind.toVector.flatMap(free)
     // Binders in one group scope left to right: each one's type sees the names bound before it.
     def group(binders: Vector[SA.Binder]): (Vector[SA.Term.Ident], Set[String]) =
       binders.foldLeft((Vector.empty[SA.Term.Ident], bound)) { case ((found, inner), binder) =>
@@ -442,19 +442,18 @@ object Elaborator {
       case SA.Term.Select(base, _, _)            => free(base)
       case SA.Term.App(fn, args, evidence, _)    => ((fn +: args) ++ evidence).flatMap(free)
       case SA.Term.Pair(fst, snd, _)             => free(fst) ++ free(snd)
-      case SA.Term.Sort(level, kind, scope, _) =>
+      case SA.Term.Sort(level, kind, _) =>
         val written = level match {
           case SA.Term.SortLevel.Written(written)              => Vector(written)
           case SA.Term.SortLevel.Zero | SA.Term.SortLevel.Prop => Vector.empty
         }
-        (written ++ kind ++ scope).flatMap(free)
+        (written ++ kind).flatMap(free)
       case SA.Term.Pi(written, binders, body, _) =>
         val (inBinders, inner) = group(binders)
         closure(written) ++ inBinders ++ freeIdentifiers(body, inner)
       case SA.Term.Lam(written, header, body, _) =>
         val (inBinders, inner) = group(header.params)
         closure(written) ++ inBinders ++ freeIdentifiers(header.ty, inner) ++ freeIdentifiers(body, inner)
-      case SA.Term.Scope(name, body, _) => freeIdentifiers(body, bound + name)
       case SA.Term.Match(scrut, motive, cases, wildcard, equation, _) =>
         val inCases = bound ++ equation.map(_.name)
         free(scrut) ++ free(motive) ++
@@ -544,10 +543,7 @@ object Elaborator {
   private def elabClosure(written: SA.Closure, omitted: CA.Closure, env: ResolveEnv): CA.Closure = {
     def field(term: Option[SA.Term], parameter: CA.Parameter, omittedField: CA.ClosureField): CA.ClosureField =
       term.fold(omittedField)(written => CA.ClosureField.Written(elabField(written, parameter, env)))
-    CA.Closure(
-      field(written.kind, CA.Parameter.Kind, omitted.kind),
-      field(written.scope, CA.Parameter.Lifetime, omitted.scope)
-    )
+    CA.Closure(field(written.kind, CA.Parameter.Kind, omitted.kind))
   }
 
   /** A sort's or closure's written field, elaborated with its parameter's forms open (spec §1). */
@@ -683,12 +679,11 @@ object Elaborator {
         Vector.empty,
         sp
       )
-    case SA.Term.Sort(level, kind, scope, sp) =>
-      // `Type` and `Prop` fix the level, and an omitted kind or scope is Kind.unr or Lifetime.empty (spec §1).
+    case SA.Term.Sort(level, kind, sp) =>
+      // `Type` and `Prop` fix the level, and an omitted kind is Kind.unr.
       def fixed(form: CA.Form): CA.Term = CA.Term.FormOp(form, Vector.empty, sp)
-      val scopeTerm = scope.fold(fixed(CA.Form.LifetimeEmpty))(elabField(_, CA.Parameter.Lifetime, env))
       level match {
-        case SA.Term.SortLevel.Prop => CA.Term.Prop(scopeTerm, sp)
+        case SA.Term.SortLevel.Prop => CA.Term.Prop(sp)
         case dataLevel =>
           val levelTerm = dataLevel match {
             case SA.Term.SortLevel.Zero          => fixed(CA.Form.LevelZero)
@@ -698,23 +693,19 @@ object Elaborator {
           CA.Term.Sort(
             levelTerm,
             kind.fold(fixed(CA.Form.KindUnr))(elabField(_, CA.Parameter.Kind, env)),
-            scopeTerm,
             sp
           )
       }
     case pi: SA.Term.Pi => elabPi(pi, env)
     case l: SA.Term.Lam =>
       // A lambda's omitted closure field is derived from its captures by the checker (spec §4.3).
-      val closure = elabClosure(l.closure, CA.Closure(CA.ClosureField.Omitted, CA.ClosureField.Omitted), env)
+      val closure = elabClosure(l.closure, CA.Closure(CA.ClosureField.Omitted), env)
       val header = elabHeader(l.header, CA.BinderSite.Function, closure, env)
       header.ty match {
         case pi: CA.Term.Pi =>
           elabLam(pi, header.bodyEnv, l.body, None, None, l.span)
         case _ => at(l.span) { wtf("Lambda header must produce a function type") }
       }
-    case SA.Term.Scope(name, body, span) =>
-      val (ref, bodyEnv) = env.enterLocalScope.bind(name, allowShadow = false)
-      CA.Term.Scope(ref, elabTerm(body, bodyEnv), span, NodeId.fresh())
     case b: SA.Term.Body =>
       val checkedLets = Vector.newBuilder[CA.Let]
       val startEnv = env.enterOpenScope

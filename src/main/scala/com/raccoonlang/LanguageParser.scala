@@ -148,7 +148,7 @@ object LanguageParser {
   }
 
   /** The fields a sort takes by name. */
-  private val sortFieldNames: Set[String] = Set("level", "kind", "scope")
+  private val sortFieldNames: Set[String] = Set("level", "kind")
 
   private def sortField(implicit sourceId: Option[SourceId]): Parser[(String, Term, Span)] =
     (wordAtom ~ sym('=') ~/ skipAllWs ~ term).flatSpanned(sourceId)
@@ -199,13 +199,13 @@ object LanguageParser {
   }
 
   /**
-   * A closure `{ kind = k, scope = S }` (spec §1): a function type's or lambda's kind and scope, never a level. Callers
-   * build it only once `closureStart` has recognized one, so ruling a closure out stays cheap.
+   * A closure `{ kind = k }`: a function type's or lambda's kind, never a level. Callers build it only once
+   * `closureStart` has recognized one, so ruling a closure out stays cheap.
    */
   private def closureFields(implicit sourceId: Option[SourceId]): Parser[Closure] =
     fieldList.map { written =>
       val fields = fieldsByName(written, levelMisplaced = Some("a closure has no level"))
-      Closure(fields.get("kind"), fields.get("scope"))
+      Closure(fields.get("kind"))
     }
 
   /**
@@ -221,14 +221,13 @@ object LanguageParser {
       )
     }
 
-  /** Type permits an optional level; Prop is a distinct former with scope alone. */
+  /** Type permits optional level and kind; Prop is a distinct fieldless former. */
   private val sortFormers: Map[String, Option[SortLevel]] =
     Map("Type" -> None, "Prop" -> Some(SortLevel.Prop))
 
   /**
    * A sort former, as a whole word so that `Types` stays an identifier, and its field list if it has one. Its name
-   * decides its level and whether a `level` field belongs. An omitted `kind` or `scope` is `Kind.unr` or
-   * `Lifetime.empty`.
+   * decides its level and whether a `level` field belongs. An omitted `kind` is `Kind.unr`.
    */
   private def sortFormer(implicit sourceId: Option[SourceId]): Parser[Term] =
     (wordAtom.filter("SortFormer", sortFormers.contains) ~ (skipWS ~ fieldList).?).flatSpanned(sourceId).map {
@@ -240,9 +239,9 @@ object LanguageParser {
         val level = fixed
           .orElse(fields.get("level").map(SortLevel.Written))
           .getOrElse(SortLevel.Zero)
-        if (former == "Prop" && fields.contains("kind"))
-          throw ParseError(span.start, span.start, "Prop has no kind field")
-        Sort(level, fields.get("kind"), fields.get("scope"), span)
+        if (former == "Prop" && fields.nonEmpty)
+          throw ParseError(span.start, span.start, "Prop has no fields")
+        Sort(level, fields.get("kind"), span)
     }
 
   private def parenArgs[A](arg: => Parser[A]): Parser[Vector[A]] =
@@ -504,15 +503,6 @@ object LanguageParser {
         Lam(written.getOrElse(Closure.omitted), header, body, span)
       }
 
-  /**
-   * `scope l => e` (spec §1). `scope` is a keyword only here, at the start of a term; in a field list it is a field
-   * name, which the field parser reads as a plain word. The body extends as far to the right as a lambda body does.
-   */
-  private def scopeP(implicit sourceId: Option[SourceId]): Parser[Term] =
-    (kw("scope") ~/ argName ~ sym("=>") ~/ skipAllWs ~ term).flatSpanned(sourceId).map { case (name, body, span) =>
-      Scope(name, body, span)
-    }
-
   private def caseHead: Parser[(Vector[String], Boolean)] = {
     val shortName = (symTight(".") ~/ ident).map(name => (Vector(name), true))
     val globalPath = pathP.map(path => (path, false))
@@ -574,7 +564,7 @@ object LanguageParser {
       evidenceGroup(term).map(TermEvidence.tupled)).rep(0)
 
   private def term(implicit sourceId: Option[SourceId]): Parser[Term] =
-    ((lambda | scopeP | matchP | commandBlock | closedPi | body | simplePi | termAtom) ~ termTrailers ~ spacedArguments)
+    ((lambda | matchP | commandBlock | closedPi | body | simplePi | termAtom) ~ termTrailers ~ spacedArguments)
       .map { case (base, trailers) =>
         trailers.foldLeft(base) {
           case (cur, TermDot(name, sp))        => Select(cur, name, trailerSpan(cur, sp))

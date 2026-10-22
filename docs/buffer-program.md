@@ -5,12 +5,22 @@ GPU modules. A checked program is immutable; `Buffer.run` validates and executes
 through one small trusted builtin. Each invocation allocates private buffers and register banks and returns immutable
 `Buffer.Result` values. It does not expose host arrays, handles, callbacks, or mutable state to the evaluator.
 
-The public builder uses `Buffer.build`, `withInput`, `withScratch`, and `withOutput`. Each scoped buffer has a sealed
-handle and, when writable, a matching linear owner. Loads and stores require the matching owner for mutable buffers;
-export consumes an output owner, while scratch release consumes a scratch owner. `Fixed` lets an `ifThenElse` or
+The public builder uses `Buffer.build`, `withInput`, `withScratch`, and `withOutput`. `Buffer.build` creates a fresh
+root brand and a linear access token. A context carries that token together with the current control-flow frame, so
+only the builder can emit instructions or move access into a child frame. Branch and repeat callbacks receive a fresh
+frame token and a `BufferAccess.View` describing its ancestry. A parent scalar can be copied into a child frame with
+`Buffer.lift32` or `Buffer.lift64`; nested views compose with `BufferAccess.compose`. Scalar operands must match both
+the builder root and the context frame, so a child snapshot cannot be used with its parent context or another builder.
+
+Each buffer allocation has a separate abstract brand, a sealed handle, and, when writable, a matching linear owner.
+All buffers are statically allocated for the whole invocation, including allocations described from inside a loop
+builder. Loads and stores require the matching owner for mutable buffers; output export consumes its owner, while
+scratch release consumes its owner. Extent getters return only immutable size metadata, so a closure that reads an
+extent may outlive its owner. It carries no authority to load or store. `Fixed` lets an `ifThenElse` or
 `repeat32`/`repeat64` body thread fieldless owners through both arms or every iteration. Mutable `Reg32`/`Reg64` values
-can be captured as program state, but they are not `Fixed` state and cannot be returned as branch-dependent handles.
-Read-only `inputBytes`, `scratchBytes`, and `outputBytes` expose extents without exposing buffer IDs.
+are program-global slots tied to the builder root and can be captured as program state. They are not `Fixed` state.
+`getReg32` and `getReg64` produce immutable snapshots tagged with the current frame. Read-only `inputBytes`,
+`scratchBytes`, and `outputBytes` expose extents without exposing buffer IDs or storage.
 
 Buffers are allocated in builder order and outputs are returned in that same order. Buffer storage and scalar banks are
 zero-initialized once per run. Allocations described from inside a loop builder still describe one static allocation

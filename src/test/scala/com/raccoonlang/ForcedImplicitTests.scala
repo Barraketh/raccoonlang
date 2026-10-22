@@ -417,7 +417,7 @@ class ForcedImplicitTests extends munit.FunSuite with TestSupport {
     assertEquals(
       ErrorRendering.render(expectTypeError[ArityMismatch]("{ List.nil() }", Prelude.default), None),
       "Cannot apply List.nil - expected 1 params (A), got 0; " +
-        "family parameters u, S are implicit, determined by the other arguments"
+        "family parameter u is implicit, determined by the other arguments"
     )
   }
 

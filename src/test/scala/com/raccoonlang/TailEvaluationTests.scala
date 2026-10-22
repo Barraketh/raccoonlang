@@ -87,7 +87,7 @@ class TailEvaluationTests extends munit.FunSuite with TestSupport {
     assertEquals(payload(onSmallStack(runProgram(nonTail + "{ sum(build(5000, List.nil(Nat))) }"))), sumBelow(5000))
   }
 
-  test("a let body, a scope's body and a call into another definition are tail positions") {
+  test("a let body, a nested block and a call into another definition are tail positions") {
     val program =
       """
         |def viaLet (n: Nat)(acc: Nat): Nat decreases structural(n) := {
@@ -99,10 +99,10 @@ class TailEvaluationTests extends munit.FunSuite with TestSupport {
         |  }
         |}
         |
-        |def viaScope (n: Nat)(acc: Nat): Nat decreases structural(n) := {
+        |def viaBlock (n: Nat)(acc: Nat): Nat decreases structural(n) := {
         |  match n returning Nat with
         |  | Nat.zero => acc
-        |  | Nat.succ p => scope l => viaScope(p, Nat.add(acc, 3))
+        |  | Nat.succ p => { viaBlock(p, Nat.add(acc, 3)) }
         |}
         |
         |mutual {
@@ -119,7 +119,7 @@ class TailEvaluationTests extends munit.FunSuite with TestSupport {
         |}
         |""".stripMargin
     assertEquals(payload(onSmallStack(runProgram(program + "{ viaLet(100000, 0) }"))), BigInt(200000))
-    assertEquals(payload(onSmallStack(runProgram(program + "{ viaScope(100000, 0) }"))), BigInt(300000))
+    assertEquals(payload(onSmallStack(runProgram(program + "{ viaBlock(100000, 0) }"))), BigInt(300000))
     assertEquals(ctorName(onSmallStack(runProgram(program + "{ even(100001) }"))), "Bool.false")
   }
 
@@ -217,9 +217,10 @@ class TailEvaluationTests extends munit.FunSuite with TestSupport {
         |
         |def probe (b: Bool)(n: Nat): Nat := {
         |  let m := Nat.succ(n)
-        |  scope l => match b returning Nat with
+        |  { match b returning Nat with
         |    | Bool.true => count(100000, m)
         |    | Bool.false => n
+        |  }
         |}
         |
         |def outer (b: Bool)(n: Nat): Nat := probe(b, n)

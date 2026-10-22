@@ -1,0 +1,16 @@
+import buffer.Program
+
+inductive BranchValueBox (r: Type): Type { level = Level.one }
+ | pack {frame: Type}(value: Buffer.Val64(r, frame)): BranchValueBox(r)
+
+def packageBranchValue {r: Type}{frame: Type}(value: Buffer.Val64(r, frame)): BranchValueBox(r) :=
+  BranchValueBox.pack(value)
+
+def usePackagedBranchValue {r: Type}{frame: Type}
+    (ctx: Buffer.Ctx(r, frame))(packed: BranchValueBox(r))
+    : Pair(Buffer.Ctx(r, frame), Buffer.Val64(r, frame)) := {
+  match packed returning Pair(Buffer.Ctx(r, frame), Buffer.Val64(r, frame)) with
+  | BranchValueBox.pack hidden value => Buffer.add64(ctx, value, value)
+}
+
+{ Unit.unit }

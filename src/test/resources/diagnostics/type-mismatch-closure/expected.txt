@@ -1,18 +1,8 @@
 
-<root>/main.rac:1:58: error: type mismatch
-def eqBy {S: Lifetime}(A: Type { scope = S }): BEq(A) := BEq.mk(fun (a: A)(b: A): Bool => Bool.true)
-                                                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  expected: { scope = S } A -> A -> Bool
-  actual:   (a: A) -> (b: A) -> Bool
-  closures differ in scope S  vs  Lifetime.empty
-note: in argument 1 (beq) of BEq.mk
-note: in definition eqBy
-
-<root>/main.rac:3:89: error: type mismatch
-def listed {l: Lifetime}(xs: List(({ scope = l } Unit -> Nat))): List((Unit -> Nat)) := xs
-                                                                                        ^^
-  expected: List(Unit -> Nat)
-  actual:   List({ scope = l } Unit -> Nat)
-  differ at: Unit -> Nat  vs  { scope = l } Unit -> Nat
-  closures differ in scope Lifetime.empty  vs  l
-note: in definition listed
+<root>/main.rac:1:60: error: type mismatch
+def forget (f: { kind = lin } Unit -> Nat): Unit -> Nat := f
+                                                           ^
+  expected: Unit -> Nat
+  actual:   { kind = Kind.lin } Unit -> Nat
+  closures differ in kind Kind.unr  vs  Kind.lin
+note: in definition forget

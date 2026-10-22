@@ -103,9 +103,6 @@ object ErrorRendering {
       case KindExceeded(declaration, declared, part, partKind) =>
         s"$declaration is declared at kind ${show(declared)}, which does not contain the kind ${show(partKind)} " +
           s"of ${renderPart(part, show)}"
-      case ScopeExceeded(declaration, declared, part, partScope) =>
-        s"$declaration is declared at scope ${show(declared)}, which does not contain the scope ${show(partScope)} " +
-          s"of ${renderPart(part, show)}"
       case LinearUnused(local) =>
         if (local == "_") "A wildcard binds a value of linear type, which must be used exactly once, and is never used"
         else s"$local has a linear type, so it must be used exactly once, but some path does not use it"
@@ -118,8 +115,6 @@ object ErrorRendering {
         val value = definition.fold("The program's result")(name => s"Definition $name")
         s"$value has the linear type ${show(tpe)}; a value outside every binder is never linear, since only a " +
           "local's uses are counted"
-      case LifetimeEscapes(lifetime, tpe) =>
-        s"Lifetime $lifetime escapes its scope: the type ${show(tpe)} names it outside `scope $lifetime`"
       case SealedConstructor(family, member) =>
         val use = member.fold("matching on a value of it")(name => s"naming $name")
         s"The sealed family $family keeps its constructors and selectors to the module that declares it, so $use " +
@@ -148,7 +143,7 @@ object ErrorRendering {
   /**
    * The "differ at" line is omitted when the unifier failed at the root. `checkFits` asks `actual ~ expected`, so `v1`
    * belongs to `actual`; both are printed expected-first to match the lines above. Function types that differ in their
-   * closures, or in what their code captures, fail at the two function types, and the report names what differs.
+   * closure kind, fail at the two function types, and the report names what differs.
    */
   private def renderTypeMismatch(mismatch: TypeMismatch, show: Value => String): String = {
     val expected = show(mismatch.expected)
@@ -159,18 +154,11 @@ object ErrorRendering {
         val actualPart = show(failure.v1)
         val functionParts = (failure.v2, failure.v1) match {
           case (expectedPi: Value.VPi, actualPi: Value.VPi) =>
-            Vector(
-              Option.when(expectedPi.closureKind != actualPi.closureKind)(
+            Option
+              .when(expectedPi.closureKind != actualPi.closureKind)(
                 s"closures differ in kind ${show(expectedPi.closureKind)}  vs  ${show(actualPi.closureKind)}"
-              ),
-              Option.when(expectedPi.closureScope != actualPi.closureScope)(
-                s"closures differ in scope ${show(expectedPi.closureScope)}  vs  ${show(actualPi.closureScope)}"
-              ),
-              Option.when(expectedPi.mentionedScope != actualPi.mentionedScope)(
-                s"their code captures differ in scope ${show(expectedPi.mentionedScope)}  vs  " +
-                  show(actualPi.mentionedScope)
               )
-            ).flatten
+              .toVector
           case _ => Vector.empty
         }
         val reason = if (failure.apart) "provably different" else "not reducible: stuck"
@@ -195,12 +183,11 @@ object ErrorRendering {
     runs.map { case (step, count) => if (count == 1) step else s"$step ×$count" }.mkString(" > ")
   }
 
-  /** A part whose kind or scope a declaration's must contain, as the phrase that follows "of". */
+  /** A part whose kind a declaration must contain, as the phrase that follows "of". */
   private def renderPart(part: ContainedPart, show: Value => String): String =
     part match {
-      case ContainedPart.Capture(name, tpe)      => s"capture $name : ${show(tpe)}"
-      case ContainedPart.Field(name, tpe)        => s"field $name : ${show(tpe)}"
-      case ContainedPart.LifetimeParameter(name) => s"lifetime parameter $name, which every type former must name"
+      case ContainedPart.Capture(name, tpe) => s"capture $name : ${show(tpe)}"
+      case ContainedPart.Field(name, tpe)   => s"field $name : ${show(tpe)}"
     }
 
   /** Why an implicit argument's projection could not be followed (`Projection.project`). */

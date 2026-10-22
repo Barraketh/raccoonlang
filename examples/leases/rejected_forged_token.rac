@@ -1,0 +1,6 @@
+// Clients cannot mint a Token from the copyable Lease.
+import Lease
+
+def forged {brand: Type}(lease: Lease(brand)): Token(brand) := Token.mk(brand)
+
+{ forged }

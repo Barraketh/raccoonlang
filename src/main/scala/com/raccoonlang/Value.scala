@@ -146,8 +146,8 @@ object Value {
       case _: VPi | _: VLam | _: NeutralThunk => true
       // Classified by a sort or a sort parameter, so neither a proof nor a structure: tested before proofhood, which
       // would build a sort's type, a sort that would build its own in turn.
-      case _: VSort | _: Level | _: Kind | _: Lifetime | _: KernelSingleton => false
-      case _ if isKnownProof(value)                                         => true
+      case _: VSort | _: Level | _: Kind | _: KernelSingleton => false
+      case _ if isKnownProof(value)                           => true
       // A value that structure eta can decompose compares fieldwise, which no key can decide
       // (StructEta, rule 2).
       case v if etaDecomposable(v) => true
@@ -233,8 +233,7 @@ object Value {
           }
         // Everything else is either leaf-like or reaches vars only through its type. Sorts are
         // excluded explicitly: the type of a sort at `u` is the sort at `u+1`, an infinite ascent with the same deps.
-        case _: VSort | Large | SortParameter | _: ParameterTpe | _: Level | _: Kind | _: Lifetime |
-            _: ConstructorHead =>
+        case _: VSort | Large | SortParameter | _: ParameterTpe | _: Level | _: Kind | _: ConstructorHead =>
         case other => walk(other.tpe)
       }
     }
@@ -268,9 +267,8 @@ object Value {
   }
 
   /**
-   * A sort parameter: `Level`, `Kind` or `Lifetime` (spec §2.2). None is a type: no sort contains it, so a variable of
-   * one is bound only at the binder sites the checker admits, and an expression of one stands only where that parameter
-   * is expected.
+   * A sort parameter: `Level` or `Kind`. Neither is a type: no sort contains it, so a variable of one is bound only at
+   * the binder sites the checker admits, and an expression of one stands only where that parameter is expected.
    */
   sealed trait ParameterTpe extends KernelSingleton {
     final override def tpe: Value = SortParameter
@@ -281,9 +279,6 @@ object Value {
   }
   case object KindTpe extends ParameterTpe {
     override val key: ValueKey.Key = ValueKey.kindTpe
-  }
-  case object LifetimeTpe extends ParameterTpe {
-    override val key: ValueKey.Key = ValueKey.lifetimeTpe
   }
 
   /**
@@ -472,65 +467,15 @@ object Value {
   }
 
   /**
-   * A lifetime in normal form (spec §2.3): the set of its lifetime variables, the empty set being `Lifetime.empty`.
-   * Built only by the constructors below, so structural equality is definitional equality and the set is canonical at
-   * birth.
-   */
-  final class Lifetime private (val vars: DepSet) extends Value {
-    override def tpe: Value = LifetimeTpe
-    override def synDeps: DepSet = vars
-
-    def isEmpty: Boolean = vars.isEmpty
-
-    private val cachedHashCode: Int = vars.hashCode()
-
-    // Hashed when first read, as a kind's is.
-    override lazy val key: ValueKey.Key = ValueKey.lifetime(vars)
-    override val needsStructuralDefEq: Boolean = Value.needsStructuralDefEq(this)
-
-    override def equals(obj: Any): Boolean =
-      obj match {
-        case other: Lifetime => cachedHashCode == other.cachedHashCode && vars == other.vars
-        case _               => false
-      }
-
-    override def hashCode(): Int = cachedHashCode
-  }
-
-  object Lifetime {
-    val empty: Lifetime = new Lifetime(DepSet.empty)
-
-    def variable(id: VarId): Lifetime = new Lifetime(DepSet(id))
-
-    /** Set union: associative, commutative, idempotent, with `union(empty, x) = x`. */
-    def union(lifetimes: Iterable[Lifetime]): Lifetime =
-      lifetimes.foldLeft(empty) { (acc, l) =>
-        if (l.isEmpty) acc else if (acc.isEmpty) l else new Lifetime(acc.vars ++ l.vars)
-      }
-
-    /** `outer` contains `inner` when every element of `inner` is one of `outer`. */
-    def contains(outer: Lifetime, inner: Lifetime): Boolean = (inner.vars -- outer.vars).isEmpty
-
-    /** `l` less the variables `ids`: a function type's scope without the lifetimes its own group binds (spec §2.4). */
-    def less(l: Lifetime, ids: DepSet): Lifetime =
-      if (!l.vars.intersects(ids)) l else new Lifetime(l.vars -- ids)
-
-    /** The lifetime variable this lifetime is exactly, as refinement and forcing recognize it. */
-    def singleVariable(l: Lifetime): Option[VarId] =
-      if (l.vars.size == 1) Some(l.vars.max) else None
-  }
-
-  /**
    * A sort, built only by `Sorts`, which also answers every question about which sort it is. There is no extractor and
    * no structural equality: two sorts are compared only by conversion, so `==` on a sort is a kernel bug and throws
    * rather than silently answering false.
    */
-  final class VSort private[raccoonlang] (val isProp: Boolean, val level: Level, val kind: Kind, val scope: Lifetime)
-    extends Classifier {
-    override lazy val tpe: Value = Sorts.sort(if (isProp) Level.zero else Level.succ(level), Kind.unr, scope)
+  final class VSort private[raccoonlang] (val isProp: Boolean, val level: Level, val kind: Kind) extends Classifier {
+    override lazy val tpe: Value = if (isProp) Sorts.Type else Sorts.sort(Level.succ(level), Kind.unr)
 
-    override val synDeps: DepSet = DepSet.unionAll(Iterator(level.synDeps, kind.synDeps, scope.synDeps))
-    override val key: ValueKey.Key = ValueKey.sort(isProp, level, kind, scope)
+    override val synDeps: DepSet = DepSet.unionAll(Iterator(level.synDeps, kind.synDeps))
+    override val key: ValueKey.Key = ValueKey.sort(isProp, level, kind)
     override val needsStructuralDefEq: Boolean = Value.needsStructuralDefEq(this)
 
     override def equals(obj: Any): Boolean = wtf(s"Sort $this compared structurally; compare sorts by conversion")
@@ -542,9 +487,7 @@ object Value {
   // instance derives its own from its binders and codomain (Interpreter.piClassifier). A Pi that
   // binds a level is `Large`.
   // Binders are the checked CoreAst.Binder nodes themselves: a VPi is its syntax plus a closure.
-  // `closureKind` and `closureScope` are the function type's closure (spec §1) in normal form; they are part of its
-  // identity, so its key mixes them in and conversion compares them exactly. `mentionedScope` is what its captures
-  // hold, read as a lambda's derived closure reads them, which its sort counts; it is part of its identity too.
+  // `closureKind` is the function type's closure in normal form and is part of its identity.
   // Structural `==` is meaningless on a value holding functions, so it throws, as on a sort.
   /** Evaluator-created codomain closure with syntax-checked binder-independence metadata. */
   private[raccoonlang] abstract class CheckedPiCodomain(
@@ -559,8 +502,6 @@ object Value {
       binders: Vector[CoreAst.Binder],
       codomain: Env => Value,
       closureKind: Kind,
-      closureScope: Lifetime,
-      mentionedScope: Lifetime,
       synDeps: DepSet,
       id: ValueId,
       classifier0: () => Classifier,
@@ -576,7 +517,7 @@ object Value {
       new RuntimeSlotPrefixCache(runtimeSlotLayout)
 
     override lazy val tpe: Classifier = classifier0()
-    override val key: ValueKey.Key = ValueKey.pi(id, binders, closureKind, closureScope, mentionedScope)
+    override val key: ValueKey.Key = ValueKey.pi(id, binders, closureKind)
     override val needsStructuralDefEq: Boolean = Value.needsStructuralDefEq(this)
 
     override def equals(obj: Any): Boolean = wtf(s"Function type $this compared structurally; compare by conversion")
@@ -1494,8 +1435,7 @@ object Value {
   case class Inductive(meta: InductiveMeta) extends ConstType
 
   /**
-   * A trusted axiom whose type ends in a sort, as `Quot` 's does: a type former, which names each of its lifetime
-   * parameters in its declared scope as a family does (`Sorts.requireNamesLifetimeParameters`).
+   * A trusted axiom whose type ends in a sort, as `Quot` 's does: a type former.
    */
   case object TypeFormer extends ConstType
 

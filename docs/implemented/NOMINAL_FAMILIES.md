@@ -20,9 +20,9 @@ For **`Type` families** (declared in a `Type`, not in `Prop`), with `F` and `G` 
 - **N1, injectivity.** `F(ā) = F(b̄)` implies `ā = b̄`: the parameters and indices, as one dependent tuple.
 - **N2, generativity.** `F(ā) = G(b̄)` implies `False` when `F` and `G` are different heads.
 - **N3, distinct forms.** An instance of a `Type` family, a Type-valued function type and a universe `Type { … }` are pairwise
-  unequal. Universe conversion requires equal level, kind and scope; failures of those comparisons stay stuck.
+  unequal. Universe conversion requires equal level and kind; failures of those comparisons stay stuck.
 
-Their scope is exact:
+The principle is limited to these forms:
 
 - **Inductive heads only.** Nothing is claimed about an axiom of type `Type`, or a type-level
   application that is stuck: `axiom T : Type` may be `Nat`. A type that evaluates to a family instance is compared by
@@ -132,7 +132,7 @@ the existing finite-hash equality shortcut and coverage/refinement implementatio
   telescope of index equations whose later equations depend on an earlier type equation (the `Tag(A: Type)(a: A)` shape)
   resolves at that type equation. Value clashes across families (`Bool.true` against `Two.one`) stay stuck, as since
   `921fa3f`: the refutation, when there is one, comes from the type equation before them.
-- **Documentation.** `docs/kernel.md` gets a section "Nominal families" stating N1–N3, their scope and the size rule,
+- **Documentation.** `docs/kernel.md` gets a section "Nominal families" stating N1–N3, their limits and the size rule,
   beside quotient soundness as the kernel's stated principles. "Apartness" and "Refinement unification" cite it.
 
 `docs/implemented/REFINEMENT_CERTIFICATES.md` then turns these from unifier behaviour into principles a proof term may use: its
@@ -162,7 +162,7 @@ unifier links and their classification remain unchanged and trusted. No link cer
    - propositional extensionality (planned);
    - struct eta, and proof irrelevance in conversion;
    - value keys (conversion must never identify two types with different codes);
-   - kinds, lifetimes and sealing;
+   - kinds and sealing;
    - universe polymorphism.
 2. **N1, the size rule** at declaration, with its diagnostic and tests.
 3. **N2, refinement:**

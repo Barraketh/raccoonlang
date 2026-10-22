@@ -253,7 +253,7 @@ object ValueEquivalence {
           }
       }
 
-    // Rejects solutions that let scope-local fresh vars escape. This also catches transitive
+    // Rejects solutions that let fresh vars escape an inner refinement. This also catches transitive
     // escapes (?a := f(?b), ?b := freshVar): every escape chain contains at least one link made
     // since `start` whose immediate solution mentions a var above the watermark, because stores
     // returned by inner unifications never contain out-of-scope vars themselves.
@@ -269,7 +269,7 @@ object ValueEquivalence {
     // Grouping is part of a function type's identity: two Pis are related binder-by-binder within their
     // single groups, and differing group counts are a failure to derive `≡` (stuck), never apartness.
     // `(a:A)(b:B) -> C` and `(a:A) -> (b:B) -> C` are different types and do not relate here. So is the
-    // closure: closure kinds and scopes compare exactly (spec §2.5). So is each binder's mode: `[h: P] -> A`,
+    // closure: closure kinds compare exactly. So is each binder's mode: `[h: P] -> A`,
     // `{h: P} -> A` and `(h: P) -> A` are three types (PROOF_BY_EVALUATION §1.5).
     private def tryUnifyPis(pi1: VPi, pi2: VPi, eqStore: EqStore, ctx: Ctx): Either[UnifyFailure, PiUnification] = {
       if (
@@ -282,9 +282,7 @@ object ValueEquivalence {
       val watermark = FreshVar.currentId
       // A closure mismatch is reported at the two function types, whose closures say where they differ.
       var curStore =
-        tryUnify(pi1.closureKind, pi2.closureKind, eqStore, innerCtx)
-          .flatMap(tryUnify(pi1.closureScope, pi2.closureScope, _, innerCtx))
-          .flatMap(tryUnify(pi1.mentionedScope, pi2.mentionedScope, _, innerCtx)) match {
+        tryUnify(pi1.closureKind, pi2.closureKind, eqStore, innerCtx) match {
           case Right(closureStore) => closureStore
           case Left(_)             => return Left(UnifyFailure(pi1, pi2, apart = false))
         }
@@ -443,10 +441,9 @@ object ValueEquivalence {
     }
 
     /**
-     * A kind or lifetime equation (spec §6.2), between normal forms that differ. A variable alone on one side, not
-     * occurring in the other, links to the other side; when both sides are variables, the later-bound one links to the
-     * earlier-bound one. Every other equation is stuck, and none is apart: no two kinds or lifetimes are provably
-     * unequal.
+     * A kind equation, between normal forms that differ. A variable alone on one side, not occurring in the other,
+     * links to the other side; when both sides are variables, the later-bound one links to the earlier-bound one. Every
+     * other equation is stuck, and none is apart: no two kinds are provably unequal.
      */
     private def unifyParameters(
         a: Value,
@@ -850,22 +847,17 @@ object ValueEquivalence {
             .map(Right(_))
             .getOrElse(stuck(l1, l2))
 
-        // Kinds and lifetimes are equal exactly when their normal forms are (spec §2.3); otherwise only a link can
+        // Kinds are equal exactly when their normal forms are; otherwise only a link can
         // solve the equation.
         case (k1: Kind, k2: Kind) =>
           if (k1 == k2) Right(meta)
           else unifyParameters(k1, Kind.singleVariable(k1), k2, Kind.singleVariable(k2), meta, ctx)
-        case (l1: Lifetime, l2: Lifetime) =>
-          if (l1 == l2) Right(meta)
-          else unifyParameters(l1, Lifetime.singleVariable(l1), l2, Lifetime.singleVariable(l2), meta, ctx)
-
-        // Two sorts are equal when their levels, kinds and scopes are (spec §2.5).
+        // Two sorts are equal when their levels and kinds agree.
         case (s1: VSort, s2: VSort) if Sorts.isProp(s1) == Sorts.isProp(s2) =>
           (for {
             afterLevel <- tryUnify(s1.level, s2.level, meta, ctx)
             afterKind <- tryUnify(s1.kind, s2.kind, afterLevel, ctx)
-            afterScope <- tryUnify(s1.scope, s2.scope, afterKind, ctx)
-          } yield afterScope).left.map(_.asStuck)
+          } yield afterKind).left.map(_.asStuck)
 
         // Unify FreshVars through ctx. Basic idea: FreshVars can point at things through context
         // unify creates a ctx of pointers. We only create pointers from the top of the chain

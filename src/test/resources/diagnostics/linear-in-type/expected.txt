@@ -1,5 +1,5 @@
 
-<root>/main.rac:7:48: error: t has the linear type Tok(l), so it cannot stand inside a type or a proof: types and proofs hold no tokens
-def burn {l: Lifetime}(t: Tok(l)): Eq(Nat, eat(t), 0) := Eq.refl(0)
-                                               ^
+<root>/main.rac:7:32: error: t has the linear type Tok, so it cannot stand inside a type or a proof: types and proofs hold no tokens
+def burn (t: Tok): Eq(Nat, eat(t), 0) := Eq.refl(0)
+                               ^
 note: in definition burn

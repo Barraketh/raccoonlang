@@ -8,20 +8,19 @@ import scala.jdk.CollectionConverters._
 import NodeIdentityTests.Residuals
 
 /**
- * A Pi's, lambda's, match's or `scope` term's node identity is a field of its own, and the keys built from it decide
- * conversion and name atoms (docs/kernel.md#value-identity). So two nodes may share an identity only when one is the
- * other rebuilt, and a residual keeps the identity of the node it rebuilds. This holds the elaborator and the checker
- * to that across every program at hand: the bundled preludes, the examples and each diagnostic fixture's program.
+ * A Pi's, lambda's or match's node identity is a field of its own. So two nodes may share an identity only when one is
+ * the other rebuilt, and a residual keeps the identity of the node it rebuilds. This holds the elaborator and the
+ * checker to that across every program at hand: the bundled preludes, the examples and each diagnostic fixture's
+ * program.
  */
 class NodeIdentityTests extends munit.FunSuite {
 
   private def identity(term: Term): Option[NodeId] =
     term match {
-      case pi: Term.Pi       => Some(pi.id)
-      case lam: Term.Lam     => Some(lam.id)
-      case m: Term.Match     => Some(m.id)
-      case scope: Term.Scope => Some(scope.id)
-      case _                 => None
+      case pi: Term.Pi   => Some(pi.id)
+      case lam: Term.Lam => Some(lam.id)
+      case m: Term.Match => Some(m.id)
+      case _             => None
     }
 
   /** The identity-bearing nodes of a term, at any depth. */

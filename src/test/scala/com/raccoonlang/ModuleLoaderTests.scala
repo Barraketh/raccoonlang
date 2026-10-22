@@ -1,7 +1,7 @@
 package com.raccoonlang
 
 import java.nio.charset.StandardCharsets
-import java.nio.file.{Files, Path}
+import java.nio.file.{Files, Path, Paths}
 
 class ModuleLoaderTests extends munit.FunSuite with DiagnosticAssertions {
   private def write(root: Path, relative: String, source: String): Path = {
@@ -84,6 +84,33 @@ class ModuleLoaderTests extends munit.FunSuite with DiagnosticAssertions {
     run(entry) match {
       case Value.VCtor(head, _, _) => assertEquals(head.name, "Eq.refl")
       case other                   => fail(s"Expected a retained Eq.refl constructor, got $other")
+    }
+  }
+
+  test("a sealed lease requires a live token for each read and keeps token authority linear") {
+    val root = Paths.get("examples/leases").toAbsolutePath.normalize
+    val main = root.resolve("main.rac")
+    assertEquals(PrettyPrinter.print(run(main, Prelude.default)), "20")
+
+    val cases = Vector(
+      ("rejected_read_without_token.rac", "read(lease)", "read(lease)", classOf[ArityMismatch]),
+      ("rejected_forged_token.rac", "Token.mk(brand)", "Token.mk", classOf[SealedConstructor]),
+      ("rejected_duplicate_token.rac", "Pair.mk(token, token)", "token", classOf[LinearReused])
+    )
+    cases.foreach { case (file, unsafeSite, spanSite, expected) =>
+      val entry = root.resolve(file)
+      val source = Files.readString(entry, StandardCharsets.UTF_8)
+      val loaded = ModuleLoader.load(entry, ModuleLoader.LoadConfig.forEntry(entry, Prelude.default))
+      val failure = intercept[Execution.CheckFailure] {
+        Execution.check(Execution.elaborate(loaded.program, Prelude.default))
+      }
+      assertEquals(failure.diagnostics.length, 1)
+      assert(expected.isInstance(failure.diagnostics.head.error), failure.diagnostics.head.error.toString)
+      assertEquals(
+        failure.diagnostics.head.span.map(_.start),
+        Some(if (expected == classOf[LinearReused]) source.lastIndexOf(spanSite) else source.indexOf(spanSite))
+      )
+      assert(source.contains(unsafeSite))
     }
   }
 

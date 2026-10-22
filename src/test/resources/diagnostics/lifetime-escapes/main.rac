@@ -1,8 +1,0 @@
-inductive Lease (l: Lifetime) : Type { scope = l }
- | mk : Lease(l)
-
-def use {l: Lifetime}(h: Lease(l)): Nat := 0
-
-def leak : Nat := use(scope l => Lease.mk(l))
-
-{ leak }

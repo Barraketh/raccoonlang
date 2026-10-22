@@ -18,18 +18,18 @@ class UniverseTests extends munit.FunSuite with TestSupport {
     assert(!ValueEquivalence.defEq(Sorts.Prop, Sorts.Type))
   }
 
-  test("Type fields are optional and Prop permits only scope") {
+  test("Type permits level and kind fields, while Prop has no fields") {
     def program(sort: String): String = s"def f (u: Level)(A: $sort)(x: A): A := x\n"
     typecheckDecls(program("Type { level = u}"))
-    typecheckDecls(program("Type { scope = empty, level = u, kind = unr }"))
+    typecheckDecls(program("Type { level = u, kind = unr }"))
     typecheckDecls(program("Type { kind = lin }"))
-    typecheckDecls("def p (P: Prop { scope = empty }): Prop := P\n")
     assertEquals(parseFailure(program("Type {}")), "Empty field list")
     assertEquals(parseFailure(program("Type { level = u, level = u}")), "Repeated field level")
-    assertEquals(parseFailure(program("Type { level = u, scope = empty, scope = empty }")), "Repeated field scope")
+    assertEquals(parseFailure(program("Type { level = u, scope = Nat.zero }")), "Unknown field scope")
     assertEquals(parseFailure(program("Type { level = u, size = u }")), "Unknown field size")
     assertEquals(parseFailure(program("Prop { level = zero }")), "Misplaced field level: Prop fixes the level")
-    assertEquals(parseFailure(program("Prop { kind = lin }")), "Prop has no kind field")
+    assertEquals(parseFailure(program("Prop { kind = lin }")), "Prop has no fields")
+    assertEquals(parseFailure(program("Prop { scope = Nat.zero }")), "Unknown field scope")
     assert(LanguageParser.parseProgram(program("Sort { level = u }")).isInstanceOf[Failure])
     expectOnly[NotFound](typecheckDecls(program("Sort")))
     expectOnly[NotFound](typecheckDecls(program("Level.imax(u, u)")))
@@ -449,8 +449,8 @@ class UniverseTests extends munit.FunSuite with TestSupport {
 
     val solved = ValueEquivalence
       .tryUnify(
-        Sorts.sort(Value.Level.mk(u.id), Value.Kind.unr, Value.Lifetime.empty),
-        Sorts.sort(Value.Level.const(1), Value.Kind.unr, Value.Lifetime.empty),
+        Sorts.sort(Value.Level.mk(u.id), Value.Kind.unr),
+        Sorts.sort(Value.Level.const(1), Value.Kind.unr),
         eqStore
       )
       .getOrElse(fail("expected sort unification to solve the level variable"))
@@ -465,8 +465,8 @@ class UniverseTests extends munit.FunSuite with TestSupport {
     assert(
       ValueEquivalence
         .tryUnify(
-          Sorts.sort(Value.Level.of(Map(u.id -> 1), 0), Value.Kind.unr, Value.Lifetime.empty),
-          Sorts.sort(Value.Level.zero, Value.Kind.unr, Value.Lifetime.empty),
+          Sorts.sort(Value.Level.of(Map(u.id -> 1), 0), Value.Kind.unr),
+          Sorts.sort(Value.Level.zero, Value.Kind.unr),
           eqStore
         )
         .isLeft

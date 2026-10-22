@@ -52,19 +52,11 @@ object Projection {
     /** VSort -> its kind; it recovers a kind variable only when the kind is exactly that variable. */
     case object SortKind extends Step
 
-    /** VSort -> its scope; it recovers a lifetime variable only when the scope is exactly that variable. */
-    case object SortScope extends Step
-
     /** Level of the exact shape u + k -> u (single atom, no constant), mirroring unifyLevels. */
     final case class LevelOffset(k: Int) extends Step
 
     /** VPi -> its closure kind; it recovers a kind variable only when the closure kind is exactly that variable. */
     case object PiClosureKind extends Step
-
-    /**
-     * VPi -> its closure scope; it recovers a lifetime variable only when the closure scope is exactly that variable.
-     */
-    case object PiClosureScope extends Step
 
     /** VPi -> evaluated domain of binder idx; valid only when independent of earlier binders. */
     final case class PiDomain(idx: Int) extends Step
@@ -159,9 +151,8 @@ object Projection {
         case Var(_, id, _) => Some(id)
         case level: Level =>
           Level.singleVariableOffset(level).collect { case (id, 0) => id }
-        case kind: Kind         => Kind.singleVariable(kind)
-        case lifetime: Lifetime => Lifetime.singleVariable(lifetime)
-        case _                  => None
+        case kind: Kind => Kind.singleVariable(kind)
+        case _          => None
       }
 
     val holeOfVar = mutable.Map.empty[VarId, Int]
@@ -244,7 +235,6 @@ object Projection {
                 case sort: VSort =>
                   if (!Sorts.isProp(sort)) queue.append((root, steps :+ Step.SortLevel, sort.level))
                   if (!Sorts.isProp(sort)) queue.append((root, steps :+ Step.SortKind, sort.kind))
-                  queue.append((root, steps :+ Step.SortScope, sort.scope))
 
                 case VCtor(head, stored, tpe) =>
                   if (head.noConfusion && Sealing.accessible(familySeal(tpe), site))
@@ -271,7 +261,6 @@ object Projection {
 
                 case pi: VPi =>
                   closures.append((root, steps :+ Step.PiClosureKind, pi.closureKind))
-                  closures.append((root, steps :+ Step.PiClosureScope, pi.closureScope))
                   pi.binders.indices.foreach { idx =>
                     independentPiDomain(pi, idx).foreach { domain =>
                       queue.append((root, steps :+ Step.PiDomain(idx), domain))
@@ -389,9 +378,9 @@ object Projection {
       if ((binderTypes :+ out).exists(_.synDeps.intersects(firstIds))) None
       else {
         // The remaining group keeps the closure: it is the same function's, applied one binder further. It keeps the
-        // whole group's mentioned scope, a superset of what the remaining binders' code captures, which is harmless:
-        // only positions inside it are read, and no implicit is bound to the copy itself. It keeps the
-        // node identity and captures too, which is sound: a Pi's key counts its binders (docs/kernel.md#value-identity),
+        // whole group's closure kind and captures, which is harmless: only positions inside it are read, and no
+        // implicit is bound to the copy itself. It keeps the node identity and captures too, which is sound: a Pi's key
+        // counts its binders (docs/kernel.md#value-identity),
         // so the only Pis sharing this key are this node's, at these captures, less as many leading binders.
         Some(
           pi.copy(
@@ -403,9 +392,7 @@ object Projection {
                 remaining,
                 fullEnv,
                 out,
-                pi.closureKind,
-                pi.closureScope,
-                pi.mentionedScope
+                pi.closureKind
               )
           )
         )
@@ -485,12 +472,6 @@ object Projection {
               case other                              => Left(Failure.NotASort(other))
             }
 
-          case Step.SortScope =>
-            v match {
-              case sort: VSort => Right(sort.scope)
-              case other       => Left(Failure.NotASort(other))
-            }
-
           case Step.LevelOffset(k) =>
             toLevel(v).flatMap { l =>
               if (k == 0) Right(l)
@@ -501,12 +482,6 @@ object Projection {
           case Step.PiClosureKind =>
             v match {
               case pi: VPi => Right(pi.closureKind)
-              case other   => Left(Failure.NotAFunctionType(other))
-            }
-
-          case Step.PiClosureScope =>
-            v match {
-              case pi: VPi => Right(pi.closureScope)
               case other   => Left(Failure.NotAFunctionType(other))
             }
 

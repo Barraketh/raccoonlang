@@ -45,9 +45,8 @@ private[raccoonlang] object RefinementCertificates {
         motive = privateTerm(t.motive),
         cases = t.cases.map(c => c.copy(ctorName = privateName(c.ctorName), body = privateTerm(c.body)))
       )
-    case t: CA.Term.Sort =>
-      t.copy(level = privateTerm(t.level), kind = privateTerm(t.kind), scope = privateTerm(t.scope))
-    case t: CA.Term.Prop   => t.copy(scope = privateTerm(t.scope))
+    case t: CA.Term.Sort   => t.copy(level = privateTerm(t.level), kind = privateTerm(t.kind))
+    case t: CA.Term.Prop   => t
     case t: CA.Term.FormOp => t.copy(args = t.args.map(privateTerm))
     case _                 => throw Unsupported()
   }
@@ -57,11 +56,11 @@ private[raccoonlang] object RefinementCertificates {
     val source =
       """
         |namespace Private {
-        |inductive Eq {u: Level}{S: Lifetime}(A: Type { level = u, scope = S }) indices (x:A)(y:A):Prop { scope = S }
+        |inductive Eq {u: Level}(A: Type { level = u }) indices (x:A)(y:A):Prop
         | | refl(x:A):Eq(A,x,x)
         |inductive Bottom:Prop
-        |def transport {u: Level}{S: Lifetime}{Sm: Lifetime}{Sc: Lifetime}{A: Type { level = u, scope = S }}{x:A}{y:A}
-        | (e:Eq(A,x,y))(motive:{ scope = Sc } A -> Prop { scope = Sm })(h:motive(x)):motive(y) := match e returning motive(y) with
+        |def transport {u: Level}{A: Type { level = u }}{x:A}{y:A}
+        | (e:Eq(A,x,y))(motive:A -> Prop)(h:motive(x)):motive(y) := match e returning motive(y) with
         | | Eq.refl z => h
         |}
         |""".stripMargin
@@ -126,7 +125,7 @@ private[raccoonlang] object RefinementCertificates {
     }
     def withInvalidProof[A](body: => A): A = {
       val before = rewrite
-      rewrite = _ => CA.Term.Prop(CA.Term.FormOp(CA.Form.LifetimeEmpty, Vector.empty, Span(0, 0)), Span(0, 0))
+      rewrite = _ => CA.Term.Prop(Span(0, 0))
       try body
       finally rewrite = before
     }
@@ -150,10 +149,9 @@ private[raccoonlang] object RefinementCertificates {
     private def parameter(id: VarId): CA.Term = env.locals.iterator
       .collectFirst {
         case (ref, value) if (value match {
-              case level: Level       => Level.singleVariableOffset(level).contains(id -> 0)
-              case kind: Kind         => !kind.isLin && kind.vars == DepSet(id)
-              case lifetime: Lifetime => lifetime.vars == DepSet(id)
-              case _                  => false
+              case level: Level => Level.singleVariableOffset(level).contains(id -> 0)
+              case kind: Kind   => !kind.isLin && kind.vars == DepSet(id)
+              case _            => false
             }) =>
           CA.Term.LocalRef(ref, span)
       }
@@ -222,8 +220,8 @@ private[raccoonlang] object RefinementCertificates {
             val args = family.args.take(head.numErasedFamilyArgs) ++ fields
             call(head, args)
           case a: VApp                    => call(a.head, a.args)
-          case sort: VSort if sort.isProp => CA.Term.Prop(apply(sort.scope), span)
-          case sort: VSort                => CA.Term.Sort(apply(sort.level), apply(sort.kind), apply(sort.scope), span)
+          case sort: VSort if sort.isProp => CA.Term.Prop(span)
+          case sort: VSort                => CA.Term.Sort(apply(sort.level), apply(sort.kind), span)
           case level: Level =>
             def offset(term: CA.Term, n: Int): CA.Term =
               (0 until n).foldLeft(term)((t, _) => CA.Term.FormOp(CA.Form.LevelSucc, Vector(t), span))
@@ -238,10 +236,6 @@ private[raccoonlang] object RefinementCertificates {
             val parts = base ++ ids(kind.vars).map(parameter)
             if (parts.isEmpty) CA.Term.FormOp(CA.Form.KindUnr, Vector.empty, span)
             else parts.reduceLeft((a, b) => CA.Term.FormOp(CA.Form.KindJoin, Vector(a, b), span))
-          case lifetime: Lifetime =>
-            val parts = ids(lifetime.vars).map(parameter)
-            if (parts.isEmpty) CA.Term.FormOp(CA.Form.LifetimeEmpty, Vector.empty, span)
-            else parts.reduceLeft((a, b) => CA.Term.FormOp(CA.Form.LifetimeUnion, Vector(a, b), span))
           case pi: VPi =>
             var scope = env
             var closure = pi.env
@@ -258,10 +252,7 @@ private[raccoonlang] object RefinementCertificates {
             CA.Term.Pi(
               binders,
               out,
-              CA.Closure(
-                CA.ClosureField.Written(apply(pi.closureKind)),
-                CA.ClosureField.Written(apply(pi.closureScope))
-              ),
+              CA.Closure(CA.ClosureField.Written(apply(pi.closureKind))),
               span,
               NodeId.fresh()
             )
@@ -390,7 +381,7 @@ private[raccoonlang] object RefinementCertificates {
       val x = SyntheticLocalRef.fresh("noConfusionValue")
       val truth = app(
         eqName,
-        CA.Term.Prop(CA.Term.FormOp(CA.Form.LifetimeEmpty, Vector.empty, span), span),
+        CA.Term.Prop(span),
         global(bottomName),
         global(bottomName)
       )
@@ -401,10 +392,10 @@ private[raccoonlang] object RefinementCertificates {
       }
       val discriminator = lam(
         Vector(binder(x, quote(e.left.tpe, context), CA.BinderSite.Function)),
-        CA.Term.Prop(CA.Term.FormOp(CA.Form.LifetimeEmpty, Vector.empty, span), span),
+        CA.Term.Prop(span),
         CA.Term.Match(
           CA.Term.LocalRef(x, span),
-          CA.Term.Prop(CA.Term.FormOp(CA.Form.LifetimeEmpty, Vector.empty, span), span),
+          CA.Term.Prop(span),
           cases,
           None,
           None,

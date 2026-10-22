@@ -129,12 +129,10 @@ object MatchChecker {
         // field, so put it into the canonical form for its exact type. A field's type is its local's type at its
         // binder, so it is confined there (spec §4.2).
         val fieldsEnv = br.argRefs.zip(args).foldLeft(envWithScrut) { case (curEnv, (ref, argVal)) =>
-          requireInScope(argVal.tpe, curEnv)
           curEnv.putLocal(ref, Value.canonicalizeProof(argVal))
         }
         // The equation is a hypothesis after the fields, confined as they are, and unrestricted, as every proof is.
         val branchEnv = equation.fold(fieldsEnv) { case (ref, proposition) =>
-          requireInScope(proposition, fieldsEnv)
           fieldsEnv.putLocal(ref, Value.canonicalizeProof(VProof(proposition)))
         }
         val branchRes = checkTerm(br.body, expectedTy, branchEnv)

@@ -29,7 +29,7 @@ object Interpreter {
     Level.max(pieces.result())
   }
 
-  /** The solution of a solved kind or lifetime variable, which refinement links only to a normal form of its own. */
+  /** The solution of a solved kind variable, which refinement links only to a normal form of its own. */
   private def solvedParameter(id: VarId, eqStore: EqStore): Option[Value] = eqStore.subst.get(id).map(eqStore.force)
 
   private def normalizeKind(k: Kind, eqStore: EqStore): Kind = {
@@ -44,18 +44,6 @@ object Interpreter {
     if (k.isLin) Kind.lin else Kind.join(pieces.result())
   }
 
-  private def normalizeLifetime(l: Lifetime, eqStore: EqStore): Lifetime = {
-    val pieces = Vector.newBuilder[Lifetime]
-    l.vars.foreach { id =>
-      pieces += (solvedParameter(id, eqStore) match {
-        case Some(next: Lifetime) => normalizeLifetime(next, eqStore)
-        case Some(other)          => wtf(s"Lifetime variable $id solved to the non-lifetime $other")
-        case None                 => Lifetime.variable(id)
-      })
-    }
-    Lifetime.union(pieces.result())
-  }
-
   /**
    * Continues the reduction of v if any dependency that blocks it has been solved in EqStore. The default call (if v
    * cannot be further reduced) is a fast empty/intersection check, so callers may use it defensively.
@@ -67,7 +55,6 @@ object Interpreter {
         case Blocked(blockedOn) => blockedOn.intersects(eqStore.solvedIds)
         case l: Level           => l.synDeps.intersects(eqStore.solvedIds)
         case k: Kind            => k.synDeps.intersects(eqStore.solvedIds)
-        case l: Lifetime        => l.synDeps.intersects(eqStore.solvedIds)
         case _                  => false
       }
     if (needsResolution) resolveInEqStore(v0, ValueOps.newMaterializer(eqStore)) else v0
@@ -105,11 +92,9 @@ object Interpreter {
           case _                => wtf(s"Blocked extractor matched unexpected value $v0")
         }
 
-      case l: Level if l.synDeps.intersects(eqStore.solvedIds)    => normalizeLevel(l, eqStore)
-      case k: Kind if k.synDeps.intersects(eqStore.solvedIds)     => normalizeKind(k, eqStore)
-      case l: Lifetime if l.synDeps.intersects(eqStore.solvedIds) => normalizeLifetime(l, eqStore)
-
-      case _ => v0
+      case l: Level if l.synDeps.intersects(eqStore.solvedIds) => normalizeLevel(l, eqStore)
+      case k: Kind if k.synDeps.intersects(eqStore.solvedIds)  => normalizeKind(k, eqStore)
+      case _                                                   => v0
     }
   }
 
@@ -120,16 +105,13 @@ object Interpreter {
    */
   /**
    * A Pi into Prop is impredicative and unrestricted; a data Pi takes the maximum of its domain and codomain levels.
-   * Proposition domains contribute zero. Scope joins the closure, mentioned captures, domains and codomain, less the
-   * lifetimes supplied by this binder group. A level binder makes the Pi Large.
+   * Proposition domains contribute zero. A level binder makes the Pi Large.
    */
   private[raccoonlang] def piClassifierFromChecked(
       binders: Vector[CoreAst.Binder],
       freshEnv: Env,
       outV: Value,
-      closureKind: Kind,
-      closureScope: Lifetime,
-      mentionedScope: Lifetime
+      closureKind: Kind
   ): Classifier = {
     val freshValues = binders.map(binder => freshEnv(binder.localRef))
     if (Sorts.isProposition(outV) && !closureKind.isUnr)
@@ -143,15 +125,8 @@ object Interpreter {
           case tpe             => Some(TypeChecker.getUniverse(tpe))
         }
       }
-      // A lifetime binder enters as its own variable, which the caller supplies.
-      val ownLifetimes = freshValues.collect { case lifetime: Lifetime => lifetime.vars }.foldLeft(DepSet.empty)(_ ++ _)
-      val scope =
-        Lifetime.less(
-          Lifetime.union(closureScope +: mentionedScope +: domSorts.map(_.scope) :+ outSort.scope),
-          ownLifetimes
-        )
-      if (Sorts.isProp(outSort)) Sorts.prop(scope)
-      else Sorts.sort(Level.max(domSorts.map(_.level) :+ outSort.level), closureKind, scope)
+      if (Sorts.isProp(outSort)) Sorts.Prop
+      else Sorts.sort(Level.max(domSorts.map(_.level) :+ outSort.level), closureKind)
     }
   }
 
@@ -159,12 +134,10 @@ object Interpreter {
       binders: Vector[CoreAst.Binder],
       baseEnv: Env,
       out: CoreAst.Term,
-      closureKind: Kind,
-      closureScope: Lifetime,
-      mentionedScope: Lifetime
+      closureKind: Kind
   ): Classifier = {
     val freshEnv = BinderOps.freshen(binders, baseEnv)
-    piClassifierFromChecked(binders, freshEnv, evalTerm(out, freshEnv), closureKind, closureScope, mentionedScope)
+    piClassifierFromChecked(binders, freshEnv, evalTerm(out, freshEnv), closureKind)
   }
 
   /**
@@ -178,23 +151,18 @@ object Interpreter {
       case CoreAst.ClosureField.Omitted           => wtf("An omitted closure field reached evaluation before checking")
     }
 
-  /**
-   * An axiom's head. One whose type, past all its binder groups, is a sort is a type former, whose arguments projection
-   * reads; it names each lifetime parameter in its declared scope, as a family does (spec §5.1).
-   */
-  private def axiomHead(name: String, tpe: Value): ConstType = {
+  /** An axiom ending in a sort is a type former, whose arguments projection reads. */
+  private def axiomHead(tpe: Value): ConstType = {
     @tailrec
-    def telescope(parameters: Vector[(CoreAst.Binder, Value)], tpe: Value): ConstType =
+    def telescope(tpe: Value): ConstType =
       tpe match {
         case pi: VPi =>
           val freshEnv = BinderOps.freshen(pi)
-          telescope(parameters ++ pi.binders.map(binder => binder -> freshEnv(binder.localRef)), pi.codomain(freshEnv))
-        case sort: VSort =>
-          Sorts.requireNamesLifetimeParameters(s"Axiom $name", sort.scope, parameters)
-          TypeFormer
-        case _ => Symbol
+          telescope(pi.codomain(freshEnv))
+        case _: VSort => TypeFormer
+        case _        => Symbol
       }
-    telescope(Vector.empty, tpe)
+    telescope(tpe)
   }
 
   private[raccoonlang] def evalPi(pi: CTerm.Pi, env: Env): VPi = {
@@ -203,17 +171,12 @@ object Interpreter {
     val captureVals = closedEnv.locals.values.toVector
     val id = ValueId.LocalId(pi.id, captureVals)
     val closureKind = evalClosureField(pi.closure.kind, Sorts.KindField, env)
-    val closureScope = evalClosureField(pi.closure.scope, Sorts.ScopeField, env)
-    // The Pi's own binders are not in `env`, so these are the locals bound outside it that its code mentions.
-    val mentionedScope = derivedField(Sorts.ScopeField, (pi.codeRefs intersect env.localRefs).toVector, env)
 
     val synDeps = DepSet.newBuilder
     captureVals.foreach { v =>
       synDeps.unionInPlace(v.synDeps)
     }
     synDeps.unionInPlace(closureKind.synDeps)
-    synDeps.unionInPlace(closureScope.synDeps)
-    synDeps.unionInPlace(mentionedScope.synDeps)
 
     val codomain =
       new CheckedPiCodomain(pi.binders, pi.codomainIndependent, Some(pi.codomainBinderIndices), closedEnv) {
@@ -225,11 +188,9 @@ object Interpreter {
       pi.binders,
       codomain,
       closureKind,
-      closureScope,
-      mentionedScope,
       synDeps.result(),
       id,
-      classifier0 = () => piClassifier(pi.binders, closedEnv, pi.out, closureKind, closureScope, mentionedScope),
+      classifier0 = () => piClassifier(pi.binders, closedEnv, pi.out, closureKind),
       isPropValued = pi.knownPropValued.getOrElse {
         val fresh = BinderOps.freshen(pi.binders, closedEnv)
         Sorts.isProposition(evalTerm(pi.out, fresh))
@@ -384,9 +345,8 @@ object Interpreter {
   /** The value that is a sort parameter's type, which a variable of it and an expression of it have. */
   private[raccoonlang] def parameterType(parameter: CoreAst.Parameter): ParameterTpe =
     parameter match {
-      case CoreAst.Parameter.Level    => LevelTpe
-      case CoreAst.Parameter.Kind     => KindTpe
-      case CoreAst.Parameter.Lifetime => LifetimeTpe
+      case CoreAst.Parameter.Level => LevelTpe
+      case CoreAst.Parameter.Kind  => KindTpe
     }
 
   // A checked sort parameter expression denotes a normal form: checking admits nothing else at its position.
@@ -402,23 +362,15 @@ object Interpreter {
       case other   => wtf(s"Checked kind expression evaluated to the non-kind $other")
     }
 
-  private[raccoonlang] def getLifetime(v: Value): Lifetime =
-    v match {
-      case l: Lifetime => l
-      case other       => wtf(s"Checked lifetime expression evaluated to the non-lifetime $other")
-    }
-
   private[raccoonlang] def evalFormOp(form: CoreAst.Form, args: Vector[Value]): Value =
     form match {
-      case CoreAst.Form.LevelZero     => Level.zero
-      case CoreAst.Form.LevelOne      => Level.one
-      case CoreAst.Form.LevelSucc     => Level.succ(getLevel(args(0)))
-      case CoreAst.Form.LevelMax      => Level.max(args.map(getLevel))
-      case CoreAst.Form.KindUnr       => Kind.unr
-      case CoreAst.Form.KindLin       => Kind.lin
-      case CoreAst.Form.KindJoin      => Kind.join(args.map(getKind))
-      case CoreAst.Form.LifetimeEmpty => Lifetime.empty
-      case CoreAst.Form.LifetimeUnion => Lifetime.union(args.map(getLifetime))
+      case CoreAst.Form.LevelZero => Level.zero
+      case CoreAst.Form.LevelOne  => Level.one
+      case CoreAst.Form.LevelSucc => Level.succ(getLevel(args(0)))
+      case CoreAst.Form.LevelMax  => Level.max(args.map(getLevel))
+      case CoreAst.Form.KindUnr   => Kind.unr
+      case CoreAst.Form.KindLin   => Kind.lin
+      case CoreAst.Form.KindJoin  => Kind.join(args.map(getKind))
     }
 
   /** Evaluation attaches no source location: reduction can run inside a callee body. */
@@ -598,7 +550,7 @@ object Interpreter {
             case Decl.AxiomDecl(name, ty, _) =>
               if (!trusted) fail(UntrustedAxiom(name))
               val tyV = TypeChecker.checkDeclType(ty, env).value
-              env.putGlobal(name, publishedValue(VConst(name, axiomHead(name, tyV), tyV), tyV))
+              env.putGlobal(name, publishedValue(VConst(name, axiomHead(tyV), tyV), tyV))
 
             case d: Decl.InductiveDecl =>
               InductiveChecks.evalInductiveBlock(Decl.InductiveBlock(Vector(d), d.span), env)

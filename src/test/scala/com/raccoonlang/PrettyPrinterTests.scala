@@ -49,17 +49,13 @@ class PrettyPrinterTests extends munit.FunSuite with TestSupport {
     assertEquals(PrettyPrinter.print(runProgram("{ Type { level = zero} }")), "Type")
   }
 
-  test("a sort prints the kind and scope it does not leave at their defaults") {
-    val src = "axiom f : (l: Lifetime) -> (A: Type { scope = union(l, empty), kind = lin }) -> Prop { scope = l }\n"
+  test("a sort prints the kind it does not leave at its default") {
+    val src = "axiom f : (A: Type { kind = lin }) -> Prop\n"
     val printed = PrettyPrinter.printTerm(axiomType(src, "f"))
 
-    assertEquals(
-      printed,
-      "(l: Lifetime) -> (A: Type { kind = Kind.lin, scope = Lifetime.union(l, Lifetime.empty) }) -> " +
-        "Prop { scope = l }"
-    )
+    assertEquals(printed, "(A: Type { kind = Kind.lin }) -> Prop")
     axiomType(s"axiom g : $printed\n", "g")
-    assertEquals(PrettyPrinter.print(runProgram("{ Type { kind = lin, scope = empty } }")), "Type { kind = Kind.lin }")
+    assertEquals(PrettyPrinter.print(runProgram("{ Type { kind = lin } }")), "Type { kind = Kind.lin }")
     assertEquals(
       PrettyPrinter.print(runProgram("{ Type { level = one, kind = unr } }")),
       "Type { level = Level.one }"
@@ -123,7 +119,7 @@ class PrettyPrinterTests extends munit.FunSuite with TestSupport {
     val types = Vector(
       "Type -> (Type -> Type)" -> "Type -> (Type -> Type)",
       "(A: Type) -> ((x: A) -> A)" -> "(A: Type) -> ((x: A) -> A)",
-      "(l: Lifetime) -> Type -> ({ scope = l } Type -> Type)" -> "(l: Lifetime) -> Type -> ({ scope = l } Type -> Type)",
+      "Type -> ({ kind = lin } (x: Type) -> Type)" -> "Type -> ({ kind = Kind.lin } (x: Type) -> Type)",
       "Type -> Type -> Type" -> "Type -> Type -> Type"
     )
     // The binder groups down a chain of codomains.
@@ -140,8 +136,8 @@ class PrettyPrinterTests extends munit.FunSuite with TestSupport {
       PrettyPrinter.print(expectTypeError[TypeMismatch](source, Prelude.default).actual)
     assertEquals(actual("def bad (g: Nat -> (Nat -> Nat)): Nat := g\n"), "Nat -> (Nat -> Nat)")
     assertEquals(
-      actual("def bad (l: Lifetime)(g: Nat -> ({ scope = l } Nat -> Nat)): Nat := g\n"),
-      "Nat -> ({ scope = l } Nat -> Nat)"
+      actual("def bad (g: Nat -> ({ kind = lin } (x: Nat) -> Nat)): Nat := g\n"),
+      "Nat -> ({ kind = Kind.lin } (x: Nat) -> Nat)"
     )
     assertEquals(actual("def bad (g: Nat -> Nat -> Nat): Nat := g\n"), "Nat -> Nat -> Nat")
   }
@@ -157,8 +153,8 @@ class PrettyPrinterTests extends munit.FunSuite with TestSupport {
       "{ Nat.add }" -> "Nat.add",
       "{ fun (A: Type)(x: A): A => x }" -> "fun (A: Type) (x: A) => …",
       "{ (A: Type) -> (x: A) -> Eq(A, x, x) }" -> "(A: Type) -> (x: A) -> Eq(A, x, x)",
-      "{ (l: Lifetime) -> Type -> ({ scope = l } Type -> Type) }" ->
-        "(l: Lifetime) -> Type -> ({ scope = l } Type -> Type)",
+      "{ { kind = lin } (x: Type) -> Type }" ->
+        "{ kind = Kind.lin } (x: Type) -> Type",
       "{ Type { kind = lin } }" -> "Type { kind = Kind.lin }",
       "{ 1267650600228229401496703205376 }" -> "1267650600228229401496703205376",
       "{ Eq.refl(3) }" -> "Eq.refl(3)"
@@ -192,19 +188,6 @@ class PrettyPrinterTests extends munit.FunSuite with TestSupport {
     assertEquals(
       onDefaultStack(PrettyPrinter.print(Value.Level.const(depth))),
       "Level.succ(" * (depth - 1) + "Level.one" + ")" * (depth - 1)
-    )
-    val names = Vector.tabulate(depth)(idx => s"l$idx")
-    val union = Value.Lifetime.union(
-      names.map(name =>
-        FreshVar.freshValue(name, Value.LifetimeTpe)._2 match {
-          case lifetime: Value.Lifetime => lifetime
-          case other                    => fail(s"Expected a lifetime variable, got $other")
-        }
-      )
-    )
-    assertEquals(
-      onDefaultStack(PrettyPrinter.print(union)),
-      "Lifetime.union(" * (depth - 1) + names.head + names.tail.map(name => s", $name)").mkString
     )
     val span = Span(0, 0)
     val nested = (1 to depth).foldLeft[CoreAst.Term](CoreAst.Term.NatLit(0, span)) { (acc, _) =>

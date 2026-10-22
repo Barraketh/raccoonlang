@@ -1,19 +1,20 @@
 import buffer.Program
+import buffer.Access
 
 def sumBytesWithCount(countValue: Nat): Buffer.Result := {
-  let (program, _) := Buffer.build(Nat, fun (r: Lifetime)(ctx: Buffer.Ctx(r, r)): Pair(Buffer.Ctx(r, r), Nat) => {
+  let (program, _) := Buffer.build(Nat, fun (r: Type)(ctx: Buffer.Ctx(r, r)): Pair(Buffer.Ctx(r, r), Nat) => {
     let (afterInput, _) := Buffer.withInput(ctx, 3, Nat,
-        fun (inputLife: Lifetime)(input: Buffer.InputHandle(r, inputLife))(inputCtx: Buffer.Ctx(r, inputLife))
-            : Pair(Buffer.Ctx(r, inputLife), Nat) => {
+        fun (inputBrand: Type)(input: Buffer.InputHandle(r, inputBrand))(inputCtx: Buffer.Ctx(r, r))
+            : Pair(Buffer.Ctx(r, r), Nat) => {
       let (afterScratch, _) := Buffer.withScratch(inputCtx, 3, Nat,
-          fun (scratchLife: Lifetime)(scratch: Buffer.ScratchHandle(r, scratchLife))
-              (scratchOwner: Buffer.ScratchOwn(r, scratchLife))(scratchCtx: Buffer.Ctx(r, scratchLife))
-              : Pair(Buffer.Ctx(r, scratchLife), Nat) => {
+          fun (scratchBrand: Type)(scratch: Buffer.ScratchHandle(r, scratchBrand))
+              (scratchOwner: Buffer.ScratchOwn(r, scratchBrand))(scratchCtx: Buffer.Ctx(r, r))
+              : Pair(Buffer.Ctx(r, r), Nat) => {
         let (afterOutput, (returnedScratch, _)) := Buffer.withOutput(scratchCtx, 4,
-            Pair(Buffer.ScratchOwn(r, scratchLife), Nat),
-            fun (outputLife: Lifetime)(output: Buffer.OutputHandle(r, outputLife))(outputOwner: Buffer.OutputOwn(r, outputLife))
-                (outputCtx: Buffer.Ctx(r, outputLife))
-                : Pair(Buffer.Ctx(r, outputLife), Pair(Buffer.ScratchOwn(r, scratchLife), Nat)) => {
+            Pair(Buffer.ScratchOwn(r, scratchBrand), Nat),
+            fun (outputBrand: Type)(output: Buffer.OutputHandle(r, outputBrand))(outputOwner: Buffer.OutputOwn(r, outputBrand))
+                (outputCtx: Buffer.Ctx(r, r))
+                : Pair(Buffer.Ctx(r, r), Pair(Buffer.ScratchOwn(r, scratchBrand), Nat)) => {
               let (afterOffset, offset) := Buffer.const64(outputCtx, 0)
               let (afterCount, count) := Buffer.const32(afterOffset, countValue)
               let (afterZero, zero) := Buffer.const32(afterCount, 0)
@@ -22,10 +23,12 @@ def sumBytesWithCount(countValue: Nat): Buffer.Result := {
               let fixedOwners := Buffer.fixedPair(Buffer.fixedScratch(scratch), Buffer.fixedOutput(output))
               let (loopCtx, loopOwners) := Buffer.repeat32(initialized, count, fixedOwners,
                   (scratchOwner, outputOwner),
-                  fun (bodyLife: Lifetime)(index: Buffer.Val32(r, bodyLife))(bodyCtx: Buffer.Ctx(r, bodyLife))
-                      (state: Pair(Buffer.ScratchOwn(r, scratchLife), Buffer.OutputOwn(r, outputLife)))
-                      : Pair(Buffer.Ctx(r, bodyLife), Pair(Buffer.ScratchOwn(r, scratchLife), Buffer.OutputOwn(r, outputLife))) => {
+                  fun (frame: Type)(view: BufferAccess.View(r, frame))(index: Buffer.Val32(r, frame))
+                      (bodyCtx: Buffer.Ctx(r, frame))
+                      (state: Pair(Buffer.ScratchOwn(r, scratchBrand), Buffer.OutputOwn(r, outputBrand)))
+                      : Pair(Buffer.Ctx(r, frame), Pair(Buffer.ScratchOwn(r, scratchBrand), Buffer.OutputOwn(r, outputBrand))) => {
                     let (bodyScratch, bodyOutput) := state
+                    let bodyZero := Buffer.lift32(view, zero)
                     let (wideCtx, wideIndex) := Buffer.extend32To64(bodyCtx, index)
                     let (loaded, byte) := Buffer.load8Input(wideCtx, input, wideIndex)
                     let (saved, savedScratch) := Buffer.store8Scratch(loaded, scratch, bodyScratch, wideIndex, byte)
@@ -36,16 +39,17 @@ def sumBytesWithCount(countValue: Nat): Buffer.Result := {
                   })
               let (checked, isZero) := Buffer.eq32(loopCtx, count, zero)
               let (branchCtx, branchOwners) := Buffer.ifThenElse(checked, isZero, fixedOwners, loopOwners,
-                  fun (yesScope: Lifetime)(yesCtx: Buffer.Ctx(r, yesScope))
-                      (state: Pair(Buffer.ScratchOwn(r, scratchLife), Buffer.OutputOwn(r, outputLife)))
-                      : Pair(Buffer.Ctx(r, yesScope), Pair(Buffer.ScratchOwn(r, scratchLife), Buffer.OutputOwn(r, outputLife))) => {
+                  fun (frame: Type)(view: BufferAccess.View(r, frame))(yesCtx: Buffer.Ctx(r, frame))
+                      (state: Pair(Buffer.ScratchOwn(r, scratchBrand), Buffer.OutputOwn(r, outputBrand)))
+                      : Pair(Buffer.Ctx(r, frame), Pair(Buffer.ScratchOwn(r, scratchBrand), Buffer.OutputOwn(r, outputBrand))) => {
                     let (yesScratch, yesOutput) := state
-                    let reset := Buffer.setReg32(yesCtx, accumulator, zero)
+                    let bodyZero := Buffer.lift32(view, zero)
+                    let reset := Buffer.setReg32(yesCtx, accumulator, bodyZero)
                     (reset, (yesScratch, yesOutput))
                   },
-                  fun (noScope: Lifetime)(noCtx: Buffer.Ctx(r, noScope))
-                      (state: Pair(Buffer.ScratchOwn(r, scratchLife), Buffer.OutputOwn(r, outputLife)))
-                      : Pair(Buffer.Ctx(r, noScope), Pair(Buffer.ScratchOwn(r, scratchLife), Buffer.OutputOwn(r, outputLife))) =>
+                  fun (frame: Type)(view: BufferAccess.View(r, frame))(noCtx: Buffer.Ctx(r, frame))
+                      (state: Pair(Buffer.ScratchOwn(r, scratchBrand), Buffer.OutputOwn(r, outputBrand)))
+                      : Pair(Buffer.Ctx(r, frame), Pair(Buffer.ScratchOwn(r, scratchBrand), Buffer.OutputOwn(r, outputBrand))) =>
                     (noCtx, state))
               let (finalScratchOwner, finalOutputOwner) := branchOwners
               let (readTotal, total) := Buffer.getReg32(branchCtx, accumulator)

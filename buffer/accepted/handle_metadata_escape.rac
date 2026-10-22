@@ -1,0 +1,18 @@
+import buffer.Program
+
+def extentAfterRelease: Nat := {
+  let (program, extent) := Buffer.build({ kind = unr } (_: Unit) -> Nat,
+      fun (r: Type)(ctx: Buffer.Ctx(r, r)): Pair(Buffer.Ctx(r, r), { kind = unr } (_: Unit) -> Nat) => {
+    let (afterScratch, metadata) := Buffer.withScratch(ctx, 3, { kind = unr } (_: Unit) -> Nat,
+        fun (b: Type)(scratch: Buffer.ScratchHandle(r, b))(owner: Buffer.ScratchOwn(r, b))(inside: Buffer.Ctx(r, r))
+            : Pair(Buffer.Ctx(r, r), { kind = unr } (_: Unit) -> Nat) => {
+      let released := Buffer.releaseScratch(inside, scratch, owner)
+      let extent := fun (_: Unit): Nat => Buffer.scratchBytes(scratch)
+      (released, extent)
+    })
+    (afterScratch, metadata)
+  })
+  extent(Unit.unit)
+}
+
+{ extentAfterRelease }

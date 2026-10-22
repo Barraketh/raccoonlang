@@ -222,22 +222,11 @@ final case class FamilyArgumentTooLarge(family: String, argument: String, level:
 
 final case class InductiveTypeNotASort(tpe: Value) extends TypeError
 
-/** A declared kind that does not contain the kind of `part` (spec §2.6), such as a family's constructor field. */
+/** A declared kind that does not contain the kind of `part`, such as a family's constructor field. */
 final case class KindExceeded(declaration: String, declared: Value.Kind, part: ContainedPart, partKind: Value.Kind)
   extends TypeError
 
-/**
- * A declared scope that does not contain the scope of `part` (spec §2.6), such as a family's constructor field,
- * parameter or index.
- */
-final case class ScopeExceeded(
-    declaration: String,
-    declared: Value.Lifetime,
-    part: ContainedPart,
-    partScope: Value.Lifetime
-) extends TypeError
-
-/** A part of a declaration whose kind or scope the declaration's declared one must contain (spec §2.6). */
+/** A part of a declaration whose kind the declaration's declared kind must contain. */
 sealed trait ContainedPart
 
 object ContainedPart {
@@ -248,8 +237,6 @@ object ContainedPart {
   /** A family's constructor field `name`, written `Ctor.field`, of type `tpe`. */
   final case class Field(name: String, tpe: Value) extends ContainedPart
 
-  /** A family's lifetime parameter `name`, which its declared scope must name. */
-  final case class LifetimeParameter(name: String) extends ContainedPart
 }
 
 /** A local of linear type that some path through its binder's extent does not use (spec §3.2). */
@@ -270,9 +257,6 @@ final case class LinearInType(term: CoreAst.Term, tpe: Value) extends TypeError
  */
 final case class LinearGlobal(definition: Option[String], tpe: Value) extends TypeError
 
-/** A type that names the atom of a `scope` whose binder `lifetime` does not enclose it (spec §4.2). */
-final case class LifetimeEscapes(lifetime: String, tpe: Value) extends TypeError
-
 /**
  * A use of a sealed family's constructors or selectors outside its module (spec §7.1): `member` names the constructor
  * or selector named, and is absent for a match on a value of the family.
@@ -281,7 +265,7 @@ final case class SealedConstructor(family: String, member: Option[String]) exten
 
 /**
  * An axiom outside the trusted prelude (spec §7.3). No rule on an axiom's type could keep it from breaking sealing,
- * linearity or confinement, since an axiom can state `False`; a program adds an assumption in a custom prelude.
+ * linearity or sealing, since an axiom can state `False`; a program adds an assumption in a custom prelude.
  */
 final case class UntrustedAxiom(axiom: String) extends TypeError
 

@@ -103,16 +103,18 @@ class DiagnosticSnapshotTests extends munit.FunSuite with Goldens {
     diagnostics.map(_.error.productPrefix)
   }
 
-  /**
-   * Spec §9's diagnostics, which are every diagnostic the lifetimes, linearity and sealing design added: each has a
-   * snapshot case named after it that reports it and nothing else, and some test expects it as a program's only error.
-   */
-  test("every diagnostic spec §9 lists has its own snapshot case and a test that expects it alone") {
-    val spec = Files.readString(Paths.get("docs", "implemented", "LEMUR_ON_RACCOON.md"))
-    val section = spec.substring(spec.indexOf("## 9. Diagnostics"))
-    val block = section.substring(section.indexOf("```text") + "```text".length)
-    val listed = block.substring(0, block.indexOf("```")).split("[,\\s]+").filter(_.nonEmpty).toVector
-    assert(listed.length >= 9, listed)
+  /** Retained kind and linearity diagnostics still have localized source snapshots and direct unit coverage. */
+  test("retained kind and linearity diagnostics have focused snapshots and direct tests") {
+    val retained = Vector(
+      "kind-exceeded" -> "KindExceeded",
+      "kind-exceeded-lambda" -> "KindExceeded",
+      "linear-in-type" -> "LinearInType",
+      "linear-unused" -> "LinearUnused",
+      "linear-unused-pattern-field" -> "LinearUnused",
+      "linear-unused-wildcard" -> "LinearUnused",
+      "linear-reused" -> "LinearReused",
+      "linear-global" -> "LinearGlobal"
+    )
     val tests =
       Files
         .walk(Paths.get("src", "test", "scala"))
@@ -121,18 +123,19 @@ class DiagnosticSnapshotTests extends munit.FunSuite with Goldens {
         .filter(_.toString.endsWith(".scala"))
         .map(Files.readString(_))
         .mkString
-    val gaps = listed.flatMap { name =>
-      val caseDir = casesRoot.resolve(name.replaceAll("([a-z])([A-Z])", "$1-$2").toLowerCase)
+    val gaps = retained.flatMap { case (caseName, errorName) =>
+      val caseDir = casesRoot.resolve(caseName)
       val snapshot =
-        if (!Files.isDirectory(caseDir)) Some(s"$name: no snapshot case ${caseDir.getFileName}")
+        if (!Files.isDirectory(caseDir)) Some(s"$errorName: no snapshot case $caseName")
         else {
           val reported = reportedErrors(caseDir.resolve("main.rac"))
-          Option.when(reported.isEmpty || reported.exists(_ != name))(
-            s"$name: snapshot case ${caseDir.getFileName} reports ${reported.mkString("[", ", ", "]")}"
+          Option.when(reported != Vector(errorName))(
+            s"$errorName: snapshot case $caseName reports ${reported.mkString("[", ", ", "]")}"
           )
         }
-      snapshot ++ Option.when(!tests.contains(s"expectOnly[$name]"))(s"$name: no expectOnly[$name] test")
+      snapshot
     }
-    assertEquals(gaps, Vector.empty[String])
+    val directlyCovered = retained.map(_._2).distinct.filterNot(name => tests.contains(s"expectOnly[$name]"))
+    assertEquals(gaps ++ directlyCovered.map(name => s"$name: no expectOnly[$name] test"), Vector.empty[String])
   }
 }

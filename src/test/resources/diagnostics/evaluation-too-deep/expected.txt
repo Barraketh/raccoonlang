@@ -1,3 +1,4 @@
+
 <root>/main.rac:7:1: error: Evaluation is too deep: it exhausted the stack, whose size the command line sets with --stack
 def deep : Type := nest(100000)
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

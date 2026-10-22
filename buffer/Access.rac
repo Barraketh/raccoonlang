@@ -1,0 +1,30 @@
+// Linear permission for code that uses values tagged by a generated frame.
+namespace BufferAccess {
+  sealed inductive Token (brand: Type): Type { kind = lin }
+   | mk: Token(brand)
+
+  // A view describes ancestry only. Access also requires the current child token.
+  sealed inductive View (parent: Type)(child: Type): Type
+   | mk: View(parent, child)
+
+  def identity (brand: Type): View(brand, brand) := View.mk(brand, brand)
+  def compose {a: Type}{b: Type}{c: Type}(ab: View(a, b))(bc: View(b, c)): View(a, c) := View.mk(a, c)
+
+  def root {lx: Level}{kx: Kind}{kf: Kind}(X: Type { level = lx, kind = kx })
+      (body: { kind = kf } (brand: Type) -> Token(brand) -> Pair(Token(brand), X)): X := {
+    let (closed, result) := body(Unit, Token.mk(Unit))
+    match closed returning X with
+    | Token.mk => result
+  }
+
+  def within {parent: Type}{lx: Level}{kx: Kind}{kf: Kind}(token: Token(parent))(X: Type { level = lx, kind = kx })
+      (body: { kind = kf } (child: Type) -> View(parent, child) -> Token(child) -> Pair(Token(child), X))
+      : Pair(Token(parent), X) := {
+    match token returning Pair(Token(parent), X) with
+    | Token.mk => {
+      let (closed, result) := body(Unit, View.mk(parent, Unit), Token.mk(Unit))
+      match closed returning Pair(Token(parent), X) with
+      | Token.mk => (Token.mk(parent), result)
+    }
+  }
+}

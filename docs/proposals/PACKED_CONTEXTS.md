@@ -220,8 +220,8 @@ readout, and grants no inverse rule for arithmetic.
   layout admission and constructor checks, so an untrusted lookalike
   declaration gets no packed or native behaviour. Other inductive families, and
   bare variables, are not wrapped.
-- **Unchanged checks.** The existing conservative positivity treatment, and the
-  scope and linearity checks, do not change.
+- **Unchanged checks.** The existing conservative positivity treatment and
+  linearity checks do not change.
 - **One implementation** serves every consumer. The Core evaluator's scalar path
   and its general application path agree. No size-dependent path survives as a
   compatibility mode. The test-only source evaluator may remain, to check the

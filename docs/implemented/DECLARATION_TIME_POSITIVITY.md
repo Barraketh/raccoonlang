@@ -87,7 +87,7 @@ exactly the target: for a block target, `VConst(name, Inductive(_), _)` with
 | `VNatPrefix` | `base` and `tpe`. |
 | `VLam`, block target | `Core`: `tpe`, captures, `env` local values, and code names. **`Native`: `tpe`, captures and `env` local values only. No code names: by freshness, host code cannot name the block.** `ProofEta`: `tpe` and captures. |
 | `VLam`, local target | `!synDeps.contains(id)`. |
-| `ConstructorHead`, `Level`, `Kind`, `Lifetime`, `ParameterTpe`, `SortParameter`, `Large`, `VSort`, `Var`, other `VConst` | Block target: true. Local target: `!synDeps.contains(id)`. |
+| `ConstructorHead`, `Level`, `Kind`, `ParameterTpe`, `SortParameter`, `Large`, `VSort`, `Var`, other `VConst` | Block target: true. Local target: `!synDeps.contains(id)`. |
 | `DeferredEvidence` | `deferred.escaped`, unchanged. |
 
 **Positive(t, v)**
@@ -141,7 +141,7 @@ does not mention the block, is accepted inside a recursive field. Before, the
 first was rejected by positivity and the second by uniformity. Both are sound
 by freshness. This widening is intended; do not flag it as a regression.
 
-### Scans: memo, cycles and lifetime
+### Scans: memo and cycles
 
 A scan is an ordinary object passed as a parameter. Do not use `ThreadLocal`s
 or globals. It holds:

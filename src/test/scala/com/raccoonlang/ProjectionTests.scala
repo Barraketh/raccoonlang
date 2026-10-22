@@ -6,23 +6,21 @@ import com.raccoonlang.telescope.Projection
 class ProjectionTests extends munit.FunSuite with TestSupport {
   override protected val suitePrelude: Prelude.Config = Prelude.test
 
-  test("Pi-codomain projection peels one binder from a grouped telescope, keeping what its code captures") {
+  test("Pi-codomain projection peels one binder from a grouped telescope, keeping its closure kind") {
     val span = Span(0, 0)
     val env = Env.empty
     val typeSort = CoreTestTerms.sortAt(CoreAst.Form.LevelZero, span)
     val x = CoreAst.Binder(CoreAst.LocalRef(0, "x"), typeSort, span, CoreAst.BinderSite.Function, BinderMode.Explicit)
     val y = CoreAst.Binder(CoreAst.LocalRef(1, "y"), typeSort, span, CoreAst.BinderSite.Function, BinderMode.Explicit)
-    val mentioned = FreshVar.freshValue("m", LifetimeTpe)._2.asInstanceOf[Value.Lifetime]
+    val kind = FreshVar.freshValue("k", KindTpe)._2.asInstanceOf[Value.Kind]
     val grouped = VPi(
       env,
       Vector(x, y),
       _ => Sorts.Type,
-      Value.Kind.unr,
-      Value.Lifetime.empty,
-      mentioned,
-      mentioned.synDeps,
+      kind,
+      kind.synDeps,
       ValueId.LocalId(NodeId.fresh(), Vector.empty),
-      () => Sorts.sort(Level.succ(Level.one), Value.Kind.unr, mentioned),
+      () => Sorts.sort(Level.succ(Level.one), kind),
       isPropValued = false
     )
     val root = VConst("f", Symbol, grouped)
@@ -31,8 +29,9 @@ class ProjectionTests extends munit.FunSuite with TestSupport {
       .fold(failure => fail(failure.toString), identity)
 
     assertEquals(tail.asInstanceOf[VPi].binders.map(_.localRef), Vector(y.localRef))
-    // The remaining group is the same function type's, so its sort counts the same captures.
-    assert(Sorts.sortOf(tail).exists(_.scope == mentioned), tail.tpe)
+    // The remaining group is the same function type's and preserves its closure kind.
+    assertEquals(tail.asInstanceOf[VPi].closureKind, kind)
+    assert(Sorts.sortOf(tail).exists(_.kind == kind), tail.tpe)
     assert(
       Projection
         .project(Projection.Spec(0, Vector(Projection.Step.PiCodomain)), Vector(tail))
@@ -57,11 +56,9 @@ class ProjectionTests extends munit.FunSuite with TestSupport {
       Vector(x, y),
       _ => Sorts.Type,
       Value.Kind.unr,
-      Value.Lifetime.empty,
-      Value.Lifetime.empty,
       DepSet.empty,
       ValueId.LocalId(NodeId.fresh(), Vector.empty),
-      () => Sorts.sort(Level.succ(Level.one), Value.Kind.unr, Value.Lifetime.empty),
+      () => Sorts.sort(Level.succ(Level.one), Value.Kind.unr),
       isPropValued = false
     )
 

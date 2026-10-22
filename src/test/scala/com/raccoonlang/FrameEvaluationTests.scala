@@ -178,7 +178,7 @@ class FrameEvaluationTests extends munit.FunSuite with TestSupport {
     }
   }
 
-  test("dependent Pi snapshots survive later calls and scope returns the outer value") {
+  test("dependent Pi snapshots survive later calls and a block returns its last value") {
     val makeType = runProgram(
       """
         |def makeType (n: Nat): Type := {
@@ -202,7 +202,8 @@ class FrameEvaluationTests extends munit.FunSuite with TestSupport {
     assertEquals(first.key, firstAgain.key)
     assertNotEquals(first.key, second.key)
 
-    val scoped = runProgram("def scoped (n: Nat): Nat := scope l => n\n{ scoped }").asInstanceOf[Value.VLam]
+    val scoped =
+      runProgram("def scoped (n: Nat): Nat := { let saved := n\n saved }\n{ scoped }").asInstanceOf[Value.VLam]
     val seven = VPacked.nat(7, scoped.tpe.env("Nat"))
     assertEquals(natPayload(Interpreter.evalApply(scoped, Vector(seven))), BigInt(7))
   }

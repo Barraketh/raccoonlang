@@ -2,6 +2,12 @@
 
 Status: **implemented** (2026-10-01). Amends `docs/kernel.md` and `docs/language.md`.
 
+The opaque-definition change remains current. Scope-review references below are
+historical: Raccoon's former `Lifetime` and lifetime-scope feature has been
+removed, so those examples and guarantees do not describe the current language.
+See [the language reference](../language.md) and
+[the kernel reference](../kernel.md) for current rules.
+
 ## 1. The change
 
 `opaque def` is removed. Every definition is transparent: it reduces during checking and evaluation. Only the trusted
@@ -14,7 +20,8 @@ So a closed value of a family reduces to a constructor unless it depends on a pr
 **An opaque application is a second kind of stuck value.** The kernel reasons around it in many places, each a rule
 of its own:
 - apartness: an opaque application clashes with nothing;
-- implicit projection: its arguments were projection positions until `SCOPE_CONTAINMENT`;
+- implicit projection: the former scope review treated some arguments as
+  projection positions;
 - deferred evidence, which it stores among its arguments;
 - termination metrics, which may not be of an opaque type;
 - `LinearGlobal`;
@@ -23,8 +30,9 @@ of its own:
 Two soundness holes went through these rules:
 - **Bug #5:** `Eq.refl` hidden behind an opaque definition made a proof scrutinee that no probe could see through, and
   `False` followed.
-- **The scope review's H1:** an implicit read an atom out of an opaque application's arguments, so a lease was made
-  after its scope closed.
+- **The former scope review's H1:** under the removed lifetime feature, an
+  implicit read an atom out of an opaque application's arguments, so a lease
+  could be made after its scope closed.
 
 **Nothing needs it.** The bundled prelude, the GPU prelude, the GPU library and its proofs, and the examples declare
 no opaque definition. Every use is in the test suite (about 60, across 20 files), apart from the stale generator
@@ -35,7 +43,7 @@ no opaque definition. Every use is in the test suite (about 60, across 20 files)
   added nothing but the exploit.
 
 **It matches axioms.** Since 2026-09-29 only the trusted prelude declares axioms, so that names which never compute
-are audited (obligations T1–T5). An opaque definition was the one way left for any module to make such a name.
+are audited (obligations T1–T4). An opaque definition was the one way left for any module to make such a name.
 
 ## 3. What changes in the language
 
@@ -46,7 +54,8 @@ are audited (obligations T1–T5). An opaque definition was the one way left for
   open terms while checking.
 - **Every rule that names opaque definitions** names prelude axioms instead, or nothing:
   - apartness: no exception for opaque applications;
-  - projection positions: family heads and the prelude's type formers (as `SCOPE_CONTAINMENT` §4 has it);
+  - projection positions: family heads and the prelude's type formers (see
+    [Structure eta and projections](../kernel.md#structure-eta-and-projections));
   - deferred evidence: "any other head, an axiom's say";
   - termination metrics: not of an axiomatized type;
   - `LinearGlobal`: a definition whose type is linear;
@@ -73,16 +82,17 @@ are audited (obligations T1–T5). An opaque definition was the one way left for
 - **A test of opacity itself** (does not unfold, cannot be mutual) is deleted.
 - **New:** `opaque def` is a parse error.
 
-The scope review's probes `a3` and `a4` become tests with function parameters in place of the opaque definitions.
-They must still be rejected, by `SCOPE_CONTAINMENT`'s projection restriction.
+The old scope review's probes `a3` and `a4` were specific to the removed
+lifetime-scope rules; they are historical and are not current rejection
+requirements.
 
 `gpu/check.sh` is unaffected (no use), and the generated kernels stay byte-identical.
 
 ## 6. Steps
 
-One step after the scope fix lands: an implementer at medium effort, hostile review at high effort. The reviewer
-looks for a rule that still mentions opaque definitions, and for a regression test whose hazard was lost in the
-rewrite.
+The original review followed the former scope change. Its remaining review
+question was whether any rule still mentioned opaque definitions or whether an
+opaque-definition regression had lost its hazard.
 
 ## 7. Decisions for review
 

@@ -47,6 +47,7 @@ class BufferProgramSourceTests extends munit.FunSuite {
       root: java.nio.file.Path,
       relative: String,
       expected: Set[String],
+      expectedDefinition: Option[String],
       exactError: Option[TypeError] = None
   ): Unit = {
     val entry = root.resolve(relative)
@@ -61,9 +62,22 @@ class BufferProgramSourceTests extends munit.FunSuite {
     }
     val errors = rejected.diagnostics.map(_.error.productPrefix).toSet
     assert(
-      errors.intersect(expected).nonEmpty,
-      s"Expected one of $expected for $relative, got $errors\n${rejected.getMessage}"
+      errors == expected,
+      s"Expected exactly $expected for $relative, got $errors\n${rejected.getMessage}"
     )
+    assertEquals(rejected.diagnostics.size, 1, s"Expected one localized diagnostic for $relative")
+    val entrySourceId = loaded.sources.find(_.path == entry.toRealPath()).map(_.sourceId)
+    assert(entrySourceId.nonEmpty, s"The loaded source graph did not contain $entry")
+    assert(
+      rejected.diagnostics.forall(_.span.flatMap(_.source) == entrySourceId),
+      s"Expected the diagnostic for $relative to originate in its fixture, got ${rejected.diagnostics.map(_.span)}"
+    )
+    expectedDefinition.foreach { name =>
+      assert(
+        rejected.diagnostics.exists(_.frames.contains(Frame.InDefinition(name))),
+        s"Expected the diagnostic for $relative in definition $name, got ${rejected.diagnostics.map(_.frames)}"
+      )
+    }
     exactError.foreach { wanted =>
       assert(
         rejected.diagnostics.exists(_.error == wanted),
@@ -77,11 +91,12 @@ class BufferProgramSourceTests extends munit.FunSuite {
     val entry = root.resolve("buffer/TokenProbe.rac")
     val sourcePath = root.resolve("buffer/Program.rac")
     val source = Files.readString(sourcePath)
-    val parsedProgram = LanguageParser.parseProgram(source) match {
-      case Success(program, _, _)  => program
+    LanguageParser.parseProgram(source) match {
+      case Success(_, _, _)        => ()
       case Failure(_, at, message) => fail(s"Program.rac parse failed at $at: $message near ${source.substring(at)}")
     }
-    try TypeChecker.check(Elaborator.elaborate(parsedProgram, Prelude.default))
+    val loadedProgram = ModuleLoader.load(sourcePath, ModuleLoader.LoadConfig(Vector(root), Prelude.default))
+    try TypeChecker.check(Elaborator.elaborate(loadedProgram.program, Prelude.default))
     catch { case diagnostic: Diagnostic => fail(ErrorReporter.pretty(diagnostic, Source(source), None)) }
     val entrySource = Files.readString(entry)
     LanguageParser.parseProgram(entrySource) match {
@@ -118,27 +133,49 @@ class BufferProgramSourceTests extends munit.FunSuite {
     }
   }
 
+  test("extent metadata can outlive its owner because it carries no buffer authority") {
+    val root = Paths.get("").toAbsolutePath.normalize
+    assertEquals(nat(runEntry(root, "buffer/accepted/handle_metadata_escape.rac")), BigInt(3))
+  }
+
+  test("ancestor views compose for nested lifts and preserve the emitted scalar result") {
+    val root = Paths.get("").toAbsolutePath.normalize
+    val result = runEntry(root, "buffer/accepted/nested_frame_views.rac")
+    assertEquals(
+      successBytes(result),
+      Vector(Vector(BigInt(1), BigInt(0), BigInt(0), BigInt(0), BigInt(0), BigInt(0), BigInt(0), BigInt(0)))
+    )
+  }
+
   test("a mutable register cannot be packaged as Fixed loop state") {
     val root = Paths.get("").toAbsolutePath.normalize
     assertSemanticRejection(
       root,
       "buffer/rejected/fixed_register.rac",
       Set("SealedConstructor"),
-      Some(SealedConstructor("Buffer.Fixed", Some("Buffer.Fixed.mk")))
+      expectedDefinition = Some("forged"),
+      exactError = Some(SealedConstructor("Buffer.Fixed", Some("Buffer.Fixed.mk")))
     )
   }
 
-  test("source ownership rejects forged, duplicated, dropped, reused, captured, escaped, and cross-builder resources") {
+  test("source ownership rejects forged, duplicated, dropped, reused, captured, cross-builder, and stale resources") {
     val root = Paths.get("").toAbsolutePath.normalize
     Vector(
-      "buffer/rejected/duplicate_owner.rac" -> Set("LinearReused"),
-      "buffer/rejected/unused_owner.rac" -> Set("LinearUnused"),
-      "buffer/rejected/forged_owner.rac" -> Set("SealedConstructor"),
-      "buffer/rejected/store_after_export.rac" -> Set("LinearReused"),
-      "buffer/rejected/capture_owner_in_repeat.rac" -> Set("TypeMismatch", "KindExceeded", "ScopeExceeded"),
-      "buffer/rejected/cross_builder_handle.rac" -> Set("TypeMismatch"),
-      "buffer/rejected/cross_allocation_owner.rac" -> Set("TypeMismatch"),
-      "buffer/rejected/handle_escape.rac" -> Set("TypeMismatch", "ScopeExceeded", "LifetimeEscapes")
-    ).foreach { case (relative, expected) => assertSemanticRejection(root, relative, expected) }
+      ("buffer/rejected/duplicate_owner.rac", Set("LinearReused"), "duplicate"),
+      ("buffer/rejected/unused_owner.rac", Set("LinearUnused"), "discard"),
+      ("buffer/rejected/forged_owner.rac", Set("SealedConstructor"), "forged"),
+      ("buffer/rejected/store_after_export.rac", Set("LinearReused"), "useAfterExport"),
+      ("buffer/rejected/load_after_release.rac", Set("LinearReused"), "loadAfterRelease"),
+      ("buffer/rejected/store_after_release.rac", Set("LinearReused"), "storeAfterRelease"),
+      ("buffer/rejected/capture_owner_in_repeat.rac", Set("TypeMismatch"), "invalid"),
+      ("buffer/rejected/cross_builder_handle.rac", Set("TypeMismatch"), "invalid"),
+      ("buffer/rejected/cross_allocation_owner.rac", Set("TypeMismatch"), "mismatched"),
+      ("buffer/rejected/cross_root_value.rac", Set("TypeMismatch"), "useForeignRoot"),
+      ("buffer/rejected/packaged_loop_index.rac", Set("TypeMismatch"), "usePackagedLoopIndex"),
+      ("buffer/rejected/packaged_branch_value.rac", Set("TypeMismatch"), "usePackagedBranchValue"),
+      ("buffer/rejected/forged_reverse_view.rac", Set("SealedConstructor"), "reverseView")
+    ).foreach { case (relative, expected, definition) =>
+      assertSemanticRejection(root, relative, expected, expectedDefinition = Some(definition))
+    }
   }
 }

@@ -1,7 +1,19 @@
 # Lifetimes, linear types and scopes
 
-Status: **implemented** (2026-09-29). `docs/language.md` and `docs/kernel.md` state its rules, and this document stays
-as the design record. `docs/implemented/SCOPE_CONTAINMENT.md` and `docs/implemented/NO_OPAQUE.md` amend it.
+> **Historical design record.** This document describes the compiler before the
+> `Lifetime` and sort-scope feature was removed. Its lifetime syntax, scope
+> rules, and safety claims are not current. Its discussion of kinds,
+> polymorphism, linearity, and sealing is retained as design history; the
+> [language reference](../language.md) and [kernel reference](../kernel.md)
+> define current behavior. The original version is available in a clone
+> containing baseline `81759785` with
+> `git show 81759785:docs/implemented/LEMUR_ON_RACCOON.md`.
+
+Status: **historical** (the feature set was implemented on 2026-09-29, then
+the lifetime-scope parts were removed). This document stays as a design record.
+`docs/implemented/SCOPE_CONTAINMENT.md` records the retired scope design;
+`docs/implemented/NO_OPAQUE.md` contains both current opaque-definition history
+and explicitly marked scope-review history.
 
 This document specifies three additions to Raccoon. A sort gains two
 parameters beside its level: a kind, which says whether each value of its

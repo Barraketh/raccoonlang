@@ -1,2 +1,2 @@
-inductive Eq {u: Level}{S: Lifetime}(A: Type { level = u, scope = S }) indices (x: A)(y: A) : Prop { scope = S }
+inductive Eq {u: Level}(A: Type { level = u}) indices (x: A)(y: A) : Prop
  | refl (x: A) : Eq(A, x, x)

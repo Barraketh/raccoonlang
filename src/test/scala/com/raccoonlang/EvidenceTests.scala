@@ -123,10 +123,10 @@ class EvidenceTests extends munit.FunSuite with TestSupport {
     )
     // Proofs hold no tokens, a supplied one included.
     val tokens =
-      "inductive Tok (l: Lifetime) : Type { kind = lin, scope = l }\n | mk : Tok(l)\n\n" +
-        "def eat {l: Lifetime}(t: Tok(l)): Nat := match t returning Nat with\n | Tok.mk => 3\n\n"
+      "inductive Tok : Type { kind = lin }\n | mk : Tok\n\n" +
+        "def eat (t: Tok): Nat := match t returning Nat with\n | Tok.mk => 3\n\n"
     expectOnly[LinearInType](
-      typecheckDecls(tokens + three + "def g {l: Lifetime}(t: Tok(l)): Nat := three(3)[Eq.refl(eat(t))]\n")
+      typecheckDecls(tokens + three + "def g (t: Tok): Nat := three(3)[Eq.refl(eat(t))]\n")
     )
   }
 
@@ -259,7 +259,7 @@ class EvidenceTests extends munit.FunSuite with TestSupport {
   test("an evidence binder's type is a proposition") {
     assertEquals(expectOnly[NotAProposition](typecheckDecls("def f [h: Nat]: Nat := 0\n")).binder, "h")
     expectOnly[NotAProposition](typecheckDecls("def f (n: Nat): Nat := (fun [h: Bool]: Nat => n)()\n"))
-    expectOnly[NotAProposition](typecheckDecls("def f (g: [l: Lifetime] -> Nat): Nat := 0\n"))
+    expectOnly[NotAProposition](typecheckDecls("def f (g: [n: Nat] -> Nat): Nat := 0\n"))
     expectOnly[NotAProposition](typecheckDecls("def f {u: Level}(P: Type { level = u})[h: P]: Nat := 0\n"))
     // A proposition a definition computes is one.
     evaluatesTo(

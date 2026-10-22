@@ -1,0 +1,6 @@
+// A linear Token cannot be copied into two reads or results.
+import Lease
+
+def duplicate {brand: Type}(token: Token(brand)): Pair(Token(brand), Token(brand)) := Pair.mk(token, token)
+
+{ duplicate }

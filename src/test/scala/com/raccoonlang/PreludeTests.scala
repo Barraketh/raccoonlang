@@ -89,6 +89,30 @@ class PreludeTests extends munit.FunSuite with TestSupport {
     }
   }
 
+  test("the quotient builtins locate generic carrier, relation, and value arguments") {
+    val program =
+      """
+        |inductive W : Type
+        | | mk : W
+        |
+        |def relation (a: W)(b: W): Prop := True
+        |def q : Quot(W, relation) := Quot.mk(relation, W.mk)
+        |
+        |def inspect (q: Quot(W, relation)): Nat := {
+        |  let evidence := Quot.ind(q, fun (q: Quot(W, relation)): Prop => True, fun (a: W): True => True.intro)
+        |  Quot.lift(
+        |    q,
+        |    Nat,
+        |    fun (w: W): Nat => 7,
+        |    fun (a: W)(b: W)(h: relation(a, b)): Eq(Nat, 7, 7) => Eq.refl(7)
+        |  )
+        |}
+        |
+        |{ inspect(q) }
+        |""".stripMargin
+    assert(ValueEquivalence.defEq(runProgram(program), runProgram("{ 7 }")))
+  }
+
   test("Prelude Decidable and conditionals reduce") {
     val decided =
       runProgram(

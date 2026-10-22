@@ -36,7 +36,9 @@ document is silent on a case, the implementation stops and reports the gap rathe
 a lambda's, a function type, or a constructor's (§1.8):
 
 ```raccoon
-def storeAcc {n: Lifetime}{f: Nat}(e: Ctx(n, Group.warps(f, 4)))[aligned: Eq(Nat, Nat.mod(f, 4), 0)] … 
+def storeAcc {actor: Type}{frame: Type}{first: Nat}
+    (e: Ctx(actor, frame, Group.warps(first, 4)))
+    [aligned: Eq(Nat, Nat.mod(first, 4), 0)] …
 
 def render (p: Program)[ok: Eq(Bool, Gpu.wellFormed(p), Bool.true)]: String := …
 
@@ -188,7 +190,6 @@ key-decided equation structurally, but with an explicit work stack.
 result:
 - a block's result;
 - a match's chosen branch;
-- a scope's body;
 - the body of a core lambda applied in tail position.
 
 A procedure written with accumulators, using `match` rather than `Bool.and` for short-circuiting (evaluation is

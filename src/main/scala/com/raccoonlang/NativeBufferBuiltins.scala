@@ -133,9 +133,7 @@ private[raccoonlang] object NativeBufferBuiltins {
 
     tpe match {
       case pi: VPi if pi.binders.length == 2 =>
-        if (
-          pi.closureKind != Kind.unr || pi.closureScope != Lifetime.empty || pi.mentionedScope != Lifetime.empty || pi.isPropValued
-        )
+        if (pi.closureKind != Kind.unr || pi.isPropValued)
           reject("the native function must be an unrestricted closed function into Type")
         var telescopeEnv = pi.env
         Vector(listNat, listListNat).zip(pi.binders).foreach { case (expected, binder) =>
