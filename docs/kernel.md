@@ -110,3 +110,35 @@ fields and type-pattern captures. Proof values compare by proof irrelevance
 only at the same proposition; a proof field cannot hide an unforced data or
 proposition capture. Captures determined by the scrutinee's parameters or
 indices remain eligible for large elimination.
+
+## Single-constructor matches and let patterns
+
+The surface AST represents each ordinary let with a mandatory binding pattern: a
+name, a discard, or an unpack of constructor fields. Instance lets are a
+separate form requiring a name. Core and checked lets remain ordinary local
+bindings.
+
+`CoreAst.Term.MatchOne` supplies a scrutinee, field binders, and a body without
+naming a constructor. Its checker requires exactly one declared constructor,
+including when the scrutinee is already a constructor or only one branch is
+reachable. It resolves that constructor and uses the same coverage, refinement,
+branch, and Prop elimination checks as a named match. Both forms produce the
+existing checked match representation.
+
+Let-pattern lowering is syntactic. The elaborator saves the RHS in one ordinary
+let, retaining any whole-RHS annotation, and places the remainder of the block
+inside a `MatchOne`. Nested patterns produce nested matches; all immediate field
+slots are allocated before descendants. Erased constructor arguments and
+type-pattern captures are excluded from the field binders. No pattern checking
+occurs in the ordinary let checker.
+
+Both match forms use an explicit motive when present, otherwise a contextual
+expected type, otherwise a common branch result type expressible in the outer
+context. Inference checks branch agreement under each branch's own refinements.
+It cannot quote an outer local through a refinement that changes that local's
+type. A result requiring branch-local information needs an appropriate
+annotation, or must remain inside the branch.
+
+The feature introduces no runtime value form or equality rule. Equality,
+structural keys, substitution, quotation, and termination checking use their
+existing representations and algorithms.

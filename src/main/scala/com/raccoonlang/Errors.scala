@@ -21,6 +21,8 @@ object TypeError {
     case e: MissingCase                     => e.copy(span = Some(sp))
     case e: NotAType                        => e.copy(span = Some(sp))
     case e: NonInductiveMatch               => e.copy(span = Some(sp))
+    case e: InvalidSingleConstructorMatch   => e.copy(span = Some(sp))
+    case e: InvalidDestructuring            => e.copy(span = Some(sp))
     case e: MissingReturningClause          => e.copy(span = Some(sp))
     case e: NotFound                        => e.copy(span = Some(sp))
     case e: AlreadyDefined                  => e.copy(span = Some(sp))
@@ -105,6 +107,18 @@ final case class NotAType(value: Value, span: Option[Span] = None) extends TypeE
 
 final case class NonInductiveMatch(tpe: Value, span: Option[Span] = None) extends TypeError {
   val msg: String = s"Cannot match on non-inductive type $tpe"
+}
+
+final case class InvalidSingleConstructorMatch(
+    tpe: Value,
+    reason: String,
+    span: Option[Span] = None
+) extends TypeError {
+  val msg: String = s"Cannot use a constructor-omitting match on $tpe: $reason"
+}
+
+final case class InvalidDestructuring(reason: String, span: Option[Span] = None) extends TypeError {
+  val msg: String = s"Invalid destructuring let: $reason"
 }
 
 final case class MissingReturningClause(reason: String, span: Option[Span] = None) extends TypeError {

@@ -779,6 +779,163 @@ object Elaborator {
         CA.DecreaseSpec.Measure(elabTerm(term, env), sp)
     }
 
+  private sealed trait LoweredBindingPattern {
+    def ref: CA.LocalRef
+  }
+  private object LoweredBindingPattern {
+    final case class Leaf(ref: CA.LocalRef) extends LoweredBindingPattern
+    final case class Unpack(ref: CA.LocalRef, children: Vector[LoweredBindingPattern], span: Span)
+      extends LoweredBindingPattern
+  }
+
+  private sealed trait PatternSlot {
+    def ref: CA.LocalRef
+  }
+  private object PatternSlot {
+    final case class Leaf(ref: CA.LocalRef) extends PatternSlot
+    final case class Unpack(ref: CA.LocalRef, fields: Vector[SA.Term.BindingPattern], span: Span) extends PatternSlot
+  }
+
+  private def duplicatePatternName(pattern: SA.Term.BindingPattern): Option[(String, Span)] = {
+    def loop(
+        current: SA.Term.BindingPattern,
+        seen: Set[String]
+    ): Either[(String, Span), Set[String]] = current match {
+      case SA.Term.BindingPattern.Bind(name, span) =>
+        if (seen.contains(name)) Left(name -> span) else Right(seen + name)
+      case _: SA.Term.BindingPattern.Discard => Right(seen)
+      case SA.Term.BindingPattern.Unpack(fields, _) =>
+        fields.foldLeft[Either[(String, Span), Set[String]]](Right(seen)) { (acc, field) =>
+          acc.flatMap(names => loop(field, names))
+        }
+    }
+
+    loop(pattern, Set.empty).left.toOption
+  }
+
+  private def allocateImmediatePatternFields(
+      patterns: Vector[SA.Term.BindingPattern],
+      env: ResolveEnv
+  ): (Vector[PatternSlot], ResolveEnv) =
+    patterns.foldLeft((Vector.empty[PatternSlot], env)) { case ((nodes, curEnv), pattern) =>
+      pattern match {
+        case SA.Term.BindingPattern.Bind(name, _) =>
+          val (ref, nextEnv) = curEnv.bindNamed(name, allowShadow = true)
+          (nodes :+ PatternSlot.Leaf(ref), nextEnv)
+        case SA.Term.BindingPattern.Discard(_) =>
+          val (ref, nextEnv) = curEnv.allocate("_")
+          (nodes :+ PatternSlot.Leaf(ref), nextEnv)
+        case SA.Term.BindingPattern.Unpack(fields, span) =>
+          val (ref, nextEnv) = curEnv.allocate("_")
+          (nodes :+ PatternSlot.Unpack(ref, fields, span), nextEnv)
+      }
+    }
+
+  // Allocate every immediate child slot before visiting descendants. This mirrors the runtime order of nested matches.
+  private def allocatePatternDescendants(
+      nodes: Vector[PatternSlot],
+      env: ResolveEnv
+  ): (Vector[LoweredBindingPattern], ResolveEnv) = {
+    import LoweredBindingPattern.{Leaf => LoweredLeaf, Unpack => LoweredUnpack}
+    import PatternSlot.{Leaf => LeafSlot, Unpack => UnpackSlot}
+    nodes.foldLeft((Vector.empty[LoweredBindingPattern], env)) { case ((completed, curEnv), node) =>
+      node match {
+        case UnpackSlot(ref, fields, span) =>
+          val (immediate, afterImmediate) = allocateImmediatePatternFields(fields, curEnv)
+          val (children, afterDescendants) = allocatePatternDescendants(immediate, afterImmediate)
+          (completed :+ LoweredUnpack(ref, children, span), afterDescendants)
+        case LeafSlot(ref) => (completed :+ LoweredLeaf(ref), curEnv)
+      }
+    }
+  }
+
+  private def lowerNestedPatternMatches(
+      nodes: Vector[LoweredBindingPattern],
+      continuation: CA.Term
+  ): CA.Term = {
+    import LoweredBindingPattern._
+    nodes.foldRight(continuation) {
+      case (Unpack(ref, children, span), rest) =>
+        val nestedBody = lowerNestedPatternMatches(children, rest)
+        CA.Term.MatchOne(
+          CA.Term.LocalRef(ref, span),
+          None,
+          children.map(_.ref),
+          nestedBody,
+          span,
+          NodeId.fresh()
+        )
+      case (_: Leaf, rest) => rest
+    }
+  }
+
+  private def elabBodyStatements(
+      statements: Vector[SA.Term.BodyStmt],
+      out: SA.Term,
+      initialEnv: ResolveEnv,
+      bodySpan: Span
+  ): CA.Term = {
+    def loop(
+        remaining: Vector[SA.Term.BodyStmt],
+        curEnv: ResolveEnv,
+        pendingLets: Vector[CA.Let]
+    ): CA.Term = remaining.headOption match {
+      case None =>
+        val result = elabTerm(out, curEnv)
+        CA.Term.Body(pendingLets, result, bodySpan)
+      case Some(SA.Term.UseStmt(use)) =>
+        throw WTF("Use statements only allowed at top of fn declaration", Some(use.span))
+      case Some(SA.Term.OpenStmt(open)) =>
+        loop(remaining.tail, curEnv.addOpen(open), pendingLets)
+      case Some(SA.Term.LetStmt(let: SA.Term.Let.Instance)) =>
+        val ty = let.ty.map(elabType(_, curEnv))
+        val value = elabTerm(let.value, curEnv)
+        val (ref, nextEnv) = curEnv.bindRequired(let.name, let.span, allowShadow = true)
+        loop(remaining.tail, nextEnv, pendingLets :+ CA.Let(ref, ty, value, let.span, isInstance = true))
+      case Some(SA.Term.LetStmt(SA.Term.Let.Binding(SA.Term.BindingPattern.Bind(name, _), ty, value, span))) =>
+        val checkedTy = ty.map(elabType(_, curEnv))
+        val checkedValue = elabTerm(value, curEnv)
+        val (ref, nextEnv) = curEnv.bindRequired(name, span, allowShadow = true)
+        loop(remaining.tail, nextEnv, pendingLets :+ CA.Let(ref, checkedTy, checkedValue, span))
+      case Some(SA.Term.LetStmt(SA.Term.Let.Binding(SA.Term.BindingPattern.Discard(span), ty, value, letSpan))) =>
+        val checkedTy = ty.map(elabType(_, curEnv))
+        val checkedValue = elabTerm(value, curEnv)
+        val (ref, nextEnv) = curEnv.allocate("_")
+        loop(remaining.tail, nextEnv, pendingLets :+ CA.Let(ref, checkedTy, checkedValue, letSpan))
+      case Some(
+            SA.Term.LetStmt(
+              SA.Term.Let.Binding(pattern @ SA.Term.BindingPattern.Unpack(fields, patternSpan), ty, value, letSpan)
+            )
+          ) =>
+        duplicatePatternName(pattern).foreach { case (name, duplicateSpan) =>
+          throw InvalidDestructuring(s"duplicate name '$name' in one let pattern", Some(duplicateSpan))
+        }
+        // The RHS and its annotation are resolved before any names introduced by the pattern.
+        val checkedTy = ty.map(elabType(_, curEnv))
+        val checkedValue = elabTerm(value, curEnv)
+        val (rootRef, envWithRoot) = curEnv.allocate("_")
+        val (immediate, envWithFields) = allocateImmediatePatternFields(fields, envWithRoot)
+        val (patternFields, patternEnv) = allocatePatternDescendants(immediate, envWithFields)
+        val rest = loop(remaining.tail, patternEnv, Vector.empty)
+        val nested = lowerNestedPatternMatches(patternFields, rest)
+        val matchOne = CA.Term.MatchOne(
+          CA.Term.LocalRef(rootRef, letSpan),
+          None,
+          patternFields.map(_.ref),
+          nested,
+          patternSpan,
+          NodeId.fresh()
+        )
+        CA.Term.Body(
+          pendingLets :+ CA.Let(rootRef, checkedTy, checkedValue, letSpan),
+          matchOne,
+          bodySpan
+        )
+    }
+
+    loop(statements, initialEnv, Vector.empty)
+  }
+
   private def elabTerm(term: SurfaceAst.Term, env: ResolveEnv): CA.Term = term match {
     case i: SA.Term.Ident =>
       elabPathTerm(identPath(i.name, i.span), env)
@@ -798,24 +955,7 @@ object Elaborator {
         case _ => throw new RuntimeException("WTF")
       }
     case b: SA.Term.Body =>
-      val checkedLets = Vector.newBuilder[CA.Let]
-      val startEnv = env.enterOpenScope
-      // Body-local opens and lets are ordered; each statement affects only what follows it.
-      val bodyEnv = b.statements.foldLeft(startEnv) { case (curEnv, stmt) =>
-        stmt match {
-          case SA.Term.UseStmt(use) =>
-            throw WTF("Use statements only allowed at top of fn declaration", Some(use.span))
-          case SA.Term.OpenStmt(open) =>
-            curEnv.addOpen(open)
-          case SA.Term.LetStmt(l) =>
-            val ty = l.ty.map(elabType(_, curEnv))
-            val value = elabTerm(l.value, curEnv)
-            val (ref, nextEnv) = curEnv.bindRequired(l.name, l.span, allowShadow = true)
-            checkedLets += CA.Let(ref, ty, value, l.span, l.isInstance)
-            nextEnv
-        }
-      }
-      CA.Term.Body(checkedLets.result(), elabTerm(b.out, bodyEnv), b.span)
+      elabBodyStatements(b.statements, b.out, env.enterOpenScope, b.span)
     case SA.Term.Match(scrut, motive, cases, sp) =>
       CA.Term.Match(
         elabTerm(scrut, env),

@@ -198,6 +198,27 @@ def first (p: Pair($A, $B)): A := p.fst
 def second (p: Pair($A, $B)): B := p.snd
 ```
 
+Let bindings can unpack the stored fields of an inductive family with exactly one declared constructor:
+
+```raccoon
+def firstByUnpacking (p: Pair($A, $B)): A := {
+  let (first, _) := p
+  first
+}
+```
+
+Patterns may nest, use `_` to discard a field, and must list exactly the stored constructor fields in order.
+Erased arguments and type-pattern captures are not fields. `()` unpacks a constructor with no stored fields;
+`(value)` unpacks one field. An optional type annotation applies to the whole right-hand side. The right-hand side
+uses the original scope and is evaluated once; pattern names may shadow outer names, but repeated names in one
+pattern are rejected. The bindings and any match refinements are in scope for the rest of the block.
+
+Unpacking follows ordinary match rules, including for indexed, recursive, and Prop families. Prop elimination
+restrictions still apply, and a branch-local type cannot escape into an invalid outer result type. Match result types
+come from an explicit `returning` clause, otherwise a surrounding expected type, otherwise inference from the branch
+bodies. Dependent results may require an annotation. `let instance` requires a single name, and unpacked fields do
+not become instances automatically.
+
 ### Type Classes
 
 An instance is an ordinary definition or local binding marked as an instance, and instance search runs only where a term

@@ -4,6 +4,7 @@ import com.raccoonlang.TypeChecker._
 import com.raccoonlang.Value._
 import com.raccoonlang.telescope.BinderOps
 import com.raccoonlang.{CoreAst => CA, ElabAst => EA}
+import com.raccoonlang.ValueQuote.{quoteContext, quoteType}
 
 object MatchChecker {
 
@@ -146,26 +147,48 @@ object MatchChecker {
         throw PropEliminationRestricted(inductiveName, motiveTy, Some(span))
     }
 
-  private def checkBranch(br: CA.Case, args: Seq[Value], envWithScrut: Env, expectedTy: Value): EA.Case = {
+  private final case class PlannedBranch(
+      br: CA.Case,
+      args: Vector[Value],
+      branchEnv: Env,
+      store: EqStore
+  )
+
+  private final case class CheckedBranch(
+      residual: EA.Case,
+      checkedBody: CheckedTerm,
+      store: EqStore
+  )
+
+  private def checkBranch(
+      planned: PlannedBranch,
+      expected: Option[CheckedTypeTerm]
+  ): CheckedBranch = {
+    val br = planned.br
+    val args = planned.args
     if (args.length != br.argRefs.length)
       throw ArityMismatch(args.length, br.argRefs.length, Some(br.span))
-    val branchEnv = br.argRefs.zip(args).foldLeft(envWithScrut) { case (curEnv, (argRef, argVal)) =>
+    val branchEnv = br.argRefs.zip(args).foldLeft(planned.branchEnv) { case (curEnv, (argRef, argVal)) =>
       argRef match {
         case Some(ref) => curEnv.putLocal(ref, argVal)
         case None      => curEnv
       }
     }
-    val branchRes = checkTerm(br.body, branchEnv)
-    checkType(branchRes.value, expectedTy)
-    EA.Case(
-      br.ctorName,
-      br.argRefs,
-      branchRes.residual,
-      br.span
+    val branchRes = expected match {
+      case Some(motive) =>
+        val branchMotive = motive.copy(value = ValueOps.materialize(motive.value, planned.store))
+        checkTermAgainst(br.body, branchEnv, branchMotive)
+      case None => checkTerm(br.body, branchEnv)
+    }
+    CheckedBranch(
+      EA.Case(br.ctorName, br.argRefs, branchRes.residual, br.span),
+      branchRes,
+      planned.store
     )
   }
 
-  def checkMatch(t: CA.Term.Match, env: Env): CheckedTerm = {
+  def checkMatch(t: CA.Term.MatchTerm, env: Env, contextualExpected: Option[CheckedTypeTerm] = None): CheckedTerm = {
+    val span = t.span
     val scrutChecked = checkTerm(t.scrut, env)
     val scrut = scrutChecked.value
     val scrutTpe = scrut.tpe
@@ -174,94 +197,144 @@ object MatchChecker {
     val inductiveName = inductiveFamily.head.name
     val inductiveMeta = inductiveFamily.meta
     val inductiveCtorNames = inductiveMeta.constructorNames
-    val cases = t.cases.map { c =>
-      val candidates =
-        if (c.isFullyQualified) inductiveMeta.constructors.collect {
-          case ctor if ctor.canonicalName == c.ctorName => ctor.canonicalName
+    val cases = t match {
+      case single: CA.Term.MatchOne =>
+        if (inductiveCtorNames.length != 1)
+          throw InvalidSingleConstructorMatch(
+            scrutTpe,
+            s"the family declares ${inductiveCtorNames.length} constructors",
+            Some(span)
+          )
+        val ctorName = inductiveCtorNames.head
+        val head = env(ctorName) match {
+          case constructor: ConstructorHead => constructor
+          case _ => throw WTF(s"Inductive metadata points to non-constructor $ctorName", Some(span))
         }
-        else
-          inductiveMeta.constructors.collect {
-            case ctor if ctor.shortName == c.ctorName => ctor.canonicalName
+        val storedArity = head.totalArity - head.numErased
+        if (single.fieldRefs.length != storedArity)
+          throw InvalidDestructuring(
+            s"expected $storedArity stored fields, got ${single.fieldRefs.length}",
+            Some(span)
+          )
+        Vector(CA.Case(ctorName, true, single.fieldRefs.map(Some(_)), single.body, span))
+      case named: CA.Term.Match =>
+        named.cases.map { c =>
+          val candidates =
+            if (c.isFullyQualified) inductiveMeta.constructors.collect {
+              case ctor if ctor.canonicalName == c.ctorName => ctor.canonicalName
+            }
+            else
+              inductiveMeta.constructors.collect {
+                case ctor if ctor.shortName == c.ctorName => ctor.canonicalName
+              }
+          candidates match {
+            case Vector(name) => c.copy(ctorName = name)
+            case Vector()     => throw UnknownConstructor(c.ctorName, inductiveName, Some(c.span))
+            case many         => throw AmbiguousName(c.ctorName, many, Some(c.span))
           }
-      candidates match {
-        case Vector(name) => c.copy(ctorName = name)
-        case Vector()     => throw UnknownConstructor(c.ctorName, inductiveName, Some(c.span))
-        case many         => throw AmbiguousName(c.ctorName, many, Some(c.span))
-      }
+        }
     }
 
-    cases.groupBy(_.ctorName).find(_._2.length > 1).foreach { case (ctor, duplicateCases) =>
+    val resolvedCases = cases
+
+    resolvedCases.groupBy(_.ctorName).find(_._2.length > 1).foreach { case (ctor, duplicateCases) =>
       throw DuplicateCase(ctor, Some(duplicateCases(1).span))
     }
 
     lazy val reachableByType: Vector[ReachableCtor] =
       computeReachableCtors(scrut, scrutTpe, inductiveName, inductiveCtorNames, env)
 
-    def inferMotiveFromReachable(reachable: Vector[ReachableCtor]): Value = {
-      val first = reachable.headOption.getOrElse {
-        throw MissingReturningClause("no constructors are reachable", Some(t.span))
-      }
-      val inferred = first.resultTy
-      val allEqual = reachable.tail.forall { info =>
-        ValueEquivalence.defEq(inferred, info.resultTy)
-      }
-      if (!allEqual)
-        throw MissingReturningClause("reachable constructors have different result types", Some(t.span))
-      assertType(inferred)
-      inferred
-    }
+    val checkedSourceMotive = t.motive.map(syntax => checkTypeTerm(syntax, env))
+    val expectedMotive = checkedSourceMotive.orElse(contextualExpected)
+    expectedMotive.foreach(motive => assertType(motive.value))
+    expectedMotive.foreach(motive => checkPropElimination(inductiveName, scrutTpe, motive.value, reachableByType, span))
 
-    val checkedMotive = t.motive.map(motiveSyntax => checkTypeTerm(motiveSyntax, env))
-    val motiveTy = checkedMotive match {
-      case Some(motive) => motive.value
-      case None         => inferMotiveFromReachable(reachableByType)
-    }
-
-    checkPropElimination(inductiveName, scrutTpe, motiveTy, reachableByType, t.span)
-
-    var checkedByCtor = Map.empty[String, EA.Case]
-
-    scrut match {
-      case VCtor(h, fields, _) =>
-        cases.find(_.ctorName != h.name).foreach { c =>
+    val plannedBranches: Vector[PlannedBranch] = scrut match {
+      case VCtor(head, fields, _) =>
+        resolvedCases.find(_.ctorName != head.name).foreach { c =>
           throw UnreachableCase(c.ctorName, Some(c.span))
         }
-
-        val br = cases.find(_.ctorName == h.name).getOrElse(throw MissingCase(h.name))
-        checkedByCtor += h.name -> checkBranch(br, fields, env, motiveTy)
+        val br = resolvedCases.find(_.ctorName == head.name).getOrElse(throw MissingCase(head.name))
+        Vector(PlannedBranch(br, fields, env, EqStore.empty))
 
       case _ =>
         val reachableMap = reachableByType.map(info => info.name -> info).toMap
-
-        inductiveCtorNames.foreach { ctorName =>
+        inductiveCtorNames.flatMap { ctorName =>
           reachableMap.get(ctorName) match {
             case None =>
-              cases.find(_.ctorName == ctorName).foreach { c =>
+              resolvedCases.find(_.ctorName == ctorName).foreach { c =>
                 throw UnreachableCase(ctorName, Some(c.span))
               }
-
+              None
             case Some(info) =>
-              val br = cases.find(_.ctorName == ctorName).getOrElse(throw MissingCase(ctorName))
-              val branchStore = info.branchEqStore
-              val branchEnv = ValueOps.materializeEnv(env, branchStore)
-              val branchArgs = info.fieldArgs.map(arg => ValueOps.materialize(arg, branchStore))
-              val branchMotiveTy = ValueOps.materialize(motiveTy, branchStore)
-              checkedByCtor += ctorName -> checkBranch(br, branchArgs, branchEnv, branchMotiveTy)
+              val br = resolvedCases.find(_.ctorName == ctorName).getOrElse(throw MissingCase(ctorName))
+              Some(
+                PlannedBranch(
+                  br,
+                  info.fieldArgs.map(arg => ValueOps.materialize(arg, info.branchEqStore)),
+                  ValueOps.materializeEnv(env, info.branchEqStore),
+                  info.branchEqStore
+                )
+              )
           }
         }
     }
 
-    val checkedCases = cases.map { c =>
-      checkedByCtor.getOrElse(c.ctorName, throw WTF(s"Unchecked reachable case ${c.ctorName}"))
+    val checkedBranches = plannedBranches.map(branch => checkBranch(branch, expectedMotive))
+    val chosenMotive = expectedMotive.getOrElse {
+      val first = checkedBranches.headOption.getOrElse {
+        throw MissingReturningClause("no reachable branches have a result type to infer", Some(span))
+      }
+      val candidate = ValueOps.materialize(first.checkedBody.value.tpe, first.store)
+      val changedLocalIds = env.locals.zipWithIndex.collect {
+        case (binding, index) if binding.valueOption.exists { original =>
+              !ValueEquivalence.defEq(original.tpe, ValueOps.materialize(original, first.store).tpe)
+            } =>
+          index
+      }.toSet
+      val context = quoteContext(env)
+      val safeContext = context.copy(
+        quote = context.quote.filterNot { case (_, entry) =>
+          entry.term match {
+            case EA.Term.LocalRef(ref, _) => changedLocalIds.contains(ref.id)
+            case _                        => false
+          }
+        }
+      )
+      val residual =
+        try quoteType(candidate, safeContext, span)
+        catch {
+          case _: CannotQuoteValue =>
+            throw MissingReturningClause(
+              "the common branch result type cannot be expressed outside the match",
+              Some(span)
+            )
+        }
+      val value = Interpreter.evalTypeTerm(residual, env)
+      assertType(value)
+      checkPropElimination(inductiveName, scrutTpe, value, reachableByType, span)
+      checkedBranches.foreach { branch =>
+        val branchValue = ValueOps.materialize(branch.checkedBody.value, branch.store)
+        val branchExpected = ValueOps.materialize(value, branch.store)
+        checkType(branchValue, branchExpected)
+      }
+      CheckedTypeTerm(value, residual)
     }
     val checkedMatch = EA.Term.Match(
       scrutChecked.residual,
-      checkedMotive.map(_.residual),
-      checkedCases,
-      t.span,
+      Some(chosenMotive.residual),
+      checkedBranches.map(_.residual),
+      span,
       t.nodeId
     )
-    CheckedTerm(Interpreter.evalTerm(checkedMatch, env), checkedMatch)
+    val value = scrut match {
+      case VCtor(_, _, _) =>
+        checkedBranches.headOption.map(_.checkedBody.value).getOrElse {
+          throw WTF("Known constructor match had no checked branch", Some(span))
+        }
+      case _ => Interpreter.stuckMatch(checkedMatch, scrut, env, chosenMotive.value)
+    }
+    CheckedTerm(value, checkedMatch)
   }
 
 }

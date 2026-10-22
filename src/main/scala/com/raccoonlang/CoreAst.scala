@@ -96,13 +96,29 @@ object CoreAst {
         nodeId: NodeId
     ) extends Term
 
+    sealed trait MatchTerm extends Term {
+      def scrut: Term
+      def motive: Option[TypeTerm]
+      def span: Span
+      def nodeId: NodeId
+    }
+
     final case class Match(
         scrut: Term,
         motive: Option[TypeTerm],
         cases: Vector[Case],
         span: Span,
         nodeId: NodeId
-    ) extends Term
+    ) extends MatchTerm
+
+    final case class MatchOne(
+        scrut: Term,
+        motive: Option[TypeTerm],
+        fieldRefs: Vector[CoreAst.LocalRef],
+        body: Term,
+        span: Span,
+        nodeId: NodeId
+    ) extends MatchTerm
 
   }
 

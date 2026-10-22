@@ -94,8 +94,24 @@ object SurfaceAst {
         span: Span
     ) extends Term
 
-    // Let: let x := foo
-    final case class Let(name: String, ty: Option[TypeTerm], value: Term, span: Span, isInstance: Boolean = false)
+    sealed trait BindingPattern {
+      def span: Span
+    }
+    object BindingPattern {
+      final case class Bind(name: String, span: Span) extends BindingPattern
+      final case class Discard(span: Span) extends BindingPattern
+      final case class Unpack(fields: Vector[BindingPattern], span: Span) extends BindingPattern
+    }
+
+    sealed trait Let {
+      def ty: Option[TypeTerm]
+      def value: Term
+      def span: Span
+    }
+    object Let {
+      final case class Binding(pattern: BindingPattern, ty: Option[TypeTerm], value: Term, span: Span) extends Let
+      final case class Instance(name: String, ty: Option[TypeTerm], value: Term, span: Span) extends Let
+    }
 
     sealed trait BodyStmt {
       def span: Span

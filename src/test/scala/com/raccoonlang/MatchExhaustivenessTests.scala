@@ -128,7 +128,7 @@ class MatchExhaustivenessTests extends munit.FunSuite {
     typecheckDecls(p)
   }
 
-  test("omitted returning: rejected when no constructors are reachable") {
+  test("omitted returning: contextual result supports matches with no reachable constructors") {
     val p =
       """
         |inductive Nat : Type
@@ -144,10 +144,10 @@ class MatchExhaustivenessTests extends munit.FunSuite {
         |
         |""".stripMargin
 
-    intercept[MissingReturningClause] { typecheckDecls(p) }
+    typecheckDecls(p)
   }
 
-  test("omitted returning: rejected when reachable constructor result types differ") {
+  test("omitted returning: contextual result supports differing constructor result types") {
     val p =
       """
         |inductive Nat : Type
@@ -166,6 +166,6 @@ class MatchExhaustivenessTests extends munit.FunSuite {
         |
         |""".stripMargin
 
-    intercept[MissingReturningClause] { typecheckDecls(p) }
+    typecheckDecls(p)
   }
 }

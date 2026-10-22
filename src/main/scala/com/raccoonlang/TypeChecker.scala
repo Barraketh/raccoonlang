@@ -149,31 +149,35 @@ object TypeChecker {
     }
 
   // Returning the residual term lets callers preserve checked let/lambda structure instead of re-checking.
-  private def checkBody(body: CA.Term.Body, env: Env): CheckedTerm = {
+  private def checkBody(
+      body: CA.Term.Body,
+      env: Env,
+      expected: Option[CheckedTypeTerm] = None
+  ): CheckedTerm = {
     val checkedLets = Vector.newBuilder[EA.Let]
     var curEnv = env
 
     body.lets.foreach { l =>
-      val checkedValue = checkTerm(l.value, curEnv)
+      val checkedAnnotation = l.ty.map(checkTypeTerm(_, curEnv))
+      checkedAnnotation.foreach(checked => assertType(checked.value))
+      val checkedValue = checkedAnnotation match {
+        case Some(annotation) => checkTermAgainst(l.value, curEnv, annotation)
+        case None             => checkTerm(l.value, curEnv)
+      }
       rejectStoredAppHeadOnlyRefs(checkedValue.residual, curEnv)
 
-      var resTyTerm: Option[EA.TypeTerm] = None
-      val withType = l.ty
-        .map { tyTerm =>
-          val checkedTy = checkTypeTerm(tyTerm, curEnv)
-          val tyV = checkedTy.value
-          checkType(checkedValue.value, tyV)
-          resTyTerm = Some(checkedTy.residual)
-          checkedValue.value
-        }
-        .getOrElse(checkedValue.value)
+      val resTyTerm = checkedAnnotation.map(_.residual)
+      val withType = checkedValue.value
 
       checkedLets += EA.Let(l.localRef, resTyTerm, checkedValue.residual, l.span, l.isInstance)
       val instanceKey = if (l.isInstance) Some(InstanceSearch.instanceKey(l.name, withType)) else None
       curEnv = curEnv.putLocal(l.localRef, withType, instanceKey)
     }
 
-    val checkedRes = checkTerm(body.res, curEnv)
+    val checkedRes = expected match {
+      case Some(motive) => checkTermAgainst(body.res, curEnv, motive)
+      case None         => checkTerm(body.res, curEnv)
+    }
     CheckedTerm(checkedRes.value, EA.Term.Body(checkedLets.result(), checkedRes.residual, body.span))
   }
 
@@ -215,12 +219,11 @@ object TypeChecker {
         case None => bodyEnv
       }
 
-    val checkedBody = l.body match {
-      case b: CA.Term.Body => checkBody(b, recurEnv)
-      case _               => checkTerm(l.body, recurEnv)
-    }
-
-    checkType(checkedBody.value, checkedVpi.outTy)
+    val checkedBody = checkTermAgainst(
+      l.body,
+      recurEnv,
+      CheckedTypeTerm(checkedVpi.outTy, checkedVpi.residual.out)
+    )
     rejectStoredAppHeadOnlyRefs(checkedBody.residual, recurEnv)
     val checkedLam =
       EA.Term.Lam(
@@ -259,12 +262,29 @@ object TypeChecker {
           val goal = getType(derive.goal, env)
           val value = InstanceSearch.solve(goal, env)
           CheckedTerm(value, quoteTerm(value, quoteContext(env), derive.span))
-        case m: CA.Term.Match => MatchChecker.checkMatch(m, env)
-        case b: CA.Term.Body  => checkBody(b, env)
+        case m: CA.Term.MatchTerm => MatchChecker.checkMatch(m, env)
+        case b: CA.Term.Body      => checkBody(b, env)
         case term: CA.TypeTerm =>
           val checked = checkTypeTerm(term, env)
           CheckedTerm(checked.value, checked.residual)
       }
+    } catch {
+      case e: TypeError if e.span.isEmpty => throw TypeError.withSpan(e, term.span)
+    }
+
+  private[raccoonlang] def checkTermAgainst(
+      term: CA.Term,
+      env: Env,
+      expected: CheckedTypeTerm
+  ): CheckedTerm =
+    try {
+      val checked = term match {
+        case body: CA.Term.Body           => checkBody(body, env, Some(expected))
+        case matchTerm: CA.Term.MatchTerm => MatchChecker.checkMatch(matchTerm, env, Some(expected))
+        case _                            => checkTerm(term, env)
+      }
+      checkType(checked.value, expected.value)
+      checked
     } catch {
       case e: TypeError if e.span.isEmpty => throw TypeError.withSpan(e, term.span)
     }

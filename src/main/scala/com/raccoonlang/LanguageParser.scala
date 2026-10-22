@@ -185,12 +185,29 @@ object LanguageParser {
   private def layoutParam(implicit sourceId: Option[SourceId]): Parser[Binder] = skipAllWs ~ param
   private def layoutErasedParam(implicit sourceId: Option[SourceId]): Parser[Binder] = skipAllWs ~ erasedParam
 
-  private def let(implicit sourceId: Option[SourceId]): Parser[Let] =
-    (kw("let") ~/ kw("instance").!.? ~ ident ~ (sym(':') ~ skipAllWs ~ typeTerm).? ~ sym(":=") ~/ skipAllWs ~ term)
+  private def bindingPattern(implicit sourceId: Option[SourceId]): Parser[BindingPattern] = {
+    val unpack =
+      (sym('(') ~/ skipAllWs ~ bindingPattern.rep(0, layoutSym(',')) ~ layoutSymTight(')'))
+        .flatSpanned(sourceId)
+        .map { case (fields, span) => BindingPattern.Unpack(fields, span) }
+    val leaf = argName.flatSpanned(sourceId).map { case (name, span) =>
+      if (name == "_") BindingPattern.Discard(span) else BindingPattern.Bind(name, span)
+    }
+    unpack | leaf
+  }
+
+  private def let(implicit sourceId: Option[SourceId]): Parser[Let] = {
+    val head: Parser[Either[String, BindingPattern]] =
+      (kw("instance") ~/ ident).map(Left(_)) | bindingPattern.map(Right(_))
+    (kw("let") ~/ head ~ (sym(':') ~ skipAllWs ~ typeTerm).? ~ sym(":=") ~/ skipAllWs ~ term)
       .flatSpanned(sourceId)
-      .map { case (instanceOpt, name, ty, value, span) =>
-        Let(name, ty, value, span, isInstance = instanceOpt.isDefined)
+      .map { case (binding, ty, value, span) =>
+        binding match {
+          case Left(name)     => Let.Instance(name, ty, value, span)
+          case Right(pattern) => Let.Binding(pattern, ty, value, span)
+        }
       }
+  }
 
   private def useStmt(implicit sourceId: Option[SourceId]): Parser[Use] =
     (kw("use") ~/ term).flatSpanned(sourceId).map(Use.tupled)

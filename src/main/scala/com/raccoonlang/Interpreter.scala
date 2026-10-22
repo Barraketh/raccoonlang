@@ -197,24 +197,33 @@ object Interpreter {
     }
   }
 
+  private[raccoonlang] def stuckMatch(
+      m: ETerm.Match,
+      scrut: Value,
+      env: Env,
+      outType: Value
+  ): Value = {
+    val capturedIndexes = CapturedIndexes.getCapturedIndexes(m, env)
+    val matchCaptures = captureValues(env, capturedIndexes)
+    val lamId = ValueId.LocalId(m.nodeId, matchCaptures)
+    val closedEnv = RuntimeEnv.closeForEval(env, capturedIndexes)
+    scrut match {
+      case Blocker(blockerId) => NeutralThunk(m, closedEnv, lamId, outType, Some(blockerId))
+      case _                  => NeutralThunk(m, closedEnv, lamId, outType, None)
+    }
+  }
+
   private def evalMatch(m: ETerm.Match, env: Env): Value = {
     val scrut = evalTerm(m.scrut, env)
     val (head, args) = scrut match {
       case VCtor(head, fields, _) => (head, fields)
       case other                  =>
         // We are either blocked or stuck
-        val capturedIndexes = CapturedIndexes.getCapturedIndexes(m, env)
-        val matchCaptures: Vector[Value] = captureValues(env, capturedIndexes)
         val outType: Value = m.motive match {
           case Some(motive) => evalTypeTerm(motive, env)
           case None         => scrut.tpe
         }
-        val lamId = ValueId.LocalId(m.nodeId, matchCaptures)
-        val closedEnv = RuntimeEnv.closeForEval(env, capturedIndexes)
-        other match {
-          case Blocker(blockerId) => return NeutralThunk(m, closedEnv, lamId, outType, Some(blockerId))
-          case _                  => return NeutralThunk(m, closedEnv, lamId, outType, None)
-        }
+        return stuckMatch(m, other, env, outType)
     }
 
     val ctorName = head.name
@@ -259,9 +268,15 @@ object Interpreter {
           case CoreAst.ConstBody.TermBody(term) =>
             if (lazyGlobal && isInstance) throw WTF("Lazy global instances are not supported", Some(span))
 
-            lazy val checked = TypeChecker.checkTerm(term, env)
-            lazy val checkedTy = TypeChecker.getType(ty, env)
-            TypeChecker.checkType(checked.value, checkedTy)
+            lazy val checkedTy =
+              try {
+                val checked = TypeChecker.checkTypeTerm(ty, env)
+                TypeChecker.assertType(checked.value)
+                checked
+              } catch {
+                case e: TypeError if e.span.isEmpty => throw TypeError.withSpan(e, ty.span)
+              }
+            lazy val checked = TypeChecker.checkTermAgainst(term, env, checkedTy)
 
             if (lazyGlobal) env.putLazyGlobal(name, () => checked.value)
             else putGlobal(env, name, checked.value, isInstance)
