@@ -1,6 +1,6 @@
 # Prop outside the universe hierarchy
 
-Status: **implemented** (2026-10-01, commit `01f9817`). Steps P1 and P2 (§10) landed together: `imax`, `LinearProp`,
+Status: **implemented** (2026-10-01, commit `426db76f`). Steps P1 and P2 (§10) landed together: `imax`, `LinearProp`,
 `Level.isNeverZero`, `typeCollapseDeps` and the `s1-prop-clash` guard are gone. Decisions (§11): eliminators take a `P`
 suffix (`False.elimP`, `Eq.substP`); `Sort` is removed as a keyword; data levels start at zero; the `ef799a0` stopgap was
 not merged, since P1 superseded it. `docs/language.md` and `docs/kernel.md` state the rules. The rest of this document is

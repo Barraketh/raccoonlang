@@ -1,15 +1,22 @@
 # Declaration-time occurrence and positivity checks
 
-Status: implemented by Luna at max effort, 2026-10-03. Functional validation
-passes. Depth scaling stays flat, but the timing comparison misses the baseline
-acceptance criterion; see the measured results below. GPU proof checking reaches
-the known separate compact-Nat barrier.
+Status: **implemented**. The design and measurements below were recorded on
+2026-10-03. Depth scaling stayed flat, but that timing comparison missed its
+baseline acceptance criterion; it does not measure the current checkout.
+The compact-Nat `Nat.blt` barrier recorded below was subsequently fixed by
+the eager symbolic reduction change. Current rules are in the
+[kernel reference](../kernel.md#inductives-and-matching).
+
+The implementation plan, working-tree instructions, original test counts,
+and external library paths below are historical records, not instructions for
+current development. GPU proofs and integration probes now live in the
+external Lemur repository.
 
 This replaces two designs:
 
-- `POSITIVITY_SUMMARIES.md`, the per-value summaries implemented in `bfa2bc3`
+- `POSITIVITY_SUMMARIES.md`, the per-value summaries implemented in `a8fd8de0`
   (`ValueAnalysis.scala`). The document has been removed; it remains in git
-  history up to `d727085`.
+  history up to `f15b8c29` at `docs/proposals/POSITIVITY_SUMMARIES.md`.
 - `PI_AND_INDUCTIVE_OCCURRENCES.md`, the proposed Pi/inductive-head ownership
   redesign. It was never implemented or committed.
 
@@ -299,7 +306,7 @@ Run builds and CLI checks one at a time.
    ≈ 0.50 s, `full_record` ≈ 2.9 s, `matched_conjunction` ≈ 2.7 s median wall).
    Report any case that is clearly slower; do not tune.
 
-### Known separate barrier (out of scope)
+### Historical separate barrier (subsequently fixed)
 
 `gpu/proofs/SharedMemory.rac:58` (`SharedMemory.notPositive`) fails because
 `Nat.blt(0, Nat.succ(m))` stays stuck. It fails identically on the build before

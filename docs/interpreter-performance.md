@@ -1,5 +1,13 @@
 # Interpreter performance
 
+> **Historical measurements.** This report describes the named source snapshots,
+> not current compiler performance. Revision IDs and hashes below identify the
+> original measurements and may belong to histories outside this branch. GPU
+> workloads and their scripts now live in the external Lemur repository. Paths
+> under `target/performance` name ignored local artifacts from those runs; the
+> logs and binaries are not included in a clean checkout. Current evaluator
+> behavior is documented in [the kernel reference](kernel.md#evaluation-depth).
+
 ## Checked constructor result specialization (2026-10-02)
 
 At base `c6599774890b42b4c4bb9985a20b07c4253572d7`, a constructor result was cached only when its codomain mentioned none of its own binders. The checked Pi now records the exact binder indices mentioned anywhere in the codomain, including nested closures. Constructor application binds only those arguments when evaluating a dependent result. Each checked Pi instance keeps at most four closed results, matched by the identity of the relevant actual values, so reuse preserves their exact type annotations and nominal owner. Unresolved or blocked inputs and results do not enter the cache. A changed closure, environment, or binder vector falls back to full instantiation; the existing independent result path is unchanged. The specialization retains canonical proof checks for arguments on its dependent path. Implicit projection specs were already compiled before this change; no projection compilation claim is made here.
@@ -11,13 +19,13 @@ The one-tile exact-ring TinyGEMM checked-source harness ran on Oracle GraalVM 21
 | 17 | 11.491, 11.481, 11.597; **11.491** | 9.624, 9.563, 9.545; **9.563** | −16.8% |
 | 83 | 11.517, 11.513, 11.496; **11.513** | 9.545, 9.572, 9.590; **9.572** | −16.9% |
 
-Every warmup and timed run passed the complete 16,384-cell output oracle and expected counters: 1,251 warp steps, 88 async completions, 98,304 TMA bytes, 1,048,576 scalar multiplies and adds each, four MMA instructions, 64 tensor-memory loads and 16 stores. `sbt validate` passed 967 tests. Raw [baseline](../target/performance/call-type-plans/jvm-baseline.log), [candidate](../target/performance/call-type-plans/jvm-candidate.log), and [validation](../target/performance/call-type-plans/validate.log) logs are preserved in ignored `target/performance`; their hashes and the measured source hashes are in [provenance](../target/performance/call-type-plans/provenance.txt). Native performance is unmeasured for this isolated change.
+Every warmup and timed run passed the complete 16,384-cell output oracle and expected counters: 1,251 warp steps, 88 async completions, 98,304 TMA bytes, 1,048,576 scalar multiplies and adds each, four MMA instructions, 64 tensor-memory loads and 16 stores. `sbt validate` passed 967 tests. Raw baseline (`target/performance/call-type-plans/jvm-baseline.log`), candidate (`target/performance/call-type-plans/jvm-candidate.log`), and validation (`target/performance/call-type-plans/validate.log`) logs are preserved in ignored `target/performance`; their hashes and the measured source hashes are in provenance (`target/performance/call-type-plans/provenance.txt`). Native performance is unmeasured for this isolated change.
 
 ## Soundness integration on `soundness_performance`
 
 This snapshot layers the reviewed 22-file performance delta from `438be1281f7fbaa7aa34ee4ce2b1bdc306f3ad08` to `fbee3bf469565d17145f050ca2cd696d50d7b850` onto `soundness_improvements` at `acaf536ec836f55fcb2b024e2badc6814521678f`. The soundness branch remains the base: nominal family classifiers, proposition/data separation, checked refutations, Prelude proofs, and soundness tests are retained. Two small compatibility edits accompany the merge: the soundness helper now closes an empty-capture environment through `Env.closeForEval(Set.empty)`, and a hand-built data-valued `VPi` test supplies the current `isPropValued = false` field. The measured source and test diff against `acaf536` has SHA-256 `4e7da421a5241242716604d9d24043cd0d8dd1603653c3ba2839e0292eed1e1d`.
 
-The baseline executable was built from `acaf536` and is preserved as [`raccoon-soundness-acaf536`](../target/performance/raccoon-soundness-acaf536) (SHA-256 `2c688b1888f58c754bfc57a96192a5f1df36943452f6261b41305152ebb1d054`). The candidate was built from the matching measured working tree based on `acaf536` plus the source/test delta above, and is preserved as [`raccoon-soundness-performance`](../target/performance/raccoon-soundness-performance) (SHA-256 `b103ede6429e5f8d481c88111dd800d7ab420db72e3eec42601d342d466de39e`). Both used Oracle GraalVM 21.0.12, Native Image O2, Serial GC, `--parallelism=4 -J-Xmx3g`, and default-enabled assertions. The benchmark ran three alternating baseline/candidate pairs per example with `--raw`; no other heavy job ran concurrently. All nine pairs produced byte-identical stdout.
+The baseline executable was built from `acaf536` and is preserved as `raccoon-soundness-acaf536` (`target/performance/raccoon-soundness-acaf536`) (SHA-256 `2c688b1888f58c754bfc57a96192a5f1df36943452f6261b41305152ebb1d054`). The candidate was built from the matching measured working tree based on `acaf536` plus the source/test delta above, and is preserved as `raccoon-soundness-performance` (`target/performance/raccoon-soundness-performance`) (SHA-256 `b103ede6429e5f8d481c88111dd800d7ab420db72e3eec42601d342d466de39e`). Both used Oracle GraalVM 21.0.12, Native Image O2, Serial GC, `--parallelism=4 -J-Xmx3g`, and default-enabled assertions. The benchmark ran three alternating baseline/candidate pairs per example with `--raw`; no other heavy job ran concurrently. All nine pairs produced byte-identical stdout.
 
 | Example | acaf536 median wall / CPU / peak RSS → candidate median wall / CPU / peak RSS | Output bytes and SHA-256 |
 | --- | --- | --- |
@@ -25,7 +33,7 @@ The baseline executable was built from `acaf536` and is preserved as [`raccoon-s
 | `attention_pingpong` | 32.577 / 32.540 / 1,249,263,616 B → 8.866 / 8.840 / 160,628,736 B | 696,817; `c7799ca4d1ac07a8190a78d829b12d205f4fc013cf3547bff4f48b6df7feeb0a` |
 | `attention_a3b` | 33.860 / 33.820 / 1,344,356,352 B → 9.007 / 8.990 / 169,984,000 B | 758,235; `912cec153aeddf13c6cf23ab300af4bafbdcb5fb614cf7a87feba91ad962f2c7` |
 
-The integrated candidate passed `sbt scalafmtAll` and `sbt validate` with 952 tests, no failures or errors; the unchanged `acaf536` baseline passed 928 tests. `gpu/check.sh` passed all 189 checks with no skips using the `raccoon-cuda:12.9` container (`nvcc` 12.9.86, `ptxas` 12.9). The attention, ping-pong, and A3b kernels and their causal variants met their register budgets with no spills. The [baseline build log](../target/performance/soundness-baseline-build.log), [baseline validation log](../target/performance/soundness-baseline-validate.log), [candidate build log](../target/performance/soundness-performance-build.log), [candidate validation log](../target/performance/soundness-performance-validate-final.log), [raw benchmark JSON](../target/performance/soundness-performance-native-results.json), [benchmark console log](../target/performance/soundness-performance-native-results.log), and [GPU gate log](../target/performance/soundness-performance-gpu-check.log) preserve the run evidence. Additional source and binary hashes are recorded in [the integration provenance file](../target/performance/soundness-performance-provenance.txt).
+The integrated candidate passed `sbt scalafmtAll` and `sbt validate` with 952 tests, no failures or errors; the unchanged `acaf536` baseline passed 928 tests. `gpu/check.sh` passed all 189 checks with no skips using the `raccoon-cuda:12.9` container (`nvcc` 12.9.86, `ptxas` 12.9). The attention, ping-pong, and A3b kernels and their causal variants met their register budgets with no spills. The baseline build log (`target/performance/soundness-baseline-build.log`), baseline validation log (`target/performance/soundness-baseline-validate.log`), candidate build log (`target/performance/soundness-performance-build.log`), candidate validation log (`target/performance/soundness-performance-validate-final.log`), raw benchmark JSON (`target/performance/soundness-performance-native-results.json`), benchmark console log (`target/performance/soundness-performance-native-results.log`), and GPU gate log (`target/performance/soundness-performance-gpu-check.log`) preserve the run evidence. Additional source and binary hashes are recorded in the integration provenance file (`target/performance/soundness-performance-provenance.txt`).
 
 ## Historical capture-only snapshot on `codex/interpreter-performance`
 
@@ -33,7 +41,7 @@ The following measurements are from the earlier interpreter-performance branch, 
 
 This follow-up records the final integrated source after the capture-only `Env` change. The measured source tree was later committed as `4495b852aa70057356093f6a1dc545402b2f1e06`, based on the earlier integrated snapshot `38016598849535b7bd42b1f4930acb2d0c231c51`. The executable was built and benchmarked from matching working-tree bytes at `0e8ff1d8faa4ad7daa470ce6075a82a0e4dfda87`, with the reviewed `Env.scala` replacement still uncommitted. The final source fingerprint is `aca1ac01c74c42cea577208012902a4fe93800e32a92e4bf2e24191646e3799a` for `git diff 3801659 -- src`; the `Env.scala`-only difference is `710a977b263aed400ffddfba90c5d019a03a71e12223ff2f2874c49084cf1c84`. These fingerprints establish that the committed source and measured working tree match. The built candidate SHA-256 is `25ee2ad1f9aa3cbca7386bb113cc85209d3f0b9a24b09edcaa46b60384474247`; later documentation-only commits do not change it.
 
-The comparison uses the preserved [380 executable](../target/performance/raccoon-before-cleanup) (SHA-256 `80963f53b538e88db59f365cb153f609201eb8c211ede054ad3bbb548e185320`) and the [final candidate](../target/performance/raccoon-env-capture-only) (SHA-256 `25ee2ad1f9aa3cbca7386bb113cc85209d3f0b9a24b09edcaa46b60384474247`). Both were built with Oracle GraalVM 21.0.12, Native Image O2, Serial GC, and assertions enabled. The benchmark ran seven alternating baseline/candidate pairs per example with `--raw`, without concurrent builds or tests. All 42 stdout results matched byte-for-byte.
+The comparison uses the preserved 380 executable (`target/performance/raccoon-before-cleanup`) (SHA-256 `80963f53b538e88db59f365cb153f609201eb8c211ede054ad3bbb548e185320`) and the final candidate (`target/performance/raccoon-env-capture-only`) (SHA-256 `25ee2ad1f9aa3cbca7386bb113cc85209d3f0b9a24b09edcaa46b60384474247`). Both were built with Oracle GraalVM 21.0.12, Native Image O2, Serial GC, and assertions enabled. The benchmark ran seven alternating baseline/candidate pairs per example with `--raw`, without concurrent builds or tests. All 42 stdout results matched byte-for-byte.
 
 | Example | 380 median wall / CPU / peak RSS → final median wall / CPU / peak RSS | Output bytes and SHA-256 |
 | --- | --- | --- |
@@ -49,17 +57,17 @@ The paired CPU deltas below are final minus 380. They show no material consisten
 | `attention_pingpong` | +.030, −.030, +.010, −.030, +.040, −.030, +.010 | +.010 | 4 / 7 |
 | `attention_a3b` | +.060, +.050, .000, −.040, −.020, −.010, +.050 | .000 | 3 / 7 |
 
-The paired wall-delta medians were −.033 s for attention, +.008 s for ping-pong and +.002 s for A3b. RSS varied between processes; the per-binary medians are shown above and are not treated as a stable memory result. Raw measurements and run ordering are in [the final JSON](../target/performance/env-capture-native-results.json) and [console log](../target/performance/env-capture-native-results.log); the [native build log](../target/performance/env-capture-native-build.log) and [source provenance](../target/performance/env-capture-provenance.txt) are also retained.
+The paired wall-delta medians were −.033 s for attention, +.008 s for ping-pong and +.002 s for A3b. RSS varied between processes; the per-binary medians are shown above and are not treated as a stable memory result. Raw measurements and run ordering are in the final JSON (`target/performance/env-capture-native-results.json`) and console log (`target/performance/env-capture-native-results.log`); the native build log (`target/performance/env-capture-native-build.log`) and source provenance (`target/performance/env-capture-provenance.txt`) are also retained.
 
 The accepted Env change only routes `localValueOption` through the existing `runtimeValueOrNull` lookup. `apply(ref)` and `containsLocal` retain their original implementations from 380, preserving the measured hot paths. The string append implementation retains a Boolean packed-suffix marker and the constructor-prefix length; the prefix length determines the packed suffix boundary without storing a second offset. The validated native append path, output key semantics and source-shaped printing remain covered by the existing semantic tests. Constructor-result caching remains enabled with the checked-independent-codomain guard and per-`VPi` result ownership; the isolated cache ablation below supports retaining it.
 
-The final source passed `sbt scalafmtAll` without formatting changes and `sbt validate` with 930 tests, 0 failures and 0 errors. The full `gpu/check.sh` gate passed 189 checks with no skips or failures against the final candidate. It used the `raccoon-cuda:12.9` container (`nvcc` 12.9.86 and `ptxas` 12.9); generated attention kernels met their register budgets with no spills. See the [validation log](../target/performance/env-capture-validate.log), [GPU gate log](../target/performance/env-capture-gpu-check.log) and [formatting log](../target/performance/env-capture-scalafmt.log).
+The final source passed `sbt scalafmtAll` without formatting changes and `sbt validate` with 930 tests, 0 failures and 0 errors. The full `gpu/check.sh` gate passed 189 checks with no skips or failures against the final candidate. It used the `raccoon-cuda:12.9` container (`nvcc` 12.9.86 and `ptxas` 12.9); generated attention kernels met their register budgets with no spills. See the validation log (`target/performance/env-capture-validate.log`), GPU gate log (`target/performance/env-capture-gpu-check.log`) and formatting log (`target/performance/env-capture-scalafmt.log`).
 
 ### Follow-up design measurements
 
-The final capture-only Env shape follows two rejected consolidation trials. A full shared `localValueOrNull` helper changed `apply`, membership and capture lookup; in six rotated ping-pong rounds it cost a median +.105 s CPU versus the string-only snapshot, with all six paired deltas positive. A partial shared-helper integration trial that still kept specialized membership was +.12 s paired median CPU on A3b over three pairs versus 380 (individual deltas +.10, +.12 and +.20 s). That trial included the other integrated changes and does not isolate the helper's causal contribution. The final version avoids both helper variants on the hot `apply` and membership paths. The string-only snapshot itself had mixed/flat A3b CPU deltas across seven pairs (median −.01 s) and noisy attention deltas across three pairs (median +.10 s); its ping-pong comparison was also mixed (median −.03 s). These are not evidence of a consistent string-only regression. The retained six-round comparison is [here](../target/performance/cleanup-attribution/string-cleanup-attribution.json), with [A3b attribution](../target/performance/cleanup-attribution/env-attribution-a3b.json), [attention attribution](../target/performance/cleanup-attribution/env-attribution-attention.json) and the partial trial's exact benchmark [here](../target/performance/env-partial-native-results.json).
+The final capture-only Env shape follows two rejected consolidation trials. A full shared `localValueOrNull` helper changed `apply`, membership and capture lookup; in six rotated ping-pong rounds it cost a median +.105 s CPU versus the string-only snapshot, with all six paired deltas positive. A partial shared-helper integration trial that still kept specialized membership was +.12 s paired median CPU on A3b over three pairs versus 380 (individual deltas +.10, +.12 and +.20 s). That trial included the other integrated changes and does not isolate the helper's causal contribution. The final version avoids both helper variants on the hot `apply` and membership paths. The string-only snapshot itself had mixed/flat A3b CPU deltas across seven pairs (median −.01 s) and noisy attention deltas across three pairs (median +.10 s); its ping-pong comparison was also mixed (median −.03 s). These are not evidence of a consistent string-only regression. The retained six-round comparison is here (`target/performance/cleanup-attribution/string-cleanup-attribution.json`), with A3b attribution (`target/performance/cleanup-attribution/env-attribution-a3b.json`), attention attribution (`target/performance/cleanup-attribution/env-attribution-attention.json`) and the partial trial's exact benchmark here (`target/performance/env-partial-native-results.json`).
 
-The constructor cache was compared against an otherwise unchanged build where `VPi.constructorResultType` always computed `codomain(instantiatedEnv)`. The ablation retained `CheckedPiCodomain`, syntax eligibility analysis, hash loops and determining/evidence indices, so it tests the combined benefit of skipping argument-environment binding and memoizing the independent result. It made two temporary lazy-val visibility widenings solely to satisfy unused-field compiler warnings; those visibility edits are not in the shipped source. Cache-off CPU cost increased by +.410 s on ping-pong, +.270 s on attention and +.340 s on A3b by median paired deltas; all 13 pairs were positive, and all 26 outputs matched byte-for-byte. RSS was noisy. This supports keeping the guarded per-instance cache, but does not separate the binding and memoization savings. The [ablation provenance](../target/performance/cache-study/cache-study-provenance.txt), [temporary patch](../target/performance/cache-study/cache-study-ablation.patch), [ping-pong data](../target/performance/cache-study/cache-study-pingpong-results.json) and [attention/A3b data](../target/performance/cache-study/cache-study-attention-results.json) are preserved.
+The constructor cache was compared against an otherwise unchanged build where `VPi.constructorResultType` always computed `codomain(instantiatedEnv)`. The ablation retained `CheckedPiCodomain`, syntax eligibility analysis, hash loops and determining/evidence indices, so it tests the combined benefit of skipping argument-environment binding and memoizing the independent result. It made two temporary lazy-val visibility widenings solely to satisfy unused-field compiler warnings; those visibility edits are not in the shipped source. Cache-off CPU cost increased by +.410 s on ping-pong, +.270 s on attention and +.340 s on A3b by median paired deltas; all 13 pairs were positive, and all 26 outputs matched byte-for-byte. RSS was noisy. This supports keeping the guarded per-instance cache, but does not separate the binding and memoization savings. The ablation provenance (`target/performance/cache-study/cache-study-provenance.txt`), temporary patch (`target/performance/cache-study/cache-study-ablation.patch`), ping-pong data (`target/performance/cache-study/cache-study-pingpong-results.json`) and attention/A3b data (`target/performance/cache-study/cache-study-attention-results.json`) are preserved.
 
 ## Historical 380 checkpoint measurements and analysis
 
@@ -109,10 +117,10 @@ CPU time and peak RSS. Values below are medians; RSS is in bytes.
 
 Every run against both binaries produced the exact output hash and byte count
 shown above. The candidate native build log is
-[`integration-native-build.log`](../target/performance/integration-native-build.log);
+`integration-native-build.log` (`target/performance/integration-native-build.log`);
 raw alternating results are in
-[`integration-vs-dc29a91.json`](../target/performance/integration-vs-dc29a91.json)
-and [`integration-vs-original.json`](../target/performance/integration-vs-original.json),
+`integration-vs-dc29a91.json` (`target/performance/integration-vs-dc29a91.json`)
+and `integration-vs-original.json` (`target/performance/integration-vs-original.json`),
 with their console logs beside them. The original and `dc29a91` executables
 were preserved as `target/performance/raccoon-baseline` and
 `target/performance/raccoon-dc29a91` before building the candidate.
@@ -188,9 +196,9 @@ count/lookup APIs. It was effectively flat against the slot snapshot: median
 wall 22.169 → 22.152 s, CPU 21.88 → 22.00 s, RSS 1.129 → 1.169 GB. The trial
 was removed; the final source retains the frame implementation and capture
 semantics tests. Its raw results are in
-[`capture-followup-pair.json`](../target/performance/isolated-gates/capture-followup-pair.json)
+`capture-followup-pair.json` (`target/performance/isolated-gates/capture-followup-pair.json`)
 and the decision is documented in
-[`capture-followup-rejected-report.txt`](../target/performance/isolated-gates/capture-followup-rejected-report.txt).
+`capture-followup-rejected-report.txt` (`target/performance/isolated-gates/capture-followup-rejected-report.txt`).
 
 ### Validation
 
@@ -198,12 +206,12 @@ The integrated source snapshot received independent clean code review, and
 passed `sbt scalafmtAll` and `sbt validate` with 930 tests, 0 failures and 0
 errors. Source review was clean; independent report review is a commit gate.
 The final validation log is
-[`integration-validate-after-name-resolution.log`](../target/performance/integration-validate-after-name-resolution.log).
+`integration-validate-after-name-resolution.log` (`target/performance/integration-validate-after-name-resolution.log`).
 The full `gpu/check.sh` run passed 189 checks with no skips. It ran against
 the integrated candidate with the `raccoon-cuda:12.9` toolkit container:
 `nvcc` and `ptxas` 12.9.86 compiled the generated kernels and passed register
 budgets with zero spill bytes. The check log is
-[`integration-gpu-check.log`](../target/performance/integration-gpu-check.log).
+`integration-gpu-check.log` (`target/performance/integration-gpu-check.log`).
 
 ### Remaining native time budgets
 
@@ -225,8 +233,8 @@ to add to it.
 | Separate prelude and imports-only source | 2.01 s | not additive |
 
 The raw phase data is in
-[`integration-phase-results.json`](../target/performance/attribution/integration-phase-results.json)
-and [`integration-phase-results.log`](../target/performance/attribution/integration-phase-results.log);
+`integration-phase-results.json` (`target/performance/attribution/integration-phase-results.json`)
+and `integration-phase-results.log` (`target/performance/attribution/integration-phase-results.log`);
 the historical phase files and results remain unchanged. These measurements
 move the next priorities: a warm batch runner can target the roughly 2.01 s
 imports-only cost; broader checked-module reuse has a 4.55 s whole-frontend
@@ -273,24 +281,26 @@ Top sampled leaves were `Value.canonicalizeProof` (19),
 `Env.bindRuntimeLocals` (19), `Env.runtimeValueOrNull` (10),
 `Interpreter.step` (9), `Env.containsLocal` (8), and `Interpreter.applyStep`
 (7). The recording, 128-frame export, and bucket summary are retained as
-[`integration-jvm-pingpong.jfr`](../target/performance/attribution/integration-jvm-pingpong.jfr),
-[`integration-jvm-execution.json`](../target/performance/attribution/integration-jvm-execution.json),
-and [`integration-jvm-buckets.json`](../target/performance/attribution/integration-jvm-buckets.json).
+`integration-jvm-pingpong.jfr` (`target/performance/attribution/integration-jvm-pingpong.jfr`),
+`integration-jvm-execution.json` (`target/performance/attribution/integration-jvm-execution.json`),
+and `integration-jvm-buckets.json` (`target/performance/attribution/integration-jvm-buckets.json`).
 JVM sampled shares are not native subsystem times and are not added to the
 native phase budgets.
 
 ### Gate evidence and reproduction
 
-The standalone gate raw files copied into the ignored local evidence folder
-are linked here: [slots results and summary](../target/performance/isolated-gates/slots-pingpong-native-results.json),
-[metadata results and summary](../target/performance/isolated-gates/metadata-final-pingpong-results.json),
-[string results](../target/performance/isolated-gates/string-delayed-key-benchmark.json),
-and [eager-key prototype results](../target/performance/isolated-gates/string-eager-key-results.json).
-The original gate summaries, build logs and source commits remain in their
+The standalone gate raw files were recorded at these ignored local paths:
+slots results and summary (`target/performance/isolated-gates/slots-pingpong-native-results.json`),
+metadata results and summary (`target/performance/isolated-gates/metadata-final-pingpong-results.json`),
+string results (`target/performance/isolated-gates/string-delayed-key-benchmark.json`),
+and eager-key prototype results (`target/performance/isolated-gates/string-eager-key-results.json`).
+The original gate summaries, build logs and source commits were retained in
 implementer worktrees; the integrated gate copies and raw final comparisons
-are under `target/performance` and ignored by Git.
+were stored under `target/performance`, outside version control.
 
-Reproduce a native comparison with:
+The original comparison used the following commands in the old combined
+compiler/library checkout. They are historical instructions: this repository
+no longer contains `scripts/benchmark-interpreter.py` or the GPU workload files.
 
 ```sh
 scripts/build-graal-native.sh --parallelism=4 -J-Xmx3g
@@ -301,8 +311,7 @@ python3 scripts/benchmark-interpreter.py \
   --mode raw --output target/performance/native-results.json
 ```
 
-The original baseline can be substituted with
-`target/performance/raccoon-baseline`. Reproduce the GPU proof/compiler checks
-with `RACCOON="$PWD/target/graalvm/raccoon" gpu/check.sh`; the script reports
+That run could substitute `target/performance/raccoon-baseline` for the
+baseline. Its external GPU proof/compiler checks used `RACCOON="$PWD/target/graalvm/raccoon" gpu/check.sh`; the script reports
 when the CUDA toolkit is unavailable rather than silently running its
 register checks.

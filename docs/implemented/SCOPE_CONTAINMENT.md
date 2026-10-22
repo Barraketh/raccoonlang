@@ -6,9 +6,9 @@ has no lifetime type, sort-scope field, or `scope` term. See the
 [language reference](../language.md) and [kernel reference](../kernel.md) for
 the current language.
 
-The full historical document is retained in the compiler repository's Git
-history at baseline `81759785`. In a clone containing that commit, view it with:
+The full historical document is retained in this branch at revision
+`4af124c4`, immediately before lifetime removal. View it with:
 
 ```sh
-git show 81759785:docs/implemented/SCOPE_CONTAINMENT.md
+git show 4af124c4:docs/implemented/SCOPE_CONTAINMENT.md
 ```

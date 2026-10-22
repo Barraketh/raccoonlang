@@ -4,8 +4,8 @@
 > `Scoped`, which represented Raccoon's removed `Lifetime`/scope feature.
 > Those nodes are not part of the current language or compiler. See the
 > [language reference](../language.md) and [kernel reference](../kernel.md).
-> The original source is available from baseline `81759785` with
-> `git show 81759785:docs/proposals/INTERNED_WORDS_AND_BYTECODE.md`.
+> The pre-removal source is retained at revision `4af124c4`; view it with
+> `git show 4af124c4:docs/proposals/INTERNED_WORDS_AND_BYTECODE.md`.
 
 Status: proposal, 2026-10-05. Not implemented.
 

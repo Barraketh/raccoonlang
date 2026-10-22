@@ -5,9 +5,9 @@
 > rules, and safety claims are not current. Its discussion of kinds,
 > polymorphism, linearity, and sealing is retained as design history; the
 > [language reference](../language.md) and [kernel reference](../kernel.md)
-> define current behavior. The original version is available in a clone
-> containing baseline `81759785` with
-> `git show 81759785:docs/implemented/LEMUR_ON_RACCOON.md`.
+> define current behavior. The pre-removal version is retained in this branch at
+> revision `4af124c4`; view it with
+> `git show 4af124c4:docs/implemented/LEMUR_ON_RACCOON.md`.
 
 Status: **historical** (the feature set was implemented on 2026-09-29, then
 the lifetime-scope parts were removed). This document stays as a design record.

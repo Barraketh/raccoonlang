@@ -10,8 +10,6 @@ expression. Imports must come first. Only the entry file may have a final
 expression; imported files are declaration modules.
 
 ```raccoon
-import Data.Nat
-
 def twice (f: Nat -> Nat)(x: Nat): Nat := f(f(x))
 
 { twice(Nat.succ, 0) }
@@ -27,6 +25,7 @@ axiom name (parameters): Result
 mutual { declarations }
 namespace Path { declarations }
 open Path
+{ declarations }                       // a scoped declaration block
 ```
 
 A `mutual` block is atomic and must contain either only function definitions or
@@ -172,7 +171,7 @@ to one of that field's forms unqualified, and only then as usual. So
 body of a recursive `def succ`, and `kind = lin` means `Kind.lin`:
 
 ```raccoon
-def id {u: Level}{A: Type { level = u }}(x: A): A := x
+def identity {u: Level}{A: Type { level = u }}(x: A): A := x
 
 inductive Box (u: Level)(A: Type { level = u }) : Type { level = u }
  | mk (value: A) : Box(u, A)
@@ -264,9 +263,9 @@ arguments of the function's current binder group.
 Implicit parameters use braces:
 
 ```raccoon
-def id {A: Type}(x: A): A := x
+def identity {A: Type}(x: A): A := x
 
-{ id(Nat.zero) }
+{ identity(Nat.zero) }
 ```
 
 Call sites never write implicit arguments. Every implicit must be recoverable
@@ -542,16 +541,17 @@ shadow earlier names.
 `command join { ... }` composes a sequence using an ordinary named function:
 
 ```raccoon
-command Gpu.then {
-  chunk.staging.acquire
-  chunk.staging.write(values)
-  chunk.staging.fence
-  chunk.output.store
+command Nat.add {
+  1
+  let two := 2
+  two
+  3
 }
 ```
 
-This expands to a right-associated sequence of `Gpu.then` applications. For
-three commands `a`, `b`, `c`, the expansion is `Gpu.then(a, Gpu.then(b, c))`.
+This evaluates to `6`. It expands to a right-associated sequence of `Nat.add`
+applications, with the `let` enclosing the remaining sequence. For three
+commands `a`, `b`, `c`, the expansion is `Nat.add(a, Nat.add(b, c))`.
 The function's type supplies the composition rule; the notation adds no typing or evaluation
 rule. A single command is itself. Ordinary `let` and `open` statements scope
 over the remaining sequence. Items follow the usual line-break rules, and the
@@ -667,9 +667,9 @@ Parameters before `indices` are uniform across every constructor result.
 Binders after `indices` are indices and may vary between constructors.
 
 ```raccoon
-inductive Nat : Type
- | zero : Nat
- | succ (pred: Nat) : Nat
+inductive Count : Type
+ | zero : Count
+ | succ (pred: Count) : Count
 
 inductive Vec {u: Level}(A: Type { level = u }) indices (n: Nat)
     : Type { level = u }
@@ -806,7 +806,9 @@ wildcard, each case the wildcard stands for has its own `h`, at its own
 constructor. The scrutinee's family must have no indices, else
 `MatchEquationIndexed`, and its type must be unrestricted: a scrutinee of
 linear type would put a token in a proposition, which is `LinearInType`. The
-equation is stated with the prelude's `Eq`, which must be the equality family;
+scrutinee must also be data in `Type`; a proof scrutinee is
+`MatchEquationUnavailable`, since the validated `Eq` ranges over data types.
+The equation is stated with the prelude's `Eq`, which must be the equality family;
 otherwise, and in the prelude's own declarations, a named equation is
 `MatchEquationUnavailable`.
 
@@ -878,9 +880,9 @@ A lambda's body runs only when the lambda is applied, so it is not on the
 paths around it, and a match with no branch inside it ends none of them. A use
 of an outer local inside a lambda is one use, by the lambda, at the lambda's
 position, and the lambda must use it exactly once on every path through its
-body. A lambda that captures a linear local is itself linear, its derived
-closure kind is `Kind.lin`, and writing it at `Kind.unr` is `KindExceeded`. A
-value of a linear function type is used by applying it, so it is applied
+body. A lambda that captures a linear local is itself linear: its derived
+closure kind includes the captured local's kind, and writing it at `Kind.unr`
+is `KindExceeded`. A value of a linear function type is used by applying it, so it is applied
 exactly once.
 
 Binders are exact about kinds: `{A: Type}` accepts only unrestricted types and
@@ -1055,16 +1057,18 @@ its module:
 sealed inductive Token : Type { kind = lin }
  | mk : Token
 
-def makeToken : Token := Token.mk
+def makeToken (u: Unit): Token := Token.mk
 
 def consume (token: Token): Nat := match token returning Nat with
  | Token.mk => 1
 ```
 
-Another module may call `makeToken`, but cannot construct or match `Token`
+Another module may call `makeToken(Unit.unit)`, but cannot construct or match `Token`
 directly. Linearity still requires each token value to be consumed once. Sealing
 controls constructor access; it does not restrict how a module's exported
-functions use their arguments.
+functions use their arguments. The explicit parameter keeps `makeToken` an
+unrestricted function; a global value declared directly at `Token` would be
+`LinearGlobal`.
 
 An implicit parameter may be forced through a sealed constructor's field only
 inside the family's module; elsewhere it is `NonForcedImplicitParam`. The
@@ -1183,11 +1187,15 @@ the examples and tests, including:
   destructuring, while `Prod` remains the unrestricted pair with selectors;
 - `Decidable`, `Subtype`, `Exists`, `Nonempty`, and common boolean and natural
   operations;
-- `Quot` with `Quot.mk`, `Quot.sound`, `Quot.lift`, and `Quot.ind`.
+- `Quot` with `Quot.mk`, `Quot.sound`, `Quot.lift`, and `Quot.ind`;
+- the trusted `Buffer.Native.executeEncoded` entry point used by the separate
+  [finite buffer-program library](buffer-program.md). Import `buffer.Program`
+  with the repository root on the source path to use that library's builders.
 
-The polymorphic declarations are level- and kind-polymorphic. Their implicit
-sort parameters are forced from explicit arguments, so call sites do not write
-them:
+Polymorphic declarations bind the levels and, where supported, kinds shown in
+their signatures. For example, `List` accepts unrestricted element types,
+whereas `Pair` is kind-polymorphic. Their implicit sort parameters are forced
+from explicit arguments, so call sites do not write them:
 
 ```text
 inductive List {u: Level}(A: Type { level = u }) : Type { level = u }

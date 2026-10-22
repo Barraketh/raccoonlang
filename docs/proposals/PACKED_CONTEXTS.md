@@ -8,6 +8,12 @@ replaced by §1, §2 and §4. Its live requirements are restated here: the
 integration invariants (§1), the conversion of residual operations (§4) and its
 validation.
 
+The compact successor-prefix starting point is implemented; the predecessor
+contexts, step summaries, tail calls modulo contexts, and polynomial normal
+forms proposed here are not. The comparison below is a 2026-10-05 snapshot.
+Its symbolic `Nat.blt` regression was subsequently fixed without implementing
+this proposal. See the [current Nat rules](../kernel.md#natural-numbers).
+
 ## Purpose
 
 Packed Nats currently get their behaviour on symbolic arguments from rules
@@ -44,7 +50,7 @@ eager. The magnitude of a number never selects a different rule.
 
 ## Current state
 
-The working tree implements the compact Nat design that this proposal replaces:
+The compiler implements the compact Nat design that this proposal would replace:
 
 - a compact successor prefix, `VNatPrefix`, built only by `Packed.natPrefix`. It
   represents `succ^offset(base)` with a `BigInt` offset;
@@ -79,9 +85,10 @@ tree:
   [Declaration-time positivity](../implemented/DECLARATION_TIME_POSITIVITY.md)
   replaced that check, and the reproducer now passes. The storage proofs
   themselves have not been re-run.
-- **`Nat.blt(0, Nat.succ(m))`.** The compact-Nat rules introduced this
-  regression; HEAD checks all three of the files that now fail. §2 and §4 remove
-  those rules. Validation item 10 requires all three to check again.
+- **`Nat.blt(0, Nat.succ(m))`.** This was a regression in the measured snapshot.
+  The current compiler resolves the validated `Nat.ble` peer independently of
+  scalar execution eligibility, so this reduction now succeeds. Validation
+  item 10 remains a preservation requirement for the proposed redesign.
 
 The goals stay the same:
 

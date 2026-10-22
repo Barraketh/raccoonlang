@@ -4,9 +4,9 @@
 > and sort-scope feature. Any references to lifetime values, scope fields,
 > scope syntax, or their safety properties describe an unsupported design, not
 > current behavior. See the [language reference](../language.md) and
-> [kernel reference](../kernel.md). The original source is available from
-> baseline `81759785` with
-> `git show 81759785:docs/proposals/REFLECTED_TYPING.md`.
+> [kernel reference](../kernel.md). The pre-removal source is retained at
+> revision `4af124c4`; view it with
+> `git show 4af124c4:docs/proposals/REFLECTED_TYPING.md`.
 
 Status: **candidate implementation plan** (2026-10-02). Proposed direction for problem 1 of
 [Safety problems](SAFETY_PROBLEMS.md). No part of this feature is implemented by this document.

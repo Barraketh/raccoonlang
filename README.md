@@ -28,7 +28,8 @@ Raccoon currently provides:
   declared kind bounds the linearity of their values;
 - linear types: every local of a type whose kind is not `Kind.unr` is used
   exactly once on every control-flow path, and no type or proof contains one;
-- dependent, exhaustive pattern matching with an explicit `returning` motive;
+- dependent, exhaustive pattern matching with an explicit `returning` motive,
+  a final wildcard case, and named match equations for unrestricted data;
 - checking by synthesis and definitional equality: a term's type never depends
   on where it stands;
 - structural, lexicographic, and measure-based termination checking;
@@ -39,6 +40,7 @@ Raccoon currently provides:
 - sealed families, whose constructors and selectors only their own file may use;
 - proof irrelevance and controlled elimination from `Prop`;
 - namespaces, scoped `open`, and file imports;
+- `command join { ... }` blocks that compose terms with an ordinary function;
 - quotients and axioms, which only the trusted prelude (bundled or
   `--prelude`) declares; every definition computes;
 - compact natural-number literals and trusted native natural-number reduction;
@@ -66,6 +68,8 @@ two-argument function type and is called as `f(a, b)`. Write
 See [the language reference](docs/language.md) for source syntax and semantics,
 and [the kernel reference](docs/kernel.md) for the trusted rules behind
 conversion, proofs, inductives, and native values.
+The [documentation guide](docs/README.md) distinguishes current references,
+implemented design records, historical designs, and unimplemented proposals.
 
 ## Run a program
 
@@ -182,4 +186,5 @@ Raccoon's compiler validation runs independently of both library checkouts.
 - `examples`: runnable Raccoon programs;
 - `docs/language.md`: current source-language reference;
 - `docs/kernel.md`: current trusted semantic reference;
+- `docs/buffer-program.md`: finite native buffer programs and their ownership API;
 - `STYLE.md`: project engineering conventions.

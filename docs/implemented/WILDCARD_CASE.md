@@ -21,8 +21,10 @@ code gains the same, for example a function on `Group` that cares about one cons
 
 - **Last only.** A wildcard case is the last case of its match. Elsewhere, or twice, it is a parse error.
 - **It stands for something.** It stands for the reachable constructors not yet named:
-  - "reachable" as for a missing case today: a constructor whose result is apart from the scrutinee's type needs no
-    case, and the wildcard does not stand for it;
+  - reachability is shared with coverage: apartness or a known-constructor
+    clash proposes exclusion, but omission requires a checked local refutation
+    of the constructor hypotheses. Otherwise the constructor remains reachable
+    and the wildcard stands for it;
   - a wildcard that would stand for none is `RedundantCase`, located at it.
 - **Each constructor checked separately.** `e` is checked once per constructor the wildcard stands for, in that
   case's environment and refinement, exactly as if the case had been written out with `_` for every field. So a
@@ -42,7 +44,8 @@ applied to the expansion.
 ## 4. Implementation
 
 - **Parser:** a case head `_` with no fields.
-- **Surface and Core ASTs:** a case marked as the wildcard.
+- **Surface and elaborated Core ASTs:** a separate optional final wildcard
+  case. Checked residual matches contain only the expanded ordinary cases.
 - **`MatchChecker`:** after resolving the family, replace the wildcard by one case per remaining reachable constructor,
   with fresh anonymous pattern variables, before checking the cases. `RedundantCase` is new.
 - **Printing:** a residual prints the expansion.

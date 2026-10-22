@@ -474,6 +474,7 @@ it converts with the match written out in full in that order; evaluation,
 conversion and the ledger never meet a wildcard.
 
 A match may name its equation, `match h : e`. The scrutinee's type `T` must be
+data in `Type`; a proof scrutinee is `MatchEquationUnavailable`. It must be
 unrestricted, else `LinearInType` at the scrutinee, since the equation is a
 proposition about it, and its family must have no indices, else
 `MatchEquationIndexed` at `h`; both are checked once, at the match. Each case,
@@ -481,8 +482,8 @@ an expanded one included, binds `h` after its fields, as a proof of
 `Eq(T, e′, C(p̄, x̄))`: `e′` is the checked scrutinee and `x̄` the case's
 fields, both under the case's refinement, and `C(p̄, x̄)` is the constructor
 value refinement unifies the scrutinee with, at `T`. Without indices it has type
-`T` in every case, so the equation is well typed without refinement. `h`'s type
-is confined at its binder as a field's is; it is unrestricted, so the ledger
+`T` in every case, so the equation is well typed without refinement. `h` is
+an ordinary proof local and is unrestricted, so the ledger
 does not track it. Nothing is rewritten by it: the motive and the other locals
 are as they would be without it. `Eq` is the validated equality family of the
 trusted prelude (see [Equality](#equality)), so the hypothesis is true whenever
@@ -988,7 +989,7 @@ An equation attaches only to the exact transparent lambda published under its
 canonical `Nat.*` name while a trusted prelude loads, after its two explicit
 Nat arguments and Nat/Bool result are validated. The declaration body is
 typechecked but not semantically recognized; agreement between that body and
-the host equation is obligation T5. Application never consults a global name
+the host equation is obligation T4. Application never consults a global name
 registry, so later same-named source cannot acquire the equation.
 
 Subtraction truncates at zero. Division by zero returns zero, modulus by zero
@@ -1051,6 +1052,14 @@ list that ends first is `nil` against `cons`. So two distinct literals are
 apart when one ends first or a character where they differ is apart, as it is
 when `Char.ofNat` builds a constructor around its scalar. The bundled prelude
 does not currently install this layout.
+
+For a compatible trusted prelude, `String.append` can use a packed fast path.
+Installation requires structural validation of its checked definition, the
+ordinary `List.append` definition, and `String.data`, with the exact validated
+constructor and captured declarations. Unrecognized definitions keep their
+source semantics. The optimization handles known scalar strings and falls back
+to the checked source body for other inputs; it does not replace general
+`List.append` or make string syntax available without a validated layout.
 
 ### Equality
 
@@ -1142,7 +1151,9 @@ Changes to the checker or evaluator must preserve these rules:
 1. Conversion success is justified by a definitional equality rule.
 2. Refinement links are forced consequences; the unifier never chooses among
    several solutions.
-3. Match pruning uses apartness, never ordinary unification failure.
+3. Match pruning requires a checked local refutation of constructor hypotheses;
+   apartness or a known-constructor clash can propose one, but ordinary
+   unification failure cannot justify pruning.
 4. A proof's behavior depends only on its exact proposition.
 5. Runtime proof reconstruction is finite and never invokes unification.
 6. Proof structure supplies no no-confusion or termination evidence.
@@ -1191,10 +1202,12 @@ Changes to the checker or evaluator must preserve these rules:
     native literal layouts. That trusted surface keeps the audited obligations
     T1 to T4; every other prelude declaration is checked as one in any module.
 24. An evidence argument is either supplied and convertible with its
-    proposition evaluated at the application, or discharged by a constructor
-    applied to fields read off that proposition, whose result type is
-    convertible with it; discharge invents no field, and reads no expected type
-    and no hypothesis beyond what the proposition holds. Evaluation binds the canonical proof of the same
+    proposition evaluated at the application, or discharged by one of the two
+    constructor rules: recover fields directly from the exact proposition, or
+    recursively discharge an evidence-eligible family's evidence fields within
+    the 1024-step path bound. The constructed proof's result type must convert
+    with the proposition. Discharge invents no data field, reads no expected
+    type, and consults no hypothesis in scope. Evaluation binds the canonical proof of the same
     proposition, and evaluates the proposition only when that proof is looked
     at. An application's dependencies, key and conversion skip its evidence
     arguments, which its head and other arguments determine.

@@ -4,6 +4,12 @@ Status: **implemented** (2026-09-29). `docs/language.md` and `docs/kernel.md`
 state its rules, and this document stays as the design record; §8 records what
 implementation decided.
 
+This is a design record. References to the state before these changes and to
+the former GPU checkout are historical. The current trust obligations are
+T1–T4; lifetime scopes have been removed. Native Nat reduction now uses compact
+successor prefixes and uniform mixed reducers, as described in the
+[kernel reference](../kernel.md#natural-numbers), rather than the cutoff in §5.
+
 This document specifies four changes, driven by the GPU library spike in
 `gpu/`, where most lines of a kernel thread a linear emitter and tokens through
 `match … returning` on pairs:
@@ -62,9 +68,9 @@ of the bundled prelude's trusted surface: every
 axiom and builtin with its type, every native operation, every native literal
 layout, and every sealed family. Changing any of them changes the golden file,
 so the change is reviewed against §1.2. The bundled prelude's inventory is
-today's: `Quot` and `Quot.sound` as axioms; `Quot.mk`, `Quot.lift` and
-`Quot.ind` as builtins; the native Nat operations; the `Nat` layout; no sealed
-family.
+the current bundled surface: `Quot` and `Quot.sound` as axioms; `Quot.mk`,
+`Quot.lift`, `Quot.ind`, and `Buffer.Native.executeEncoded` as builtins; the
+native Nat operations; the `Nat` layout; no sealed family.
 
 **1.5 Documents.** `docs/implemented/LEMUR_ON_RACCOON.md` §3.4's last sentence and §7.1's
 and §7.3's prelude rules, `docs/kernel.md`'s Sealing section and its paragraph

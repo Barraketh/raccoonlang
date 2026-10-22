@@ -5,10 +5,11 @@ GPU modules. A checked program is immutable; `Buffer.run` validates and executes
 through one small trusted builtin. Each invocation allocates private buffers and register banks and returns immutable
 `Buffer.Result` values. It does not expose host arrays, handles, callbacks, or mutable state to the evaluator.
 
-The public builder uses `Buffer.build`, `withInput`, `withScratch`, and `withOutput`. `Buffer.build` creates a fresh
-root brand and a linear access token. A context carries that token together with the current control-flow frame, so
+The public builder uses `Buffer.build`, `withInput`, `withScratch`, and `withOutput`.
+`Buffer.build` checks its callback under an abstract root type brand and supplies
+a linear access token. A context carries that token together with the current control-flow frame, so
 only the builder can emit instructions or move access into a child frame. Branch and repeat callbacks receive a fresh
-frame token and a `BufferAccess.View` describing its ancestry. A parent scalar can be copied into a child frame with
+abstract frame brand, a linear token, and a `BufferAccess.View` describing its ancestry. A parent scalar can be copied into a child frame with
 `Buffer.lift32` or `Buffer.lift64`; nested views compose with `BufferAccess.compose`. Scalar operands must match both
 the builder root and the context frame, so a child snapshot cannot be used with its parent context or another builder.
 
@@ -22,19 +23,39 @@ are program-global slots tied to the builder root and can be captured as program
 `getReg32` and `getReg64` produce immutable snapshots tagged with the current frame. Read-only `inputBytes`,
 `scratchBytes`, and `outputBytes` expose extents without exposing buffer IDs or storage.
 
+Brands are ordinary type parameters, not runtime-generated type identities or
+lifetimes. The implementation instantiates its abstract callback brands with
+`Unit`; the callback must check for any brand, and access requires the sealed
+linear token and matching root/frame types. The language does not enforce a
+general lifetime or escape restriction on unrestricted metadata.
+
 Buffers are allocated in builder order and outputs are returned in that same order. Buffer storage and scalar banks are
 zero-initialized once per run. Allocations described from inside a loop builder still describe one static allocation
 for the whole run; the loop does not reallocate or clear them on each trip. Input byte lists must match the declared
 input extents and contain values from 0 through 255. A later run cannot mutate its inputs or an earlier result.
 
-The instruction set provides unsigned 32- and 64-bit loads/stores, wrapping add/subtract/multiply and bit operations,
+The instruction set provides unsigned 8-, 16-, 32-, and 64-bit loads/stores, wrapping add/subtract/multiply and bit operations,
 unsigned division/remainder, comparisons, U32-to-U64 extension, conditional blocks, and fixed-on-entry repeats. Buffer
-offsets are byte offsets. Byte and 16-bit stores reject values that do not fit; wider stores write their low-order
-bytes. Repeat counts are read once when the repeat begins, and the loop index is read-only to the body. Control flow is
+offsets are byte offsets, and multibyte loads and stores use little-endian order.
+Byte and 16-bit stores reject values that do not fit; 32- and 64-bit stores write
+their corresponding register width. Division or remainder by zero is an
+arithmetic fault. Shifts by at least the register width produce zero.
+Repeat counts are read once when the repeat begins, and the loop index is read-only to the body. Control flow is
 structured and finite: there are no arbitrary jumps or unstructured control-flow edges, user fuel values, or hidden
 instruction-count limit.
 Malformed programs, invalid arithmetic, out-of-bounds access, invalid input, and implementation resource limits return
 a `Buffer.Result.failure` code instead of exposing partially mutable storage.
+
+| Failure code | Meaning |
+|---|---|
+| `1` | Malformed encoded program |
+| `3` | Buffer access out of bounds |
+| `4` | Invalid arithmetic operation, including a narrow store that does not fit |
+| `5` | Implementation resource limit exceeded |
+| `6` | Invalid run input |
+
+The builtin returns status `0` with output lists on success; `Buffer.run` wraps
+that result as `Buffer.Result.success`. A failure exposes no output buffers.
 
 The current bounded implementation limits a program to 1,000,000 encoded words and 200,000 instructions, each scalar
 register bank to 65,536 entries, 256 buffers, 64 MiB per buffer, and 256 MiB total private storage. Combined input and
@@ -46,6 +67,13 @@ It builds one immutable increment program, runs it on two inputs, then reuses it
 the concrete results `42`, `10`, and `42`; [`buffer/ReductionProbe.rac`](../buffer/ReductionProbe.rac) demonstrates
 loop-carried reduction state and a zero-trip branch. The source-facing bridge and native executor are covered by
 `BufferProgramSourceTests`, `NativeBufferProgramTests`, and `NativeBufferBuiltinsTests`.
+
+Run the probes from the repository root so imports can find `buffer/Program.rac`:
+
+```bash
+sbt 'run --root . buffer/TokenProbe.rac'
+sbt 'run --root . buffer/ReductionProbe.rac'
+```
 
 The trusted surface added for this library is only `Buffer.Native.executeEncoded`, which takes generic encoded words
 and byte lists and returns a status plus output lists. The type, compiler, linear ownership API, and higher-level

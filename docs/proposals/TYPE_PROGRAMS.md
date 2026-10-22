@@ -4,8 +4,8 @@
 > `Lifetime` and sort-scope feature. Any lifetime or scope forms mentioned in
 > the proposal are unsupported and do not describe current semantics. See the
 > [language reference](../language.md) and [kernel reference](../kernel.md).
-> The original source is available from baseline `81759785` with
-> `git show 81759785:docs/proposals/TYPE_PROGRAMS.md`.
+> The pre-removal source is retained at revision `4af124c4`; view it with
+> `git show 4af124c4:docs/proposals/TYPE_PROGRAMS.md`.
 
 Status: proposal, 2026-10-05. Not implemented.
 

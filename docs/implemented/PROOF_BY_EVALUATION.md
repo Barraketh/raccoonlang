@@ -2,8 +2,14 @@
 
 Status: **approved design, partly implemented** (review 2026-09-30). Implemented: §1 (evidence arguments and fields,
 both discharge rules, the depth bound), §2.2 (printing), §2.3 (value metadata), §2.4 (tail positions), §2.5 (stack
-exhaustion). Open: the §2.6 measurements. `docs/language.md` and `docs/kernel.md` state the implemented rules, and
-this document stays as the design record.
+exhaustion). The §2.6 targets record the original validation plan; later
+measurements are in the [historical performance report](../interpreter-performance.md).
+`docs/language.md` and `docs/kernel.md` state the current rules.
+
+This document is a design record, so descriptions of pre-change behavior are
+historical. Core evaluation now uses explicit reusable frames for both tail and
+non-tail calls. Native Nat reduction uses compact successor prefixes rather
+than a literal-magnitude cutoff. GPU paths below belong to the external library.
 
 Proof by reflection proves a property in three steps:
 1. Write a decision procedure in Raccoon, `check : D -> Bool`.
@@ -210,19 +216,23 @@ pipeline's global state (fresh-name counters, the linear-subterm table) is not s
 | print a computed `String` of 1,000,000 characters, `--raw` | < 1 s, no overflow |
 | publish, and compare by `Eq.refl`, two separately built lists of 1,000,000 elements | no overflow |
 | an accumulator-style check over a 1,000,000-element list, discharged as evidence | constant stack, < 2 s |
-| non-tail recursion | limited by `--stack` alone; exhaustion is `EvaluationTooDeep` at the declaration |
+| non-tail recursion (original target) | report stack exhaustion as `EvaluationTooDeep`; current Core calls use reusable frames, while the checker and semantic helpers still use the host stack |
 | `gpu/gen.sh` on every GPU example | no `-Xss`, no `render.py`, output byte-identical |
 
-**2.7 Not done.**
-- **A full explicit-continuation (CEK) machine.** The evaluator is re-entered from the checker, the unifier, native
-  bodies and Pi codomains, and deep values are a second source of depth (§2.3), so a CEK evaluator alone would not
-  suffice. §2.2–2.5 remove each measured source directly.
+**2.7 Subsequent implementation and remaining work.**
+- **Reusable evaluation frames are now implemented.** Core tail and non-tail
+  calls share an explicit frame machine. Checker and semantic-helper recursion,
+  and execution-plan construction, can still exhaust the host stack. See
+  [evaluation depth](../kernel.md#evaluation-depth).
 - **Former native Nat cutoff.** The old `MaxUnfoldedLiteral` policy capped
   source unfolding for mixed Nat arguments. It has been replaced by compact
   symbolic successor prefixes, uniform mixed reducers, and one-layer demand
   inspection for existing constructor equations; current behavior is specified
   in [kernel.md](../kernel.md#natural-numbers).
-- **Native list operations.** That would add trusted surface with T5-like obligations.
+- **General native list operations remain unimplemented.** A separately
+  validated `String.append` fast path exists for compatible custom preludes;
+  ordinary `List.append` is not replaced. Native equations must preserve the
+  checked source behavior (current obligation T4).
 
 ## 3. In use
 
