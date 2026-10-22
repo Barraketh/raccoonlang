@@ -19,17 +19,7 @@ case class ParseError(startIdx: Int, curIdx: Int, message: String) extends Runti
 
 case class SourceId(value: Int) extends AnyVal
 
-case class AstNodeId(source: Option[SourceId], start: Int) {
-  def stableName: String =
-    source match {
-      case Some(sourceId) => s"${sourceId.value}:$start"
-      case None           => s"unknown:$start"
-    }
-}
-
-case class Span(start: Int, end: Int, source: Option[SourceId] = None) {
-  def nodeId: AstNodeId = AstNodeId(source, start)
-}
+case class Span(start: Int, end: Int, source: Option[SourceId] = None)
 case class Spanned[+A](value: A, span: Span)
 
 trait Parser[+A] {

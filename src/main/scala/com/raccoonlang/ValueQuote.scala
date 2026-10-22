@@ -15,6 +15,7 @@ object ValueQuote {
       context: QuoteContext
   )
 
+  // Inlining captures can change closure code, so every rebuilt Pi, lambda, or match receives a fresh semantic ID.
   private final class ClosedEnvInliner(env: Env, context: QuoteContext) {
     private val envLength = env.locals.length
 
@@ -39,30 +40,32 @@ object ValueQuote {
         case ElabAst.Term.LocalRef(ref, refSpan) => inlineLocal(ref, refSpan)
         case ElabAst.Term.App(fn, args, appSpan) =>
           ElabAst.Term.App(inlineAppHead(fn), args.map(inlineTerm), appSpan)
-        case ElabAst.Term.Pi(binders, out, classifier, piSpan) =>
+        case ElabAst.Term.Pi(binders, out, classifier, piSpan, _) =>
           val nextBinders = binders.map { b =>
             b.copy(localRef = reindex(b.localRef), ty = inlineBinderType(b.ty))
           }
-          ElabAst.Term.Pi(nextBinders, inlineTypeTerm(out), classifier, piSpan)
+          ElabAst.Term.Pi(nextBinders, inlineTypeTerm(out), classifier, piSpan, NodeId.fresh())
         case ElabAst.Term.Body(lets, res, bodySpan) =>
           val nextLets = lets.map { l =>
             ElabAst.Let(reindex(l.localRef), l.ty.map(inlineTypeTerm), inlineTerm(l.value), l.span, l.isInstance)
           }
           ElabAst.Term.Body(nextLets, inlineTerm(res), bodySpan)
-        case ElabAst.Term.Lam(ty, body, lamSpan, name, recursiveSelf) =>
+        case ElabAst.Term.Lam(ty, body, lamSpan, name, recursiveSelf, _) =>
           ElabAst.Term.Lam(
             inlineTypeTerm(ty).asInstanceOf[ElabAst.Term.Pi],
             inlineTerm(body),
             lamSpan,
             name,
-            recursiveSelf
+            recursiveSelf,
+            NodeId.fresh()
           )
-        case ElabAst.Term.Match(scrut, motive, cases, matchSpan) =>
+        case ElabAst.Term.Match(scrut, motive, cases, matchSpan, _) =>
           ElabAst.Term.Match(
             inlineTerm(scrut),
             motive.map(inlineTypeTerm),
             cases.map(inlineCase),
-            matchSpan
+            matchSpan,
+            NodeId.fresh()
           )
       }
 
@@ -76,11 +79,11 @@ object ValueQuote {
           }
         case ElabAst.Term.App(fn, args, appSpan) =>
           ElabAst.Term.App(inlineAppHead(fn), args.map(inlineTerm), appSpan)
-        case ElabAst.Term.Pi(binders, out, classifier, piSpan) =>
+        case ElabAst.Term.Pi(binders, out, classifier, piSpan, _) =>
           val nextBinders = binders.map { b =>
             b.copy(localRef = reindex(b.localRef), ty = inlineBinderType(b.ty))
           }
-          ElabAst.Term.Pi(nextBinders, inlineTypeTerm(out), classifier, piSpan)
+          ElabAst.Term.Pi(nextBinders, inlineTypeTerm(out), classifier, piSpan, NodeId.fresh())
       }
 
     private def inlineTypePattern(tp: ElabAst.TypePattern): ElabAst.TypePattern =
@@ -188,7 +191,8 @@ object ValueQuote {
       quoteTerm(Interpreter.evalTerm(term.scrut, env), context, term.scrut.span),
       term.motive.map(motive => quoteType(Interpreter.evalTypeTerm(motive, env), context, motive.span)),
       term.cases.map(inliner.inlineCase),
-      span
+      span,
+      NodeId.fresh()
     )
   }
 
@@ -232,7 +236,7 @@ object ValueQuote {
           case ValueId.Const(globalName) => Some(globalName)
           case _                         => term.name
         }
-        ElabAst.Term.Lam(opened.term, bodyTerm, span, name, term.recursiveSelf)
+        ElabAst.Term.Lam(opened.term, bodyTerm, span, name, term.recursiveSelf, NodeId.fresh())
       case (_, LamBody.Native(_, _, _)) => throw CannotQuoteValue(lam, "native lambda has no quoted syntax", Some(span))
     }
   }
@@ -285,7 +289,7 @@ object ValueQuote {
       ElabAst.Binder(inliner.reindex(b.localRef), inliner.inlineBinderType(b.ty), Span(0, 0), b.isInstance)
     }
 
-    OpenedPi(ElabAst.Term.Pi(quotedBinders, quotedOut, pi.tpe, span), freshArgs, nextContext)
+    OpenedPi(ElabAst.Term.Pi(quotedBinders, quotedOut, pi.tpe, span, NodeId.fresh()), freshArgs, nextContext)
   }
 
   private def quoteLevel(level: Level, context: QuoteContext, span: Span): ElabAst.Term = {

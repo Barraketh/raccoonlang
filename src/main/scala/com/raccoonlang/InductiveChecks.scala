@@ -161,7 +161,7 @@ object InductiveChecks {
       val allBinders = ctor.erasedBinders ++ ctor.fields
       val fullTypeTerm =
         if (allBinders.isEmpty) ctor.resultTy
-        else Term.Pi(allBinders, ctor.resultTy, ctor.span)
+        else Term.Pi(allBinders, ctor.resultTy, ctor.span, NodeId.fresh())
 
       val fullType = TypeChecker.getType(fullTypeTerm, curEnv)
       val erasedFamilyArgIndexes = ctor.erasedBinders.map { binder =>
@@ -185,7 +185,7 @@ object InductiveChecks {
     val name = header.name
     val ty = {
       if (header.binders.isEmpty) decl.header.resultTy
-      else Term.Pi(header.binders, decl.header.resultTy, decl.header.span)
+      else Term.Pi(header.binders, decl.header.resultTy, decl.header.span, NodeId.fresh())
     }
 
     val inductiveTypeCheck = TypeChecker.getType(ty, env)

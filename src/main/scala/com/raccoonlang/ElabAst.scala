@@ -47,7 +47,7 @@ object ElabAst {
 
     final case class App(fn: Term, args: Vector[Term], span: Span) extends Term with TypeTerm
 
-    final case class Pi(binders: Vector[Binder], out: TypeTerm, classifier: Universe, span: Span)
+    final case class Pi(binders: Vector[Binder], out: TypeTerm, classifier: Universe, span: Span, nodeId: NodeId)
       extends Term
       with TypeTerm {
       require(binders.nonEmpty, "Pi requires at least one binder")
@@ -60,14 +60,16 @@ object ElabAst {
         body: Term,
         span: Span,
         name: Option[String],
-        recursiveSelf: Option[CoreAst.LocalRef]
+        recursiveSelf: Option[CoreAst.LocalRef],
+        nodeId: NodeId
     ) extends Term
 
     final case class Match(
         scrut: Term,
         motive: Option[TypeTerm],
         cases: Vector[Case],
-        span: Span
+        span: Span,
+        nodeId: NodeId
     ) extends Term
   }
 

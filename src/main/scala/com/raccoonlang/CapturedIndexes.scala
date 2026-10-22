@@ -49,7 +49,7 @@ object CapturedIndexes {
       case Term.LocalRef(ref, _) =>
         addRef(ref, cutoff, refs)
 
-      case Term.Pi(binders, out, _, _) =>
+      case Term.Pi(binders, out, _, _, _) =>
         binders.foreach { b =>
           goBinderType(b.ty, cutoff, refs)
         }
@@ -64,11 +64,11 @@ object CapturedIndexes {
         }
         goTerm(res, cutoff, refs)
 
-      case Term.Lam(ty, body, _, _, _) =>
+      case Term.Lam(ty, body, _, _, _, _) =>
         goTerm(ty, cutoff, refs)
         goTerm(body, cutoff, refs)
 
-      case Match(scrut, motive, cases, _) =>
+      case Match(scrut, motive, cases, _, _) =>
         goTerm(scrut, cutoff, refs)
         motive.foreach(goTerm(_, cutoff, refs))
         cases.foreach { c =>

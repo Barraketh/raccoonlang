@@ -68,7 +68,7 @@ object TypeChecker {
         case EA.Term.App(fn, args, _) =>
           loop(fn, appHead = true)
           args.foreach(arg => loop(arg, appHead = false))
-        case EA.Term.Pi(binders, out, _, _) =>
+        case EA.Term.Pi(binders, out, _, _, _) =>
           binders.foreach(b => loopBinderType(b.ty))
           loop(out, appHead = false)
         case EA.Term.Body(lets, res, _) =>
@@ -77,8 +77,8 @@ object TypeChecker {
             loop(l.value, appHead = false)
           }
           loop(res, appHead = false)
-        case EA.Term.Lam(_, _, _, _, _) =>
-        case EA.Term.Match(scrut, motive, cases, _) =>
+        case EA.Term.Lam(_, _, _, _, _, _) =>
+        case EA.Term.Match(scrut, motive, cases, _, _) =>
           loop(scrut, appHead = false)
           motive.foreach(loop(_, appHead = false))
           cases.foreach(c => loop(c.body, appHead = false))
@@ -120,7 +120,7 @@ object TypeChecker {
       }
 
     val checkedPi =
-      EA.Term.Pi(checkedBinders, checkedOut.residual, classifier, pi.span)
+      EA.Term.Pi(checkedBinders, checkedOut.residual, classifier, pi.span, pi.nodeId)
     CheckedPi(evalPi(checkedPi, env, vBinders), binderEnv, outV, checkedPi)
   }
 
@@ -228,7 +228,8 @@ object TypeChecker {
         checkedBody.residual,
         l.span,
         l.name,
-        l.recursion.map(_.selfRef)
+        l.recursion.map(_.selfRef),
+        l.nodeId
       )
     CheckedTerm(Interpreter.evalLam(checkedLam, vpi, env), checkedLam)
   }

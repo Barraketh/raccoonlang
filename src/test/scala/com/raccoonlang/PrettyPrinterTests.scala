@@ -4,7 +4,7 @@ class PrettyPrinterTests extends munit.FunSuite {
   private def parseCore(src: String): CoreAst.Program =
     LanguageParser.parseProgram(src) match {
       case Success(value, _, _) => Elaborator.elab(value, Prelude.test)
-      case err: Failure        => fail(s"Failed to parse: $err, ${src.substring(err.curIdx)}")
+      case err: Failure         => fail(s"Failed to parse: $err, ${src.substring(err.curIdx)}")
     }
 
   private def axiomType(src: String, name: String): CoreAst.TypeTerm =
@@ -28,7 +28,13 @@ class PrettyPrinterTests extends munit.FunSuite {
       ElabAst.BinderType.ConstrainedCapture(ref, constraint, span),
       span
     )
-    val pi = ElabAst.Term.Pi(Vector(binder), ElabAst.Term.LocalRef(ref, span), Value.VSort(Value.Level.zero), span)
+    val pi = ElabAst.Term.Pi(
+      Vector(binder),
+      ElabAst.Term.LocalRef(ref, span),
+      Value.VSort(Value.Level.zero),
+      span,
+      NodeId.fresh()
+    )
 
     assertEquals(PrettyPrinter.printElabTerm(pi), printed)
   }

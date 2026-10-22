@@ -14,8 +14,6 @@ class ValueOpsTests extends munit.FunSuite {
     ElabAst.BinderType.TypePattern(pattern, pattern.span)
   }
 
-  private def nodeId(start: Int): AstNodeId = AstNodeId(None, start)
-
   private def symbolicValue(name: String): VConst =
     VConst(name, Symbol, valueType)
 
@@ -119,29 +117,32 @@ class ValueOpsTests extends munit.FunSuite {
     val runtimeEnv = Env.empty.putGlobal("Type", valueType).putLocal(capturedRef, captured)
 
     val binder = VBinder(argRef, binderType(typeRef), typeRef, Vector.empty)
+    val piNodeId = NodeId.fresh()
+    val lamNodeId = NodeId.fresh()
     val pi = VPi(
       runtimeEnv,
       Vector(binder),
       _ => valueType,
       captured.synDeps,
-      ValueId.LocalId(nodeId(1), Vector(captured)),
+      ValueId.LocalId(piNodeId, Vector(captured)),
       typeToTypeClassifier
     )
     val piTerm = ETerm.Pi(
       Vector(ElabAst.Binder(argRef, binderType(typeRef), span)),
       typeRef,
       typeToTypeClassifier,
-      span
+      span,
+      piNodeId
     )
     val lamTerm = ETerm.Lam(
       piTerm,
       ETerm.LocalRef(capturedRef, span),
       span,
       name = None,
-      recursiveSelf = None
+      recursiveSelf = None,
+      nodeId = lamNodeId
     )
-    val lam =
-      VLam(pi, ValueId.LocalId(nodeId(2), Vector(captured)), LamBody.Core(lamTerm, runtimeEnv))
+    val lam = VLam(pi, ValueId.LocalId(lamNodeId, Vector(captured)), LamBody.Core(lamTerm, runtimeEnv))
 
     val materialized = ValueOps.materialize(lam, solve(captured, solution)).asInstanceOf[VLam]
 
@@ -162,28 +163,32 @@ class ValueOpsTests extends munit.FunSuite {
     val runtimeEnv = RuntimeEnv.closeForEval(env)
 
     val binder = VBinder(argRef, binderType(typeRef), typeRef, Vector.empty)
+    val piNodeId = NodeId.fresh()
+    val lamNodeId = NodeId.fresh()
     val pi = VPi(
       runtimeEnv,
       Vector(binder),
       _ => valueType,
       DepSet.empty,
-      ValueId.LocalId(nodeId(1), Vector.empty),
+      ValueId.LocalId(piNodeId, Vector.empty),
       typeToTypeClassifier
     )
     val piTerm = ETerm.Pi(
       Vector(ElabAst.Binder(argRef, binderType(typeRef), span)),
       typeRef,
       typeToTypeClassifier,
-      span
+      span,
+      piNodeId
     )
     val lamTerm = ETerm.Lam(
       piTerm,
       ETerm.LocalRef(capturedRef, span),
       span,
       name = None,
-      recursiveSelf = None
+      recursiveSelf = None,
+      nodeId = lamNodeId
     )
-    val lam = VLam(pi, ValueId.LocalId(nodeId(2), Vector.empty), LamBody.Core(lamTerm, runtimeEnv))
+    val lam = VLam(pi, ValueId.LocalId(lamNodeId, Vector.empty), LamBody.Core(lamTerm, runtimeEnv))
 
     intercept[WTF](Interpreter.evalApply(lam, Vector(symbolicValue("Arg"))))
   }
@@ -198,7 +203,8 @@ class ValueOpsTests extends munit.FunSuite {
       Vector(ElabAst.Binder(argRef, binderType(typeRef), span)),
       typeRef,
       typeToTypeClassifier,
-      span
+      span,
+      NodeId.fresh()
     )
     val vpi = Interpreter.evalPi(piTerm, env, piTerm.binders.map(com.raccoonlang.telescope.TypePatternOps.toVBinder))
     val lamTerm = ETerm.Lam(
@@ -206,7 +212,8 @@ class ValueOpsTests extends munit.FunSuite {
       ETerm.LocalRef(capturedRef, span),
       span,
       name = None,
-      recursiveSelf = None
+      recursiveSelf = None,
+      nodeId = NodeId.fresh()
     )
     val lam = Interpreter.evalLam(lamTerm, vpi, env)
 
@@ -238,12 +245,13 @@ class ValueOpsTests extends munit.FunSuite {
           span
         )
       ),
-      span
+      span,
+      NodeId.fresh()
     )
     val thunk = NeutralThunk(
       matchTerm,
       runtimeEnv,
-      ValueId.LocalId(nodeId(3), Vector(scrut, captured)),
+      ValueId.LocalId(matchTerm.nodeId, Vector(scrut, captured)),
       valueType,
       Some(scrut.id)
     )
@@ -284,7 +292,8 @@ class ValueOpsTests extends munit.FunSuite {
           span
         )
       ),
-      span
+      span,
+      NodeId.fresh()
     )
 
     val blocked = Interpreter.evalTerm(matchTerm, env).asInstanceOf[NeutralThunk]

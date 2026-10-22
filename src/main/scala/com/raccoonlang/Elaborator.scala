@@ -638,8 +638,8 @@ object Elaborator {
     val body = elabType(pi.body, binderEnv)
     val span = Span(binder.span.start, body.span.end, binder.span.source.orElse(body.span.source))
     body match {
-      case pi: CA.Term.Pi => CA.Term.Pi(binder +: pi.binders, pi.out, span)
-      case other          => CA.Term.Pi(Vector(binder), other, span)
+      case pi: CA.Term.Pi => CA.Term.Pi(binder +: pi.binders, pi.out, span, NodeId.fresh())
+      case other          => CA.Term.Pi(Vector(binder), other, span, NodeId.fresh())
     }
   }
 
@@ -722,7 +722,7 @@ object Elaborator {
     val outTy = elabType(header.ty, bodyEnv)
     val ty =
       if (params.isEmpty) outTy
-      else CA.Term.Pi(params, outTy, header.span)
+      else CA.Term.Pi(params, outTy, header.span, NodeId.fresh())
     HeaderResult(ty, bodyEnv)
   }
 
@@ -759,7 +759,7 @@ object Elaborator {
       case _ => (Vector.empty[SA.Use], body)
     }
     val checkedUses = uses.map(use => CA.Use(elabTerm(use.normalizer, outerEnv), use.span))
-    CA.Term.Lam(pi, checkedUses, elabTerm(newBody, bodyEnv), span, name, recursion)
+    CA.Term.Lam(pi, checkedUses, elabTerm(newBody, bodyEnv), span, name, recursion, NodeId.fresh())
   }
 
   private def elabDecreaseRef(name: String, span: Span, env: ResolveEnv): CA.LocalRef =
@@ -837,7 +837,8 @@ object Elaborator {
             }
           CA.Case(ctorName, isFullyQualified, argRefs, elabTerm(c.body, bodyEnv), c.span)
         },
-        sp
+        sp,
+        NodeId.fresh()
       )
   }
 

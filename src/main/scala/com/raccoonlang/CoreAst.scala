@@ -84,7 +84,7 @@ object CoreAst {
     }
 
     // Pi (x: A) -> B x
-    final case class Pi(binders: Vector[Binder], out: TypeTerm, span: Span) extends Term with TypeTerm {
+    final case class Pi(binders: Vector[Binder], out: TypeTerm, span: Span, nodeId: NodeId) extends Term with TypeTerm {
       require(binders.nonEmpty, "Pi requires at least one binder")
     }
 
@@ -100,14 +100,16 @@ object CoreAst {
         body: Term,
         span: Span,
         name: Option[String],
-        recursion: Option[Recursion]
+        recursion: Option[Recursion],
+        nodeId: NodeId
     ) extends Term
 
     final case class Match(
         scrut: Term,
         motive: Option[TypeTerm],
         cases: Vector[Case],
-        span: Span
+        span: Span,
+        nodeId: NodeId
     ) extends Term
 
   }

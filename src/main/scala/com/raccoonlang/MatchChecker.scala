@@ -223,7 +223,8 @@ object MatchChecker {
       scrutChecked.residual,
       checkedMotive.map(_.residual),
       checkedCases,
-      t.span
+      t.span,
+      t.nodeId
     )
     CheckedTerm(Interpreter.evalTerm(checkedMatch, env), checkedMatch)
   }

@@ -76,7 +76,7 @@ object Interpreter {
   def evalPi(pi: ETerm.Pi, env: Env, vBinders: Vector[VBinder]): VPi = {
     val capturedIndexes = CapturedIndexes.getCapturedIndexes(pi, env)
     val captureVals = captureValues(env, capturedIndexes)
-    val id = ValueId.LocalId(pi.span.nodeId, captureVals)
+    val id = ValueId.LocalId(pi.nodeId, captureVals)
     val closedEnv = RuntimeEnv.closeForEval(env, capturedIndexes)
 
     val synDeps = DepSet.newBuilder
@@ -146,7 +146,7 @@ object Interpreter {
       case Some(funcName) => ValueId.Const(funcName)
       case None =>
         val captureVals = captureValues(env, capturedIndexes)
-        ValueId.LocalId(l.span.nodeId, captureVals)
+        ValueId.LocalId(l.nodeId, captureVals)
 
     }
     VLam(vpi, id, LamBody.Core(l, RuntimeEnv.closeForEval(env, capturedIndexes)))
@@ -209,7 +209,7 @@ object Interpreter {
           case Some(motive) => evalTypeTerm(motive, env)
           case None         => scrut.tpe
         }
-        val lamId = ValueId.LocalId(m.span.nodeId, matchCaptures)
+        val lamId = ValueId.LocalId(m.nodeId, matchCaptures)
         val closedEnv = RuntimeEnv.closeForEval(env, capturedIndexes)
         other match {
           case Blocker(blockerId) => return NeutralThunk(m, closedEnv, lamId, outType, Some(blockerId))

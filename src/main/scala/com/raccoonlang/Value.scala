@@ -47,7 +47,7 @@ object Value {
       override def toString: String = name
     }
 
-    final case class LocalId(nodeId: AstNodeId, captures: Vector[Value]) extends ValueId
+    final case class LocalId(nodeId: NodeId, captures: Vector[Value]) extends ValueId
   }
 
   private[raccoonlang] def envDeps(env: Env): DepSet = {

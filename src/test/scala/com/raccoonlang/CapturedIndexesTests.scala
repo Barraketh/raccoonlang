@@ -26,7 +26,8 @@ class CapturedIndexesTests extends munit.FunSuite {
         span
       ),
       classifier,
-      span
+      span,
+      NodeId.fresh()
     )
 
     val indexes = CapturedIndexes.getCapturedIndexes(term, env)
