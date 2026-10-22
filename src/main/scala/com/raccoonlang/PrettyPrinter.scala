@@ -12,13 +12,10 @@ object PrettyPrinter {
     import com.raccoonlang.CoreAst.Term
 
     def pt(t: CoreAst.TypeTerm): String = t match {
-      case ref: Term.Ref                => printRef(ref)
-      case Term.TSelect(base, field, _) => s"${ptAtom(base)}[$field]"
-      case Term.Derive(goal, _)         => s"derive[${pt(goal)}]"
-      case Term.TApp(fn, args, _) =>
-        val headStr = ptAtom(fn)
-        val argsStr = args.map(ptAtom).mkString(", ")
-        s"$headStr($argsStr)"
+      case ref: Term.Ref        => printRef(ref)
+      case select: Term.Select  => printCoreTerm(select)
+      case Term.Derive(goal, _) => s"derive[${pt(goal)}]"
+      case app: Term.App        => printCoreTerm(app)
       case Term.Pi(binders, out, _, _) =>
         val bindersStr = binders
           .map(printPiBinder)
@@ -27,11 +24,11 @@ object PrettyPrinter {
     }
 
     def ptAtom(t: CoreAst.TypeTerm): String = t match {
-      case _: Term.Ref           => pt(t)
-      case Term.TSelect(_, _, _) => pt(t)
-      case Term.Derive(_, _)     => pt(t)
-      case Term.TApp(_, _, _)    => pt(t)
-      case Term.Pi(_, _, _, _)   => s"(${pt(t)})"
+      case _: Term.Ref         => pt(t)
+      case _: Term.Select      => pt(t)
+      case Term.Derive(_, _)   => pt(t)
+      case _: Term.App         => pt(t)
+      case Term.Pi(_, _, _, _) => s"(${pt(t)})"
     }
 
     def printPiBinder(b: CoreAst.Binder): String =
@@ -120,9 +117,7 @@ object PrettyPrinter {
     case _: CoreAst.Term.Ref                   => printCoreTerm(t)
     case CoreAst.Term.App(_, _, _)             => printCoreTerm(t)
     case CoreAst.Term.Derive(_, _)             => printCoreTerm(t)
-    case CoreAst.Term.TApp(_, _, _)            => printCoreTerm(t)
-    case ts: CoreAst.Term.TSelect              => printTypeTerm(ts)
-    case CoreAst.Term.Select(base, field, _)   => s"${printTermAtom(base)}[$field]"
+    case CoreAst.Term.Select(_, _, _)          => printCoreTerm(t)
     case CoreAst.Term.Lam(_, _, _, _, _, _, _) => s"(${printCoreTerm(t)})"
     case CoreAst.Term.Match(_, _, _, _, _)     => s"(${printCoreTerm(t)})"
     case CoreAst.Term.Body(_, _, _)            => s"(${printCoreTerm(t)})"

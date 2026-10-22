@@ -69,27 +69,19 @@ object CoreAst {
 
     final case class LocalRef(ref: CoreAst.LocalRef, span: Span) extends Ref
 
-    // Projection in type position: base[field]
-    final case class TSelect(base: TypeTerm, field: String, span: Span) extends TypeTerm
-
-    // Projection in term position: base[field]
-    final case class Select(base: Term, field: String, span: Span) extends Term
+    // Projection in either term or type position: base[field]
+    final case class Select(base: Term, field: String, span: Span) extends Term with TypeTerm
 
     // Explicit instance search expression: derive[Goal]
     final case class Derive(goal: TypeTerm, span: Span) extends TypeTerm
-
-    // Application in type position
-    final case class TApp(fn: Ref, args: Vector[TypeTerm], span: Span) extends TypeTerm {
-      require(args.nonEmpty, "Type application requires at least one argument")
-    }
 
     // Pi (x: A) -> B x
     final case class Pi(binders: Vector[Binder], out: TypeTerm, span: Span, nodeId: NodeId) extends Term with TypeTerm {
       require(binders.nonEmpty, "Pi requires at least one binder")
     }
 
-    // Application: f(a) (term-level)
-    final case class App(fn: Term, args: Vector[Term], span: Span) extends Term
+    // Application in either term or type position.
+    final case class App(fn: Term, args: Vector[Term], span: Span) extends Term with TypeTerm
 
     final case class Body(lets: Vector[Let], res: Term, span: Span) extends Term
 

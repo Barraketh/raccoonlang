@@ -126,14 +126,14 @@ object TypeChecker {
 
   private[raccoonlang] def checkTypeTerm(term: CA.TypeTerm, env: Env): CheckedTypeTerm =
     term match {
-      case t: CA.Term.TApp =>
-        val fn = checkTypeTerm(t.fn, env)
-        val args = t.args.map(arg => checkTypeTerm(arg, env))
+      case app: CA.Term.App =>
+        val fn = checkTerm(app.fn, env)
+        val args = app.args.map(arg => checkTerm(arg, env))
         val value = checkApplyValue(fn.value, args.map(_.value))
-        val residual = EA.Term.App(fn.residual, args.map(_.residual), t.span)
+        val residual = EA.Term.App(fn.residual, args.map(_.residual), app.span)
         CheckedTypeTerm(value, residual)
-      case CA.Term.TSelect(base, field, span) =>
-        val checkedBase = checkTypeTerm(base, env)
+      case CA.Term.Select(base, field, span) =>
+        val checkedBase = checkTerm(base, env)
         val (selectorName, value) = checkSelect(checkedBase.value, field, span, env)
         CheckedTypeTerm(value, EA.Term.App(EA.Term.GlobalRef(selectorName, span), Vector(checkedBase.residual), span))
       case derive: CA.Term.Derive =>
@@ -254,17 +254,7 @@ object TypeChecker {
   def checkTerm(term: CA.Term, env: Env): CheckedTerm =
     try {
       term match {
-        case CA.Term.Select(base, field, span) =>
-          val checkedBase = checkTerm(base, env)
-          val (selectorName, value) = checkSelect(checkedBase.value, field, span, env)
-          CheckedTerm(value, EA.Term.App(EA.Term.GlobalRef(selectorName, span), Vector(checkedBase.residual), span))
         case l: CA.Term.Lam => checkLam(l, env)
-        case app: CA.Term.App =>
-          val checkedFn = checkTerm(app.fn, env)
-          val checkedArgs = app.args.map(arg => checkTerm(arg, env))
-          val value = checkApplyValue(checkedFn.value, checkedArgs.map(_.value))
-          val residual = EA.Term.App(checkedFn.residual, checkedArgs.map(_.residual), app.span)
-          CheckedTerm(value, residual)
         case derive: CA.Term.Derive =>
           val goal = getType(derive.goal, env)
           val value = InstanceSearch.solve(goal, env)

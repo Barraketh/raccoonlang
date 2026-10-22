@@ -629,7 +629,7 @@ object Elaborator {
     elabPath[CA.TypeTerm](path, env)(
       (ref, span) => CA.Term.LocalRef(ref, span),
       (name, span) => CA.Term.GlobalRef(name, span),
-      (base, field, span) => CA.Term.TSelect(base, field, span)
+      (base, field, span) => CA.Term.Select(base, field, span)
     )
 
   private def elabPi(pi: SA.Term.Pi, env: ResolveEnv): CA.Term.Pi = {
@@ -643,10 +643,10 @@ object Elaborator {
     }
   }
 
-  private def elabTypeAppHead(fn: SA.TypeTerm, env: ResolveEnv): CA.Term.Ref =
+  private def elabTypePatternHead(fn: SA.TypeTerm, env: ResolveEnv): CA.Term.Ref =
     elabType(fn, env) match {
       case ref: CA.Term.Ref => ref
-      case other => throw WTF(s"Type application head must resolve to a reference, got $other", Some(fn.span))
+      case other            => throw WTF(s"Type pattern head must resolve to a reference, got $other", Some(fn.span))
     }
 
   private def elabType(ty: SA.TypeTerm, env: ResolveEnv): CA.TypeTerm = ty match {
@@ -655,9 +655,9 @@ object Elaborator {
     case s: SA.Term.TSelect =>
       flattenTypePath(s) match {
         case Some(path) => elabPathType(path, env)
-        case None       => CA.Term.TSelect(elabType(s.base, env), s.field, s.span)
+        case None       => CA.Term.Select(elabType(s.base, env), s.field, s.span)
       }
-    case SA.Term.TApp(fn, args, sp) => CA.Term.TApp(elabTypeAppHead(fn, env), args.map(elabType(_, env)), sp)
+    case SA.Term.TApp(fn, args, sp) => CA.Term.App(elabType(fn, env), args.map(elabType(_, env)), sp)
     case SA.Term.Derive(goal, sp)   => CA.Term.Derive(elabType(goal, env), sp)
     case pi: SA.Term.Pi             => elabPi(pi, env)
   }
@@ -672,7 +672,7 @@ object Elaborator {
           val (nextArg, argEnv) = elabPattern(arg, curEnv)
           (curArgs :+ nextArg, argEnv)
         }
-        (CA.TypePattern.App(elabTypeAppHead(fn, env), nextArgs, sp), nextEnv)
+        (CA.TypePattern.App(elabTypePatternHead(fn, env), nextArgs, sp), nextEnv)
 
       case SA.TypePattern.Capture(name, sp) =>
         val (ref, nextEnv) = env.bindRequired(name, sp)
