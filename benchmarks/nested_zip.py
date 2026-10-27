@@ -43,30 +43,21 @@ def parse_sizes(value: str) -> list[int]:
     return sizes
 
 
-def parse_kinds(value: str) -> list[str]:
-    return [part.strip() for part in value.split(",") if part.strip()]
-
-
-def raccoon_source(size: int, transparent_zip: bool) -> str:
-    unfold = "def" if transparent_zip else "opaque def"
+def raccoon_source(size: int) -> str:
     lets = []
     previous = "v"
     for idx in range(1, size + 1):
         lets.append(f"  let z{idx} := zip(v, {previous})")
         previous = f"z{idx}"
 
-    return f"""inductive Nat : Type
- | zero : Nat
- | succ (_: Nat) : Nat
-
-inductive Vec (A: Sort($u)) indices (n: Nat) : Sort(Level.max(Level.one, u))
+    return f"""inductive Vec (A: Sort($u)) indices (n: Nat) : Sort(Level.max(Level.one, u))
  | nil {{A: Sort($u)}} : Vec(A, Nat.zero)
  | cons {{A: Sort($u)}} (tail: Vec(A, $n)) (head: A) : Vec(A, Nat.succ(n))
 
 inductive Pair (A: Sort($u1))(B: Sort($u2)): Sort(Level.max(u1, u2))
  | mk(a: $A in Sort($u1))(b: $B in Sort($u2)): Pair(A, B)
 
-{unfold} zip(va: Vec($A, $n))(vb: Vec($B, n)): Vec(Pair(A, B), n) decreases measure(n) := {{
+def zip(va: Vec($A, $n))(vb: Vec($B, n)): Vec(Pair(A, B), n) decreases measure(n) := {{
   let ResType := Vec(Pair(A, B), n)
   match va returning ResType with
   | Vec.nil => Vec.nil(Pair(A, B))
@@ -126,8 +117,7 @@ def write_file(path: Path, contents: str) -> None:
 
 def generate_raccoon(out_dir: Path, sizes: Iterable[int]) -> None:
     for size in sizes:
-        write_file(out_dir / f"nested_zip_opaque_{size}.rac", raccoon_source(size, transparent_zip=False))
-        write_file(out_dir / f"nested_zip_transparent_{size}.rac", raccoon_source(size, transparent_zip=True))
+        write_file(out_dir / f"nested_zip_{size}.rac", raccoon_source(size))
 
 
 def generate_lean(out_dir: Path, sizes: Iterable[int]) -> None:
@@ -260,26 +250,21 @@ def print_summary(summary: RunSummary) -> None:
         )
 
 
-def run_raccoon_jvm(args: argparse.Namespace, out_dir: Path) -> None:
-    classpath = args.classpath or default_classpath()
-    for kind in args.raccoon_kinds:
-        for size in args.raccoon_sizes:
-            reps = reps_for_size(size, args.reps, args.large_reps, args.large_threshold)
-            path = out_dir / f"nested_zip_{kind}_{size}.rac"
-            command = [args.java, "-cp", classpath, "com.raccoonlang.Main", "--prelude", args.prelude, str(path)]
-            print_summary(benchmark_command(f"raccoon-jvm-{kind}", size, command, reps, args.timeout))
-
-
-def run_raccoon_native(args: argparse.Namespace, out_dir: Path) -> None:
-    native_bin = Path(args.native_bin)
-    if not native_bin.exists():
-        raise FileNotFoundError(f"native binary not found: {native_bin}")
-    for kind in args.raccoon_kinds:
-        for size in args.raccoon_sizes:
-            reps = reps_for_size(size, args.reps, args.large_reps, args.large_threshold)
-            path = out_dir / f"nested_zip_{kind}_{size}.rac"
-            command = [str(native_bin), str(path)]
-            print_summary(benchmark_command(f"raccoon-native-{kind}", size, command, reps, args.timeout))
+def run_raccoon(args: argparse.Namespace, out_dir: Path, runner: str) -> None:
+    """Run the generated sources with runner set to 'jvm' or 'native'."""
+    if runner == "jvm":
+        classpath = args.classpath or default_classpath()
+        command = [args.java, "-cp", classpath, "com.raccoonlang.Main"]
+    else:
+        native_bin = Path(args.native_bin)
+        if not native_bin.exists():
+            raise FileNotFoundError(f"native binary not found: {native_bin}")
+        command = [str(native_bin)]
+    command += ["--prelude", args.prelude]
+    for size in args.raccoon_sizes:
+        reps = reps_for_size(size, args.reps, args.large_reps, args.large_threshold)
+        path = out_dir / f"nested_zip_{size}.rac"
+        print_summary(benchmark_command(f"raccoon-{runner}", size, [*command, str(path)], reps, args.timeout))
 
 
 def run_lean(args: argparse.Namespace, out_dir: Path, raised_limits: bool) -> None:
@@ -309,7 +294,6 @@ def main() -> int:
     parser.add_argument("--out-dir", type=Path, default=Path("/tmp/raccoonlang-benchmarks/nested-zip"))
     parser.add_argument("--raccoon-sizes", type=parse_sizes, default=DEFAULT_RACCOON_SIZES)
     parser.add_argument("--lean-sizes", type=parse_sizes, default=DEFAULT_LEAN_SIZES)
-    parser.add_argument("--raccoon-kinds", type=parse_kinds, default=["opaque", "transparent"])
     parser.add_argument("--reps", type=int, default=5, help="repetitions for sizes below --large-threshold")
     parser.add_argument("--large-reps", type=int, default=3)
     parser.add_argument("--large-threshold", type=int, default=51200)
@@ -317,16 +301,11 @@ def main() -> int:
     parser.add_argument("--java", default="java")
     parser.add_argument("--classpath", help="JVM classpath for com.raccoonlang.Main")
     parser.add_argument("--prelude", default=str(REPO_ROOT / "src/main/resources/Init/TestPrelude.rac"))
-    parser.add_argument("--native-bin", default=str(REPO_ROOT / "native/target/scala-2.13/raccoon-release-full"))
+    parser.add_argument("--native-bin", default=str(REPO_ROOT / "target/graalvm/raccoon"))
     parser.add_argument("--lean", default="lean")
     args = parser.parse_args()
 
     runners = expand_runners(args.runner or ["generate"])
-    invalid_kinds = sorted(set(args.raccoon_kinds) - {"opaque", "transparent"})
-    if invalid_kinds:
-        raise ValueError(f"unknown raccoon kind(s): {', '.join(invalid_kinds)}")
-
-    args.out_dir.mkdir(parents=True, exist_ok=True)
     if any(runner in runners for runner in ["generate", "jvm", "native"]):
         generate_raccoon(args.out_dir, args.raccoon_sizes)
     if any(runner in runners for runner in ["generate", "lean-default", "lean-raised"]):
@@ -339,16 +318,12 @@ def main() -> int:
     for runner in runners:
         if runner == "generate":
             continue
-        if runner == "jvm":
-            run_raccoon_jvm(args, args.out_dir)
-        elif runner == "native":
-            run_raccoon_native(args, args.out_dir)
+        if runner in ("jvm", "native"):
+            run_raccoon(args, args.out_dir, runner)
         elif runner == "lean-default":
             run_lean(args, args.out_dir, raised_limits=False)
         elif runner == "lean-raised":
             run_lean(args, args.out_dir, raised_limits=True)
-        else:
-            raise ValueError(f"unknown runner: {runner}")
     return 0
 
 

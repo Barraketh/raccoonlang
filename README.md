@@ -28,15 +28,19 @@ zN := zip(v, zN-1)
 consume(zN)
 ```
 
-Current results on my M1 laptop:
+Results on an Apple M1 Max, October 26, 2026; process
+wall-clock times, including startup:
 
-| nested zips | Raccoon JVM | Lean 4.31 nightly |
-|------------:|------------:|------------------:|
-|         800 |      0.465s |            2.872s |
-|       1,600 |      0.558s |            9.915s |
-|       3,200 |      0.692s |           41.274s |
-|       6,400 |      0.889s | timed out at 180s |
-|      51,200 |      3.435s |               N/A |
+| nested zips | Raccoon JVM | Raccoon native | Lean 4.37 nightly |
+|------------:|------------:|---------------:|------------------:|
+|         800 |      0.449s |         0.033s |            2.692s |
+|       1,600 |      0.544s |         0.051s |            8.662s |
+|       3,200 |      0.679s |         0.086s |           33.350s |
+|       6,400 |      0.921s |         0.159s | fails after 138s  |
+|      51,200 |      2.273s |         1.266s |               N/A |
+
+Lean runs with raised `maxRecDepth` and disabled heartbeats; with default limits
+it fails at 800 nested zips.
 
 Note that at this point I have done 0 optimization - these performance wins are strictly algorithmic.
 
