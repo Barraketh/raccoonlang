@@ -3,6 +3,8 @@ package com.raccoonlang
 import com.raccoonlang.Value._
 
 object ValueOps {
+
+  /** Transitively substitute solved dependencies and resume affected blocked computations before rebuilding values. */
   def materialize(value: Value, eqStore: EqStore): Value = Materialize.materialize(value)(eqStore)
 
   def materializeEnv(env: Env, eqStore: EqStore): Env = Materialize.materializeEnv(env)(eqStore)
@@ -34,15 +36,22 @@ object ValueOps {
         case VSort(level)                      => VSort(materializeLevel(level))
         case Var(name, id, tpe)                => Var(name, id, materialize(tpe))
         case VConst(name, constType, tpe)      => VConst(name, constType, materialize(tpe))
-        case VApp(head, args, tpe, blockerId) =>
-          VApp(materialize(head), args.map(materialize(_)), materialize(tpe), blockerId)
-        case NeutralThunk(term, env, id, tpe, blockerId) =>
+        case poly: VNatPoly                    => NatNormalForm.substituteAtoms(poly, materialize(_))
+        case VApp(head, args, tpe, blockerIds) =>
+          val nextHead = materialize(head)
+          val nextArgs = args.map(materialize(_))
+          val nextType = materialize(tpe)
+          nextHead match {
+            case ctor: ConstructorHead => ConstructorValue(ctor, nextArgs, nextType)
+            case _                     => VApp(nextHead, nextArgs, nextType, materializeDeps(blockerIds))
+          }
+        case NeutralThunk(term, env, id, tpe, blockerIds) =>
           NeutralThunk(
             term,
             materializeEnv(env),
             materializeLocalId(id),
             materialize(tpe),
-            blockerId
+            materializeDeps(blockerIds)
           )
         case ctor: ConstructorHead =>
           ctor.copy(tpe = materialize(ctor.tpe))
@@ -53,8 +62,9 @@ object ValueOps {
       }
     }
 
+    // An empty store is common (fresh unification and match checking); skip computing dependencies then.
     private def mayNeedMaterialization(value: Value)(implicit eqStore: EqStore): Boolean =
-      value.synDeps.intersects(eqStore.solvedIds)
+      eqStore.subst.nonEmpty && value.synDeps.intersects(eqStore.solvedIds)
 
     private def materializeLevel(level: Level)(implicit eqStore: EqStore): Level =
       Interpreter.resolveInEqStore(level, eqStore) match {
@@ -94,6 +104,7 @@ object ValueOps {
       }
 
     private def materializeDeps(deps: DepSet)(implicit eqStore: EqStore): DepSet = {
+      if (!deps.intersects(eqStore.solvedIds)) return deps
       val res = DepSet.newBuilder
       deps.foreach { id =>
         eqStore.subst.get(id) match {

@@ -79,6 +79,8 @@ object ValueEquivalence {
       }
     }
 
+    private def isNative(lam: VLam): Boolean = lam.body.isInstanceOf[LamBody.Native]
+
     private def sameValueObject(v1: Value, v2: Value): Boolean =
       v1.asInstanceOf[AnyRef] eq v2.asInstanceOf[AnyRef]
 
@@ -98,6 +100,10 @@ object ValueEquivalence {
         case (p1: VPi, p2: VPi) if p1.binders.length == p2.binders.length => defEqPi(p1, p2).isDefined
         case (l1: VLam, l2: VLam) if l1.tpe.binders.length == l2.tpe.binders.length =>
           if (l1.eq(l2) || defEqLamId(l1.id, l2.id)) true
+          // Distinct native lambdas never convert: builtins are extensionally different functions (see Builtins), and
+          // other natives, such as termination-checking stand-ins, are opaque. Opening a stuck native on fresh
+          // arguments would only return its own application again.
+          else if (isNative(l1) && isNative(l2)) false
           else {
             defEqPi(l1.tpe, l2.tpe) match {
               case Some(vars) =>
@@ -110,8 +116,13 @@ object ValueEquivalence {
 
         case (v1: VApp, v2: VApp) if v1.args.length == v2.args.length =>
           defEq(v1.head, v2.head) &&
-          v1.args.zip(v2.args).forall { case (arg1, arg2) => defEq(arg1, arg2) } &&
+          (v1.args.zip(v2.args).forall { case (arg1, arg2) => defEq(arg1, arg2) } ||
+            // A stuck kernel beq has two Nat arguments ordered by key. Convertible atoms can have different keys and
+            // reverse that order, so structural conversion also admits the symmetric orientation.
+            (v1.head eq Kernel.beq) && defEq(v1.args(0), v2.args(1)) && defEq(v1.args(1), v2.args(0))) &&
           defEq(v1.tpe, v2.tpe) // Important for constructors
+
+        case (_: VNatPoly, _) | (_, _: VNatPoly) => NatNormalForm.equivalent(a, b)
 
         case (c1: ConstructorHead, c2: ConstructorHead) if c1.name == c2.name => true
 
@@ -205,7 +216,7 @@ object ValueEquivalence {
       case InductiveFamilyValue(_) if value.tpe.isInstanceOf[VSort] => Some(TypeFamily)
       case pi: VPi  => if (pi.tpe == PropTpe) None else Some(FunctionType)
       case _: VSort => Some(TypeUniverse)
-      case _: Var | _: NeutralThunk | _: VLam | _: VConst | _: VApp | _: ConstructorHead => None
+      case _: Var | _: NeutralThunk | _: VLam | _: VConst | _: VApp | _: ConstructorHead | _: VNatPoly => None
       // Level arithmetic and these primitive forms have no nominal apartness rule.
       case _: Level | LevelTpe | PropTpe | KernelObject => None
     }
@@ -244,6 +255,8 @@ object ValueEquivalence {
 
         // Symmetric: link unlinked Var (right) to non-Var value
         case (other, v: Var) if meta.isRefinable(v.id) => tryLinkVar(v, other, meta)
+
+        case (_: VNatPoly, _) | (_, _: VNatPoly) => NatNormalForm.unifySuccessorPrefixes(a, b, meta)
 
         case _ =>
           (rigidForm(a), rigidForm(b)) match {

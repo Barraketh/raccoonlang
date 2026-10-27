@@ -45,6 +45,10 @@ private object Builtins {
       }
   }
 
+  /**
+   * No two entries are extensionally equal functions, so conversion may treat distinct native lambdas as unequal
+   * without opening them (see ValueEquivalence).
+   */
   private val entries: Map[String, Entry] =
     Map(
       "Sort" -> SortEntry,
@@ -53,7 +57,15 @@ private object Builtins {
       },
       "Level.max" -> Native { (_, _, args) =>
         Level.max(args.map(arg => Interpreter.getLevel(arg)))
-      }
+      },
+      "Nat.add" -> Native((_, _, args) => NatNormalForm.add(args(0), args(1))),
+      "Nat.mul" -> Native((_, _, args) => NatNormalForm.mul(args(0), args(1))),
+      "Nat.pow" -> Native((_, _, args) => NatNormalForm.pow(args(0), args(1))),
+      "Nat.sub" -> Native((_, _, args) => NatNormalForm.sub(args(0), args(1))),
+      "Nat.pred" -> Native((_, _, args) => NatNormalForm.pred(args(0))),
+      "Nat.isZero" -> Native((_, _, args) => NatNormalForm.isZero(args(0))),
+      "Nat.beq" -> Native((_, _, args) => NatNormalForm.beq(args(0), args(1))),
+      "Nat.ble" -> Native((_, _, args) => NatNormalForm.ble(args(0), args(1)))
     )
 
   def instantiate(name: String, tpe: Value, span: Span): Value =

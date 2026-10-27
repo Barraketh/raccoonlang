@@ -18,11 +18,11 @@ class InterpreterTests extends munit.FunSuite {
 
   private def toShape(v: Value): Shape = v match {
     case Value.ConstructorHead(n, _, _, _) => SConst(n)
-    case Value.VCtor(h, fields, _) =>
+    case ConstructorValue(h, fields) =>
       if (fields.isEmpty) SConst(h.name) else SApp(SConst(h.name), fields.toList.map(toShape))
-    case Value.VConst(n, _, _)  => SConst(n)
+    case Value.VConst(n, _, _)     => SConst(n)
     case Value.VApp(h, args, _, _) => SApp(toShape(h), args.toList.map(toShape))
-    case other                  => SConst(other.toString) // fallback, won't be used in this test
+    case other                     => SConst(other.toString) // fallback, won't be used in this test
   }
 
   private val zeroS = SConst("Nat.zero")
@@ -30,10 +30,6 @@ class InterpreterTests extends munit.FunSuite {
 
   test("Nats compute") {
     val p = """
-              |inductive Nat : Type
-              | | zero : Nat
-              | | succ (_: Nat) : Nat
-              |
               |def add (a: Nat)(b: Nat): Nat decreases structural(b) := {
               |  match b with
               |  | Nat.zero => a
@@ -54,17 +50,13 @@ class InterpreterTests extends munit.FunSuite {
   test("zero-arity constructor identifier evaluates to constructor view") {
     val p =
       """
-        |inductive Bool : Type
-        | | true : Bool
-        | | false : Bool
-        |
         |{
         |  Bool.true
         |}
         |""".stripMargin
 
     InterpreterTests.this.getValue(p) match {
-      case Value.VCtor(head, fields, _) =>
+      case ConstructorValue(head, fields) =>
         assertEquals(head.name, "Bool.true")
         assertEquals(fields, Vector.empty)
       case other =>
@@ -75,10 +67,6 @@ class InterpreterTests extends munit.FunSuite {
   test("nullary constructor with erased binder evaluates to constructor view after erased application") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
-        |
         |inductive Vec (A: Type) indices (n: Nat) : Sort(Level.one)
         | | nil {A: Type} : Vec(A, Nat.zero)
         | | cons {A: Type} (n: Nat) (xs: Vec(A, n)) (x: A): Vec(A, Nat.succ(n))
@@ -89,7 +77,7 @@ class InterpreterTests extends munit.FunSuite {
         |""".stripMargin
 
     InterpreterTests.this.getValue(p) match {
-      case Value.VCtor(head, fields, _) =>
+      case ConstructorValue(head, fields) =>
         assertEquals(head.name, "Vec.nil")
         assertEquals(fields, Vector.empty)
       case other =>

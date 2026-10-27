@@ -49,6 +49,32 @@ def congrFun (A: Sort($u))(B: Sort($v))(f: A -> B)(g: A -> B)(p: Eq((x: A) -> B,
   | Eq.refl h => Eq.refl(h(x))
 }
 
+// Laws of the native arithmetic beyond the normal forms (docs/nat-normal-forms.md).
+namespace Nat {
+  // Distributivity is not definitional; every other semiring identity follows from this axiom and conversion, such as
+  // right distributivity `Nat.mul_add(c, a, b)` and `a * (b + 1) = a * b + a`.
+  axiom mul_add (a: Nat)(b: Nat)(c: Nat): Eq(Nat, Nat.mul(a, Nat.add(b, c)), Nat.add(Nat.mul(a, b), Nat.mul(a, c)))
+
+  // The successor equation of power, `x^(a + 1) = x^a * x`, is definitional, so the exponent laws left out of the
+  // normal forms are theorems by induction on the exponent.
+  def mul_pow (x: Nat)(y: Nat)(a: Nat): Eq(Nat, Nat.pow(Nat.mul(x, y), a), Nat.mul(Nat.pow(x, a), Nat.pow(y, a))) decreases structural(a) := {
+    match a returning Eq(Nat, Nat.pow(Nat.mul(x, y), a), Nat.mul(Nat.pow(x, a), Nat.pow(y, a))) with
+    | Nat.zero => Eq.refl(Nat.succ(Nat.zero))
+    | Nat.succ k => congrArg(Nat.mul_pow(x, y, k), Nat, fun (n: Nat): Nat => Nat.mul(n, Nat.mul(x, y)))
+  }
+
+  // The step rewrites `x^(a*k) * x^a = x^(a*k + a)` by the product law, then `a*k + a` to `a * (k + 1)` by `mul_add`.
+  def pow_mul (x: Nat)(a: Nat)(b: Nat): Eq(Nat, Nat.pow(Nat.pow(x, a), b), Nat.pow(x, Nat.mul(a, b))) decreases structural(b) := {
+    match b returning Eq(Nat, Nat.pow(Nat.pow(x, a), b), Nat.pow(x, Nat.mul(a, b))) with
+    | Nat.zero => Eq.refl(Nat.succ(Nat.zero))
+    | Nat.succ k =>
+      Eq.trans(
+        congrArg(Nat.pow_mul(x, a, k), Nat, fun (n: Nat): Nat => Nat.mul(n, Nat.pow(x, a))),
+        Eq.symm(congrArg(Nat.mul_add(a, k, Nat.succ(Nat.zero)), Nat, fun (n: Nat): Nat => Nat.pow(x, n)))
+      )
+  }
+}
+
 inductive False : Prop
 
 namespace False {
@@ -98,10 +124,6 @@ def emptyElim (h: Empty)(C: Sort($u)): C := Empty.elim(h, C)
 
 inductive Unit : Type
  | unit : Unit
-
-inductive Bool : Type
- | false : Bool
- | true : Bool
 
 namespace Bool {
   def cond (c: Bool)(A: Sort($u))(t: A)(f: A): A := {
@@ -179,61 +201,7 @@ def instance trueDecidable : Decidable(True) := Decidable.isTrue(True.intro)
 
 def instance falseDecidable : Decidable(False) := Decidable.isFalse(False, notFalse)
 
-inductive Nat : Type
- | zero : Nat
- | succ (_: Nat) : Nat
-
 namespace Nat {
-  def pred (n: Nat): Nat := {
-    match n returning Nat with
-    | Nat.zero => Nat.zero
-    | Nat.succ p => p
-  }
-
-  def isZero (n: Nat): Bool := {
-    match n returning Bool with
-    | Nat.zero => Bool.true
-    | Nat.succ p => Bool.false
-  }
-
-  def sub (a: Nat)(b: Nat): Nat decreases structural(b) := {
-    match b returning Nat with
-    | Nat.zero => a
-    | Nat.succ p => Nat.pred(Nat.sub(a, p))
-  }
-
-  def add (a: Nat)(b: Nat): Nat decreases structural(b) := {
-    match b returning Nat with
-    | Nat.zero => a
-    | Nat.succ p => Nat.add(Nat.succ(a), p)
-  }
-
-  def mul (a: Nat)(b: Nat): Nat decreases structural(b) := {
-    match b returning Nat with
-    | Nat.zero => Nat.zero
-    | Nat.succ p => Nat.add(a, Nat.mul(a, p))
-  }
-
-  def beq (a: Nat)(b: Nat): Bool decreases structural(a) := {
-    match a returning Bool with
-    | Nat.zero => Nat.isZero(b)
-    | Nat.succ aTail => {
-      match b returning Bool with
-      | Nat.zero => Bool.false
-      | Nat.succ bTail => Nat.beq(aTail, bTail)
-    }
-  }
-
-  def ble (a: Nat)(b: Nat): Bool decreases structural(a) := {
-    match a returning Bool with
-    | Nat.zero => Bool.true
-    | Nat.succ aTail => {
-      match b returning Bool with
-      | Nat.zero => Bool.false
-      | Nat.succ bTail => Nat.ble(aTail, bTail)
-    }
-  }
-
   def le (a: Nat)(b: Nat): Prop := Eq(Bool, Nat.ble(a, b), Bool.true)
 
   def lt (a: Nat)(b: Nat): Prop := Nat.le(Nat.succ(a), b)

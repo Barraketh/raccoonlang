@@ -65,6 +65,7 @@ object TypeChecker {
             }
           }
         case EA.Term.GlobalRef(_, _) =>
+        case EA.Term.NatLit(_, _)    =>
         case EA.Term.App(fn, args, _) =>
           loop(fn, appHead = true)
           args.foreach(arg => loop(arg, appHead = false))

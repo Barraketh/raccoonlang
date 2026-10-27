@@ -1,6 +1,8 @@
 package com.raccoonlang
 
-import org.roaringbitmap.RoaringBitmap
+import org.roaringbitmap.{FastAggregation, RoaringBitmap}
+
+import scala.jdk.CollectionConverters._
 
 final class DepSet private (private val bitmap: RoaringBitmap) {
   def contains(id: Int): Boolean = bitmap.contains(id)
@@ -72,11 +74,12 @@ object DepSet {
 
   def apply(ids: Int*): DepSet = from(ids)
 
-  def unionAll(sets: DepSet*): DepSet = {
-    val builder = newBuilder
-    sets.foreach(builder.unionInPlace)
-    builder.result()
-  }
+  /** One id, without a builder or a copy. */
+  def single(id: Int): DepSet = new DepSet(RoaringBitmap.bitmapOf(id))
+
+  /** Union many sets at once; repeated in-place unions shift array containers on every insertion. */
+  def unionAll(sets: Iterable[DepSet]): DepSet =
+    new DepSet(FastAggregation.or(sets.iterator.map(_.bitmap).asJava))
 
   def from(ids: IterableOnce[Int]): DepSet = {
     val builder = newBuilder

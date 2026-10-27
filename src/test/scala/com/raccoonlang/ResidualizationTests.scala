@@ -29,6 +29,7 @@ class ResidualizationTests extends munit.FunSuite {
     term match {
       case EA.Term.GlobalRef(n, _) => n == name
       case EA.Term.LocalRef(_, _)  => false
+      case EA.Term.NatLit(_, _)    => false
       case EA.Term.App(fn, args, _) =>
         containsGlobal(fn, name) || args.exists(arg => containsGlobal(arg, name))
       case EA.Term.Pi(binders, out, _, _, _) =>
@@ -59,33 +60,21 @@ class ResidualizationTests extends munit.FunSuite {
       case EA.TypePattern.Capture(_, _) => false
     }
 
-  private val natDecls =
-    """
-      |inductive Nat : Type
-      | | zero : Nat
-      | | succ (_: Nat) : Nat
-      |""".stripMargin
-
   test("checked residual preserves transparent applications literally") {
     val p =
-      natDecls +
-        """
-          |inductive Bool : Type
-          | | true : Bool
-          | | false : Bool
-          |
-          |def expensive (n: Nat): Nat := n
-          |
-          |def choose (b: Bool)(x: Nat): Nat := {
-          |  match b returning Nat with
-          |  | Bool.true => x
-          |  | Bool.false => Nat.zero
-          |}
-          |
-          |{
-          |  choose(Bool.false, expensive(Nat.zero))
-          |}
-          |""".stripMargin
+      """
+        |def expensive (n: Nat): Nat := n
+        |
+        |def choose (b: Bool)(x: Nat): Nat := {
+        |  match b returning Nat with
+        |  | Bool.true => x
+        |  | Bool.false => Nat.zero
+        |}
+        |
+        |{
+        |  choose(Bool.false, expensive(Nat.zero))
+        |}
+        |""".stripMargin
 
     val checked = checkBody(p)
     val res = resultTerm(checked.term)
@@ -95,24 +84,19 @@ class ResidualizationTests extends munit.FunSuite {
 
   test("checked residual preserves stuck transparent applications literally") {
     val p =
-      natDecls +
-        """
-          |inductive Bool : Type
-          | | true : Bool
-          | | false : Bool
-          |
-          |axiom opaqueBool (b: Bool): Bool
-          |
-          |def choose (b: Bool): Nat := {
-          |  match b returning Nat with
-          |  | Bool.true => Nat.zero
-          |  | Bool.false => Nat.succ(Nat.zero)
-          |}
-          |
-          |{
-          |  choose(opaqueBool(Bool.true))
-          |}
-          |""".stripMargin
+      """
+        |axiom opaqueBool (b: Bool): Bool
+        |
+        |def choose (b: Bool): Nat := {
+        |  match b returning Nat with
+        |  | Bool.true => Nat.zero
+        |  | Bool.false => Nat.succ(Nat.zero)
+        |}
+        |
+        |{
+        |  choose(opaqueBool(Bool.true))
+        |}
+        |""".stripMargin
 
     val res = resultTerm(checkBody(p).term)
     assert(containsGlobal(res, "choose"))
@@ -121,16 +105,15 @@ class ResidualizationTests extends munit.FunSuite {
 
   test("checked residual elaborates projection syntax to selector application") {
     val p =
-      natDecls +
-        """
-          |struct Pair (A: Type)(B: Type) : Type
-          | | mk {A: Type}{B: Type} (fst: A)(snd: B) : Pair(A, B)
-          |
-          |{
-          |  let p := Pair.mk(Nat, Nat, Nat.zero, Nat.succ(Nat.zero))
-          |  p.fst
-          |}
-          |""".stripMargin
+      """
+        |struct Pair (A: Type)(B: Type) : Type
+        | | mk {A: Type}{B: Type} (fst: A)(snd: B) : Pair(A, B)
+        |
+        |{
+        |  let p := Pair.mk(Nat, Nat, Nat.zero, Nat.succ(Nat.zero))
+        |  p.fst
+        |}
+        |""".stripMargin
 
     checkBody(p).term match {
       case EA.Term.Body(lets, EA.Term.App(EA.Term.GlobalRef("Pair.fst", _), Vector(EA.Term.LocalRef(ref, _)), _), _) =>
@@ -143,14 +126,13 @@ class ResidualizationTests extends munit.FunSuite {
 
   test("lambda bodies preserve checked application syntax") {
     val p =
-      natDecls +
-        """
-          |def id (n: Nat): Nat := n
-          |
-          |{
-          |  fun (n: Nat): Nat => id(Nat.zero)
-          |}
-          |""".stripMargin
+      """
+        |def id (n: Nat): Nat := n
+        |
+        |{
+        |  fun (n: Nat): Nat => id(Nat.zero)
+        |}
+        |""".stripMargin
 
     resultTerm(checkBody(p).term) match {
       case EA.Term.Lam(_, body, _, _, _, _) =>
@@ -162,21 +144,16 @@ class ResidualizationTests extends munit.FunSuite {
 
   test("stuck match branch bodies preserve checked application syntax") {
     val p =
-      natDecls +
-        """
-          |inductive Bool : Type
-          | | true : Bool
-          | | false : Bool
-          |
-          |def id (n: Nat): Nat := n
-          |axiom opaqueBool (b: Bool): Bool
-          |
-          |{
-          |  match opaqueBool(Bool.true) returning Nat with
-          |  | Bool.true => id(Nat.zero)
-          |  | Bool.false => id(Nat.zero)
-          |}
-          |""".stripMargin
+      """
+        |def id (n: Nat): Nat := n
+        |axiom opaqueBool (b: Bool): Bool
+        |
+        |{
+        |  match opaqueBool(Bool.true) returning Nat with
+        |  | Bool.true => id(Nat.zero)
+        |  | Bool.false => id(Nat.zero)
+        |}
+        |""".stripMargin
 
     resultTerm(checkBody(p).term) match {
       case EA.Term.Match(_, _, cases, _, _) =>
@@ -188,21 +165,16 @@ class ResidualizationTests extends munit.FunSuite {
 
   test("stuck match preserves checked scrutinee syntax") {
     val p =
-      natDecls +
-        """
-          |inductive Bool : Type
-          | | true : Bool
-          | | false : Bool
-          |
-          |def idBool (b: Bool): Bool := b
-          |axiom opaqueBool (b: Bool): Bool
-          |
-          |{
-          |  match idBool(opaqueBool(Bool.true)) returning Nat with
-          |  | Bool.true => Nat.zero
-          |  | Bool.false => Nat.zero
-          |}
-          |""".stripMargin
+      """
+        |def idBool (b: Bool): Bool := b
+        |axiom opaqueBool (b: Bool): Bool
+        |
+        |{
+        |  match idBool(opaqueBool(Bool.true)) returning Nat with
+        |  | Bool.true => Nat.zero
+        |  | Bool.false => Nat.zero
+        |}
+        |""".stripMargin
 
     resultTerm(checkBody(p).term) match {
       case EA.Term.Match(scrut, _, _, _, _) =>
@@ -214,14 +186,13 @@ class ResidualizationTests extends munit.FunSuite {
 
   test("Pi binder residual preserves reducible plain binder heads") {
     val p =
-      natDecls +
-        """
-          |def TyId (A: Type): Type := A
-          |
-          |{
-          |  (_: TyId(Nat)) -> Nat
-          |}
-          |""".stripMargin
+      """
+        |def TyId (A: Type): Type := A
+        |
+        |{
+        |  (_: TyId(Nat)) -> Nat
+        |}
+        |""".stripMargin
 
     resultTerm(checkBody(p).term) match {
       case pi: EA.Term.Pi =>
@@ -263,16 +234,15 @@ class ResidualizationTests extends munit.FunSuite {
 
   test("Pi binder residual preserves type-pattern captures") {
     val p =
-      natDecls +
-        """
-          |inductive Vec (A: Sort($u)) indices (n: Nat) : Sort(u)
-          | | nil {A: Sort($u)} : Vec(A, Nat.zero)
-          | | cons {A: Sort($u)} (tail: Vec(A, $n)) (head: A) : Vec(A, Nat.succ(n))
-          |
-          |{
-          |  (v: Vec(Nat, $n)) -> Vec(Nat, n)
-          |}
-          |""".stripMargin
+      """
+        |inductive Vec (A: Sort($u)) indices (n: Nat) : Sort(u)
+        | | nil {A: Sort($u)} : Vec(A, Nat.zero)
+        | | cons {A: Sort($u)} (tail: Vec(A, $n)) (head: A) : Vec(A, Nat.succ(n))
+        |
+        |{
+        |  (v: Vec(Nat, $n)) -> Vec(Nat, n)
+        |}
+        |""".stripMargin
 
     resultTerm(checkBody(p).term) match {
       case pi: EA.Term.Pi =>

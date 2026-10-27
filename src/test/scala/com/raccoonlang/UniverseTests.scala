@@ -25,10 +25,6 @@ class UniverseTests extends munit.FunSuite {
   test("Type 0 fits in Type 1 (simple ascription with inductive)") {
     val p =
       """
-        |inductive Nat : Type
-        |  | zero: Nat
-        |  | succ (_: Nat) : Nat
-        |
         |{
         |  let x : Type := Nat
         |  x
@@ -92,10 +88,6 @@ class UniverseTests extends munit.FunSuite {
   test("def f(u: Level)(A: Sort u)(x: A): A := x; apply at u=1, A=Nat, x=Nat.zero") {
     val p =
       """
-        |inductive Nat : Type
-        |  | zero: Nat
-        |  | succ (_: Nat) : Nat
-        |
         |def f (u: Level)(A: Sort(u))(x: A): A := x
         |
         |{ f(Level.one, Nat, Nat.zero) }
@@ -128,10 +120,6 @@ class UniverseTests extends munit.FunSuite {
   test("Function result at lower universe accepted by higher ascription (up by 2)") {
     val p =
       """
-        |inductive Nat : Type
-        |  | zero: Nat
-        |  | succ (_: Nat) : Nat
-        |
         |axiom up2 (u: Level)(A: Sort(u)): Sort(Level.succ(Level.succ(u)))
         |
         |{ up2(Level.one, Nat) }
@@ -221,10 +209,6 @@ class UniverseTests extends munit.FunSuite {
   test("Level-parametric id at u=1 works for Nat") {
     val p =
       """
-        |inductive Nat : Type
-        |  | zero: Nat
-        |  | succ (_: Nat) : Nat
-        |
         |def idAt (u: Level)(A: Sort(u))(x: A): A := x
         |
         |{ idAt(Level.one, Nat, Nat.zero) }
@@ -345,10 +329,6 @@ class UniverseTests extends munit.FunSuite {
   test("positive: capture through Level.succ in a type pattern works") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
-        |
         |def idUp (A: Sort(Level.succ($u)))(x: A): A := x
         |
         |{

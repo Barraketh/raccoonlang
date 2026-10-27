@@ -1,5 +1,55 @@
 # Kernel rules
 
+## Natural number normal forms
+
+`Bool`, `Nat`, their constructors, and the native `Nat.add`, `Nat.mul`,
+`Nat.pow`, `Nat.sub`, `Nat.pred`, `Nat.isZero`, `Nat.beq`, and `Nat.ble` are
+kernel declarations present beneath every prelude and program; they cannot be
+redeclared. Ordinary source functions acquire no arithmetic laws merely from
+their names.
+
+Arithmetic evaluates to sums of products with arbitrary-precision nonnegative
+coefficients, constants, and exponents. The normal forms decide exactly these
+definitional laws: addition and multiplication are associative and commutative
+with units, `0 * x = 0`, closed arithmetic computes, `Nat.succ(x) = x + 1`,
+multiplying by a numeral distributes, `x^0 = 1`, a numeral power is a repeated
+product, powers of equal bases multiply by adding exponents
+(`x^a * x^b = x^(a + b)`, symbolic or not), and `1^e = 1`. Nothing symbolic
+distributes: a product of sums stays a product whose factors are the sums, so
+`a * (b + c)` and `a * b + a * c` are different forms, and a power with a
+symbolic exponent keeps its whole base, so `(x * y)^a` and `(x^a)^b` are not
+split. The prelude axiom `Nat.mul_add` states distributivity, and every other
+semiring identity follows from it and conversion; the prelude theorems
+`Nat.mul_pow` and `Nat.pow_mul` state `(x * y)^a = x^a * y^a` and
+`(x^a)^b = x^(a * b)`. Normalization needs no limits; a closed power too large
+for the JVM to represent raises `NatValueTooLarge`.
+
+Each Nat value has one representation: zero is the `Nat.zero` constructor, a
+lone neutral atom is itself, and everything else, including every successor, is
+a compact form; constructing `Nat.succ(x)` yields the form `x + 1`. The
+constructor view exposes a form with a positive constant as `Nat.succ` with
+that constant decremented. A form with zero constant, including a product of
+successors or a symbolic power, blocks on all its dependencies. Substitution
+recomputes affected arithmetic, including symbolic exponents and bases, and
+blocked matches. Atom equality respects existing definitional
+conversion, including when convertible atoms have different structural keys.
+
+Truncated subtraction and the comparisons depend only on the signed difference
+of their arguments: they cancel common whole terms and decide when one
+remaining part is zero or the other has a known successor, and otherwise stay
+stuck on the canonical parts. A sum inside a factor is opaque to cancellation.
+They satisfy the recursive equations, such as
+`sub(a, succ(b)) = pred(sub(a, b))`. A stuck subtraction absorbs only a known
+constant subtrahend, so every result is stable under substitution.
+
+Unequal symbolic forms do not establish contradiction. Refinement keeps
+whole-variable linking and successor cancellation, and otherwise leaves
+arithmetic equations stuck. Structural termination peels known successors;
+monomials, factors, and summands are not structural subterms. Positivity treats
+factor bases and symbolic exponents, including sums, as arguments of the Nat
+operations, so a target occurring in one is never positive. The [Nat normal forms design](nat-normal-forms.md)
+specifies the laws, the representation, and quotation.
+
 ## Function-type equality
 
 Function types compare binder domains and constrained-capture classifiers by

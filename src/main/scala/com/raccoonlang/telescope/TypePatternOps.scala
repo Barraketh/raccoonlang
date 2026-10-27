@@ -158,8 +158,10 @@ object TypePatternOps {
     def projectStep(value: Value, idx: Int): Value =
       value match {
         case VSort(level) if idx == 0 => level
-        case VApp(_, args, _, _)      => args.lift(idx).getOrElse(throw FailedToOpenCapture(value, idx))
-        case _                        => throw FailedToOpenCapture(value, idx)
+        case ConstructorValue(_, fields) =>
+          fields.lift(idx).getOrElse(throw FailedToOpenCapture(value, idx))
+        case VApp(_, args, _, _) => args.lift(idx).getOrElse(throw FailedToOpenCapture(value, idx))
+        case _                   => throw FailedToOpenCapture(value, idx)
       }
 
     path.foldLeft(value) { case (cur, nextIdx) => projectStep(cur, nextIdx) }

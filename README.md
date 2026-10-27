@@ -54,6 +54,12 @@ Note that at this point I have done 0 optimization - these performance wins are 
     - Impredicative Prop with proof irrelevance and controlled large elimination
     - Universe polymorphism ranges over Type levels only; propositions cannot be carriers for `Eq`, `DecidableEq`, or `Subsingleton`
 - Extensible definitional equality through type-driven expression normalization
+- Canonical sums of products for builtin Nat addition, multiplication, and powers, deciding associativity,
+  commutativity, units, numeral arithmetic, and the exponent product law `x^a * x^b = x^(a + b)` by conversion, plus
+  native truncated subtraction and comparisons
+    - Distributivity is the prelude axiom `Nat.mul_add`; `(x * y)^a` and `(x^a)^b` are the prelude theorems
+      `Nat.mul_pow` and `Nat.pow_mul`
+    - See [the Nat normal forms design](docs/nat-normal-forms.md) for the laws, representation, and kernel integration
 - Namespaces, file imports, dotted names, and scoped `open`
 - Type patterns
 - Type classes with `def instance`, `let instance`, `[f: Foo]` instance binders, and explicit `derive[Foo]`
@@ -353,7 +359,8 @@ resulting value when the program body produces one.
 as a no-op for compatibility with source files that name their prelude dependency.
 
 Prelude declarations can use `:= builtin` when their canonical name has a native implementation in the runtime builtin
-registry.
+registry. `Bool`, `Nat`, their constructors, and the native Nat arithmetic, subtraction, and comparisons are built
+into the kernel: every environment has them, including with `--no-prelude`, and they cannot be redeclared.
 
 ```bash
 sbt 'run --root examples examples/nats.rac'

@@ -47,6 +47,8 @@ object ElabAst {
 
     final case class App(fn: Term, args: Vector[Term], span: Span) extends Term with TypeTerm
 
+    final case class NatLit(value: BigInt, span: Span) extends Term with TypeTerm
+
     final case class Pi(binders: Vector[Binder], out: TypeTerm, classifier: Universe, span: Span, nodeId: NodeId)
       extends Term
       with TypeTerm {

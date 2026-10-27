@@ -13,10 +13,6 @@ class MatchExhaustivenessTests extends munit.FunSuite {
   test("non-exhaustive: missing succ case on Nat") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
-        |
         |def onlyZero (n: Nat): Nat := {
         |  match n with
         |  | Nat.zero => Nat.zero
@@ -30,10 +26,6 @@ class MatchExhaustivenessTests extends munit.FunSuite {
   test("duplicate case: two Nat.zero branches") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
-        |
         |def dup (n: Nat): Nat := {
         |  match n with
         |  | Nat.zero => Nat.zero
@@ -49,10 +41,6 @@ class MatchExhaustivenessTests extends munit.FunSuite {
   test("unreachable case: Vec.cons on Vec A Nat.zero") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
-        |
         |inductive Vec (A: Type) indices (n: Nat) : Sort(Level.one)
         | | nil {A: Type} : Vec(A, Nat.zero)
         | | cons {A: Type} (n: Nat) (xs: Vec(A, n)) (x: A): Vec(A, Nat.succ(n))
@@ -71,10 +59,6 @@ class MatchExhaustivenessTests extends munit.FunSuite {
   test("non-exhaustive: opaque scrutinee application should still require succ case") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
-        |
         |// Opaque on purpose: evaluator will keep this as a Symbol head
         |axiom g (n: Nat): Nat
         |
@@ -92,10 +76,6 @@ class MatchExhaustivenessTests extends munit.FunSuite {
   test("exhaustive: opaque scrutinee application should typecheck") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
-        |
         |axiom g (n: Nat): Nat
         |
         |def ok (n: Nat): Nat := {
@@ -131,10 +111,6 @@ class MatchExhaustivenessTests extends munit.FunSuite {
   test("omitted returning: contextual result supports matches with no reachable constructors") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
-        |
         |inductive IsZero indices (n: Nat) : Type
         | | intro : IsZero(Nat.zero)
         |
@@ -150,10 +126,6 @@ class MatchExhaustivenessTests extends munit.FunSuite {
   test("omitted returning: contextual result supports differing constructor result types") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
-        |
         |inductive Shape indices (n: Nat) : Type
         | | zeroCase : Shape(Nat.zero)
         | | succCase (m: Nat) : Shape(Nat.succ(m))

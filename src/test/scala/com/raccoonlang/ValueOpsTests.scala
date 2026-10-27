@@ -253,7 +253,7 @@ class ValueOpsTests extends munit.FunSuite {
       runtimeEnv,
       ValueId.LocalId(matchTerm.nodeId, Vector(scrut, captured)),
       valueType,
-      Some(scrut.id)
+      DepSet(scrut.id)
     )
 
     val eqCaptured = solve(captured, solution)
@@ -264,7 +264,7 @@ class ValueOpsTests extends munit.FunSuite {
 
     assert(!materialized.synDeps.contains(captured.id))
     assert(materialized.synDeps.contains(scrut.id))
-    assertEquals(materialized.blockerId, Some(scrut.id))
+    assertEquals(materialized.blockerIds, DepSet(scrut.id))
 
     val eqAll = eqCaptured.allow(DepSet(scrut.id)).addLink(scrut.id, ctor)
     assertEquals(Interpreter.resolveInEqStore(materialized, eqAll), solution)
@@ -305,7 +305,7 @@ class ValueOpsTests extends munit.FunSuite {
 
     assert(!blocked.synDeps.contains(unused.id))
     assert(blocked.synDeps.contains(scrut.id))
-    assertEquals(blocked.blockerId, Some(scrut.id))
+    assertEquals(blocked.blockerIds, DepSet(scrut.id))
   }
 
   test("constructor equality accounts for result type") {

@@ -40,6 +40,7 @@ object ValueQuote {
         case ElabAst.Term.LocalRef(ref, refSpan) => inlineLocal(ref, refSpan)
         case ElabAst.Term.App(fn, args, appSpan) =>
           ElabAst.Term.App(inlineAppHead(fn), args.map(inlineTerm), appSpan)
+        case ElabAst.Term.NatLit(_, _) => t
         case ElabAst.Term.Pi(binders, out, classifier, piSpan, _) =>
           val nextBinders = binders.map { b =>
             b.copy(localRef = reindex(b.localRef), ty = inlineBinderType(b.ty))
@@ -79,6 +80,7 @@ object ValueQuote {
           }
         case ElabAst.Term.App(fn, args, appSpan) =>
           ElabAst.Term.App(inlineAppHead(fn), args.map(inlineTerm), appSpan)
+        case ElabAst.Term.NatLit(_, _) => t
         case ElabAst.Term.Pi(binders, out, classifier, piSpan, _) =>
           val nextBinders = binders.map { b =>
             b.copy(localRef = reindex(b.localRef), ty = inlineBinderType(b.ty))
@@ -158,6 +160,8 @@ object ValueQuote {
 
       case VCtor(head, fields, tpe) => quoteCtor(head, fields, tpe, context, span)
 
+      case poly: VNatPoly => quoteNatForm(poly, context, span)
+
       case VApp(head, args, _, _) =>
         val fn = quoteAppHead(head, context, span)
         ElabAst.Term.App(fn, args.map(arg => quoteTerm(arg, context, span)), span)
@@ -178,6 +182,62 @@ object ValueQuote {
 
   private def quoteAppHead(value: Value, context: QuoteContext, span: Span): ElabAst.Term =
     quotedAppHeadFor(context.quote, value).getOrElse(quoteTerm(value, context, span))
+
+  /**
+   * Published forms are nonzero and their monomials have nonempty factors. Quote ordinary arithmetic using the kernel's
+   * native names, with an operand that is a form, such as a sum base or a symbolic exponent, quoted as its own form;
+   * balanced trees keep expression depth logarithmic at each level without copying sub-vectors.
+   */
+  private def quoteNatForm(poly: VNatPoly, context: QuoteContext, span: Span): ElabAst.Term = {
+    def natLit(value: BigInt): ElabAst.Term = ElabAst.Term.NatLit(value, span)
+
+    def call2(name: String, left: ElabAst.Term, right: ElabAst.Term): ElabAst.Term =
+      ElabAst.Term.App(ElabAst.Term.GlobalRef(name, span), Vector(left, right), span)
+
+    // Every caller supplies at least one summand or factor by the published-form invariants.
+    def balanced(values: Vector[ElabAst.Term], operation: String): ElabAst.Term = {
+      def loop(from: Int, until: Int): ElabAst.Term =
+        if (until - from == 1) values(from)
+        else {
+          val middle = from + (until - from) / 2
+          call2(operation, loop(from, middle), loop(middle, until))
+        }
+      loop(0, values.length)
+    }
+
+    // An operand typically occurs in many monomials, including inside operands that are forms; quote each once.
+    val quotedOperands = scala.collection.mutable.HashMap.empty[ValueKey.Key, ElabAst.Term]
+    def quoteOperand(operand: Value): ElabAst.Term =
+      quotedOperands.getOrElse(operand.key, null) match { // unlike get, allocates no Some
+        case null =>
+          val quoted = operand match {
+            case poly: VNatPoly => quoteForm(poly.form)
+            case other          => quoteTerm(other, context, span)
+          }
+          quotedOperands.update(operand.key, quoted)
+          quoted
+        case known => known
+      }
+
+    def quoteForm(form: NatNormalForm.Form): ElabAst.Term = {
+      val summands = Vector.newBuilder[ElabAst.Term]
+      if (form.constant > 0) summands += natLit(form.constant)
+      form.terms.foreach { term =>
+        val factors = term.monomial.factors.map {
+          case power: NatNormalForm.NumeralPower =>
+            val base = quoteOperand(power.base)
+            if (power.exponent == 1) base else call2("Nat.pow", base, natLit(power.exponent))
+          case power: NatNormalForm.SymbolicPower =>
+            call2("Nat.pow", quoteOperand(power.base), quoteOperand(power.exponent))
+        }
+        val productFactors = if (term.coefficient == 1) factors else natLit(term.coefficient) +: factors
+        summands += balanced(productFactors, "Nat.mul")
+      }
+      balanced(summands.result(), "Nat.add")
+    }
+
+    quoteForm(poly.form)
+  }
 
   private def quoteClosedMatch(
       term: ElabAst.Term.Match,

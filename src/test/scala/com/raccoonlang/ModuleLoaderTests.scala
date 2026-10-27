@@ -75,9 +75,6 @@ class ModuleLoaderTests extends munit.FunSuite {
       """
         |import Init.Prelude
         |
-        |inductive Nat : Type
-        | | zero : Nat
-        |
         |{
         |  Eq.refl(Nat.zero)
         |}
@@ -324,7 +321,11 @@ class ModuleLoaderTests extends munit.FunSuite {
 
     val loaded = ModuleLoader.load(entry, ModuleLoader.LoadConfig(Vector(srcRoot), Prelude.test))
     assertEquals(
-      ctorName(Interpreter.run(Elaborator.elab(loaded.program, Prelude.test), Prelude.test).getOrElse(fail("Program has no body"))),
+      ctorName(
+        Interpreter
+          .run(Elaborator.elab(loaded.program, Prelude.test), Prelude.test)
+          .getOrElse(fail("Program has no body"))
+      ),
       "Lib.Nat.zero"
     )
   }

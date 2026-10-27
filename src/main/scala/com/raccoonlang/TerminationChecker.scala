@@ -77,6 +77,7 @@ object TerminationChecker {
 
   private def isStrictSubterm(candidate: Value, root: Value): Boolean =
     root match {
+      case form: VNatPoly => NatNormalForm.isStrictlySmaller(candidate, form)
       case VCtor(_, fields, _) =>
         fields.exists { field =>
           // Proof fields cannot expose data subterms, since proof irrelevance hides their structure.

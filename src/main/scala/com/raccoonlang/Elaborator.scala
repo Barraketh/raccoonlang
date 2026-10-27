@@ -259,16 +259,22 @@ object Elaborator {
       BuiltinGlobals
         .foldLeft(NameNode()) { case (root, name) => root.insertGlobal(name, name) }
 
-    def empty: ResolveEnv =
+    private def withRoot(root: NameNode): ResolveEnv =
       ResolveEnv(
         List(Map.empty),
         0,
-        builtinRoot,
+        root,
         Vector.empty,
         List(Map.empty[String, ResolvedObject]),
         Set.empty,
         None
       )
+
+    /** Primitive names only; the kernel's own declarations elaborate here. */
+    def primitive: ResolveEnv = withRoot(builtinRoot)
+
+    /** Primitive and kernel names, visible to every prelude and program. */
+    def kernel: ResolveEnv = withRoot(kernelRoot)
   }
 
   private final case class SurfacePath(root: Boolean, parts: Vector[String], span: Span)
@@ -727,7 +733,7 @@ object Elaborator {
   }
 
   def getType(header: SA.FuncHeader): CA.TypeTerm =
-    elabHeader(header, ResolveEnv.empty).ty
+    elabHeader(header, ResolveEnv.kernel).ty
 
   private def elabLam(
       pi: CA.Term.Pi,
@@ -1099,13 +1105,20 @@ object Elaborator {
     (decls.result(), curEnv)
   }
 
+  private lazy val (elaboratedKernel, kernelRoot) = {
+    val (decls, env) = elabCommands(Kernel.surface.decls, ResolveEnv.primitive)
+    (decls, env.root)
+  }
+
+  private[raccoonlang] def kernelDecls: Vector[CA.Decl] = elaboratedKernel
+
   private def preludeEnv(prelude: Prelude.Config): ResolveEnv = {
-    val (_, env) = elabCommands(expandStructSelectors(prelude.surface.decls), ResolveEnv.empty)
-    ResolveEnv.empty.copy(root = env.root)
+    val (_, env) = elabCommands(expandStructSelectors(prelude.surface.decls), ResolveEnv.kernel)
+    ResolveEnv.kernel.copy(root = env.root)
   }
 
   private[raccoonlang] def elabWithoutPrelude(p: SA.Program): CA.Program =
-    elabProgram(p, ResolveEnv.empty)
+    elabProgram(p, ResolveEnv.kernel)
 
   def elab(p: SA.Program): CA.Program =
     elab(p, Prelude.default)

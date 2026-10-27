@@ -56,10 +56,6 @@ class ProjectionTests extends munit.FunSuite {
   test("non-dependent projections: Pair.fst and Pair.snd") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
-        |
         |struct Pair (A: Type)(B: Type) : Type
         | | mk {A: Type}{B: Type} (fst: A)(snd: B) : Pair(A, B)
         |
@@ -79,10 +75,6 @@ class ProjectionTests extends munit.FunSuite {
   test("dependent projections on family arguments: WrapIdx.x") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
-        |
         |inductive Vec (A: Type) indices (n: Nat) : Type
         | | nil {A: Type} : Vec(A, Nat.zero)
         | | cons {A: Type} (tail: Vec(A, $n)) (head: A) : Vec(A, Nat.succ(n))
@@ -106,10 +98,6 @@ class ProjectionTests extends munit.FunSuite {
   test("typecheck: dependent projection works in types with family arguments") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
-        |
         |inductive Vec (A: Type) indices (n: Nat) : Type
         | | nil {A: Type} : Vec(A, Nat.zero)
         | | cons {A: Type} (tail: Vec(A, $n)) (head: A) : Vec(A, Nat.succ(n))
@@ -126,10 +114,6 @@ class ProjectionTests extends munit.FunSuite {
   test("typecheck: dependent projection works with type patterns") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
-        |
         |inductive Vec (A: Type) indices (n: Nat) : Type
         | | nil {A: Type} : Vec(A, Nat.zero)
         | | cons {A: Type} (tail: Vec(A, $n)) (head: A) : Vec(A, Nat.succ(n))
@@ -146,10 +130,6 @@ class ProjectionTests extends munit.FunSuite {
   test("typecheck: later field projection can depend on earlier field projection") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
-        |
         |inductive Vec (A: Type) indices (n: Nat) : Type
         | | nil {A: Type} : Vec(A, Nat.zero)
         | | cons {A: Type} (tail: Vec(A, $n)) (head: A) : Vec(A, Nat.succ(n))
@@ -166,9 +146,6 @@ class ProjectionTests extends munit.FunSuite {
   test("typecheck: later field projection can instantiate a family field with an earlier projection") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        |
         |struct Sigma (A: Type)(B: A -> Type) : Type
         | | mk {A: Type}{B: A -> Type} (fst: A)(snd: B(fst)) : Sigma(A, B)
         |
@@ -181,10 +158,6 @@ class ProjectionTests extends munit.FunSuite {
   test("typecheck: projection can quote a function-typed field") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
-        |
         |struct HasFn : Type
         | | mk (f: Nat -> Nat) : HasFn
         |
@@ -209,9 +182,6 @@ class ProjectionTests extends munit.FunSuite {
   test("typecheck: projection can quote constructor value with erased argument in field type") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        |
         |inductive Box (A: Type) : Type
         | | mk {A: Type} : Box(A)
         |
@@ -230,9 +200,6 @@ class ProjectionTests extends munit.FunSuite {
   test("typecheck: projection can recover erased constructor argument from stored field") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        |
         |inductive Pack : Type
         | | mk (x: $A in Type) : Pack
         |
@@ -251,10 +218,6 @@ class ProjectionTests extends munit.FunSuite {
   test("regression: projection from opaque struct-valued def stays neutral") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
-        |
         |struct Pair (A: Type)(B: Type) : Type
         | | mk {A: Type}{B: Type} (fst: A)(snd: B) : Pair(A, B)
         |
@@ -273,10 +236,6 @@ class ProjectionTests extends munit.FunSuite {
   test("regression: projection in type position from opaque struct constant stays neutral") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
-        |
         |struct PairU (A: Sort($u1))(B: Sort($u2)) : Sort(Level.max(u1, u2))
         | | mk {A: Sort($u1)}{B: Sort($u2)} (fst: A)(snd: B) : PairU(A, B)
         |
@@ -292,10 +251,6 @@ class ProjectionTests extends munit.FunSuite {
   test("regression: projection from stuck match returning a struct stays neutral") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
-        |
         |struct Pair (A: Type)(B: Type) : Type
         | | mk {A: Type}{B: Type} (fst: A)(snd: B) : Pair(A, B)
         |
@@ -320,10 +275,6 @@ class ProjectionTests extends munit.FunSuite {
   test("typecheck: struct output determined by erased binders supports explicit specialized projection") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
-        |
         |struct ChooseLeft (A: Type)(B: Type) indices (Out: Type) : Type
         | | mk {A: Type}{B: Type} (x: A) : ChooseLeft(A, B, A)
         |
@@ -336,10 +287,6 @@ class ProjectionTests extends munit.FunSuite {
   test("negative: projection does not refine captured struct output from erased binders") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
-        |
         |struct ChooseLeft (A: Type)(B: Type) indices (Out: Type) : Type
         | | mk {A: Type}{B: Type} (x: A) : ChooseLeft(A, B, A)
         |
@@ -363,10 +310,6 @@ class ProjectionTests extends munit.FunSuite {
   test("typecheck: struct indices may depend on constructor fields") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
-        |
         |inductive Vec (A: Type) indices (n: Nat) : Type
         | | nil {A: Type} : Vec(A, Nat.zero)
         | | cons {A: Type} (tail: Vec(A, $n)) (head: A) : Vec(A, Nat.succ(n))
@@ -381,10 +324,6 @@ class ProjectionTests extends munit.FunSuite {
   test("negative: projection does not infer hidden erased binders from family arguments") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
-        |
         |inductive Vec (A: Type) indices (n: Nat) : Type
         | | nil {A: Type} : Vec(A, Nat.zero)
         | | cons {A: Type} (tail: Vec(A, $n)) (head: A) : Vec(A, Nat.succ(n))
@@ -406,10 +345,6 @@ class ProjectionTests extends munit.FunSuite {
   test("negative: struct selector is rejected when a field has hidden dependencies") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
-        |
         |inductive Vec (A: Type) indices (n: Nat) : Type
         | | nil {A: Type} : Vec(A, Nat.zero)
         | | cons {A: Type} (tail: Vec(A, $n)) (head: A) : Vec(A, Nat.succ(n))
@@ -512,10 +447,6 @@ class ProjectionTests extends munit.FunSuite {
   test("negative: Prop struct projection into Type is restricted when the field is not forced") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
-        |
         |struct Nonempty (A: Type) : Prop
         | | intro {A: Type} (val: A) : Nonempty(A)
         |

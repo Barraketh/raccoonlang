@@ -22,10 +22,6 @@ class InductiveCheckTest extends munit.FunSuite {
   test("Inductive type must be a Sort (no Pi): inductive Bad : Nat") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
-        |
         |inductive Bad : Nat
         | | mk : Bad
         |
@@ -37,10 +33,6 @@ class InductiveCheckTest extends munit.FunSuite {
   test("Inductive type must be a Sort (Pi case): inductive Bad(A: Type) : A") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
-        |
         |inductive Bad(A: Type) : A
         | | mk{A: Type}: Bad(A)
         |
@@ -52,10 +44,6 @@ class InductiveCheckTest extends munit.FunSuite {
   test("Constructor result must be inductive head: ctor returns Nat, not Bad") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
-        |
         |inductive Bad : Type
         | | mk : Nat
         |
@@ -102,10 +90,6 @@ class InductiveCheckTest extends munit.FunSuite {
   test("Constructor erased binders must be inductive params") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
-        |
         |inductive Vec (A: Type) indices (n: Nat) : Sort(Level.one)
         | | mk {B: Type}{n: Nat}: Vec(B, n)
         |
@@ -117,10 +101,6 @@ class InductiveCheckTest extends munit.FunSuite {
   test("Constructor result must have full family arity") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
-        |
         |inductive Vec (A: Type) indices (n: Nat) : Sort(Level.one)
         | | bad {A: Type}: Vec(A)
         |
@@ -132,10 +112,6 @@ class InductiveCheckTest extends munit.FunSuite {
   test("Constructor erased binders may not bind indices") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
-        |
         |inductive Vec (A: Type) indices (n: Nat) : Sort(Level.one)
         | | bad {A: Type}{n: Nat}: Vec(A, n)
         |
@@ -169,10 +145,6 @@ class InductiveCheckTest extends munit.FunSuite {
   test("Constructor param witness type is checked after elaboration") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
-        |
         |inductive Bad (A: Type) : Type
         | | mk {A: Nat}: Bad(A)
         |
@@ -204,10 +176,6 @@ class InductiveCheckTest extends munit.FunSuite {
   test("Nested non-positive: recursive occurrence under forbidden container parameter") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
-        |
         |inductive BadBox (A: Type) : Type
         | | mk {A: Type} (f: A -> Nat) : BadBox(A)
         |
@@ -276,9 +244,6 @@ class InductiveCheckTest extends munit.FunSuite {
   test("Nested metadata: unknown type-function head forbids dependent family argument") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        |
         |inductive Higher (F: Type -> Type) : Sort(Level.one)
         | | mk {F: Type -> Type} (x: F(Nat)) : Higher(F)
         |

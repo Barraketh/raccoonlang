@@ -21,10 +21,6 @@ class VecZipTest extends munit.FunSuite {
   test("Indexed Vec zip") {
     val program =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
-        |
         |inductive Vec(u: Level)(A: Sort(u)) indices (n: Nat) : Sort(Level.max(Level.one, u))
         | | nil {u: Level}{A: Sort(u)}: Vec(u, A, Nat.zero)
         | | cons {u: Level}{A: Sort(u)}(n: Nat)(vec: Vec(u, A, n))(elem: A): Vec(u, A, Nat.succ(n))
@@ -56,10 +52,6 @@ class VecZipTest extends munit.FunSuite {
   test("Indexed Vec zip with type patterns") {
     val program =
       """
-        |inductive Nat : Type
-        |  | zero : Nat
-        |  | succ (_: Nat) : Nat
-        |
         |inductive Vec (A: Sort($u)) indices (n: Nat) : Sort(Level.max(Level.one, u))
         |  | nil {A: Sort($u)}: Vec(A, Nat.zero)
         |  | cons {A: Sort($u)} (v: Vec(A, $n))(elem: A): Vec(A, Nat.succ(n))

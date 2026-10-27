@@ -17,24 +17,15 @@ class AxiomTests extends munit.FunSuite {
       case err: Failure => fail(s"Failed to parse: $err, ${src.substring(err.curIdx)}")
     }
 
-  private val natPrelude =
-    """
-      |inductive Nat : Type
-      | | zero : Nat
-      | | succ (_: Nat) : Nat
-      |
-      |""".stripMargin
-
   test("axiom declares an opaque constant") {
     val res = runProgram(
-      natPrelude +
-        """
-          |axiom magicNat : Nat
-          |
-          |{
-          |  magicNat
-          |}
-          |""".stripMargin
+      """
+        |axiom magicNat : Nat
+        |
+        |{
+        |  magicNat
+        |}
+        |""".stripMargin
     )
 
     assertEquals(PrettyPrinter.print(res), "magicNat")
@@ -43,14 +34,13 @@ class AxiomTests extends munit.FunSuite {
 
   test("parameterized axiom can be applied") {
     val res = runProgram(
-      natPrelude +
-        """
-          |axiom choose (A: Type)(x: A): A
-          |
-          |{
-          |  choose(Nat, Nat.zero)
-          |}
-          |""".stripMargin
+      """
+        |axiom choose (A: Type)(x: A): A
+        |
+        |{
+        |  choose(Nat, Nat.zero)
+        |}
+        |""".stripMargin
     )
 
     assertEquals(PrettyPrinter.print(res), "choose(Nat, Nat.zero)")
@@ -59,17 +49,16 @@ class AxiomTests extends munit.FunSuite {
 
   test("axiom instance participates in derive") {
     val res = runProgram(
-      natPrelude +
-        """
-          |struct DecEq (A: Type) : Type
-          | | mk {A: Type} (ok: Nat) : DecEq(A)
-          |
-          |axiom instance natEq : DecEq(Nat)
-          |
-          |{
-          |  derive[DecEq(Nat)]
-          |}
-          |""".stripMargin
+      """
+        |struct DecEq (A: Type) : Type
+        | | mk {A: Type} (ok: Nat) : DecEq(A)
+        |
+        |axiom instance natEq : DecEq(Nat)
+        |
+        |{
+        |  derive[DecEq(Nat)]
+        |}
+        |""".stripMargin
     )
 
     assertEquals(PrettyPrinter.print(res), "natEq")
@@ -77,10 +66,9 @@ class AxiomTests extends munit.FunSuite {
 
   test("axiom result must be a type") {
     val p =
-      natPrelude +
-        """
-          |axiom bad : Nat.zero
-          |""".stripMargin
+      """
+        |axiom bad : Nat.zero
+        |""".stripMargin
 
     intercept[NotAType] {
       typecheckDecls(p)

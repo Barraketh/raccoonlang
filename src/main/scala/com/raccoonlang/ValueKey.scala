@@ -43,12 +43,19 @@ object ValueKey {
     val ConstId = 13
     val LocalId = 14
     val PropTpe = 15
+    val NatPoly = 16
+    val NatTerms = 17
+    val NatMonomial = 18
+    val NatNumeralPower = 19
+    val NatSymbolicPower = 20
   }
 
   private val SeedHi = -7046029254386353131L
   private val SeedLo = -4417276706812531889L
   private val Mul1 = -49064778989728563L
   private val Mul2 = -4265267296055464877L
+  private val BigIntSmallEncoding = 0x534d414c4c000001L
+  private val BigIntLargeEncoding = 0x4c41524745000001L
 
   private def avalanche(x0: Long): Long = {
     var x = x0
@@ -62,11 +69,11 @@ object ValueKey {
   private def tag(id: Int): Key =
     Key(avalanche(SeedHi ^ id.toLong), avalanche(SeedLo + id.toLong))
 
-  private def mixLong(key: Key, value: Long): Key =
-    Key(
-      avalanche(key.hi ^ (value + SeedHi)),
-      avalanche(key.lo + java.lang.Long.rotateLeft(value ^ SeedLo, 31))
-    )
+  private def mixLong(key: Key, value: Long): Key = Key(mixLongHi(key.hi, value), mixLongLo(key.lo, value))
+
+  private def mixLongHi(hi: Long, value: Long): Long = avalanche(hi ^ (value + SeedHi))
+
+  private def mixLongLo(lo: Long, value: Long): Long = avalanche(lo + java.lang.Long.rotateLeft(value ^ SeedLo, 31))
 
   private def mixString(key: Key, value: String): Key = {
     var cur = mixLong(key, value.length.toLong)
@@ -78,11 +85,58 @@ object ValueKey {
     cur
   }
 
-  private def mixKey(key: Key, value: Key): Key =
-    Key(
-      avalanche(key.hi ^ value.hi),
-      avalanche(key.lo + java.lang.Long.rotateLeft(value.lo, 27))
-    )
+  private def mixBigInt(key: Key, value: BigInt): Key = {
+    val mixer = new Mixer(key)
+    mixer.bigInt(value)
+    mixer.result
+  }
+
+  private def mixKey(key: Key, value: Key): Key = Key(mixKeyHi(key.hi, value), mixKeyLo(key.lo, value))
+
+  private def mixKeyHi(hi: Long, value: Key): Long = avalanche(hi ^ value.hi)
+
+  private def mixKeyLo(lo: Long, value: Key): Long = avalanche(lo + java.lang.Long.rotateLeft(value.lo, 27))
+
+  /** Mixes a sequence into one key without allocating a key per step; each step matches the functional mixers. */
+  private final class Mixer(start: Key) {
+    private var hi = start.hi
+    private var lo = start.lo
+
+    def long(value: Long): Unit = {
+      hi = mixLongHi(hi, value)
+      lo = mixLongLo(lo, value)
+    }
+
+    def key(value: Key): Unit = {
+      hi = mixKeyHi(hi, value)
+      lo = mixKeyLo(lo, value)
+    }
+
+    /**
+     * Length-tagged binary encoding avoids decimal conversion and distinguishes small and full-width integer chunks.
+     */
+    def bigInt(value: BigInt): Unit =
+      if (value.isValidLong) {
+        long(BigIntSmallEncoding)
+        long(value.longValue)
+      } else {
+        val bytes = value.toByteArray
+        long(BigIntLargeEncoding)
+        long(bytes.length.toLong)
+        var offset = 0
+        while (offset < bytes.length) {
+          val end = math.min(offset + java.lang.Long.BYTES, bytes.length)
+          var word = 0L
+          while (offset < end) {
+            word = (word << 8) | (bytes(offset) & 0xffL)
+            offset += 1
+          }
+          long(word)
+        }
+      }
+
+    def result: Key = Key(hi, lo)
+  }
 
   private def mixValues(key: Key, values: Iterable[Value]): Key = {
     val iter = values.iterator
@@ -137,5 +191,45 @@ object ValueKey {
       mixLong(valueIdKey(tag(Tag.Pi), p.id), p.binders.length.toLong)
     case Value.ConstructorHead(n, _, _, _) =>
       mixString(tag(Tag.ConstructorHead), n)
+    case poly: Value.VNatPoly =>
+      mixBigInt(mixKey(tag(Tag.NatPoly), poly.form.termsKey), poly.form.constant)
+  }
+
+  /** Nat terms in order; each term contributes its coefficient and its monomial's cached key. */
+  private[raccoonlang] def natTermsKey(terms: Vector[NatNormalForm.Term]): Key = {
+    val mixer = new Mixer(tag(Tag.NatTerms))
+    mixer.long(terms.length.toLong)
+    var index = 0
+    while (index < terms.length) {
+      val term = terms(index)
+      mixer.bigInt(term.coefficient)
+      mixer.key(term.monomial.key)
+      index += 1
+    }
+    mixer.result
+  }
+
+  /**
+   * A monomial's factors in order; each contributes its base's key, so a form base contributes its own form's key, then
+   * its kind and its exponent: a numeral, or a symbolic exponent's key.
+   */
+  private[raccoonlang] def natMonomialKey(factors: Vector[NatNormalForm.Factor]): Key = {
+    val mixer = new Mixer(tag(Tag.NatMonomial))
+    mixer.long(factors.length.toLong)
+    var index = 0
+    while (index < factors.length) {
+      val factor = factors(index)
+      mixer.key(factor.base.key)
+      factor match {
+        case power: NatNormalForm.NumeralPower =>
+          mixer.long(Tag.NatNumeralPower.toLong)
+          mixer.bigInt(power.exponent)
+        case power: NatNormalForm.SymbolicPower =>
+          mixer.long(Tag.NatSymbolicPower.toLong)
+          mixer.key(power.exponent.key)
+      }
+      index += 1
+    }
+    mixer.result
   }
 }

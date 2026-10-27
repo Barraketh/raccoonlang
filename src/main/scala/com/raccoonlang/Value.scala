@@ -33,7 +33,8 @@ object Value {
       case _: VPi | _: VLam | _: NeutralThunk => true
       case app: VApp =>
         app.head.needsStructuralDefEq || app.args.exists(_.needsStructuralDefEq) || app.tpe.needsStructuralDefEq
-      case _ => false
+      case poly: VNatPoly => poly.form.needsStructuralDefEq
+      case _              => false
     })
   }
 
@@ -203,7 +204,19 @@ object Value {
     override lazy val synDeps: DepSet = tpe.synDeps
   }
 
-  case class VApp(head: Value, args: Vector[Value], tpe: Value, blockerId: Option[VarId] = None) extends Value {
+  /**
+   * A published Nat normal form that is neither zero nor a lone unit atom, constructed only by `Form.toValue`, which
+   * caches it. Every positive Nat constant and every successor is one of these, so equal forms have equal keys unless
+   * an atom needs structural conversion. A primitive sum used as a factor base is also one of these, with its own key,
+   * dependencies, and quotation. Dependencies come from the form's shared terms.
+   */
+  final class VNatPoly private[raccoonlang] (val form: NatNormalForm.Form) extends Value {
+    override def tpe: Value = Kernel.natType
+
+    override def synDeps: DepSet = form.synDeps
+  }
+
+  case class VApp(head: Value, args: Vector[Value], tpe: Value, blockerIds: DepSet = DepSet.empty) extends Value {
     override lazy val synDeps: DepSet = {
       val res = DepSet.newBuilder
       res.unionInPlace(head.synDeps)
@@ -212,10 +225,14 @@ object Value {
       res.result()
     }
 
-    require(args.nonEmpty || blockerId.isEmpty, "Blocked application requires at least one argument")
+    require(args.nonEmpty || blockerIds.isEmpty, "Blocked application requires at least one argument")
     head match {
       case h: ConstructorHead =>
-        require(blockerId.isEmpty, s"Constructor ${h.name} cannot be blocked")
+        require(blockerIds.isEmpty, s"Constructor ${h.name} cannot be blocked")
+        require(
+          args.length != 1 || h.name != Kernel.SuccName,
+          "Nat successors are compact; construct them through ConstructorValue"
+        )
         require(
           args.length == h.totalArity - h.numErased,
           s"Constructor ${h.name} stores ${args.length} fields, expected ${h.totalArity - h.numErased}"
@@ -224,7 +241,7 @@ object Value {
     }
   }
 
-  case class NeutralThunk(term: ElabAst.Term.Match, env: Env, id: ValueId.LocalId, tpe: Value, blockerId: Option[VarId])
+  case class NeutralThunk(term: ElabAst.Term.Match, env: Env, id: ValueId.LocalId, tpe: Value, blockerIds: DepSet)
     extends Value {
     override lazy val synDeps: DepSet = {
       val res = DepSet.newBuilder
@@ -237,6 +254,9 @@ object Value {
 
   case class Var(name: String, id: VarId, tpe: Value) extends Value {
     override lazy val synDeps: DepSet = tpe.synDeps + id
+
+    /** The variable alone, without its type's dependencies; it blocks applications of and matches on it. */
+    lazy val reductionBlockers: DepSet = DepSet.single(id)
   }
 
   case class VLam(
@@ -297,13 +317,13 @@ object Value {
    */
 
   object VBlockedApp {
-    def apply(head: Value, args: Vector[Value], tpe: Value, blockerId: VarId): VApp =
-      VApp(head, args, tpe, Some(blockerId))
+    def apply(head: Value, args: Vector[Value], tpe: Value, blockerIds: DepSet): VApp =
+      VApp(head, args, tpe, blockerIds)
 
-    def unapply(value: Value): Option[(Value, Vector[Value], Value, VarId)] =
+    def unapply(value: Value): Option[(Value, Vector[Value], Value, DepSet)] =
       value match {
-        case VApp(head, args, tpe, Some(blockerId)) => Some((head, args, tpe, blockerId))
-        case _                                      => None
+        case VApp(head, args, tpe, blockers) if blockers.nonEmpty => Some((head, args, tpe, blockers))
+        case _                                                    => None
       }
   }
 
@@ -312,36 +332,43 @@ object Value {
 
     def unapply(value: Value): Option[(ConstructorHead, Vector[Value], Value)] =
       value match {
-        case VApp(head: ConstructorHead, fields, tpe, None) => Some((head, fields, tpe))
-        case _                                              => None
+        case VApp(head: ConstructorHead, fields, tpe, blockers) if blockers.isEmpty => Some((head, fields, tpe))
+        case _                                                                      => None
       }
   }
 
-  object Blocker {
-    def unapply(value: Value): Option[VarId] =
+  /** Dependencies that can make reduction progress; these grant no permission to refine variables. */
+  object ReductionBlockers {
+    def of(value: Value): DepSet =
       value match {
-        case Var(_, id, _)                      => Some(id)
-        case VBlockedApp(_, _, _, id)           => Some(id)
-        case NeutralThunk(_, _, _, _, Some(id)) => Some(id)
-        case _                                  => None
+        case variable: Var                             => variable.reductionBlockers
+        case VBlockedApp(_, _, _, ids)                 => ids
+        case NeutralThunk(_, _, _, _, ids)             => ids
+        case poly: VNatPoly if poly.form.constant == 0 => poly.synDeps // no known successor
+        case _                                         => DepSet.empty
       }
+
+    def unapply(value: Value): Option[DepSet] = {
+      val blockers = of(value)
+      if (blockers.isEmpty) None else Some(blockers)
+    }
   }
 
   object Blocked {
-    def unapply(value: Value): Option[VarId] =
+    def unapply(value: Value): Option[DepSet] =
       value match {
-        case VBlockedApp(_, _, _, id)           => Some(id)
-        case NeutralThunk(_, _, _, _, Some(id)) => Some(id)
-        case _                                  => None
+        case VBlockedApp(_, _, _, ids)                     => Some(ids)
+        case NeutralThunk(_, _, _, _, ids) if ids.nonEmpty => Some(ids)
+        case _                                             => None
       }
   }
 
   object ConstSpine {
     def unapply(value: Value): Option[(VConst, Vector[Value])] =
       value match {
-        case c: VConst                         => Some((c, Vector.empty))
-        case VApp(head: VConst, args, _, None) => Some((head, args))
-        case _                                 => None
+        case c: VConst                                                 => Some((c, Vector.empty))
+        case VApp(head: VConst, args, _, blockers) if blockers.isEmpty => Some((head, args))
+        case _                                                         => None
       }
   }
 

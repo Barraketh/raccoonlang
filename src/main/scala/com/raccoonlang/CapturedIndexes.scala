@@ -49,6 +49,8 @@ object CapturedIndexes {
       case Term.LocalRef(ref, _) =>
         addRef(ref, cutoff, refs)
 
+      case Term.NatLit(_, _) =>
+
       case Term.Pi(binders, out, _, _, _) =>
         binders.foreach { b =>
           goBinderType(b.ty, cutoff, refs)

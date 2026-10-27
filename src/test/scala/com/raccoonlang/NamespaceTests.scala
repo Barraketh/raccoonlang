@@ -14,17 +14,13 @@ class NamespaceTests extends munit.FunSuite {
     Interpreter.run(parseCore(src), Prelude.test)
 
   private def ctorName(v: Value): String = v match {
-    case Value.VCtor(head, _, _) => head.name
-    case other                   => fail(s"Expected constructor value, got $other")
+    case ConstructorValue(head, _) => head.name
+    case other                     => fail(s"Expected constructor value, got $other")
   }
 
   test("inductive head can also be used as a namespace for functions") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
-        |
         |inductive List (A: Type) : Type
         | | nil {A: Type} : List(A)
         | | cons {A: Type} (tail: List(A))(head: A) : List(A)
@@ -44,18 +40,14 @@ class NamespaceTests extends munit.FunSuite {
   test("open namespace snapshots known globals and checks namespace existence") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
-        |
         |namespace Nat {
-        |  def add (a: Nat)(b: Nat): Nat := a
+        |  def keepLeft (a: Nat)(b: Nat): Nat := a
         |}
         |
         |open Nat
         |
         |{
-        |  add(succ(zero), zero)
+        |  keepLeft(succ(zero), zero)
         |}
         |""".stripMargin
 
@@ -63,18 +55,14 @@ class NamespaceTests extends munit.FunSuite {
 
     val late =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
-        |
         |open Nat
         |
         |namespace Nat {
-        |  def add (a: Nat)(b: Nat): Nat := a
+        |  def keepLeft (a: Nat)(b: Nat): Nat := a
         |}
         |
         |{
-        |  add(succ(zero), zero)
+        |  keepLeft(succ(zero), zero)
         |}
         |""".stripMargin
 
@@ -84,8 +72,8 @@ class NamespaceTests extends munit.FunSuite {
 
     val missing =
       """
-        |def Nat : Type := Type
-        |open Nat
+        |def Number : Type := Type
+        |open Number
         |""".stripMargin
 
     intercept[NotFound] {
@@ -96,10 +84,6 @@ class NamespaceTests extends munit.FunSuite {
   test("root-qualified open bypasses current namespace shadowing") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
-        |
         |namespace Shadow {
         |  namespace Nat {
         |    def decoy : _root_.Nat := _root_.Nat.zero
@@ -119,10 +103,6 @@ class NamespaceTests extends munit.FunSuite {
 
     val shadowed =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
-        |
         |namespace Shadow {
         |  namespace Nat {
         |    def decoy : _root_.Nat := _root_.Nat.zero
@@ -156,10 +136,6 @@ class NamespaceTests extends munit.FunSuite {
   test("selected, renamed, and excluded open rules expose the requested aliases") {
     val selected =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
-        |
         |open Nat.{zero, succ}
         |
         |{
@@ -171,10 +147,6 @@ class NamespaceTests extends munit.FunSuite {
 
     val renamed =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
-        |
         |open Nat.{zero as natZero, succ as natSucc}
         |
         |{
@@ -186,10 +158,6 @@ class NamespaceTests extends munit.FunSuite {
 
     val excludedAndRenamed =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
-        |
         |open Nat.{*, -succ, succ as nsucc}
         |
         |{
@@ -201,10 +169,6 @@ class NamespaceTests extends munit.FunSuite {
 
     val excludedOriginal =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
-        |
         |open Nat.{*, -succ, succ as nsucc}
         |
         |def bad : Nat := succ(zero)
@@ -218,9 +182,6 @@ class NamespaceTests extends munit.FunSuite {
   test("open aliases can be used as qualified namespace prefixes") {
     val wildcard =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        |
         |namespace Data {
         |  inductive Tree (A: Type) : Type
         |   | leaf {A: Type} (value: A) : Tree(A)
@@ -237,9 +198,6 @@ class NamespaceTests extends munit.FunSuite {
 
     val selected =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        |
         |namespace Data {
         |  inductive Tree (A: Type) : Type
         |   | leaf {A: Type} (value: A) : Tree(A)
@@ -256,9 +214,6 @@ class NamespaceTests extends munit.FunSuite {
 
     val renamed =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        |
         |namespace Data {
         |  inductive Tree (A: Type) : Type
         |   | leaf {A: Type} (value: A) : Tree(A)
@@ -275,9 +230,6 @@ class NamespaceTests extends munit.FunSuite {
 
     val excluded =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        |
         |namespace Data {
         |  inductive Tree (A: Type) : Type
         |   | leaf {A: Type} (value: A) : Tree(A)
@@ -294,9 +246,6 @@ class NamespaceTests extends munit.FunSuite {
 
     val ambiguous =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        |
         |namespace A {
         |  inductive Tree (A: Type) : Type
         |   | leaf {A: Type} (value: A) : Tree(A)
@@ -321,9 +270,6 @@ class NamespaceTests extends munit.FunSuite {
   test("open conflicts are reported when opened") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        |
         |namespace A {
         |  def foo : Nat := Nat.zero
         |}
@@ -344,10 +290,6 @@ class NamespaceTests extends munit.FunSuite {
   test("anonymous command block scopes opens but keeps declarations") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
-        |
         |{
         |  open Nat
         |  def one : Nat := succ(zero)
@@ -360,9 +302,6 @@ class NamespaceTests extends munit.FunSuite {
 
     val scoped =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        |
         |{
         |  open Nat
         |  def ok : Nat := zero
@@ -379,9 +318,6 @@ class NamespaceTests extends munit.FunSuite {
   test("local dotted names project, root-qualified names bypass local shadowing") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        |
         |struct NatOps : Type
         | | mk (zero: Nat) : NatOps
         |
@@ -395,10 +331,6 @@ class NamespaceTests extends munit.FunSuite {
   test("match cases may use explicit short constructor names from scrutinee type") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (p: Nat) : Nat
-        |
         |def pred (n: Nat): Nat := {
         |  match n with
         |  | .zero => Nat.zero
@@ -416,10 +348,6 @@ class NamespaceTests extends munit.FunSuite {
   test("plain case heads must resolve as globals, not locals") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (p: Nat) : Nat
-        |
         |def bad (zero: Nat)(n: Nat): Nat := {
         |  match n with
         |  | zero => Nat.zero
@@ -486,10 +414,6 @@ class NamespaceTests extends munit.FunSuite {
   test("match cases for namespaced inductives may be fully qualified, partially qualified, and unqualified") {
     val fullyQualified =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
-        |
         |namespace Data {
         |  inductive Tree : Type
         |   | leaf : Tree
@@ -511,10 +435,6 @@ class NamespaceTests extends munit.FunSuite {
 
     val partiallyQualified =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
-        |
         |namespace Data {
         |  inductive Tree : Type
         |   | leaf : Tree
@@ -538,10 +458,6 @@ class NamespaceTests extends munit.FunSuite {
 
     val unqualified =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
-        |
         |namespace Data {
         |  inductive Tree : Type
         |   | leaf : Tree
@@ -565,10 +481,6 @@ class NamespaceTests extends munit.FunSuite {
 
     val renamedUnqualified =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
-        |
         |open Nat.{zero as z, succ as s}
         |
         |def pred (n: Nat): Nat := {
@@ -596,9 +508,6 @@ class NamespaceTests extends munit.FunSuite {
   test("old double-colon qualified syntax is rejected") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        |
         |{ Nat::zero }
         |""".stripMargin
 

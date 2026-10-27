@@ -62,6 +62,7 @@ object TypeError {
     case e: MissingDecreaseSpec             => e.copy(span = Some(sp))
     case e: NonDecreasingRecursiveCall      => e.copy(span = Some(sp))
     case e: InvalidRecursiveOccurrence      => e.copy(span = Some(sp))
+    case e: NatValueTooLarge                => e.copy(span = Some(sp))
   }
 }
 
@@ -323,4 +324,9 @@ final case class NonDecreasingRecursiveCall(function: String, reason: String, sp
 final case class InvalidRecursiveOccurrence(function: String, reason: String, span: Option[Span] = None)
   extends TypeError {
   override def msg: String = s"Invalid recursive occurrence of $function: $reason"
+}
+
+/** A closed Nat power whose result a JVM integer cannot represent; a representation limit, not a budget. */
+final case class NatValueTooLarge(exponent: BigInt, span: Option[Span] = None) extends TypeError {
+  override def msg: String = s"Nat power with exponent $exponent is too large to represent"
 }

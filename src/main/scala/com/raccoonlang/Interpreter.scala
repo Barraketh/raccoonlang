@@ -29,29 +29,34 @@ object Interpreter {
   }
 
   /**
-   * Continues the reduction of v if v is blocked by a variable that's been solved in EqStore The default call (if v
-   * cannot be further reduced) should be quite fast, so we can call it defensively (don't need to worry too much about
-   * the performance impact of calling it too often).
+   * Force links and resume blocked computations when a scheduling dependency has been solved. Materialization handles
+   * transitive substitution of heads and arguments. Stop retrying when reduction returns the same blockers, even if a
+   * solved dependency remains syntactically present in an opaque result.
    */
   def resolveInEqStore(v: Value, eqStore: EqStore): Value = {
+    def retryUnlessStuckOn(next: Value, previousBlockers: DepSet): Value =
+      next match {
+        case Blocked(nextBlockers) if nextBlockers == previousBlockers => next
+        case _                                                         => resolveInEqStore(next, eqStore)
+      }
+
     val v0 = eqStore.force(v)
     v0 match {
-      case Blocked(blockerId) if eqStore.subst.contains(blockerId) =>
+      case Blocked(blockerIds) if blockerIds.intersects(eqStore.solvedIds) =>
         v0 match {
-          case VBlockedApp(h, args, tpe, _) =>
-            val h0 = ValueOps.materialize(resolveInEqStore(h, eqStore), eqStore)
+          case VBlockedApp(h, args, tpe, oldBlockers) =>
+            val h0 = ValueOps.materialize(h, eqStore)
             val materializedArgs = args.map(arg => ValueOps.materialize(arg, eqStore))
             h0 match {
-              case lam: VLam =>
-                val res = runLam(lam, materializedArgs)
-                resolveInEqStore(res, eqStore)
-              case nextHead @ Blocker(nextBlockerId) =>
-                VBlockedApp(nextHead, args, tpe, nextBlockerId)
+              case lam: VLam => retryUnlessStuckOn(runLam(lam, materializedArgs), oldBlockers)
+              case nextHead @ ReductionBlockers(nextBlockers) =>
+                val next = VBlockedApp(nextHead, materializedArgs, ValueOps.materialize(tpe, eqStore), nextBlockers)
+                retryUnlessStuckOn(next, oldBlockers)
               case other =>
                 resolveInEqStore(evalApply(other, materializedArgs), eqStore)
             }
-          case vm: NeutralThunk if vm.blockerId.nonEmpty => resolveInEqStore(forceThunk(vm, eqStore), eqStore)
-          case _                                         => throw WTF(s"Blocked extractor matched unexpected value $v0")
+          case vm: NeutralThunk if vm.blockerIds.nonEmpty => retryUnlessStuckOn(forceThunk(vm, eqStore), vm.blockerIds)
+          case _ => throw WTF(s"Blocked extractor matched unexpected value $v0")
         }
 
       case l: Level if l.atoms.keySet.intersect(eqStore.subst.keySet).nonEmpty => normalizeLevel(l, eqStore)
@@ -100,6 +105,7 @@ object Interpreter {
   def evalTypeTerm(tt: ElabAst.TypeTerm, env: Env): Value = tt match {
     case ref: ETerm.Ref         => evalRef(ref, env)
     case ETerm.App(fn, args, _) => evalApplyTerm(fn, args, env)
+    case ETerm.NatLit(value, _) => NatNormalForm.literal(value)
     case pi: ETerm.Pi           => evalPi(pi, env)
   }
 
@@ -109,7 +115,7 @@ object Interpreter {
       case ETerm.LocalRef(local, _) => env(local)
     }
     res match {
-      case h: ConstructorHead if h.totalArity == 0 => VCtor(h, Vector.empty, h.tpe)
+      case h: ConstructorHead if h.totalArity == 0 => ConstructorValue(h, Vector.empty, h.tpe)
       case _                                       => res
     }
   }
@@ -125,9 +131,11 @@ object Interpreter {
           case h: VConst           => VApp(h, vArgs, pi.codomain(envWithArgs))
           case h: ConstructorHead =>
             val resultTy = pi.codomain(envWithArgs)
-            VCtor(h, vArgs.drop(h.numErased), resultTy)
-          case blocker @ Blocker(blockerId) => VBlockedApp(blocker, vArgs, pi.codomain(envWithArgs), blockerId)
-          case _                            => throw CannotApplyNonFunction(fn)
+            val fields = vArgs.drop(h.numErased)
+            ConstructorValue(h, fields, resultTy)
+          case blocker @ ReductionBlockers(blockerIds) =>
+            VBlockedApp(blocker, vArgs, pi.codomain(envWithArgs), blockerIds)
+          case _ => throw CannotApplyNonFunction(fn)
         }
       case _ => throw CannotApplyNonFunction(fn.tpe)
     }
@@ -207,23 +215,21 @@ object Interpreter {
     val matchCaptures = captureValues(env, capturedIndexes)
     val lamId = ValueId.LocalId(m.nodeId, matchCaptures)
     val closedEnv = RuntimeEnv.closeForEval(env, capturedIndexes)
-    scrut match {
-      case Blocker(blockerId) => NeutralThunk(m, closedEnv, lamId, outType, Some(blockerId))
-      case _                  => NeutralThunk(m, closedEnv, lamId, outType, None)
-    }
+    val blockers = ReductionBlockers.of(scrut)
+    NeutralThunk(m, closedEnv, lamId, outType, blockers)
   }
 
   private def evalMatch(m: ETerm.Match, env: Env): Value = {
     val scrut = evalTerm(m.scrut, env)
     val (head, args) = scrut match {
-      case VCtor(head, fields, _) => (head, fields)
-      case other                  =>
+      case ConstructorValue(head, fields) => (head, fields)
+      case _                              =>
         // We are either blocked or stuck
         val outType: Value = m.motive match {
           case Some(motive) => evalTypeTerm(motive, env)
           case None         => scrut.tpe
         }
-        return stuckMatch(m, other, env, outType)
+        return stuckMatch(m, scrut, env, outType)
     }
 
     val ctorName = head.name
@@ -301,17 +307,17 @@ object Interpreter {
     }
   }
 
-  private[raccoonlang] def initialEnv(prelude: Prelude.Config = Prelude.default): Env = {
-    val baseEnv =
-      Env.empty
-        .putGlobal("Type", TypeTpe)
-        .putGlobal("Level", LevelTpe)
-        .putGlobal("Level.zero", Level.zero)
-        .putGlobal("Level.one", Level.one)
-        .putGlobal("Prop", PropTpe)
+  /** Values the elaborator also knows by name; the kernel's declarations are evaluated on top of these. */
+  private[raccoonlang] def primitiveEnv: Env =
+    Env.empty
+      .putGlobal("Type", TypeTpe)
+      .putGlobal("Level", LevelTpe)
+      .putGlobal("Level.zero", Level.zero)
+      .putGlobal("Level.one", Level.one)
+      .putGlobal("Prop", PropTpe)
 
-    prelude.core.decls.foldLeft(baseEnv) { case (curEnv, decl) =>
+  private[raccoonlang] def initialEnv(prelude: Prelude.Config = Prelude.default): Env =
+    prelude.core.decls.foldLeft(Kernel.env) { case (curEnv, decl) =>
       evalDecl(decl, curEnv)
     }
-  }
 }

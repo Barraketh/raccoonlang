@@ -37,11 +37,11 @@ class TypePatternTests extends munit.FunSuite {
 
   private def toShape(v: Value): Shape = v match {
     case Value.ConstructorHead(n, _, _, _) => SConst(n)
-    case Value.VCtor(h, fields, _) =>
+    case ConstructorValue(h, fields) =>
       if (fields.isEmpty) SConst(h.name) else SApp(SConst(h.name), fields.toList.map(toShape))
-    case Value.VConst(n, _, _)  => SConst(n)
+    case Value.VConst(n, _, _)     => SConst(n)
     case Value.VApp(h, args, _, _) => SApp(toShape(h), args.toList.map(toShape))
-    case other                  => SConst(other.toString)
+    case other                     => SConst(other.toString)
   }
 
   private val zeroS = SConst("Nat.zero")
@@ -52,10 +52,6 @@ class TypePatternTests extends munit.FunSuite {
   test("positive: capture family argument from binder and use it in codomain/body") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
-        |
         |inductive Box (A: Sort($u)) : Sort(u)
         | | mk {A: Sort($u)} (a: A) : Box(A)
         |
@@ -76,10 +72,6 @@ class TypePatternTests extends munit.FunSuite {
   test("positive: capture indexed argument from binder and use it as a term") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
-        |
         |inductive Vec (A: Sort($u)) indices (n: Nat) : Sort(u)
         | | nil {A: Sort($u)} : Vec(A, Nat.zero)
         | | cons {A: Sort($u)} (tail: Vec(A, $n)) (head: A) : Vec(A, Nat.succ(n))
@@ -98,10 +90,6 @@ class TypePatternTests extends munit.FunSuite {
   test("positive: visible capture from one binder can be reused in later binders and codomain") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
-        |
         |inductive Box (A: Sort($u)) : Sort(u)
         | | mk {A: Sort($u)} (a: A) : Box(A)
         |
@@ -119,10 +107,6 @@ class TypePatternTests extends munit.FunSuite {
   test("positive: later binder can reuse captured index from earlier binder") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
-        |
         |inductive Vec (A: Sort($u)) indices (n: Nat) : Sort(u)
         | | nil {A: Sort($u)} : Vec(A, Nat.zero)
         | | cons {A: Sort($u)} (tail: Vec(A, $n)) (head: A) : Vec(A, Nat.succ(n))
@@ -141,10 +125,6 @@ class TypePatternTests extends munit.FunSuite {
   test("positive: Pi equality through flattened type patterns succeeds under renaming") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
-        |
         |inductive Vec (A: Sort($u)) indices (n: Nat) : Sort(u)
         | | nil {A: Sort($u)} : Vec(A, Nat.zero)
         | | cons {A: Sort($u)} (tail: Vec(A, $n)) (head: A) : Vec(A, Nat.succ(n))
@@ -162,10 +142,6 @@ class TypePatternTests extends munit.FunSuite {
   test("positive: type patterns work in inductive constructor fields") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
-        |
         |inductive Vec (A: Sort($u)) indices (n: Nat) : Sort(u)
         | | nil {A: Sort($u)} : Vec(A, Nat.zero)
         | | cons {A: Sort($u)} (tail: Vec(A, $n)) (head: A) : Vec(A, Nat.succ(n))
@@ -181,10 +157,6 @@ class TypePatternTests extends munit.FunSuite {
   test("positive: top-level constrained capture exposes type and level") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
-        |
         |def constrainedId (x: $A in Sort($u)): A := x
         |def capturedType (x: $A in Sort($u)): Sort(u) := A
         |
@@ -246,10 +218,6 @@ class TypePatternTests extends munit.FunSuite {
   test("negative: pattern arity mismatch in function binder is rejected") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
-        |
         |inductive Vec (A: Sort($u)) indices (n: Nat) : Sort(u)
         | | nil {A: Sort($u)} : Vec(A, Nat.zero)
         | | cons {A: Sort($u)} (tail: Vec(A, $n)) (head: A) : Vec(A, Nat.succ(n))
@@ -271,10 +239,6 @@ class TypePatternTests extends munit.FunSuite {
   test("negative: pattern arity mismatch in constructor field is rejected") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
-        |
         |inductive Vec (A: Sort($u)) indices (n: Nat) : Sort(u)
         | | nil {A: Sort($u)} : Vec(A, Nat.zero)
         | | cons {A: Sort($u)} (tail: Vec(A, $n)) (head: A) : Vec(A, Nat.succ(n))
@@ -297,9 +261,6 @@ class TypePatternTests extends munit.FunSuite {
   test("negative: extra pattern arguments are rejected") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        |
         |inductive Box (A: Type) : Type
         | | mk {A: Type} (a: A) : Box(A)
         |
@@ -320,10 +281,6 @@ class TypePatternTests extends munit.FunSuite {
   test("negative: concrete type pattern arguments are checked") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
-        |
         |inductive Box (A: Type) : Type
         | | mk {A: Type} (a: A) : Box(A)
         |
@@ -344,16 +301,13 @@ class TypePatternTests extends munit.FunSuite {
   test("negative: checked struct type pattern validates concrete family arguments") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        |
-        |inductive Bool : Type
-        | | tt : Bool
+        |inductive Answer : Type
+        | | tt : Answer
         |
         |struct ChooseLeft (A: Type)(B: Type) indices (Out: Type) : Type
         | | mk {A: Type}{B: Type} (x: A) : ChooseLeft(A, B, A)
         |
-        |def bad (w: ChooseLeft(Nat, Bool, Bool)): Type := Type
+        |def bad (w: ChooseLeft(Nat, Answer, Answer)): Type := Type
         |""".stripMargin
 
     LanguageParser.parseProgram(p) match {
@@ -370,10 +324,6 @@ class TypePatternTests extends munit.FunSuite {
   test("negative: call-site type pattern head mismatch is rejected") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
-        |
         |inductive Box (A: Sort($u)) : Sort(u)
         | | mk {A: Sort($u)} (a: A) : Box(A)
         |
@@ -401,10 +351,6 @@ class TypePatternTests extends munit.FunSuite {
   test("negative: type-pattern captures are not visible in the codomain") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
-        |
         |inductive Box (A: Sort($u)) : Sort(u)
         | | mk {A: Sort($u)} (a: A) : Box(A)
         |
@@ -424,10 +370,6 @@ class TypePatternTests extends munit.FunSuite {
   test("negative: later binder using captured index rejects mismatched actual argument") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
-        |
         |inductive Vec (A: Sort($u)) indices (n: Nat) : Sort(u)
         | | nil {A: Sort($u)} : Vec(A, Nat.zero)
         | | cons {A: Sort($u)} (tail: Vec(A, $n)) (head: A) : Vec(A, Nat.succ(n))
@@ -453,10 +395,6 @@ class TypePatternTests extends munit.FunSuite {
   test("negative: Pi equality through flattened type patterns rejects changed dependent codomain") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
-        |
         |inductive Vec (A: Sort($u)) indices (n: Nat) : Sort(u)
         | | nil {A: Sort($u)} : Vec(A, Nat.zero)
         | | cons {A: Sort($u)} (tail: Vec(A, $n)) (head: A) : Vec(A, Nat.succ(n))

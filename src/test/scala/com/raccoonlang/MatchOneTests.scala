@@ -47,9 +47,6 @@ class MatchOneTests extends munit.FunSuite {
     val program = core(
       """
         |
-        |inductive Nat : Type
-        | | zero : Nat
-        |
         |inductive Triple : Type
         | | mk (a: Nat)(b: Nat)(c: Nat): Triple
         |
@@ -81,9 +78,6 @@ class MatchOneTests extends munit.FunSuite {
   test("nested sibling patterns allocate all immediate fields before descendants") {
     val program = core(
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        |
         |inductive Pair : Type
         | | pair (first: Nat)(second: Nat): Pair
         |
@@ -107,10 +101,6 @@ class MatchOneTests extends munit.FunSuite {
     val value = run(
       """
         |
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (n: Nat): Nat
-        |
         |inductive Inner : Type
         | | mk (first: Nat)(second: Nat): Inner
         |
@@ -128,17 +118,14 @@ class MatchOneTests extends munit.FunSuite {
         |""".stripMargin
     )
     value match {
-      case VCtor(head, _, _) => assertEquals(head.name, "Nat.succ")
-      case other             => fail(s"Expected a constructor result, got $other")
+      case ConstructorValue(head, _) => assertEquals(head.name, "Nat.succ")
+      case other                     => fail(s"Expected a constructor result, got $other")
     }
   }
 
   test("MatchOne accepts one-constructor families for known and neutral values") {
     val (program, env) = compileEnv(
       """
-        |
-        |inductive Nat : Type
-        | | zero : Nat
         |
         |inductive One : Type
         | | mk (value: Nat): One
@@ -157,8 +144,8 @@ class MatchOneTests extends munit.FunSuite {
     )
     val checkedKnown = TypeChecker.checkTerm(known, env)
     checkedKnown.value match {
-      case VCtor(head, _, _) => assertEquals(head.name, "Nat.zero")
-      case other             => fail(s"Expected a constructor result, got $other")
+      case ConstructorValue(head, _) => assertEquals(head.name, "Nat.zero")
+      case other                     => fail(s"Expected a constructor result, got $other")
     }
     assert(checkedKnown.residual.isInstanceOf[EA.Term.Match])
 
@@ -172,9 +159,6 @@ class MatchOneTests extends munit.FunSuite {
   test("MatchOne rejects non-inductive, zero/multiple constructor, and wrong arity scrutinees") {
     val defs =
       """
-        |
-        |inductive Nat : Type
-        | | zero : Nat
         |
         |inductive Empty : Type
         |
@@ -222,9 +206,6 @@ class MatchOneTests extends munit.FunSuite {
     typecheck(
       """
         |
-        |inductive Nat : Type
-        | | zero : Nat
-        |
         |inductive Unit : Type
         | | unit : Unit
         |
@@ -248,13 +229,9 @@ class MatchOneTests extends munit.FunSuite {
     typecheck(
       """
         |
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (n: Nat): Nat
-        |
-        |inductive Bool : Type
-        | | yes : Bool
-        | | no : Bool
+        |inductive Answer : Type
+        | | yes : Answer
+        | | no : Answer
         |
         |def contextual (n: Nat): Nat := {
         |  match n with
@@ -266,20 +243,17 @@ class MatchOneTests extends munit.FunSuite {
     val program = core(
       """
         |
-        |inductive Nat : Type
-        | | zero : Nat
+        |inductive Answer : Type
+        | | yes : Answer
+        | | no : Answer
         |
-        |inductive Bool : Type
-        | | yes : Bool
-        | | no : Bool
-        |
-        |axiom flag: Bool
+        |axiom flag: Answer
         |
         |def inferred(ignored: Nat): Nat := {
         |  let result := {
         |    match flag with
-        |    | Bool.yes => Nat.zero
-        |    | Bool.no => Nat.zero
+        |    | Answer.yes => Nat.zero
+        |    | Answer.no => Nat.zero
         |  }
         |  result
         |}
@@ -297,9 +271,6 @@ class MatchOneTests extends munit.FunSuite {
   test("contextual motive permits empty matches; explicit motive keeps priority") {
     typecheck(
       """
-        |
-        |inductive Nat : Type
-        | | zero : Nat
         |
         |inductive Empty : Type
         |
@@ -326,14 +297,10 @@ class MatchOneTests extends munit.FunSuite {
       typecheck(
         """
           |
-          |inductive Nat : Type
-          | | zero : Nat
-          | | succ (n: Nat): Nat
+          |inductive Answer : Type
+          | | yes : Answer
           |
-          |inductive Bool : Type
-          | | yes : Bool
-          |
-          |def mismatch (n: Nat): Bool := {
+          |def mismatch (n: Nat): Answer := {
           |  match n returning Nat with
           |  | Nat.zero => Nat.zero
           |  | Nat.succ rest => rest
@@ -346,9 +313,6 @@ class MatchOneTests extends munit.FunSuite {
   test("duplicate leaves have a span and instance patterns remain named-only") {
     val source =
       """
-        |
-        |inductive Nat : Type
-        | | zero : Nat
         |
         |inductive Pair : Type
         | | mk (left: Nat)(right: Nat): Pair
@@ -396,9 +360,6 @@ class MatchOneTests extends munit.FunSuite {
     typecheck(
       """
         |
-        |inductive Nat : Type
-        | | zero : Nat
-        |
         |inductive One : Type
         | | mk (value: Nat): One
         |
@@ -411,9 +372,6 @@ class MatchOneTests extends munit.FunSuite {
     intercept[TypeMismatch] {
       typecheck(
         """
-          |
-          |inductive Nat : Type
-          | | zero : Nat
           |
           |inductive One : Type
           | | mk (value: Nat): One
@@ -430,10 +388,6 @@ class MatchOneTests extends munit.FunSuite {
   test("hidden constructor captures can stay in scope but cannot escape inferred motives") {
     val source =
       """
-        |
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (n: Nat): Nat
         |
         |inductive Vec (A: Type) indices (n: Nat): Type
         | | nil {A: Type}: Vec(A, Nat.zero)
@@ -466,9 +420,6 @@ class MatchOneTests extends munit.FunSuite {
   test("indexed MatchOne refinement checks dependent branch results") {
     typecheck(
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        |
         |inductive OnlyZero indices (n: Nat): Type
         | | mk: OnlyZero(Nat.zero)
         |
@@ -483,9 +434,6 @@ class MatchOneTests extends munit.FunSuite {
   test("recursive MatchOne binds strict subterms and rejects reconstruction") {
     typecheck(
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        |
         |inductive Chain : Type
         | | node (next: Chain): Chain
         |
@@ -498,9 +446,6 @@ class MatchOneTests extends munit.FunSuite {
     intercept[NonDecreasingRecursiveCall] {
       typecheck(
         """
-          |inductive Nat : Type
-          | | zero : Nat
-          |
           |inductive Chain : Type
           | | node (next: Chain): Chain
           |
@@ -516,9 +461,6 @@ class MatchOneTests extends munit.FunSuite {
   test("Prop MatchOne allows proof results and rejects data elimination for neutral and known values") {
     typecheck(
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        |
         |inductive Proof : Prop
         | | proof: Proof
         |
@@ -534,9 +476,6 @@ class MatchOneTests extends munit.FunSuite {
     intercept[PropEliminationRestricted] {
       typecheck(
         """
-          |inductive Nat : Type
-          | | zero : Nat
-          |
           |inductive Proof : Prop
           | | proof: Proof
           |
@@ -555,9 +494,6 @@ class MatchOneTests extends munit.FunSuite {
     intercept[PropEliminationRestricted] {
       typecheck(
         """
-          |inductive Nat : Type
-          | | zero : Nat
-          |
           |inductive Proof : Prop
           | | proof: Proof
           |
@@ -576,10 +512,6 @@ class MatchOneTests extends munit.FunSuite {
   test("inferred branch motives cannot leak refined outer types; annotation keeps scoped use") {
     val refinedPrelude =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (n: Nat): Nat
-        |
         |inductive CheckVec indices (n: Nat): Type
         | | nil: CheckVec(Nat.zero)
         | | cons (tail: CheckVec($n)): CheckVec(Nat.succ(n))
@@ -626,9 +558,6 @@ class MatchOneTests extends munit.FunSuite {
   test("checking and reevaluation each run destructuring RHS and continuation once") {
     val source =
       """
-        |
-        |inductive Nat : Type
-        | | zero : Nat
         |
         |inductive Box : Type
         | | mk (value: Nat): Box

@@ -66,18 +66,23 @@ object InductiveChecks {
     }
   }
 
-  private def lambdaDoesNotContain(target: PositivityTarget, lam: VLam): Boolean = {
-    // A function-valued family argument has no assumed variance. Its type alone
-    // cannot reveal occurrences captured in the body, so require absence in
-    // both the type and the body opened on fresh arguments. Blocked results use
-    // the conservative occurrence rules below, including for named heads that
-    // synDeps (which tracks only local variables) cannot detect.
-    doesNotOccur(target, lam.tpe) && {
-      val fresh = BinderOps.freshen(lam.tpe)
-      val args = lam.tpe.binders.map(binder => fresh(binder.localRef))
-      doesNotOccur(target, Interpreter.runLam(lam, args))
+  private def lambdaDoesNotContain(target: PositivityTarget, lam: VLam): Boolean =
+    lam.id match {
+      // A global or native function is closed and declared before the family being checked, so it cannot contain the
+      // target. Opening a native function on fresh arguments would also return its own stuck application.
+      case ValueId.Const(_) => true
+      case _                =>
+        // A function-valued family argument has no assumed variance. Its type alone
+        // cannot reveal occurrences captured in the body, so require absence in
+        // both the type and the body opened on fresh arguments. Blocked results use
+        // the conservative occurrence rules below, including for named heads that
+        // synDeps (which tracks only local variables) cannot detect.
+        doesNotOccur(target, lam.tpe) && {
+          val fresh = BinderOps.freshen(lam.tpe)
+          val args = lam.tpe.binders.map(binder => fresh(binder.localRef))
+          doesNotOccur(target, Interpreter.runLam(lam, args))
+        }
     }
-  }
 
   private def doesNotOccur(target: PositivityTarget, value: Value): Boolean =
     if (target.isDirectOccurrence(value)) false
@@ -88,6 +93,9 @@ object InductiveChecks {
         case InductiveFamilyValue(instance) =>
           if (target.isDirectOccurrence(instance.head)) false
           else instance.args.forall(arg => doesNotOccur(target, arg))
+
+        // An operand that is a form recurses through this case.
+        case poly: VNatPoly => poly.form.operands.forall(operand => doesNotOccur(target, operand))
 
         case app: VApp =>
           doesNotOccur(target, app.head) &&
@@ -126,6 +134,9 @@ object InductiveChecks {
               else doesNotOccur(target, arg)
             }
 
+        // Factor bases and symbolic exponents are arguments of Nat operations, which have no positive positions.
+        case poly: VNatPoly => doesNotOccur(target, poly)
+
         case app: VApp =>
           doesNotOccur(target, app.head) &&
           app.args.forall(arg => doesNotOccur(target, arg)) &&
@@ -157,6 +168,9 @@ object InductiveChecks {
           instance.args.forall(arg => doesNotOccur(target, arg))
         else
           instance.args.forall(arg => sameFamilyArgsDoNotContain(inductiveName, target, arg))
+
+      case poly: VNatPoly =>
+        poly.form.operands.forall(operand => sameFamilyArgsDoNotContain(inductiveName, target, operand))
 
       case app: VApp =>
         doesNotOccur(target, app.head) &&

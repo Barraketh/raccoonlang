@@ -45,14 +45,6 @@ class TypeClassTests extends munit.FunSuite {
 
   private val prelude =
     """
-      |inductive Nat : Type
-      | | zero : Nat
-      | | succ (_: Nat) : Nat
-      |
-      |inductive Bool : Type
-      | | true : Bool
-      | | false : Bool
-      |
       |struct DecEq (A: Type) : Type
       | | mk {A: Type} (ok: Bool) : DecEq(A)
       |

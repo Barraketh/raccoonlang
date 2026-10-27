@@ -3,6 +3,43 @@ package com.raccoonlang
 import com.raccoonlang.Value.LevelTpe
 
 object PrettyPrinter {
+  private def printNatForm(poly: Value.VNatPoly): String = {
+    val constant = poly.form.constant
+    val terms = poly.form.terms
+    // Small ground values keep the unary constructor syntax that source programs write; larger ones print in decimal.
+    // Operands that are forms with terms print in parentheses, as in `2 * a * (b + 1)^2 * x^(c + d) + b + 3`, and
+    // numeral bases in decimal, as in `2^n`.
+    if (terms.isEmpty && constant <= 8) {
+      var result = "Nat.zero"
+      var n = BigInt(0)
+      while (n < constant) {
+        result = s"Nat.succ($result)"
+        n += 1
+      }
+      result
+    } else {
+      def operandText(operand: Value): String =
+        operand match {
+          case poly: Value.VNatPoly if poly.form.terms.isEmpty => poly.form.constant.toString
+          case poly: Value.VNatPoly                            => s"(${printNatForm(poly)})"
+          case Value.VCtor(_, _, _)                            => "0"
+          case atom                                            => atom.toString
+        }
+      def factorText(factor: NatNormalForm.Factor): String =
+        factor match {
+          case power: NatNormalForm.NumeralPower =>
+            val base = operandText(power.base)
+            if (power.exponent == 1) base else s"$base^${power.exponent}"
+          case power: NatNormalForm.SymbolicPower => s"${operandText(power.base)}^${operandText(power.exponent)}"
+        }
+      val nonconstant = terms.map { term =>
+        val product = term.monomial.factors.map(factorText).mkString(" * ")
+        if (term.coefficient == 1) product else s"${term.coefficient} * $product"
+      }
+      (if (constant == 0) nonconstant else nonconstant :+ constant.toString).mkString(" + ")
+    }
+  }
+
   private def printRef(ref: CoreAst.Term.Ref): String = ref match {
     case CoreAst.Term.GlobalRef(name, _) => name
     case CoreAst.Term.LocalRef(ref, _)   => ref.name
@@ -182,6 +219,7 @@ object PrettyPrinter {
         val headStr = printElabTermAtom(fn)
         val argsStr = args.map(printElabTermAtom).mkString(", ")
         s"$headStr($argsStr)"
+      case Term.NatLit(value, _) => value.toString
       case Term.Pi(binders, out, _, _, _) =>
         val bindersStr = binders
           .map(printElabPiBinder)
@@ -192,6 +230,7 @@ object PrettyPrinter {
     def ptAtom(t: ElabAst.TypeTerm): String = t match {
       case _: Term.Ref            => pt(t)
       case Term.App(_, _, _)      => pt(t)
+      case Term.NatLit(_, _)      => pt(t)
       case Term.Pi(_, _, _, _, _) => s"(${pt(t)})"
     }
 
@@ -255,6 +294,7 @@ object PrettyPrinter {
   private def printElabTermAtom(t: ElabAst.Term): String = t match {
     case _: ElabAst.Term.Ref                => printElabTerm0(t)
     case ElabAst.Term.App(_, _, _)          => printElabTerm0(t)
+    case ElabAst.Term.NatLit(_, _)          => printElabTerm0(t)
     case ElabAst.Term.Lam(_, _, _, _, _, _) => s"(${printElabTerm0(t)})"
     case ElabAst.Term.Match(_, _, _, _, _)  => s"(${printElabTerm0(t)})"
     case ElabAst.Term.Body(_, _, _)         => s"(${printElabTerm0(t)})"
@@ -301,6 +341,7 @@ object PrettyPrinter {
       val headStr = print(head)
       if (fields.isEmpty) headStr
       else s"$headStr(${fields.map(print).mkString(", ")})"
+    case poly: Value.VNatPoly   => printNatForm(poly)
     case v: Value.VApp          => printApp(v.head, v.args)
     case v: Value.VLam          => s"func#${v.id}"
     case Value.Var(name, id, _) => s"$name#$id"

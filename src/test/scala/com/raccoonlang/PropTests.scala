@@ -79,10 +79,6 @@ class PropTests extends munit.FunSuite {
   test("quantification over Type into a proposition stays in Prop") {
     val res = runProgram(
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
-        |
         |{ (A: Type) -> (x: A) -> Eq(A, x, x) }
         |""".stripMargin
     )
@@ -98,10 +94,6 @@ class PropTests extends munit.FunSuite {
   test("dependent quantification into a proposition stays in Prop") {
     val res = runProgram(
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
-        |
         |{ (A: Type) -> (p: A -> Prop) -> (x: A) -> p(x) }
         |""".stripMargin
     )
@@ -117,10 +109,6 @@ class PropTests extends munit.FunSuite {
   test("Pi over proof binder into Type stays in Type") {
     val res = runProgram(
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
-        |
         |{
         |  let F : Type := (P: Prop) -> Nat
         |  F
@@ -142,10 +130,6 @@ class PropTests extends munit.FunSuite {
   test("Negative: Pi into Type is not itself a proposition") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
-        |
         |{
         |  let bad : Prop := (A: Type) -> A
         |  bad
@@ -314,10 +298,6 @@ class PropTests extends munit.FunSuite {
   test("Negative: elimination from Exists into Nat is rejected") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
-        |
         |inductive True : Prop
         | | intro : True
         |
@@ -364,10 +344,6 @@ class PropTests extends munit.FunSuite {
   test("Large elimination from Eq into Nat is allowed") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
-        |
         |def eqToNat (n: Nat)(p: Eq(Nat, n, Nat.zero)): Nat := {
         |  match p returning Nat with
         |  | Eq.refl x => Nat.zero
@@ -385,10 +361,6 @@ class PropTests extends munit.FunSuite {
   test("Large elimination from Eq into a family in Type is allowed") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
-        |
         |def choose (n: Nat)(m: Nat)(p: Eq(Nat, n, m)): Type := {
         |  match p returning Type with
         |  | Eq.refl x => Nat
@@ -401,10 +373,6 @@ class PropTests extends munit.FunSuite {
   test("Large elimination from False into Nat is allowed") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
-        |
         |inductive False : Prop
         |
         |def absurdNat (h: False): Nat := {
@@ -418,10 +386,6 @@ class PropTests extends munit.FunSuite {
   test("Large elimination from True into Nat is allowed") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
-        |
         |inductive True : Prop
         | | intro : True
         |
@@ -437,10 +401,6 @@ class PropTests extends munit.FunSuite {
   test("Large elimination from indexed-empty Prop family is allowed") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
-        |
         |inductive IsZero indices (n: Nat) : Prop
         | | intro : IsZero(Nat.zero)
         |
@@ -455,10 +415,6 @@ class PropTests extends munit.FunSuite {
   test("Large elimination is allowed when constructor field is uniquely forced by family arguments") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
-        |
         |inductive IdxWrap (A: Type) indices (x: A) : Prop
         | | intro {A: Type} (y: A) : IdxWrap(A, y)
         |
@@ -479,10 +435,6 @@ class PropTests extends munit.FunSuite {
   test("Large elimination is allowed when exactly one constructor is reachable at the given index") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
-        |
         |inductive Shape indices (n: Nat) : Prop
         | | zeroCase : Shape(Nat.zero)
         | | succCase (m: Nat) : Shape(Nat.succ(m))
@@ -503,14 +455,14 @@ class PropTests extends munit.FunSuite {
 
   private val proofCaptureDecls =
     """
-      |inductive Bool : Type
-      | | f : Bool
-      | | t : Bool
+      |inductive Answer : Type
+      | | f : Answer
+      | | t : Answer
       |
-      |inductive Holds (b: Bool) : Prop
-      | | intro {b: Bool} : Holds(b)
+      |inductive Holds (b: Answer) : Prop
+      | | intro {b: Answer} : Holds(b)
       |
-      |def getIndex (p: Holds($b)): Bool := b
+      |def getIndex (p: Holds($b)): Answer := b
       |""".stripMargin
 
   test("Large elimination rejects an unforced data capture in a proof field's type") {
@@ -519,8 +471,8 @@ class PropTests extends munit.FunSuite {
         |inductive Packed : Prop
         | | intro (p: Holds($b)) : Packed
         |
-        |def extract (p: Packed): Bool := {
-        | match p returning Bool with
+        |def extract (p: Packed): Answer := {
+        | match p returning Answer with
         | | Packed.intro h => getIndex(h)
         |}
         |""".stripMargin
@@ -558,18 +510,18 @@ class PropTests extends munit.FunSuite {
   test("Large elimination allows proof captures determined by the scrutinee index") {
     val source = proofCaptureDecls +
       """
-        |inductive Packed indices (b: Bool) : Prop
+        |inductive Packed indices (b: Answer) : Prop
         | | intro (p: Holds($b)) : Packed(b)
         |
-        |def extract (p: Packed($b)): Bool := {
-        | match p returning Bool with
+        |def extract (p: Packed($b)): Answer := {
+        | match p returning Answer with
         | | Packed.intro h => getIndex(h)
         |}
         |
-        |extract(Packed.intro(Holds.intro(Bool.t)))
+        |extract(Packed.intro(Holds.intro(Answer.t)))
         |""".stripMargin
 
-    assertEquals(PrettyPrinter.print(runProgram(source)), "Bool.t")
+    assertEquals(PrettyPrinter.print(runProgram(source)), "Answer.t")
   }
 
   test("Proof fields with fixed types allow large elimination, and hidden captures allow Prop elimination") {
@@ -579,14 +531,14 @@ class PropTests extends munit.FunSuite {
           |inductive True : Prop
           | | intro : True
           |
-          |inductive Fixed (b: Bool) : Prop
-          | | intro {b: Bool} (p: Holds(b)) : Fixed(b)
+          |inductive Fixed (b: Answer) : Prop
+          | | intro {b: Answer} (p: Holds(b)) : Fixed(b)
           |
           |inductive Packed : Prop
           | | intro (p: Holds($b)) : Packed
           |
-          |def fixed (p: Fixed($b)): Bool := {
-          | match p returning Bool with
+          |def fixed (p: Fixed($b)): Answer := {
+          | match p returning Answer with
           | | Fixed.intro h => getIndex(h)
           |}
           |
@@ -601,10 +553,6 @@ class PropTests extends munit.FunSuite {
   test("Negative: large elimination from Prop with unforced Type-valued field is rejected") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
-        |
         |inductive HasCarrier : Prop
         | | intro (A: Type) : HasCarrier
         |
@@ -626,10 +574,6 @@ class PropTests extends munit.FunSuite {
   test("Negative: large elimination is rejected when two constructors are reachable") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
-        |
         |inductive Or (P: Prop)(Q: Prop) : Prop
         | | inl {P: Prop}{Q: Prop} (p: P) : Or(P, Q)
         | | inr {P: Prop}{Q: Prop} (q: Q) : Or(P, Q)
@@ -660,10 +604,6 @@ class PropTests extends munit.FunSuite {
   test("Eq in Prop supports ordinary proof-level elimination") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
-        |
         |def symm (A: Type)(x: A)(y: A)(p: Eq(A, x, y)): Eq(A, y, x) := {
         |  match p returning Eq(A, y, x) with
         |  | Eq.refl z => Eq.refl(z)

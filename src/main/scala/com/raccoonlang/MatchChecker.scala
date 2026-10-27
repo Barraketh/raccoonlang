@@ -9,10 +9,8 @@ import com.raccoonlang.ValueQuote.{quoteContext, quoteType}
 object MatchChecker {
 
   private final case class ReachableCtor(
-      name: String,
       head: ConstructorHead,
       fieldArgs: Vector[Value],
-      resultTy: Value,
       branchEqStore: EqStore
   )
 
@@ -53,30 +51,27 @@ object MatchChecker {
     }
   }
 
-  private def computeReachableCtors(
-      scrut: Value,
-      scrutTpe: Value,
-      inductiveName: String,
-      ctorNames: Vector[String],
-      env: Env
-  ): Vector[ReachableCtor] = {
+  /**
+   * The caller has identified the scrutinee's saturated inductive family. Only whole-scrutinee variables grant value
+   * refinement; constructor result indices are checked separately. Stuck equations retain a reachable branch.
+   */
+  private def computeReachableCtors(scrut: Value, family: InductiveFamilyInstance, env: Env): Vector[ReachableCtor] = {
     import ValueEquivalence.UnificationFailure._
 
+    val scrutTpe = scrut.tpe
     def tryUnify(left: Value, right: Value, refinable: DepSet) =
       ValueEquivalence.tryUnify(left, right, EqStore.empty.allow(refinable))
 
-    def rootRefinable(value: Value): DepSet =
-      value match {
-        case Blocker(blockerId) => DepSet(blockerId)
-        case _                  => DepSet.empty
-      }
-
-    ctorNames.flatMap { ctorName =>
+    val rootRefinable = scrut match {
+      case Var(_, id, _) => DepSet.single(id)
+      case _             => DepSet.empty
+    }
+    family.meta.constructorNames.flatMap { ctorName =>
       env(ctorName) match {
         case h: ConstructorHead =>
           val FreshCtor(fieldArgs, _, resultTy) = freshCtor(h)
-          val ctorValue = VCtor(h, fieldArgs, resultTy)
-          val valueRefinable = rootRefinable(scrut) ++ ctorValue.synDeps
+          val ctorValue = ConstructorValue(h, fieldArgs, resultTy)
+          val valueRefinable = rootRefinable ++ ctorValue.synDeps
           val typeRefinable = scrutTpe.synDeps ++ ctorValue.synDeps
 
           val valueRefinement = tryUnify(scrut, ctorValue, valueRefinable)
@@ -91,12 +86,9 @@ object MatchChecker {
             case Left(_: Stuck)         => Some(EqStore.empty)
           }
 
-          branchStore.map { store =>
-            val refinedResultTy = ValueOps.materialize(scrutTpe, store)
-            ReachableCtor(ctorName, h, fieldArgs, refinedResultTy, store)
-          }
+          branchStore.map(store => ReachableCtor(h, fieldArgs, store))
 
-        case _ => throw UnknownConstructor(ctorName, inductiveName)
+        case _ => throw UnknownConstructor(ctorName, family.head.name)
       }
     }
   }
@@ -112,7 +104,7 @@ object MatchChecker {
     val FreshCtor(fields1, captures1, res1) = freshCtor(only.head)
     val FreshCtor(fields2, captures2, res2) = freshCtor(only.head)
 
-    val refinable0 = DepSet.unionAll(scrutTpe.synDeps, res1.synDeps, res2.synDeps)
+    val refinable0 = DepSet.unionAll(Vector(scrutTpe.synDeps, res1.synDeps, res2.synDeps))
 
     val startEq = {
       val start = EqStore.empty.allow(refinable0)
@@ -187,6 +179,7 @@ object MatchChecker {
     )
   }
 
+  /** Check branches against one constructor observation; dependency blockers schedule reduction, not refinement. */
   def checkMatch(t: CA.Term.MatchTerm, env: Env, contextualExpected: Option[CheckedTypeTerm] = None): CheckedTerm = {
     val span = t.span
     val scrutChecked = checkTerm(t.scrut, env)
@@ -242,23 +235,24 @@ object MatchChecker {
     }
 
     lazy val reachableByType: Vector[ReachableCtor] =
-      computeReachableCtors(scrut, scrutTpe, inductiveName, inductiveCtorNames, env)
+      computeReachableCtors(scrut, inductiveFamily, env)
 
     val checkedSourceMotive = t.motive.map(syntax => checkTypeTerm(syntax, env))
     val expectedMotive = checkedSourceMotive.orElse(contextualExpected)
     expectedMotive.foreach(motive => assertType(motive.value))
     expectedMotive.foreach(motive => checkPropElimination(inductiveName, scrutTpe, motive.value, reachableByType, span))
 
-    val plannedBranches: Vector[PlannedBranch] = scrut match {
-      case VCtor(head, fields, _) =>
+    val constructor = ConstructorValue.unapply(scrut)
+    val plannedBranches: Vector[PlannedBranch] = constructor match {
+      case Some((head, fields)) =>
         resolvedCases.find(_.ctorName != head.name).foreach { c =>
           throw UnreachableCase(c.ctorName, Some(c.span))
         }
         val br = resolvedCases.find(_.ctorName == head.name).getOrElse(throw MissingCase(head.name))
         Vector(PlannedBranch(br, fields, env, EqStore.empty))
 
-      case _ =>
-        val reachableMap = reachableByType.map(info => info.name -> info).toMap
+      case None =>
+        val reachableMap = reachableByType.map(info => info.head.name -> info).toMap
         inductiveCtorNames.flatMap { ctorName =>
           reachableMap.get(ctorName) match {
             case None =>
@@ -293,14 +287,12 @@ object MatchChecker {
           index
       }.toSet
       val context = quoteContext(env)
-      val safeContext = context.copy(
-        quote = context.quote.filterNot { case (_, entry) =>
-          entry.term match {
-            case EA.Term.LocalRef(ref, _) => changedLocalIds.contains(ref.id)
-            case _                        => false
-          }
+      val safeContext = context.copy(quote = context.quote.filter { case (_, entry) =>
+        entry.term match {
+          case EA.Term.LocalRef(ref, _) => !changedLocalIds.contains(ref.id)
+          case _                        => true
         }
-      )
+      })
       val residual =
         try quoteType(candidate, safeContext, span)
         catch {
@@ -327,12 +319,12 @@ object MatchChecker {
       span,
       t.nodeId
     )
-    val value = scrut match {
-      case VCtor(_, _, _) =>
+    val value = constructor match {
+      case Some(_) =>
         checkedBranches.headOption.map(_.checkedBody.value).getOrElse {
           throw WTF("Known constructor match had no checked branch", Some(span))
         }
-      case _ => Interpreter.stuckMatch(checkedMatch, scrut, env, chosenMotive.value)
+      case None => Interpreter.stuckMatch(checkedMatch, scrut, env, chosenMotive.value)
     }
     CheckedTerm(value, checkedMatch)
   }

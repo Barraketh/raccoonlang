@@ -25,7 +25,7 @@ class TypingTests extends munit.FunSuite {
 
   private def toShape(v: Value): Shape = v match {
     case Value.ConstructorHead(n, _, _, _) => SConst(n)
-    case Value.VCtor(h, fields, _) =>
+    case ConstructorValue(h, fields) =>
       if (fields.isEmpty) SConst(h.name) else SApp(SConst(h.name), fields.toList.map(toShape))
     case Value.VConst(n, _, _)     => SConst(n)
     case Value.VApp(h, args, _, _) => SApp(toShape(h), args.toList.map(toShape))
@@ -38,10 +38,6 @@ class TypingTests extends munit.FunSuite {
   test("def typechecks and reduces by default") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
-        |
         |def id (A: Type)(x: A): A := x
         |
         |{
@@ -56,10 +52,6 @@ class TypingTests extends munit.FunSuite {
   test("def: declared return too large (A -> A) expected, value A") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
-        |
         |def bad (A: Type)(x: A): A -> A := x
         |""".stripMargin
 
@@ -71,10 +63,6 @@ class TypingTests extends munit.FunSuite {
   test("let with mismatched ascription fails (constructor vs Nat)") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
-        |
         |{
         |  let s : Nat := Nat.succ
         |  s
@@ -89,10 +77,6 @@ class TypingTests extends munit.FunSuite {
   test("ascribed function type alpha-equals: (x: Nat)->Nat vs fun (y: Nat) => y") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
-        |
         |{
         |  let f : (x: Nat) -> Nat := fun (y: Nat): Nat => y
         |  f(Nat.zero)
@@ -106,10 +90,6 @@ class TypingTests extends munit.FunSuite {
   test("nested lambda captures outer local slot") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
-        |
         |{
         |  let k := fun (x: Nat): ((y: Nat) -> Nat) => fun (y: Nat): Nat => x
         |  let h := k(Nat.zero)
@@ -124,10 +104,6 @@ class TypingTests extends munit.FunSuite {
   test("later let shadowing allocates a new local slot") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
-        |
         |{
         |  let x := Nat.zero
         |  let f := fun (y: Nat): Nat => x
@@ -143,10 +119,6 @@ class TypingTests extends munit.FunSuite {
   test("pred on Nat typechecks and reduces via match") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
-        |
         |def pred (n: Nat): Nat := {
         |  match n with
         |  | Nat.zero => Nat.zero
@@ -165,10 +137,6 @@ class TypingTests extends munit.FunSuite {
   test("def: declared result Type but branch returns Nat => mismatch") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
-        |
         |def bad (n: Nat): Type := {
         |  match n with
         |  | Nat.zero => Nat.zero
@@ -184,10 +152,6 @@ class TypingTests extends munit.FunSuite {
   test("unannotated let with constructor synthesizes type and reduces when applied") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
-        |
         |{
         |  let one := Nat.succ(Nat.zero)
         |  one
@@ -201,10 +165,6 @@ class TypingTests extends munit.FunSuite {
   test("Bad metas") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
-        |
         |inductive Vec (A: Type) indices (n: Nat) : Sort(Level.one)
         | | nil {A: Type} : Vec(A, Nat.zero)
         | | cons {A: Type} (n: Nat) (xs: Vec(A, n)) (x: A): Vec(A, Nat.succ(n))
@@ -220,10 +180,6 @@ class TypingTests extends munit.FunSuite {
   test("reachable nullary ctor branch refines scrutinee at instantiated result type") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
-        |
         |inductive Vec (A: Type) indices (n: Nat) : Sort(Level.one)
         | | nil {A: Type} : Vec(A, Nat.zero)
         | | cons {A: Type} (n: Nat) (xs: Vec(A, n)) (x: A): Vec(A, Nat.succ(n))
@@ -240,10 +196,6 @@ class TypingTests extends munit.FunSuite {
   test("definition body can start on next line and wrap applications") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
-        |
         |def apply
         |  (f:
         |    Nat ->
@@ -274,10 +226,6 @@ class TypingTests extends munit.FunSuite {
   test("nullary top-level def body must match declared type") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
-        |
         |def bad : Nat := Type
         |""".stripMargin
 

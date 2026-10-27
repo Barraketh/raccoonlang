@@ -21,10 +21,6 @@ class EqualityCommTests extends munit.FunSuite {
   test("prove add commutativity (a + b = b + a)") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ(_: Nat) : Nat
-        |
         |def add (a: Nat)(b: Nat): Nat decreases structural(b) := {
         |  match b with
         |  | Nat.zero => a
