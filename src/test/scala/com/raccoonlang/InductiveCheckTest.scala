@@ -161,10 +161,6 @@ class InductiveCheckTest extends munit.FunSuite {
   test("Nested strictly positive: recursive occurrence under positive List parameter") {
     val p =
       """
-        |inductive List (A: Type) : Type
-        | | nil {A: Type} : List(A)
-        | | cons {A: Type} (head: A) (tail: List(A)) : List(A)
-        |
         |inductive Tree : Type
         | | node (children: List(Tree)) : Tree
         |

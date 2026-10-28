@@ -299,6 +299,13 @@ private[raccoonlang] object NatNormalForm {
     parts(0)
   }
 
+  /** The sum of Nat values, each lifted to a form and added in a balanced tree (`sumAll`). */
+  def sum(values: Iterable[Value]): Value = {
+    val parts = mutable.ArrayBuffer.empty[Form]
+    values.foreach(value => parts += fromValue(value))
+    sumAll(parts).toValue
+  }
+
   /** Adding zero returns the other operand without lifting either. */
   def add(left: Value, right: Value): Value =
     if (isZeroValue(right)) left

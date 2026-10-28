@@ -34,6 +34,7 @@ object Value {
       case app: VApp =>
         app.head.needsStructuralDefEq || app.args.exists(_.needsStructuralDefEq) || app.tpe.needsStructuralDefEq
       case poly: VNatPoly => poly.form.needsStructuralDefEq
+      case word: VWord    => word.repr.needsStructuralDefEq
       case _              => false
     })
   }
@@ -233,12 +234,27 @@ object Value {
           args.length != 1 || h.name != Kernel.SuccName,
           "Nat successors are compact; construct them through ConstructorValue"
         )
+        require(h.listShape.isEmpty, s"${h.name} applications are words; construct them through ConstructorValue")
         require(
           args.length == h.totalArity - h.numErased,
           s"Constructor ${h.name} stores ${args.length} fields, expected ${h.totalArity - h.numErased}"
         )
       case _ =>
     }
+  }
+
+  /**
+   * A word of a list-shaped type (docs/packed_lists.md, "Words"): one or more cons layers, packed in shared storage,
+   * followed by an end that is not a word. Every cons application of a list-shaped type is a word, never a `VApp`, so a
+   * word is constructor data, never stuck, and is observed through `ConstructorValue` like any constructor value.
+   * Storage is otherwise invisible: equal words may be divided and stored differently, and keys depend only on their
+   * layers and end. The representation belongs to `packed.Words`, the only code that builds or reads words; this class
+   * only delegates to it.
+   */
+  final class VWord private[raccoonlang] (val repr: packed.Word) extends Value {
+    override def tpe: Value = repr.tpe
+
+    override def synDeps: DepSet = repr.synDeps
   }
 
   case class NeutralThunk(term: ElabAst.Term.Match, env: Env, id: ValueId.LocalId, tpe: Value, blockerIds: DepSet)
@@ -281,8 +297,23 @@ object Value {
 
   }
 
-  case class ConstructorHead(name: String, erasedFamilyArgIndexes: Vector[Int], totalArity: Int, tpe: Value)
-    extends TopLevelValue {
+  /**
+   * The shape of a list-shaped type's cons constructor (see `InductiveChecks.listShape`): the index of its one
+   * recursive field among its stored fields, and the number of other stored fields, which form the payload of each
+   * layer.
+   */
+  final case class ListShape(recursiveIndex: Int, payloadWidth: Int) {
+    require(recursiveIndex >= 0 && recursiveIndex <= payloadWidth, "List recursive field index must be a stored field")
+  }
+
+  /** `listShape` is present exactly on the cons constructor of a list-shaped type, whose applications are words. */
+  case class ConstructorHead(
+      name: String,
+      erasedFamilyArgIndexes: Vector[Int],
+      totalArity: Int,
+      tpe: Value,
+      listShape: Option[ListShape]
+  ) extends TopLevelValue {
     require(erasedFamilyArgIndexes.forall(_ >= 0), "Constructor erased family arg indexes must be non-negative")
     require(
       erasedFamilyArgIndexes.distinct.length == erasedFamilyArgIndexes.length,
@@ -327,6 +358,10 @@ object Value {
       }
   }
 
+  /**
+   * Constructor applications stored as a `VApp`. This is a view of storage, not of data: a cons of a list-shaped type
+   * is a `VWord`, and a Nat successor is compact. Readers of constructor values use `ConstructorValue`.
+   */
   object VCtor {
     def apply(head: ConstructorHead, fields: Vector[Value], tpe: Value): VApp = VApp(head, fields, tpe)
 

@@ -50,6 +50,7 @@ object PrettyPrinter {
 
     def pt(t: CoreAst.TypeTerm): String = t match {
       case ref: Term.Ref        => printRef(ref)
+      case Term.StrLit(text, _) => UnicodeScalarString.renderQuoted(text)
       case select: Term.Select  => printCoreTerm(select)
       case Term.Derive(goal, _) => s"derive[${pt(goal)}]"
       case app: Term.App        => printCoreTerm(app)
@@ -62,6 +63,7 @@ object PrettyPrinter {
 
     def ptAtom(t: CoreAst.TypeTerm): String = t match {
       case _: Term.Ref         => pt(t)
+      case Term.StrLit(_, _)   => pt(t)
       case _: Term.Select      => pt(t)
       case Term.Derive(_, _)   => pt(t)
       case _: Term.App         => pt(t)
@@ -121,7 +123,9 @@ object PrettyPrinter {
   private def printApp(head: Value, args: Seq[Value]): String = {
     val headStr = head match {
       case _: Value.VApp | _: Value.VConst | _: Value.Var | _: Value.VSort => print(head)
-      case _                                                               => s"(${print(head)})"
+      // A global function, such as a native stuck on its arguments, prints as its name.
+      case Value.VLam(_, Value.ValueId.Const(name), _) => name
+      case _                                           => s"(${print(head)})"
     }
     val argsStr = args.toList.map(print).mkString(", ")
     s"$headStr($argsStr)"
@@ -152,6 +156,7 @@ object PrettyPrinter {
 
   private def printTermAtom(t: CoreAst.Term): String = t match {
     case _: CoreAst.Term.Ref                     => printCoreTerm(t)
+    case CoreAst.Term.StrLit(_, _)               => printCoreTerm(t)
     case CoreAst.Term.App(_, _, _)               => printCoreTerm(t)
     case CoreAst.Term.Derive(_, _)               => printCoreTerm(t)
     case CoreAst.Term.Select(_, _, _)            => printCoreTerm(t)
@@ -220,6 +225,8 @@ object PrettyPrinter {
         val argsStr = args.map(printElabTermAtom).mkString(", ")
         s"$headStr($argsStr)"
       case Term.NatLit(value, _) => value.toString
+      case Term.StrLit(text, _)  => UnicodeScalarString.renderQuoted(text)
+      case word: Term.Word       => printElabWord(word)
       case Term.Pi(binders, out, _, _, _) =>
         val bindersStr = binders
           .map(printElabPiBinder)
@@ -231,6 +238,8 @@ object PrettyPrinter {
       case _: Term.Ref            => pt(t)
       case Term.App(_, _, _)      => pt(t)
       case Term.NatLit(_, _)      => pt(t)
+      case Term.StrLit(_, _)      => pt(t)
+      case _: Term.Word           => pt(t)
       case Term.Pi(_, _, _, _, _) => s"(${pt(t)})"
     }
 
@@ -295,6 +304,8 @@ object PrettyPrinter {
     case _: ElabAst.Term.Ref                => printElabTerm0(t)
     case ElabAst.Term.App(_, _, _)          => printElabTerm0(t)
     case ElabAst.Term.NatLit(_, _)          => printElabTerm0(t)
+    case ElabAst.Term.StrLit(_, _)          => printElabTerm0(t)
+    case ElabAst.Term.Word(_, _, _)         => printElabTerm0(t)
     case ElabAst.Term.Lam(_, _, _, _, _, _) => s"(${printElabTerm0(t)})"
     case ElabAst.Term.Match(_, _, _, _, _)  => s"(${printElabTerm0(t)})"
     case ElabAst.Term.Body(_, _, _)         => s"(${printElabTerm0(t)})"
@@ -307,6 +318,27 @@ object PrettyPrinter {
     case m @ ElabAst.Term.Match(_, _, _, _, _) => printElabMatch(m)
     case b: ElabAst.Term.Body                  => printElabBody(b)
     case tt: ElabAst.TypeTerm                  => printElabTypeTerm(tt)
+  }
+
+  /**
+   * A word as the nested applications it stands for, built in a loop: each layer as its cons application around the
+   * rest, and each splice before the end as `List.append` of it and the rest.
+   */
+  private def printElabWord(word: ElabAst.Term.Word): String = {
+    val result = new StringBuilder
+    val closings = scala.collection.mutable.ArrayBuffer.empty[String]
+    word.pieces.init.foreach {
+      case ElabAst.Term.WordPiece.Layer(before, after) =>
+        result ++= word.consHead.name ++= "("
+        before.foreach(arg => result ++= printElabTermAtom(arg) ++= ", ")
+        closings += after.map(arg => ", " + printElabTermAtom(arg)).mkString + ")"
+      case ElabAst.Term.WordPiece.Splice(list) =>
+        result ++= "List.append(" ++= printElabTermAtom(list) ++= ", "
+        closings += ")"
+    }
+    result ++= printElabTermAtom(word.pieces.last.asInstanceOf[ElabAst.Term.WordPiece.Splice].list)
+    closings.reverseIterator.foreach(result ++= _)
+    result.toString
   }
 
   def printElabTerm(t: ElabAst.Ast): String = t match {
@@ -328,7 +360,47 @@ object PrettyPrinter {
     s"match $scrutStr$motiveStr with $casesStr"
   }
 
+  /**
+   * A word, in one loop over its tokens. A kernel `List` word prints as its elements in brackets, followed by `++` and
+   * its end unless that is `nil`, such as `[a, b] ++ xs`. A word of a user list-shaped type prints as nested
+   * constructor applications, as for any constructor, ending in its terminator.
+   */
+  private def printWord(word: Value.VWord): String = {
+    val elements = scala.collection.mutable.ArrayBuffer.empty[String]
+    val opens = new StringBuilder
+    val closings = scala.collection.mutable.ArrayBuffer.empty[String]
+    var end: Value = null
+    packed.Words.foreach(word)(
+      layer = token => {
+        if (token.head.name == Kernel.ListConsName) elements += print(token.payload(0))
+        else {
+          val recursive = token.recursiveIndex
+          val before = (0 until recursive).map(index => print(token.payload(index)) + ", ")
+          val after = (recursive until token.payloadWidth).map(index => ", " + print(token.payload(index)))
+          opens ++= token.head.name + "(" + before.mkString
+          closings += after.mkString + ")"
+        }
+        true
+      },
+      end = token => {
+        end = token.value
+        true
+      }
+    )
+    // Only a user type's layers have closings, and only a kernel `List` 's have elements.
+    if (closings.nonEmpty) opens.toString + print(end) + closings.reverseIterator.mkString
+    else if (Kernel.isListNil(end)) elements.mkString("[", ", ", "]")
+    else elements.mkString("[", ", ", "]") + " ++ " + print(end)
+  }
+
+  /**
+   * A value as source-like text. A `String.mk` whose list ends in `nil` and holds only closed scalar characters prints
+   * as a literal; any other string prints as its constructor applied to its list.
+   */
   def print(value: Value): String = value match {
+    case packed.Strings.Literal(text)                => UnicodeScalarString.renderQuoted(text)
+    case nil if Kernel.isListNil(nil)                => "[]"
+    case word: Value.VWord                           => printWord(word)
     case Value.PropTpe                               => "Prop"
     case Value.VSort(lvl) if lvl == Value.Level.zero => "Type"
     case Value.VSort(lvl)                            => s"Sort($lvl)"
@@ -336,7 +408,7 @@ object PrettyPrinter {
     case level: Value.Level                          => s"Level(${level.atoms}, ${level.c})"
     case pi: Value.VPi                               => "VPi"
     case Value.VConst(name, _, _)                    => name
-    case Value.ConstructorHead(name, _, _, _)        => name
+    case Value.ConstructorHead(name, _, _, _, _)     => name
     case Value.VCtor(head, fields, _) =>
       val headStr = print(head)
       if (fields.isEmpty) headStr

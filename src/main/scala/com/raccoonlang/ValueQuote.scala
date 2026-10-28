@@ -36,16 +36,9 @@ object ValueQuote {
 
     def inlineTerm(t: ElabAst.Term): ElabAst.Term =
       t match {
-        case ElabAst.Term.GlobalRef(_, _)        => t
+        // A term-position local can inline to a lambda or body, so do not require a type term here.
         case ElabAst.Term.LocalRef(ref, refSpan) => inlineLocal(ref, refSpan)
-        case ElabAst.Term.App(fn, args, appSpan) =>
-          ElabAst.Term.App(inlineAppHead(fn), args.map(inlineTerm), appSpan)
-        case ElabAst.Term.NatLit(_, _) => t
-        case ElabAst.Term.Pi(binders, out, classifier, piSpan, _) =>
-          val nextBinders = binders.map { b =>
-            b.copy(localRef = reindex(b.localRef), ty = inlineBinderType(b.ty))
-          }
-          ElabAst.Term.Pi(nextBinders, inlineTypeTerm(out), classifier, piSpan, NodeId.fresh())
+        case tt: ElabAst.TypeTerm                => inlineTypeTerm(tt)
         case ElabAst.Term.Body(lets, res, bodySpan) =>
           val nextLets = lets.map { l =>
             ElabAst.Let(reindex(l.localRef), l.ty.map(inlineTypeTerm), inlineTerm(l.value), l.span, l.isInstance)
@@ -81,6 +74,14 @@ object ValueQuote {
         case ElabAst.Term.App(fn, args, appSpan) =>
           ElabAst.Term.App(inlineAppHead(fn), args.map(inlineTerm), appSpan)
         case ElabAst.Term.NatLit(_, _) => t
+        case ElabAst.Term.StrLit(_, _) => t
+        case ElabAst.Term.Word(consHead, pieces, wordSpan) =>
+          val nextPieces = pieces.map {
+            case ElabAst.Term.WordPiece.Layer(before, after) =>
+              ElabAst.Term.WordPiece.Layer(before.map(inlineTerm), after.map(inlineTerm))
+            case ElabAst.Term.WordPiece.Splice(list) => ElabAst.Term.WordPiece.Splice(inlineTerm(list))
+          }
+          ElabAst.Term.Word(consHead, nextPieces, wordSpan)
         case ElabAst.Term.Pi(binders, out, classifier, piSpan, _) =>
           val nextBinders = binders.map { b =>
             b.copy(localRef = reindex(b.localRef), ty = inlineBinderType(b.ty))
@@ -158,7 +159,11 @@ object ValueQuote {
         ) throw CannotQuoteValue(const, "internal synthetic constant", Some(span))
         else ElabAst.Term.GlobalRef(name, span)
 
-      case VCtor(head, fields, tpe) => quoteCtor(head, fields, tpe, context, span)
+      case packed.Strings.Literal(text) => ElabAst.Term.StrLit(text, span)
+
+      case VCtor(head, fields, tpe) => quoteCtor(head, fields.map(quoteTerm(_, context, span)), tpe, context, span)
+
+      case word: VWord => quoteWord(word, context, span)
 
       case poly: VNatPoly => quoteNatForm(poly, context, span)
 
@@ -256,28 +261,100 @@ object ValueQuote {
     )
   }
 
+  /**
+   * Quote a word in one loop over its tokens, as one flat `Word`. Tokens are read until the rest from a token has its
+   * own entry in the quote map, or the end; that rest is quoted as usual and ends the word. A maximal run of kernel
+   * `List` layers whose elements are closed scalar characters is a splice of `String.data` of a string literal, and a
+   * run directly before `nil` ends the word itself, since it ends in `nil`. Every other layer holds its cons
+   * application's quoted arguments around the recursive field; the erased ones, recovered from the type that every
+   * layer of the word shares, are quoted once. A word that is one splice quotes as that splice. Evaluation conses and
+   * appends from the back, and appending a closed run onto a rest is consing its characters, so it rebuilds the same
+   * value.
+   */
+  private def quoteWord(word: VWord, context: QuoteContext, span: Span): ElabAst.Term = {
+    // The cons of the word's family, from its first layer, which never ends the word.
+    var head: ConstructorHead = null
+    lazy val erased = quoteErasedArgs(head, word.tpe, context, span)
+    val pieces = Vector.newBuilder[ElabAst.Term.WordPiece]
+    val run = new java.lang.StringBuilder
+    def endRun(): Unit =
+      if (run.length > 0) {
+        val text = ElabAst.Term.StrLit(run.toString, span)
+        pieces += ElabAst.Term.WordPiece.Splice(
+          ElabAst.Term.App(ElabAst.Term.GlobalRef(Kernel.StringDataName, span), Vector(text), span)
+        )
+        run.setLength(0)
+      }
+
+    var first = true
+    var end: Value = null
+    // Whether the rest from this token, other than the whole word, has its own entry, and so ends the word here.
+    def endsHere(token: packed.Token): Boolean =
+      if (first) {
+        first = false
+        false
+      } else {
+        val rest = token.rest
+        if (context.quote.contains(rest.key)) end = rest
+        end != null
+      }
+    packed.Words.foreach(word)(
+      layer = token =>
+        !endsHere(token) && {
+          if (head == null) head = token.head
+          val scalar = if (head.name == Kernel.ListConsName) packed.Strings.scalar(token.payload(0)) else -1
+          if (scalar >= 0) run.appendCodePoint(scalar)
+          else {
+            endRun()
+            val recursive = token.recursiveIndex
+            pieces += ElabAst.Term.WordPiece.Layer(
+              erased ++ (0 until recursive).map(index => quoteTerm(token.payload(index), context, span)),
+              (recursive until token.payloadWidth).map(index => quoteTerm(token.payload(index), context, span)).toVector
+            )
+          }
+          true
+        },
+      end = token => {
+        end = token.value
+        true
+      }
+    )
+    val runEndsWord = run.length > 0 && Kernel.isListNil(end)
+    endRun()
+    if (!runEndsWord) pieces += ElabAst.Term.WordPiece.Splice(quoteTerm(end, context, span))
+
+    pieces.result() match {
+      case Vector(ElabAst.Term.WordPiece.Splice(only)) => only
+      case quoted =>
+        ElabAst.Term.Word(ElabAst.Term.GlobalRef(head.name, span), quoted, span)
+    }
+  }
+
+  /** The erased arguments of a constructor application of type `tpe`, quoted, recovered from the family arguments. */
+  private def quoteErasedArgs(
+      head: ConstructorHead,
+      tpe: Value,
+      context: QuoteContext,
+      span: Span
+  ): Vector[ElabAst.Term] =
+    if (head.erasedFamilyArgIndexes.isEmpty) Vector.empty
+    else
+      tpe match {
+        case ConstSpine(_, args) => head.erasedFamilyArgIndexes.map(idx => quoteTerm(args(idx), context, span))
+        case _ => throw WTF(s"Cannot recover erased constructor args for ${head.name} from $tpe", Some(span))
+      }
+
+  /** Quote a constructor application whose stored fields are already quoted, recovering its erased arguments. */
   private def quoteCtor(
       head: ConstructorHead,
-      fields: Vector[Value],
+      quotedFields: Vector[ElabAst.Term],
       tpe: Value,
       context: QuoteContext,
       span: Span
   ): ElabAst.Term = {
-    val erasedArgs =
-      if (head.erasedFamilyArgIndexes.isEmpty) Vector.empty
-      else {
-        tpe match {
-          case ConstSpine(_, args) => head.erasedFamilyArgIndexes.map(idx => args(idx))
-          case _ => throw WTF(s"Cannot recover erased constructor args for ${head.name} from $tpe", Some(span))
-        }
-      }
-
-    val args = erasedArgs ++ fields
-
-    if (args.length != head.totalArity)
-      throw WTF(s"Constructor ${head.name} has ${args.length} args, expected ${head.totalArity}", Some(span))
-
-    val quotedArgs = args.map(arg => quoteTerm(arg, context, span))
+    val quotedArgs = quoteErasedArgs(head, tpe, context, span) ++ quotedFields
+    if (quotedArgs.length != head.totalArity)
+      throw WTF(s"Constructor ${head.name} has ${quotedArgs.length} args, expected ${head.totalArity}", Some(span))
     val fn = ElabAst.Term.GlobalRef(head.name, span)
     if (quotedArgs.isEmpty) fn else ElabAst.Term.App(fn, quotedArgs, span)
   }

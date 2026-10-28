@@ -106,6 +106,8 @@ object Interpreter {
     case ref: ETerm.Ref         => evalRef(ref, env)
     case ETerm.App(fn, args, _) => evalApplyTerm(fn, args, env)
     case ETerm.NatLit(value, _) => NatNormalForm.literal(value)
+    case lit: ETerm.StrLit      => lit.value
+    case word: ETerm.Word       => evalWord(word, env)
     case pi: ETerm.Pi           => evalPi(pi, env)
   }
 
@@ -203,6 +205,30 @@ object Interpreter {
     } catch {
       case e: TypeError if e.span.isEmpty => throw TypeError.withSpan(e, term.span)
     }
+  }
+
+  /**
+   * A word, rebuilt from the back in one loop: the last splice is the end, each layer is consed onto the rest, whose
+   * type is the layer's since a list-shaped family has no indices, and each other splice is appended to the rest by the
+   * kernel `List` 's native. So evaluating a quotation rebuilds the value it was quoted from.
+   */
+  private def evalWord(word: ETerm.Word, env: Env): Value = {
+    val head = env(word.consHead.name) match {
+      case head: ConstructorHead => head
+      case other => throw WTF(s"Word head ${word.consHead.name} is not a constructor: $other", Some(word.span))
+    }
+    var rest = evalTerm(word.pieces.last.asInstanceOf[ETerm.WordPiece.Splice].list, env)
+    var index = word.pieces.length - 2
+    while (index >= 0) {
+      rest = word.pieces(index) match {
+        case ETerm.WordPiece.Layer(before, after) =>
+          val stored = before.drop(head.numErased).map(evalTerm(_, env)) ++ (rest +: after.map(evalTerm(_, env)))
+          ConstructorValue(head, stored, rest.tpe)
+        case ETerm.WordPiece.Splice(list) => packed.Words.append(evalTerm(list, env), rest)
+      }
+      index -= 1
+    }
+    rest
   }
 
   private[raccoonlang] def stuckMatch(

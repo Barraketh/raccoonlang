@@ -128,9 +128,6 @@ class TypeClassTests extends munit.FunSuite {
     val p =
       prelude +
         """
-          |inductive List (A: Type) : Type
-          | | nil {A: Type} : List(A)
-          |
           |def instance natEq : DecEq(Nat) := DecEq.mk(Nat, Bool.true)
           |
           |def instance listEq [ea: DecEq($A)]: DecEq(List(A)) := DecEq.mk(List(A), Bool.true)

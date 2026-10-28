@@ -472,6 +472,8 @@ object Elaborator {
 
       case i: SA.Term.Ident => i
 
+      case lit: SA.Term.StrLit => lit
+
       case SA.Term.TSelect(base, field, span) =>
         SA.Term.TSelect(rewriteTypeTerm(structName, selfName, base, previousFields), field, span)
 
@@ -666,6 +668,7 @@ object Elaborator {
     case SA.Term.TApp(fn, args, sp) => CA.Term.App(elabType(fn, env), args.map(elabType(_, env)), sp)
     case SA.Term.Derive(goal, sp)   => CA.Term.Derive(elabType(goal, env), sp)
     case pi: SA.Term.Pi             => elabPi(pi, env)
+    case SA.Term.StrLit(text, sp)   => CA.Term.StrLit(text, sp)
   }
 
   private def elabPattern(pattern: SA.TypePattern, env: ResolveEnv): (CA.TypePattern, ResolveEnv) =
@@ -953,6 +956,7 @@ object Elaborator {
     case SA.Term.App(fn, args, sp) => CA.Term.App(elabTerm(fn, env), args.map(elabTerm(_, env)), sp)
     case SA.Term.Derive(goal, sp)  => CA.Term.Derive(elabType(goal, env), sp)
     case pi: SA.Term.Pi            => elabPi(pi, env)
+    case SA.Term.StrLit(text, sp)  => CA.Term.StrLit(text, sp)
     case l: SA.Term.Lam =>
       val header = elabHeader(l.header, env)
       header.ty match {
@@ -1106,7 +1110,7 @@ object Elaborator {
   }
 
   private lazy val (elaboratedKernel, kernelRoot) = {
-    val (decls, env) = elabCommands(Kernel.surface.decls, ResolveEnv.primitive)
+    val (decls, env) = elabCommands(expandStructSelectors(Kernel.surface.decls), ResolveEnv.primitive)
     (decls, env.root)
   }
 

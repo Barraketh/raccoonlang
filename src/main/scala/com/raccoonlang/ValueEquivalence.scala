@@ -1,6 +1,7 @@
 package com.raccoonlang
 
 import com.raccoonlang.Value._
+import com.raccoonlang.packed.{Token, Words, Zipped}
 import com.raccoonlang.telescope.BinderOps
 
 object ValueEquivalence {
@@ -114,6 +115,8 @@ object ValueEquivalence {
             }
           }
 
+        case (l: VWord, r: VWord) => defEqWords(l, r)
+
         case (v1: VApp, v2: VApp) if v1.args.length == v2.args.length =>
           defEq(v1.head, v2.head) &&
           (v1.args.zip(v2.args).forall { case (arg1, arg2) => defEq(arg1, arg2) } ||
@@ -131,6 +134,33 @@ object ValueEquivalence {
         case (Var(_, id1, _), Var(_, id2, _)) if id1 == id2 => true
         case _                                              => false
       }
+
+    /**
+     * Two words whose keys differ, compared layer by layer in one loop (`Words.zip`): convertible words have
+     * convertible layers, of the same constructor with convertible payloads, in order, then convertible ends. The layer
+     * types need no comparison, since every layer of a word has its end's type. An end is never a word, so words of
+     * different lengths never convert and are rejected before the walk; words of one length end together, and their
+     * ends remain to compare.
+     */
+    private def defEqWords(left: VWord, right: VWord): Boolean =
+      Words.sameLength(left, right) &&
+        (Words.zip(left, right)((l, r) =>
+          ((l.head eq r.head) || l.head.name == r.head.name) && payloadsConvert(l, r)
+        ) match {
+          case Zipped.Refused      => false
+          case Zipped.Agreed       => true
+          case rests: Zipped.Rests => defEq(rests.left, rests.right)
+        })
+
+    // Two layers of one constructor, which therefore have the same payload width.
+    private def payloadsConvert(left: Token, right: Token): Boolean = {
+      var index = 0
+      while (index < left.payloadWidth) {
+        if (!defEq(left.payload(index), right.payload(index))) return false
+        index += 1
+      }
+      true
+    }
 
     def defEq(v1: Value, v2: Value): Boolean = {
       sameValueObject(v1, v2) || proofIrrelevant(v1, v2) ||
@@ -212,13 +242,88 @@ object ValueEquivalence {
     // it supplies no-confusion evidence. Partial family/constructor heads are
     // functions; ordinary applications, symbols and blocked matches are opaque.
     private def rigidForm(value: Value): Option[RigidForm] = value match {
-      case VCtor(_, _, _) if !isProof(value)                        => Some(DataConstructor)
+      case VCtor(_, _, _) if !isProof(value) => Some(DataConstructor)
+      // A list-shaped family is never a proposition family, so a word is never a proof.
+      case _: VWord                                                 => Some(DataConstructor)
       case InductiveFamilyValue(_) if value.tpe.isInstanceOf[VSort] => Some(TypeFamily)
       case pi: VPi  => if (pi.tpe == PropTpe) None else Some(FunctionType)
       case _: VSort => Some(TypeUniverse)
       case _: Var | _: NeutralThunk | _: VLam | _: VConst | _: VApp | _: ConstructorHead | _: VNatPoly => None
       // Level arithmetic and these primitive forms have no nominal apartness rule.
       case _: Level | LevelTpe | PropTpe | KernelObject => None
+    }
+
+    private def isConstructorData(value: Value): Boolean =
+      value match {
+        case VCtor(_, _, _) => true
+        case _: VWord       => true
+        case _              => false
+      }
+
+    /**
+     * Constructor against constructor, both materialized and not both words: different constructors of one family
+     * contradict, and the same constructor unifies its stored fields in order, then the result types. A cons is always
+     * a word, so a word here meets a different constructor.
+     */
+    private def unifyConstructors(a: Value, b: Value, meta: EqStore): Result = {
+      val (h1, fields1) = ConstructorValue.unapply(a).get
+      val (h2, fields2) = ConstructorValue.unapply(b).get
+      if (h1.name != h2.name) {
+        if (sameInductiveFamily(a.tpe, b.tpe)) Left(Contradiction(a, b)) else stuck(a, b)
+      } else if (fields1.length != fields2.length) stuck(a, b)
+      else {
+        val types = if (a.tpe eq b.tpe) Vector.empty else Vector(a.tpe -> b.tpe)
+        tryUnifyPairs(fields1.zip(fields2) ++ types, meta)
+      }
+    }
+
+    /**
+     * Two words, both materialized, in one loop over their aligned layers (`Words.zip`), so a word of many layers does
+     * not recurse. Two layers of different constructors contradict when they belong to one family, which can only
+     * happen at the first pair. Two layers of one constructor unify the payloads before the recursive field at once;
+     * the payloads after it and the layers' types wait on a stack until the rests are done, preserving the order of the
+     * constructor rule. The walk stops at rests with equal keys, which convert, and rests where either word ended are
+     * unified as usual. Rests of materialized words are materialized too.
+     */
+    private def unifyWords(left: VWord, right: VWord, meta: EqStore): Result = {
+      val deferred = scala.collection.mutable.ArrayBuffer.empty[Vector[(Value, Value)]]
+      var store = meta
+      var failure: UnificationFailure = null
+      def record(result: Result): Boolean =
+        result match {
+          case Left(failed) =>
+            failure = failed
+            false
+          case Right(next) =>
+            store = next
+            true
+        }
+      def pairs(l: Token, r: Token, from: Int, until: Int): Vector[(Value, Value)] =
+        (from until until).map(index => l.payload(index) -> r.payload(index)).toVector
+      val rests = Words.zip(left, right)((l, r) =>
+        if (l.head.name != r.head.name) {
+          failure = if (sameInductiveFamily(l.tpe, r.tpe)) Contradiction(l.rest, r.rest) else Stuck(l.rest, r.rest)
+          false
+        } else
+          record(tryUnifyPairs(pairs(l, r, 0, l.recursiveIndex), store)) && {
+            val types = if (l.tpe eq r.tpe) Vector.empty else Vector(l.tpe -> r.tpe)
+            val after = pairs(l, r, l.recursiveIndex, l.payloadWidth) ++ types
+            if (after.nonEmpty) deferred += after
+            true
+          }
+      )
+      val restsUnify = rests match {
+        case Zipped.Refused      => false
+        case Zipped.Agreed       => true
+        case rests: Zipped.Rests => record(tryUnify(rests.left, rests.right, store))
+      }
+      if (!restsUnify) return Left(failure)
+      var index = deferred.length - 1
+      while (index >= 0) {
+        if (!record(tryUnifyPairs(deferred(index), store))) return Left(failure)
+        index -= 1
+      }
+      Right(store)
     }
 
     def tryUnify(v1: Value, v2: Value, meta: EqStore): Result = {
@@ -230,12 +335,9 @@ object ValueEquivalence {
 
       (a, b) match {
 
-        case (VCtor(h1, fields1, result1), VCtor(h2, fields2, result2)) =>
-          if (h1.name != h2.name) {
-            if (sameInductiveFamily(result1, result2)) Left(Contradiction(a, b))
-            else stuck(a, b)
-          } else if (fields1.length != fields2.length) stuck(a, b)
-          else tryUnifyPairs(fields1.zip(fields2) :+ (result1 -> result2), meta)
+        case (l: VWord, r: VWord) => unifyWords(l, r, meta)
+
+        case _ if isConstructorData(a) && isConstructorData(b) => unifyConstructors(a, b, meta)
 
         case (InductiveFamilyValue(f1), InductiveFamilyValue(f2)) =>
           if (a.tpe == PropTpe || b.tpe == PropTpe) stuck(a, b)

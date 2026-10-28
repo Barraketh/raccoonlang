@@ -1,6 +1,7 @@
 package com.raccoonlang
 
 import com.raccoonlang.Value._
+import com.raccoonlang.packed.Words
 
 private object Builtins {
   private sealed trait Entry {
@@ -65,7 +66,9 @@ private object Builtins {
       "Nat.pred" -> Native((_, _, args) => NatNormalForm.pred(args(0))),
       "Nat.isZero" -> Native((_, _, args) => NatNormalForm.isZero(args(0))),
       "Nat.beq" -> Native((_, _, args) => NatNormalForm.beq(args(0), args(1))),
-      "Nat.ble" -> Native((_, _, args) => NatNormalForm.ble(args(0), args(1)))
+      "Nat.ble" -> Native((_, _, args) => NatNormalForm.ble(args(0), args(1))),
+      "List.append" -> Native((_, _, args) => Words.append(args(0), args(1))),
+      "List.length" -> Native((_, _, args) => Words.length(args(0)))
     )
 
   def instantiate(name: String, tpe: Value, span: Span): Value =

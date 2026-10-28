@@ -84,6 +84,24 @@ object InductiveChecks {
         }
     }
 
+  /**
+   * Whether every part of a word satisfies `part`, in one loop over its tokens: each layer's payloads and the end;
+   * except that `positiveType` checks the layers' types instead, the positions where a word is a cons application
+   * rather than an argument of one. Consecutive layers usually share one type object, which is checked once.
+   */
+  private def forallWordParts(word: VWord, part: Value => Boolean, positiveType: Value => Boolean): Boolean = {
+    var checkedType: Value = null
+    packed.Words.foreach(word)(
+      layer = token =>
+        (0 until token.payloadWidth).forall(index => part(token.payload(index))) &&
+          ((token.tpe eq checkedType) || {
+            checkedType = token.tpe
+            positiveType(token.tpe)
+          }),
+      end = token => part(token.value)
+    )
+  }
+
   private def doesNotOccur(target: PositivityTarget, value: Value): Boolean =
     if (target.isDirectOccurrence(value)) false
     else
@@ -96,6 +114,11 @@ object InductiveChecks {
 
         // An operand that is a form recurses through this case.
         case poly: VNatPoly => poly.form.operands.forall(operand => doesNotOccur(target, operand))
+
+        // A cons head is closed and has no dependencies, so the target cannot occur in it.
+        case word: VWord =>
+          def visit(part: Value): Boolean = doesNotOccur(target, part)
+          forallWordParts(word, visit, visit)
 
         case app: VApp =>
           doesNotOccur(target, app.head) &&
@@ -137,6 +160,9 @@ object InductiveChecks {
         // Factor bases and symbolic exponents are arguments of Nat operations, which have no positive positions.
         case poly: VNatPoly => doesNotOccur(target, poly)
 
+        // Payloads and the end are arguments of constructors; only the layers' types may contain the target.
+        case word: VWord => forallWordParts(word, doesNotOccur(target, _), occursPositively(target, _))
+
         case app: VApp =>
           doesNotOccur(target, app.head) &&
           app.args.forall(arg => doesNotOccur(target, arg)) &&
@@ -172,6 +198,10 @@ object InductiveChecks {
       case poly: VNatPoly =>
         poly.form.operands.forall(operand => sameFamilyArgsDoNotContain(inductiveName, target, operand))
 
+      case word: VWord =>
+        def visit(part: Value): Boolean = sameFamilyArgsDoNotContain(inductiveName, target, part)
+        forallWordParts(word, visit, visit)
+
       case app: VApp =>
         doesNotOccur(target, app.head) &&
         app.args.forall(arg => sameFamilyArgsDoNotContain(inductiveName, target, arg)) &&
@@ -203,10 +233,43 @@ object InductiveChecks {
     positive.result()
   }
 
+  /**
+   * How a constructor's stored fields recurse: the indexes of fields whose types mention the family being declared, and
+   * whether there is exactly one, whose type is the family applied to its own parameters.
+   */
+  private final case class ConstructorRecursion(
+      ctor: ConstructorDecl,
+      recursiveFields: Vector[Int],
+      soleFieldIsOwnInstance: Boolean
+  )
+
+  /**
+   * The cons constructor and its shape, when the declaration is list-shaped: a family without indices whose values live
+   * in a universe, other than the kernel's Nat, with at least two constructors, exactly one of which has a recursive
+   * field. It has exactly one, whose type is the family applied to its own parameters, not nested in another family or
+   * under a binder. Nat has the shape with an empty payload, and keeps its compact successor forms instead.
+   */
+  private def listShape(
+      decl: Decl.InductiveDecl,
+      familyUniverse: Universe,
+      recursion: Vector[ConstructorRecursion]
+  ): Option[(String, ListShape)] =
+    if (
+      familyUniverse == PropTpe || decl.header.indices.nonEmpty || decl.header.name == Kernel.NatName ||
+      decl.ctors.length < 2
+    ) None
+    else
+      recursion.filter(_.recursiveFields.nonEmpty) match {
+        case Vector(ConstructorRecursion(ctor, Vector(field), true)) =>
+          Some(ctor.canonicalName -> ListShape(field, ctor.fields.length - 1))
+        case _ => None
+      }
+
   private def installInductive(
       decl: Decl.InductiveDecl,
       baseEnv: Env,
-      inductiveHead: VConst
+      inductiveHead: VConst,
+      listShape: Option[(String, ListShape)]
   ): Env = {
     val envWithInductive = baseEnv.putGlobal(decl.header.name, inductiveHead)
 
@@ -225,7 +288,13 @@ object InductiveChecks {
 
       curEnv.putGlobal(
         ctor.canonicalName,
-        ConstructorHead(ctor.canonicalName, erasedFamilyArgIndexes, allBinders.length, fullType)
+        ConstructorHead(
+          ctor.canonicalName,
+          erasedFamilyArgIndexes,
+          allBinders.length,
+          fullType,
+          listShape.collect { case (consName, shape) if consName == ctor.canonicalName => shape }
+        )
       )
     }
   }
@@ -295,7 +364,7 @@ object InductiveChecks {
     }
     var positiveArgs = positiveArgIndexes(familyArgs, familyArgs.map(_.tpe))
 
-    decl.ctors.foreach { ctor =>
+    val recursion = decl.ctors.map { ctor =>
       val (erasedBinders, _) = BinderOps.toVBinders(ctor.erasedBinders, checkEnvWithInductive)
       val envWithErased = BinderOps.freshen(erasedBinders, checkEnvWithInductive)
       val (fieldBinders, _) = BinderOps.toVBinders(ctor.fields, envWithErased)
@@ -372,6 +441,19 @@ object InductiveChecks {
 
       positiveArgs = positiveArgs & positiveArgIndexes(outputArgs, fieldTypes)
 
+      // The result's arguments are the family's own parameters by the uniformity check above.
+      val recursiveFields = fieldTypes.indices.filter(idx => !doesNotOccur(recursiveTarget, fieldTypes(idx))).toVector
+      val soleFieldIsOwnInstance = recursiveFields match {
+        case Vector(idx) =>
+          fieldTypes(idx) match {
+            case InductiveFamilyValue(instance) =>
+              instance.head.name == name && instance.args.length == outputArgs.length &&
+              instance.args.zip(outputArgs).forall { case (arg, own) => ValueEquivalence.defEq(arg, own) }
+            case _ => false
+          }
+        case _ => false
+      }
+      ConstructorRecursion(ctor, recursiveFields, soleFieldIsOwnInstance)
     }
 
     val meta = initialMeta.copy(positiveArgs = positiveArgs)
@@ -379,6 +461,6 @@ object InductiveChecks {
     val inductiveHeadCheck = VConst(name, Inductive(meta), inductiveTypeCheck)
 
     // Only after all constructor checks succeed do we add the decl to the environments.
-    installInductive(decl, env, inductiveHeadCheck)
+    installInductive(decl, env, inductiveHeadCheck, listShape(decl, familyUniverse, recursion))
   }
 }

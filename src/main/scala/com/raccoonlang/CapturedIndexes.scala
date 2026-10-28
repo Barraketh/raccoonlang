@@ -51,6 +51,14 @@ object CapturedIndexes {
 
       case Term.NatLit(_, _) =>
 
+      case Term.StrLit(_, _) =>
+
+      case Term.Word(_, pieces, _) =>
+        pieces.foreach {
+          case Term.WordPiece.Layer(before, after) => goTerms(before ++ after, cutoff, refs)
+          case Term.WordPiece.Splice(list)         => goTerm(list, cutoff, refs)
+        }
+
       case Term.Pi(binders, out, _, _, _) =>
         binders.foreach { b =>
           goBinderType(b.ty, cutoff, refs)

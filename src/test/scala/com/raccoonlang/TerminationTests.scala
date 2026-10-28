@@ -29,7 +29,7 @@ class TerminationTests extends munit.FunSuite {
   case class SApp(head: Shape, args: List[Shape]) extends Shape
 
   private def toShape(v: Value): Shape = v match {
-    case Value.ConstructorHead(n, _, _, _) => SConst(n)
+    case Value.ConstructorHead(n, _, _, _, _) => SConst(n)
     case ConstructorValue(h, fields) =>
       if (fields.isEmpty) SConst(h.name) else SApp(SConst(h.name), fields.toList.map(toShape))
     case Value.VConst(n, _, _)     => SConst(n)
@@ -128,20 +128,20 @@ class TerminationTests extends munit.FunSuite {
   test("measure recursion compares the evaluated measure structurally") {
     val p =
       """
-        |inductive List (A: Type) : Type
-        | | nil {A: Type} : List(A)
-        | | cons {A: Type} (tail: List(A)) (head: A) : List(A)
+        |inductive Snoc (A: Type) : Type
+        | | nil {A: Type} : Snoc(A)
+        | | cons {A: Type} (tail: Snoc(A)) (head: A) : Snoc(A)
         |
-        |def length (A: Type)(xs: List(A)): Nat decreases structural(xs) := {
+        |def length (A: Type)(xs: Snoc(A)): Nat decreases structural(xs) := {
         |  match xs returning Nat with
-        |  | List.nil => Nat.zero
-        |  | List.cons tail _ => Nat.succ(length(A, tail))
+        |  | Snoc.nil => Nat.zero
+        |  | Snoc.cons tail _ => Nat.succ(length(A, tail))
         |}
         |
-        |def consume (A: Type)(xs: List(A)): Nat decreases measure(length(A, xs)) := {
+        |def consume (A: Type)(xs: Snoc(A)): Nat decreases measure(length(A, xs)) := {
         |  match xs returning Nat with
-        |  | List.nil => Nat.zero
-        |  | List.cons tail _ => consume(A, tail)
+        |  | Snoc.nil => Nat.zero
+        |  | Snoc.cons tail _ => consume(A, tail)
         |}
         |""".stripMargin
 

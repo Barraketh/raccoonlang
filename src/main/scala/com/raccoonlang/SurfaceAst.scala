@@ -66,6 +66,9 @@ object SurfaceAst {
     // Identifier (either type or term)
     final case class Ident(name: String, span: Span) extends Term with TypeTerm
 
+    // String literal "…": its decoded text, which holds only Unicode scalar values
+    final case class StrLit(text: String, span: Span) extends Term with TypeTerm
+
     // Projection: base[field]
     final case class TSelect(base: TypeTerm, field: String, span: Span) extends TypeTerm
     final case class Select(base: Term, field: String, span: Span) extends Term

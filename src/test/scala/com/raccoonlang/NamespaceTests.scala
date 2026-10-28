@@ -21,20 +21,20 @@ class NamespaceTests extends munit.FunSuite {
   test("inductive head can also be used as a namespace for functions") {
     val p =
       """
-        |inductive List (A: Type) : Type
-        | | nil {A: Type} : List(A)
-        | | cons {A: Type} (tail: List(A))(head: A) : List(A)
+        |inductive Bag (A: Type) : Type
+        | | nil {A: Type} : Bag(A)
+        | | cons {A: Type} (tail: Bag(A))(head: A) : Bag(A)
         |
-        |namespace List {
-        |  def singleton (A: Type)(x: A): List(A) := cons(A, nil(A), x)
+        |namespace Bag {
+        |  def singleton (A: Type)(x: A): Bag(A) := cons(A, nil(A), x)
         |}
         |
         |{
-        |  List.singleton(Nat, Nat.zero)
+        |  Bag.singleton(Nat, Nat.zero)
         |}
         |""".stripMargin
 
-    assertEquals(ctorName(runProgram(p)), "List.cons")
+    assertEquals(ctorName(runProgram(p)), "Bag.cons")
   }
 
   test("open namespace snapshots known globals and checks namespace existence") {

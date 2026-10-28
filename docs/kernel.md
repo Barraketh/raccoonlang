@@ -50,6 +50,27 @@ factor bases and symbolic exponents, including sums, as arguments of the Nat
 operations, so a target occurring in one is never positive. The [Nat normal forms design](nat-normal-forms.md)
 specifies the laws, the representation, and quotation.
 
+## Packed lists and kernel strings
+
+`Sort`, `List` with `nil` and `cons`, the natives `List.append` and
+`List.length`, and the structs `Char` (`mk (val: Nat)`) and `String`
+(`mk (data: List(Char))`) are kernel declarations beneath every prelude and
+program; they cannot be redeclared.
+
+Every cons application of a list-shaped type (one recursive constructor with a
+single recursive field at its own parameters, no indices, not `Nat`) is a word:
+its layers are stored in shared chunks, invisibly to conversion, matching,
+refinement, quotation and printing, and every word is constructor data. A
+word's key is a polynomial over the integers modulo 2^61 - 1 with fixed bases;
+like every key, it guards against accidental collisions, not crafted ones.
+
+`List.append` follows its source definition, sharing storage, and ends in an
+ordinary stuck application at a stuck tail. `xs ++ [] = xs` and
+`length(xs ++ ys) = length(xs) + length(ys)` hold definitionally; associativity
+is the prelude theorem `List.append_assoc`. A string literal always has type
+`String`. [Packed lists and kernel strings](packed_lists.md) specifies the
+rules and justifies the design.
+
 ## Function-type equality
 
 Function types compare binder domains and constrained-capture classifiers by

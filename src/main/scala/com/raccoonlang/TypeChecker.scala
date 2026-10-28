@@ -66,6 +66,12 @@ object TypeChecker {
           }
         case EA.Term.GlobalRef(_, _) =>
         case EA.Term.NatLit(_, _)    =>
+        case EA.Term.StrLit(_, _)    =>
+        case EA.Term.Word(_, pieces, _) =>
+          pieces.foreach {
+            case EA.Term.WordPiece.Layer(before, after) => (before ++ after).foreach(loop(_, appHead = false))
+            case EA.Term.WordPiece.Splice(list)         => loop(list, appHead = false)
+          }
         case EA.Term.App(fn, args, _) =>
           loop(fn, appHead = true)
           args.foreach(arg => loop(arg, appHead = false))
@@ -147,6 +153,10 @@ object TypeChecker {
       case ref: CA.Term.Ref =>
         val residual = elabRef(ref)
         CheckedTypeTerm(Interpreter.evalTypeTerm(residual, env), residual)
+      case CA.Term.StrLit(text, span) =>
+        // A literal's type is kernel String whatever is expected.
+        val residual = EA.Term.StrLit(text, span)
+        CheckedTypeTerm(residual.value, residual)
     }
 
   // Returning the residual term lets callers preserve checked let/lambda structure instead of re-checking.

@@ -1,6 +1,7 @@
 package com.raccoonlang
 
 import com.raccoonlang.Value._
+import com.raccoonlang.packed.Words
 
 object ValueOps {
 
@@ -37,6 +38,8 @@ object ValueOps {
         case Var(name, id, tpe)                => Var(name, id, materialize(tpe))
         case VConst(name, constType, tpe)      => VConst(name, constType, materialize(tpe))
         case poly: VNatPoly                    => NatNormalForm.substituteAtoms(poly, materialize(_))
+        // In one loop, splicing in a solved terminator; every part of the result is materialized, so it is too.
+        case word: VWord => Words.map(word, _.intersects(eqStore.solvedIds), materialize(_))
         case VApp(head, args, tpe, blockerIds) =>
           val nextHead = materialize(head)
           val nextArgs = args.map(materialize(_))

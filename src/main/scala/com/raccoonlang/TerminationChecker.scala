@@ -79,11 +79,33 @@ object TerminationChecker {
     root match {
       case form: VNatPoly => NatNormalForm.isStrictlySmaller(candidate, form)
       case VCtor(_, fields, _) =>
-        fields.exists { field =>
-          // Proof fields cannot expose data subterms, since proof irrelevance hides their structure.
-          TypeChecker.getUniverse(field.tpe) != PropTpe &&
-          (ValueEquivalence.defEq(candidate, field) || isStrictSubterm(candidate, field))
+        fields.exists(field => isFieldOrStrictSubterm(candidate, field))
+      case word: VWord =>
+        packed.Words.isProperSuffix(candidate, word) || {
+          // Each layer's payload, then its tail, which is the rest at the next token, as the constructor view decodes
+          // them, in one loop. The end is decomposed further.
+          var found = false
+          var first = true
+          def tail(token: packed.Token): Boolean = !first && ValueEquivalence.defEq(candidate, token.rest)
+          packed.Words.foreach(word)(
+            layer = token => {
+              found = tail(token) ||
+                (0 until token.payloadWidth).exists(index => isFieldOrStrictSubterm(candidate, token.payload(index)))
+              first = false
+              !found
+            },
+            end = token => {
+              found = tail(token) || isStrictSubterm(candidate, token.value)
+              false
+            }
+          )
+          found
         }
       case _ => false
     }
+
+  private def isFieldOrStrictSubterm(candidate: Value, field: Value): Boolean =
+    // Proof fields cannot expose data subterms, since proof irrelevance hides their structure.
+    TypeChecker.getUniverse(field.tpe) != PropTpe &&
+      (ValueEquivalence.defEq(candidate, field) || isStrictSubterm(candidate, field))
 }

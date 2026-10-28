@@ -64,6 +64,14 @@ Note that at this point I have done 0 optimization - these performance wins are 
     - Distributivity is the prelude axiom `Nat.mul_add`; `(x * y)^a` and `(x^a)^b` are the prelude theorems
       `Nat.mul_pow` and `Nat.pow_mul`
     - See [the Nat normal forms design](docs/nat-normal-forms.md) for the laws, representation, and kernel integration
+- Kernel `List` with packed storage and a native `append` that follows the source definition with the right unit
+  `append(l, nil) = l` definitional; native `length` maps lists to Nat sums, so the length law
+  `length(append(l, r)) = length(l) + length(r)` holds by conversion
+    - Associativity is the prelude theorem `List.append_assoc`; it computes whenever the first list ends in `nil`
+    - See [kernel lists](docs/packed_lists.md#kernel-list)
+- Kernel `Char` and `String` with string literals `"…"`: JSON-style escapes (`\"`, `\\`, `\/`, `\b`, `\f`, `\n`,
+  `\r`, `\t`, `\uXXXX`, with surrogate pairs for scalars beyond U+FFFF) denoting Unicode scalar values; the prelude's
+  `String.append` and `String.length` call the List natives (see [kernel strings](docs/packed_lists.md#kernel-strings))
 - Namespaces, file imports, dotted names, and scoped `open`
 - Type patterns
 - Type classes with `def instance`, `let instance`, `[f: Foo]` instance binders, and explicit `derive[Foo]`
@@ -249,9 +257,6 @@ ambiguity detection.
 struct DecEq (A: Type) : Type
  | mk {A: Type} (result: Bool) : DecEq(A)
 
-inductive List (A: Type) : Type
- | nil : List(A)
-
 def instance natEq : DecEq(Nat) := DecEq.mk(Nat, Bool.true)
 
 def instance listEq [ea: DecEq($A)]: DecEq(List(A)) := DecEq.mk(List(A), Bool.true)
@@ -363,8 +368,9 @@ resulting value when the program body produces one.
 as a no-op for compatibility with source files that name their prelude dependency.
 
 Prelude declarations can use `:= builtin` when their canonical name has a native implementation in the runtime builtin
-registry. `Bool`, `Nat`, their constructors, and the native Nat arithmetic, subtraction, and comparisons are built
-into the kernel: every environment has them, including with `--no-prelude`, and they cannot be redeclared.
+registry. `Sort`, `Bool`, `Nat`, `List`, `Char`, `String`, their constructors and selectors, the native Nat arithmetic,
+subtraction, and comparisons, and the native `List.append` and `List.length` are built into the kernel: every
+environment has them, including with `--no-prelude`, and they cannot be redeclared.
 
 ```bash
 sbt 'run --root examples examples/nats.rac'

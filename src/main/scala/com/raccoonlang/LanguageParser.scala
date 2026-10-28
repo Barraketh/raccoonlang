@@ -72,6 +72,24 @@ object LanguageParser {
   private def rootTerm(implicit sourceId: Option[SourceId]): Parser[Term] =
     rootIdent.flatSpanned(sourceId).map(Ident.tupled)
 
+  /** A string literal; a malformed one is a fatal error at the offending character or escape. */
+  private val strLitAtom: Parser[String] = new Parser[String] {
+    override def parse(input: String, startIdx: Int): ParseResult[String] =
+      if (startIdx >= input.length || input.charAt(startIdx) != '"') fail(startIdx, startIdx)
+      else
+        try {
+          val decoded = UnicodeScalarString.decodeQuoted(input, startIdx)
+          Success(decoded.text, startIdx, decoded.endIdx)
+        } catch {
+          case invalid: UnicodeScalarString.Invalid => throw ParseError(startIdx, invalid.offset, invalid.message)
+        }
+
+    override def toString: String = "StringLiteral"
+  }
+
+  private def strLitTerm(implicit sourceId: Option[SourceId]): Parser[StrLit] =
+    strLitAtom.flatSpanned(sourceId).map(StrLit.tupled)
+
   private def pathP: Parser[Vector[String]] = ident.rep(min = 1, sep = P('.'))
 
   private def openPathP: Parser[(Vector[String], Boolean)] = {
@@ -86,7 +104,7 @@ object LanguageParser {
       .map(Derive.tupled)
 
   private def termAtom(implicit sourceId: Option[SourceId]): Parser[Term] =
-    deriveP | (sym("(") ~/ skipAllWs ~ term ~ layoutSymTight(")")) | rootTerm | identTerm
+    deriveP | (sym("(") ~/ skipAllWs ~ term ~ layoutSymTight(")")) | rootTerm | identTerm | strLitTerm
 
   // Type atoms: identifier or parenthesized type, with bracket selects as a postfix variant.
   // `$name` captures are parsed only by binder-type pattern parsers below.
@@ -109,7 +127,8 @@ object LanguageParser {
       deriveP |
       sym('(') ~ skipAllWs ~ typeTerm ~ layoutSymTight(')') |
       rootTypeTerm |
-      identTypeTerm
+      identTypeTerm |
+      strLitTerm
 
   sealed trait TypeTrailer
   case class Dot(name: String, span: Span) extends TypeTrailer

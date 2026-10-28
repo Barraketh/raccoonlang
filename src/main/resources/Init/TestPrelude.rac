@@ -1,5 +1,3 @@
-def Sort (l: Level): Type := builtin
-
 namespace Level {
   def succ (l: Level): Level := builtin
 

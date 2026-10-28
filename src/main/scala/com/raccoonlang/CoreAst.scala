@@ -69,6 +69,9 @@ object CoreAst {
 
     final case class LocalRef(ref: CoreAst.LocalRef, span: Span) extends Ref
 
+    // String literal: its decoded text, which holds only Unicode scalar values
+    final case class StrLit(text: String, span: Span) extends TypeTerm
+
     // Projection in either term or type position: base[field]
     final case class Select(base: Term, field: String, span: Span) extends Term with TypeTerm
 

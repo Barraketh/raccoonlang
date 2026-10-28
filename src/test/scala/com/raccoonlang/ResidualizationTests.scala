@@ -30,6 +30,12 @@ class ResidualizationTests extends munit.FunSuite {
       case EA.Term.GlobalRef(n, _) => n == name
       case EA.Term.LocalRef(_, _)  => false
       case EA.Term.NatLit(_, _)    => false
+      case EA.Term.StrLit(_, _)    => false
+      case EA.Term.Word(head, pieces, _) =>
+        head.name == name || pieces.exists {
+          case EA.Term.WordPiece.Layer(before, after) => (before ++ after).exists(arg => containsGlobal(arg, name))
+          case EA.Term.WordPiece.Splice(list)         => containsGlobal(list, name)
+        }
       case EA.Term.App(fn, args, _) =>
         containsGlobal(fn, name) || args.exists(arg => containsGlobal(arg, name))
       case EA.Term.Pi(binders, out, _, _, _) =>

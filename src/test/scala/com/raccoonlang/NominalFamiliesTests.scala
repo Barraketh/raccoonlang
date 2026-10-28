@@ -18,9 +18,6 @@ class NominalFamiliesTests extends munit.FunSuite {
       |
       |inductive False : Prop
       |
-      |inductive List (A: Sort($u)) : Sort(u)
-      | | nil {A: Sort($u)} : List(A)
-      |
       |inductive Big : Sort(Level.one)
       |
       |""".stripMargin

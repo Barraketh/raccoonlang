@@ -1,5 +1,10 @@
 package com.raccoonlang
 
+/**
+ * Structural keys. Equal keys are trusted to mean convertible values (see `ValueEquivalence.defEq`); keys guard against
+ * accidental collisions, not crafted ones. A key has two lanes that are separate hash chains: the `hi` lane reads only
+ * the `hi` lanes of child keys, and the `lo` lane only their `lo` lanes.
+ */
 object ValueKey {
   final class Key private[ValueKey] (val hi: Long, val lo: Long) {
     override def equals(other: Any): Boolean =
@@ -48,7 +53,21 @@ object ValueKey {
     val NatMonomial = 18
     val NatNumeralPower = 19
     val NatSymbolicPower = 20
+    val WordLayer = 21
+    val WordTerminator = 22
   }
+
+  /**
+   * The tags from which `packed.PolynomialKeys` mixes the symbols of words: a layer's payload tuple and a terminator.
+   * They are reserved with the other tags so that no two kinds of key share one.
+   */
+  private[raccoonlang] object WordTag {
+    val Layer: Int = Tag.WordLayer
+    val Terminator: Int = Tag.WordTerminator
+  }
+
+  /** A mixer starting from the tag `id`, one of `WordTag`, for keys that `packed` builds from child keys. */
+  private[raccoonlang] def mixer(id: Int): Mixer = new Mixer(tag(id))
 
   private val SeedHi = -7046029254386353131L
   private val SeedLo = -4417276706812531889L
@@ -98,7 +117,7 @@ object ValueKey {
   private def mixKeyLo(lo: Long, value: Key): Long = avalanche(lo + java.lang.Long.rotateLeft(value.lo, 27))
 
   /** Mixes a sequence into one key without allocating a key per step; each step matches the functional mixers. */
-  private final class Mixer(start: Key) {
+  private[raccoonlang] final class Mixer private[ValueKey] (start: Key) {
     private var hi = start.hi
     private var lo = start.lo
 
@@ -189,10 +208,11 @@ object ValueKey {
       valueIdKey(tag(Tag.NeutralThunk), m.id)
     case p: Value.VPi =>
       mixLong(valueIdKey(tag(Tag.Pi), p.id), p.binders.length.toLong)
-    case Value.ConstructorHead(n, _, _, _) =>
+    case Value.ConstructorHead(n, _, _, _, _) =>
       mixString(tag(Tag.ConstructorHead), n)
     case poly: Value.VNatPoly =>
       mixBigInt(mixKey(tag(Tag.NatPoly), poly.form.termsKey), poly.form.constant)
+    case word: Value.VWord => word.repr.key
   }
 
   /** Nat terms in order; each term contributes its coefficient and its monomial's cached key. */
