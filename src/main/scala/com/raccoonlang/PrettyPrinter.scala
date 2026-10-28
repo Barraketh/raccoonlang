@@ -6,24 +6,14 @@ object PrettyPrinter {
   private def printNatForm(poly: Value.VNatPoly): String = {
     val constant = poly.form.constant
     val terms = poly.form.terms
-    // Small ground values keep the unary constructor syntax that source programs write; larger ones print in decimal.
-    // Operands that are forms with terms print in parentheses, as in `2 * a * (b + 1)^2 * x^(c + d) + b + 3`, and
-    // numeral bases in decimal, as in `2^n`.
-    if (terms.isEmpty && constant <= 8) {
-      var result = "Nat.zero"
-      var n = BigInt(0)
-      while (n < constant) {
-        result = s"Nat.succ($result)"
-        n += 1
-      }
-      result
-    } else {
+    // Ground values print as literals. Operands that are forms with terms print in parentheses, as in
+    // `2 * a * (b + 1)^2 * x^(c + d) + b + 3`, and numeral bases in decimal, as in `2^n`.
+    if (terms.isEmpty) constant.toString
+    else {
       def operandText(operand: Value): String =
         operand match {
-          case poly: Value.VNatPoly if poly.form.terms.isEmpty => poly.form.constant.toString
-          case poly: Value.VNatPoly                            => s"(${printNatForm(poly)})"
-          case Value.VCtor(_, _, _)                            => "0"
-          case atom                                            => atom.toString
+          case poly: Value.VNatPoly if poly.form.terms.nonEmpty => s"(${printNatForm(poly)})"
+          case other                                            => print(other)
         }
       def factorText(factor: NatNormalForm.Factor): String =
         factor match {
@@ -49,11 +39,12 @@ object PrettyPrinter {
     import com.raccoonlang.CoreAst.Term
 
     def pt(t: CoreAst.TypeTerm): String = t match {
-      case ref: Term.Ref        => printRef(ref)
-      case Term.StrLit(text, _) => UnicodeScalarString.renderQuoted(text)
-      case select: Term.Select  => printCoreTerm(select)
-      case Term.Derive(goal, _) => s"derive[${pt(goal)}]"
-      case app: Term.App        => printCoreTerm(app)
+      case ref: Term.Ref          => printRef(ref)
+      case Term.NatLit(number, _) => number.toString
+      case Term.StrLit(text, _)   => UnicodeScalarString.renderQuoted(text)
+      case select: Term.Select    => printCoreTerm(select)
+      case Term.Derive(goal, _)   => s"derive[${pt(goal)}]"
+      case app: Term.App          => printCoreTerm(app)
       case Term.Pi(binders, out, _, _) =>
         val bindersStr = binders
           .map(printPiBinder)
@@ -63,6 +54,7 @@ object PrettyPrinter {
 
     def ptAtom(t: CoreAst.TypeTerm): String = t match {
       case _: Term.Ref         => pt(t)
+      case Term.NatLit(_, _)   => pt(t)
       case Term.StrLit(_, _)   => pt(t)
       case _: Term.Select      => pt(t)
       case Term.Derive(_, _)   => pt(t)
@@ -156,6 +148,7 @@ object PrettyPrinter {
 
   private def printTermAtom(t: CoreAst.Term): String = t match {
     case _: CoreAst.Term.Ref                     => printCoreTerm(t)
+    case CoreAst.Term.NatLit(_, _)               => printCoreTerm(t)
     case CoreAst.Term.StrLit(_, _)               => printCoreTerm(t)
     case CoreAst.Term.App(_, _, _)               => printCoreTerm(t)
     case CoreAst.Term.Derive(_, _)               => printCoreTerm(t)
@@ -224,9 +217,9 @@ object PrettyPrinter {
         val headStr = printElabTermAtom(fn)
         val argsStr = args.map(printElabTermAtom).mkString(", ")
         s"$headStr($argsStr)"
-      case Term.NatLit(value, _) => value.toString
-      case Term.StrLit(text, _)  => UnicodeScalarString.renderQuoted(text)
-      case word: Term.Word       => printElabWord(word)
+      case Term.NatLit(number, _) => number.toString
+      case Term.StrLit(text, _)   => UnicodeScalarString.renderQuoted(text)
+      case word: Term.Word        => printElabWord(word)
       case Term.Pi(binders, out, _, _, _) =>
         val bindersStr = binders
           .map(printElabPiBinder)
@@ -411,7 +404,8 @@ object PrettyPrinter {
     case Value.ConstructorHead(name, _, _, _, _)     => name
     case Value.VCtor(head, fields, _) =>
       val headStr = print(head)
-      if (fields.isEmpty) headStr
+      if (head.name == Kernel.ZeroName) "0" // as every other ground Nat prints as a literal
+      else if (fields.isEmpty) headStr
       else s"$headStr(${fields.map(print).mkString(", ")})"
     case poly: Value.VNatPoly   => printNatForm(poly)
     case v: Value.VApp          => printApp(v.head, v.args)

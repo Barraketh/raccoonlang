@@ -472,6 +472,8 @@ object Elaborator {
 
       case i: SA.Term.Ident => i
 
+      case lit: SA.Term.NatLit => lit
+
       case lit: SA.Term.StrLit => lit
 
       case SA.Term.TSelect(base, field, span) =>
@@ -668,6 +670,7 @@ object Elaborator {
     case SA.Term.TApp(fn, args, sp) => CA.Term.App(elabType(fn, env), args.map(elabType(_, env)), sp)
     case SA.Term.Derive(goal, sp)   => CA.Term.Derive(elabType(goal, env), sp)
     case pi: SA.Term.Pi             => elabPi(pi, env)
+    case SA.Term.NatLit(number, sp) => CA.Term.NatLit(number, sp)
     case SA.Term.StrLit(text, sp)   => CA.Term.StrLit(text, sp)
   }
 
@@ -953,10 +956,11 @@ object Elaborator {
         case Some(path) => elabPathTerm(path, env)
         case None       => CA.Term.Select(elabTerm(s.base, env), s.field, s.span)
       }
-    case SA.Term.App(fn, args, sp) => CA.Term.App(elabTerm(fn, env), args.map(elabTerm(_, env)), sp)
-    case SA.Term.Derive(goal, sp)  => CA.Term.Derive(elabType(goal, env), sp)
-    case pi: SA.Term.Pi            => elabPi(pi, env)
-    case SA.Term.StrLit(text, sp)  => CA.Term.StrLit(text, sp)
+    case SA.Term.App(fn, args, sp)  => CA.Term.App(elabTerm(fn, env), args.map(elabTerm(_, env)), sp)
+    case SA.Term.Derive(goal, sp)   => CA.Term.Derive(elabType(goal, env), sp)
+    case pi: SA.Term.Pi             => elabPi(pi, env)
+    case SA.Term.NatLit(number, sp) => CA.Term.NatLit(number, sp)
+    case SA.Term.StrLit(text, sp)   => CA.Term.StrLit(text, sp)
     case l: SA.Term.Lam =>
       val header = elabHeader(l.header, env)
       header.ty match {

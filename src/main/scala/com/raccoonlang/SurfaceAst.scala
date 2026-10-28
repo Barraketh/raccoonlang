@@ -66,6 +66,9 @@ object SurfaceAst {
     // Identifier (either type or term)
     final case class Ident(name: String, span: Span) extends Term with TypeTerm
 
+    // Nat literal: a nonnegative decimal numeral
+    final case class NatLit(number: BigInt, span: Span) extends Term with TypeTerm
+
     // String literal "…": its decoded text, which holds only Unicode scalar values
     final case class StrLit(text: String, span: Span) extends Term with TypeTerm
 

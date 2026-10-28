@@ -95,7 +95,7 @@ class UniverseTests extends munit.FunSuite {
 
     val res = runProgram(p)
     res match {
-      case v => assertEquals(PrettyPrinter.print(v), "Nat.zero")
+      case v => assertEquals(PrettyPrinter.print(v), "0")
     }
   }
 
@@ -215,7 +215,7 @@ class UniverseTests extends munit.FunSuite {
         |""".stripMargin
 
     val res = runProgram(p)
-    assertEquals(PrettyPrinter.print(res), "Nat.zero")
+    assertEquals(PrettyPrinter.print(res), "0")
   }
 
   test("Level.leq: constant can be covered by RHS atom") {

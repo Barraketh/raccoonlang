@@ -105,7 +105,7 @@ object Interpreter {
   def evalTypeTerm(tt: ElabAst.TypeTerm, env: Env): Value = tt match {
     case ref: ETerm.Ref         => evalRef(ref, env)
     case ETerm.App(fn, args, _) => evalApplyTerm(fn, args, env)
-    case ETerm.NatLit(value, _) => NatNormalForm.literal(value)
+    case lit: ETerm.NatLit      => lit.value
     case lit: ETerm.StrLit      => lit.value
     case word: ETerm.Word       => evalWord(word, env)
     case pi: ETerm.Pi           => evalPi(pi, env)

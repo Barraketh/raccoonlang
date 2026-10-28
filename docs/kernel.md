@@ -29,9 +29,10 @@ lone neutral atom is itself, and everything else, including every successor, is
 a compact form; constructing `Nat.succ(x)` yields the form `x + 1`. The
 constructor view exposes a form with a positive constant as `Nat.succ` with
 that constant decremented. A form with zero constant, including a product of
-successors or a symbolic power, blocks on all its dependencies. Substitution
-recomputes affected arithmetic, including symbolic exponents and bases, and
-blocked matches. Atom equality respects existing definitional
+successors or a symbolic power, blocks on all its dependencies. A decimal
+literal such as `42` has type `Nat` and evaluates directly to its constant.
+Substitution recomputes affected arithmetic, including symbolic exponents and
+bases, and blocked matches. Atom equality respects existing definitional
 conversion, including when convertible atoms have different structural keys.
 
 Truncated subtraction and the comparisons depend only on the signed difference

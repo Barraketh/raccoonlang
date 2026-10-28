@@ -43,6 +43,26 @@ The prelude adds source definitions such as `Nat.le`, `Nat.lt`, and
 `Nat.mul_pow` and `Nat.pow_mul`, all described below. They live in the prelude
 because `Eq` is a prelude family.
 
+## Literals
+
+A Nat literal is a run of ASCII decimal digits, such as `0` or `42`, in term or
+type position. It denotes the kernel Nat with that value, of any size. Its type
+is `Nat` whatever is expected, as a string literal's type is `String`, so
+checking it is local and needs no prelude. Evaluation goes through the single
+publication boundary below: `0` is `Nat.zero` and `3` is the constant form that
+the constructor view exposes as `Nat.succ(2)`. A literal therefore converts
+with every constructor or arithmetic spelling of its value, matches
+`Nat.succ` cases, and refines and captures like any other known successor.
+
+Literals add no law and no representation: closed values are already `BigInt`
+constants, so a literal is a leaf that builds its constant in time linear in
+its digits, where a constructor chain takes syntax linear in the value. Display
+and quotation already print constants in decimal, and literals let that output
+read back as source. Only ASCII digits form literals, and identifiers cannot
+start with a digit, so names such as `x1` are unaffected. Numerals are not
+overloaded: a literal is never a `Level`, a `Char`, or a value of another
+family.
+
 ## Definitional laws
 
 1. Addition is associative and commutative, with unit zero.
@@ -472,20 +492,20 @@ factor quotes as its own sum, and a symbolic power quotes as
 application trees, so syntax depth is logarithmic in the number of terms and
 factors at each level.
 
-`ElabAst.Term.NatLit(value, span)` is a checked leaf holding a nonnegative
+`ElabAst.Term.NatLit(number, span)` is a checked leaf holding a nonnegative
 `BigInt`, used for constants, coefficients, and exponents. Like an application,
-it is a type term, so a constant can stand in a type-pattern argument. Source
-programs have no literal syntax; quotation emits literals only from constants of
-evaluated values, so evaluating one builds the constant directly. Capture
-analysis and closed-environment inlining treat literals as leaves. Round trips
-preserve type, conversion, dependencies, and captured local slots.
+it is a type term, so a constant can stand in a type-pattern argument.
+Evaluating one builds the constant directly, once per node: the node caches its
+value, as a string literal does. Capture analysis and closed-environment
+inlining treat literals as leaves. Round trips preserve type, conversion,
+dependencies, and captured local slots.
 
-Ground values up to 8 display in the unary constructor syntax. Larger or
-symbolic values display as sums of products and powers with decimal coefficients
-and the constant last, such as `2 * a * (b + 1)^2 + b + 3`. Operands that are
-forms with terms print in parentheses and numeral bases in decimal, as in
-`x^a`, `x^(a + b)`, `2^n`, `(2 * x)^a`, and `(x^a)^b`. Checked literals print
-in decimal.
+Ground values, including zero, display as decimal literals. Symbolic values
+display as sums of products and powers with decimal coefficients and the
+constant last, such as `2 * a * (b + 1)^2 + b + 3`. Operands that are forms
+with terms print in parentheses and numeral bases in decimal, as in `x^a`,
+`x^(a + b)`, `2^n`, `(2 * x)^a`, and `(x^a)^b`. Checked literals print in
+decimal, so printed ground values and residual constants read back as source.
 
 ## Measurements
 

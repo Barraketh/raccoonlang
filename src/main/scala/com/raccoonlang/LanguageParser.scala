@@ -90,6 +90,12 @@ object LanguageParser {
   private def strLitTerm(implicit sourceId: Option[SourceId]): Parser[StrLit] =
     strLitAtom.flatSpanned(sourceId).map(StrLit.tupled)
 
+  /** A Nat literal: ASCII decimal digits. */
+  private val natLitAtom: Parser[BigInt] = P(c => c >= '0' && c <= '9').rep(1).!.map(BigInt(_)).named("NatLiteral")
+
+  private def natLitTerm(implicit sourceId: Option[SourceId]): Parser[NatLit] =
+    natLitAtom.flatSpanned(sourceId).map(NatLit.tupled)
+
   private def pathP: Parser[Vector[String]] = ident.rep(min = 1, sep = P('.'))
 
   private def openPathP: Parser[(Vector[String], Boolean)] = {
@@ -104,7 +110,7 @@ object LanguageParser {
       .map(Derive.tupled)
 
   private def termAtom(implicit sourceId: Option[SourceId]): Parser[Term] =
-    deriveP | (sym("(") ~/ skipAllWs ~ term ~ layoutSymTight(")")) | rootTerm | identTerm | strLitTerm
+    deriveP | (sym("(") ~/ skipAllWs ~ term ~ layoutSymTight(")")) | rootTerm | identTerm | natLitTerm | strLitTerm
 
   // Type atoms: identifier or parenthesized type, with bracket selects as a postfix variant.
   // `$name` captures are parsed only by binder-type pattern parsers below.
@@ -128,6 +134,7 @@ object LanguageParser {
       sym('(') ~ skipAllWs ~ typeTerm ~ layoutSymTight(')') |
       rootTypeTerm |
       identTypeTerm |
+      natLitTerm |
       strLitTerm
 
   sealed trait TypeTrailer

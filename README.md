@@ -63,6 +63,7 @@ Note that at this point I have done 0 optimization - these performance wins are 
   native truncated subtraction and comparisons
     - Distributivity is the prelude axiom `Nat.mul_add`; `(x * y)^a` and `(x^a)^b` are the prelude theorems
       `Nat.mul_pow` and `Nat.pow_mul`
+    - Decimal literals such as `0` and `42` denote kernel Nat values of any size, in terms and types
     - See [the Nat normal forms design](docs/nat-normal-forms.md) for the laws, representation, and kernel integration
 - Kernel `List` with packed storage and a native `append` that follows the source definition with the right unit
   `append(l, nil) = l` definitional; native `length` maps lists to Nat sums, so the length law

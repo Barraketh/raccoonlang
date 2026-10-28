@@ -457,6 +457,60 @@ class NatNormalFormProgramTests extends munit.FunSuite {
     assert(!result.synDeps.contains(n.id) && !result.synDeps.contains(m.id))
   }
 
+  test("decimal literals denote Nat values, convert with constructor syntax, and need no prelude") {
+    program(
+      """
+        |def zero: Eq(Nat, 0, Nat.zero) := Eq.refl(Nat.zero)
+        |def three: Eq(Nat, 3, Nat.succ(Nat.succ(Nat.succ(Nat.zero)))) := Eq.refl(003)
+        |def sum (a: Nat): Eq(Nat, Nat.add(Nat.mul(2, a), 1), Nat.succ(Nat.add(a, a))) := Eq.refl(Nat.add(1, Nat.add(a, a)))
+        |def huge: Eq(Nat, Nat.mul(100000000000000000000, 3), 300000000000000000000) := Eq.refl(300000000000000000000)
+        |""".stripMargin
+    )
+    assertEquals(value("{ 0 }"), Kernel.zeroValue)
+    assert(program("{ 12 }", Prelude.none).exists(ValueEquivalence.defEq(_, NatNormalForm.literal(12))))
+    intercept[TypeMismatch] { program("def wrong: Eq(Nat, 2, 3) := Eq.refl(2)\n") }
+  }
+
+  test("a literal has type Nat whatever is expected, in terms and in types") {
+    program(
+      """
+        |inductive Sized (n: Nat) : Type
+        | | mk {n: Nat} : Sized(n)
+        |
+        |def two: Sized(2) := Sized.mk(Nat.succ(1))
+        |def pattern (s: Sized(Nat.succ($k))): Nat := k
+        |def captured: Eq(Nat, pattern(Sized.mk(5)), 4) := Eq.refl(4)
+        |def predecessor (n: Nat): Nat := {
+        |  match n with
+        |  | Nat.zero => 0
+        |  | Nat.succ k => k
+        |}
+        |def matched: Eq(Nat, predecessor(7), 6) := Eq.refl(6)
+        |""".stripMargin
+    )
+    intercept[TypeMismatch] { program("def s: String := 3\n") }
+    intercept[TypeMismatch] { program("def b: Bool := 0\n") }
+  }
+
+  test("literals are ASCII digits and identifiers may still contain digits") {
+    def parses(source: String): Boolean = LanguageParser.parseProgram(source).isInstanceOf[Success[_]]
+    assert(parses("def x1: Nat := 1\n{ x1 }"))
+    assert(!parses("def 1x: Nat := 1\n"))
+    assert(!parses("{ \u0663 }")) // ARABIC-INDIC DIGIT THREE
+    assert(!parses("{ 3x }"))
+  }
+
+  test("ground values and arithmetic display with literals that read back as the same value") {
+    val sources = Vector("{ 0 }", "{ 1 }", "{ Nat.pow(2, 100) }", "{ Nat.mul(Nat.succ(Nat.succ(Nat.zero)), 4) }")
+    sources.foreach { source =>
+      val result = value(source)
+      val printed = PrettyPrinter.print(result)
+      assert(printed.forall(_.isDigit), printed)
+      assertEquals(value(s"{ $printed }").key, result.key, source)
+    }
+    assertEquals(PrettyPrinter.print(value("{ Nat.pow(2, 100) }")), "1267650600228229401496703205376")
+  }
+
   test("kernel Nat declarations exist without a prelude and cannot be redeclared") {
     val two = program("{ Nat.add(Nat.succ(Nat.zero), Nat.succ(Nat.zero)) }", Prelude.none)
     assert(two.exists(value => ValueEquivalence.defEq(value, NatNormalForm.literal(2))))

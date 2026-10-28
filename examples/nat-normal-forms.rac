@@ -8,7 +8,7 @@ def regrouped (x: Nat)(y: Nat)(z: Nat):
     Eq(Nat, Nat.mul(Nat.mul(x, y), z), Nat.mul(y, Nat.mul(z, x))) := Eq.refl(Nat.mul(x, Nat.mul(y, z)))
 
 def doubled (x: Nat)(y: Nat):
-    Eq(Nat, Nat.mul(Nat.succ(Nat.succ(Nat.zero)), Nat.add(x, y)), Nat.add(Nat.add(x, y), Nat.add(y, x))) :=
+    Eq(Nat, Nat.mul(2, Nat.add(x, y)), Nat.add(Nat.add(x, y), Nat.add(y, x))) :=
   Eq.refl(Nat.add(Nat.add(x, y), Nat.add(y, x)))
 
 // Distributivity over a symbolic multiplier is the prelude axiom; its instances follow by conversion.
@@ -19,13 +19,13 @@ def rightDistributive (x: Nat)(y: Nat)(z: Nat):
     Eq(Nat, Nat.mul(Nat.add(x, y), z), Nat.add(Nat.mul(x, z), Nat.mul(y, z))) := Nat.mul_add(z, x, y)
 
 def successorStep (x: Nat)(y: Nat):
-    Eq(Nat, Nat.mul(x, Nat.succ(y)), Nat.add(Nat.mul(x, y), x)) := Nat.mul_add(x, y, Nat.succ(Nat.zero))
+    Eq(Nat, Nat.mul(x, Nat.succ(y)), Nat.add(Nat.mul(x, y), x)) := Nat.mul_add(x, y, 1)
 
 // Powers of equal bases add their exponents, symbolic or not, and powers of one are one.
 def productLaw (x: Nat)(a: Nat)(b: Nat):
     Eq(Nat, Nat.mul(Nat.pow(x, a), Nat.pow(x, b)), Nat.pow(x, Nat.add(b, a))) := Eq.refl(Nat.pow(x, Nat.add(a, b)))
 
-def unitPower (e: Nat): Eq(Nat, Nat.pow(Nat.succ(Nat.zero), e), Nat.succ(Nat.zero)) := Eq.refl(Nat.succ(Nat.zero))
+def unitPower (e: Nat): Eq(Nat, Nat.pow(1, e), 1) := Eq.refl(1)
 
 // Powers of products and powers of powers are prelude theorems.
 def powerOfProduct (x: Nat)(y: Nat)(a: Nat):
@@ -36,7 +36,7 @@ def powerOfPower (x: Nat)(a: Nat)(b: Nat):
 
 {
   Nat.add(
-    Nat.add(Nat.mul(Nat.pow(Nat.add(a, b), Nat.succ(Nat.succ(Nat.zero))), Nat.add(b, a)), Nat.mul(a, Nat.succ(Nat.succ(Nat.zero)))),
-    Nat.pow(Nat.succ(Nat.succ(Nat.zero)), Nat.succ(b))
+    Nat.add(Nat.mul(Nat.pow(Nat.add(a, b), 2), Nat.add(b, a)), Nat.mul(a, 2)),
+    Nat.pow(2, Nat.succ(b))
   )
 }

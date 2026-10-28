@@ -69,6 +69,9 @@ object CoreAst {
 
     final case class LocalRef(ref: CoreAst.LocalRef, span: Span) extends Ref
 
+    // Nat literal: a nonnegative numeral
+    final case class NatLit(number: BigInt, span: Span) extends TypeTerm
+
     // String literal: its decoded text, which holds only Unicode scalar values
     final case class StrLit(text: String, span: Span) extends TypeTerm
 

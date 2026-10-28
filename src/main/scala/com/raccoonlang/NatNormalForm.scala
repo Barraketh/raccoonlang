@@ -495,7 +495,7 @@ private[raccoonlang] object NatNormalForm {
       product.result()
     }
 
-  /** Quotation produces literals only from constants of evaluated values, which are nonnegative. */
+  /** The value of a literal, whose numeral is nonnegative: decimal digits in source, or a quoted constant. */
   def literal(value: BigInt): Value = {
     require(value >= 0, s"Nat constant $value is negative")
     numeral(value).toValue

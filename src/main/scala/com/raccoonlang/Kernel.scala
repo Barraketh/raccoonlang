@@ -11,6 +11,7 @@ import com.raccoonlang.Value._
  */
 private[raccoonlang] object Kernel {
   val NatName = "Nat"
+  val ZeroName = "Nat.zero"
   val SuccName = "Nat.succ"
   val ListNilName = "List.nil"
   val ListConsName = "List.cons"
@@ -73,7 +74,7 @@ private[raccoonlang] object Kernel {
   private def native(name: String): VLam = env(name).asInstanceOf[VLam]
 
   lazy val natType: Value = env("Nat")
-  lazy val zero: ConstructorHead = constructor("Nat.zero")
+  lazy val zero: ConstructorHead = constructor(ZeroName)
   lazy val succ: ConstructorHead = constructor(SuccName)
   lazy val zeroValue: Value = VCtor(zero, Vector.empty, natType)
 

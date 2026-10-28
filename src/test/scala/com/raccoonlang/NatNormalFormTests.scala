@@ -592,7 +592,7 @@ class NatNormalFormTests extends munit.FunSuite {
     val expected = monomials.flatMap(monomial => Vector(s"$monomial + b + 3", s"b + $monomial + 3"))
     val printed = PrettyPrinter.print(value)
     assert(expected.contains(printed), printed)
-    assertEquals(PrettyPrinter.print(constant(3)), "Nat.succ(Nat.succ(Nat.succ(Nat.zero)))")
+    assertEquals(PrettyPrinter.print(constant(3)), "3")
     assertEquals(PrettyPrinter.print(constant(9)), "9")
   }
 }

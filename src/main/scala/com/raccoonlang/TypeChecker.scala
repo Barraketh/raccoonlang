@@ -153,6 +153,10 @@ object TypeChecker {
       case ref: CA.Term.Ref =>
         val residual = elabRef(ref)
         CheckedTypeTerm(Interpreter.evalTypeTerm(residual, env), residual)
+      case CA.Term.NatLit(number, span) =>
+        // A literal's type is kernel Nat whatever is expected.
+        val residual = EA.Term.NatLit(number, span)
+        CheckedTypeTerm(residual.value, residual)
       case CA.Term.StrLit(text, span) =>
         // A literal's type is kernel String whatever is expected.
         val residual = EA.Term.StrLit(text, span)

@@ -196,7 +196,7 @@ class PreludeTests extends munit.FunSuite {
           |}
           |""".stripMargin
       )
-    assertEquals(PrettyPrinter.print(natRes), "Nat.succ(Nat.succ(Nat.zero))")
+    assertEquals(PrettyPrinter.print(natRes), "2")
 
     val subRes =
       runProgram(
@@ -206,7 +206,7 @@ class PreludeTests extends munit.FunSuite {
           |}
           |""".stripMargin
       )
-    assertEquals(PrettyPrinter.print(subRes), "Nat.succ(Nat.zero)")
+    assertEquals(PrettyPrinter.print(subRes), "1")
 
     val beqRes =
       runProgram(
@@ -256,7 +256,7 @@ class PreludeTests extends munit.FunSuite {
           |}
           |""".stripMargin
       )
-    assertEquals(PrettyPrinter.print(optionBindRes), "Nat.succ(Nat.zero)")
+    assertEquals(PrettyPrinter.print(optionBindRes), "1")
 
     val sumElimRes =
       runProgram(
@@ -266,7 +266,7 @@ class PreludeTests extends munit.FunSuite {
           |}
           |""".stripMargin
       )
-    assertEquals(PrettyPrinter.print(sumElimRes), "Nat.succ(Nat.zero)")
+    assertEquals(PrettyPrinter.print(sumElimRes), "1")
 
     val listRes =
       runProgram(
@@ -276,7 +276,7 @@ class PreludeTests extends munit.FunSuite {
           |}
           |""".stripMargin
       )
-    assertEquals(PrettyPrinter.print(listRes), "Nat.succ(Nat.succ(Nat.zero))")
+    assertEquals(PrettyPrinter.print(listRes), "2")
 
     val listApiRes =
       runProgram(
@@ -294,7 +294,7 @@ class PreludeTests extends munit.FunSuite {
           |}
           |""".stripMargin
       )
-    assertEquals(PrettyPrinter.print(listApiRes), "Nat.succ(Nat.zero)")
+    assertEquals(PrettyPrinter.print(listApiRes), "1")
 
     val inhabitedRes =
       runProgram(

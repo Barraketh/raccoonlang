@@ -47,7 +47,13 @@ object ElabAst {
 
     final case class App(fn: Term, args: Vector[Term], span: Span) extends Term with TypeTerm
 
-    final case class NatLit(value: BigInt, span: Span) extends Term with TypeTerm
+    /**
+     * Nat literal: a nonnegative numeral, from source or from a quoted constant. Its value is built on first evaluation
+     * and shared by every later one, as values never change.
+     */
+    final case class NatLit(number: BigInt, span: Span) extends Term with TypeTerm {
+      lazy val value: Value = NatNormalForm.literal(number)
+    }
 
     /**
      * String literal: its decoded text, which holds only Unicode scalar values. Its value is built on first evaluation

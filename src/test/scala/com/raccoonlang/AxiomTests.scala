@@ -43,7 +43,7 @@ class AxiomTests extends munit.FunSuite {
         |""".stripMargin
     )
 
-    assertEquals(PrettyPrinter.print(res), "choose(Nat, Nat.zero)")
+    assertEquals(PrettyPrinter.print(res), "choose(Nat, 0)")
     assertEquals(PrettyPrinter.print(res.tpe), "Nat")
   }
 

@@ -57,18 +57,18 @@ namespace Nat {
   // normal forms are theorems by induction on the exponent.
   def mul_pow (x: Nat)(y: Nat)(a: Nat): Eq(Nat, Nat.pow(Nat.mul(x, y), a), Nat.mul(Nat.pow(x, a), Nat.pow(y, a))) decreases structural(a) := {
     match a returning Eq(Nat, Nat.pow(Nat.mul(x, y), a), Nat.mul(Nat.pow(x, a), Nat.pow(y, a))) with
-    | Nat.zero => Eq.refl(Nat.succ(Nat.zero))
+    | Nat.zero => Eq.refl(1)
     | Nat.succ k => congrArg(Nat.mul_pow(x, y, k), Nat, fun (n: Nat): Nat => Nat.mul(n, Nat.mul(x, y)))
   }
 
   // The step rewrites `x^(a*k) * x^a = x^(a*k + a)` by the product law, then `a*k + a` to `a * (k + 1)` by `mul_add`.
   def pow_mul (x: Nat)(a: Nat)(b: Nat): Eq(Nat, Nat.pow(Nat.pow(x, a), b), Nat.pow(x, Nat.mul(a, b))) decreases structural(b) := {
     match b returning Eq(Nat, Nat.pow(Nat.pow(x, a), b), Nat.pow(x, Nat.mul(a, b))) with
-    | Nat.zero => Eq.refl(Nat.succ(Nat.zero))
+    | Nat.zero => Eq.refl(1)
     | Nat.succ k =>
       Eq.trans(
         congrArg(Nat.pow_mul(x, a, k), Nat, fun (n: Nat): Nat => Nat.mul(n, Nat.pow(x, a))),
-        Eq.symm(congrArg(Nat.mul_add(a, k, Nat.succ(Nat.zero)), Nat, fun (n: Nat): Nat => Nat.pow(x, n)))
+        Eq.symm(congrArg(Nat.mul_add(a, k, 1), Nat, fun (n: Nat): Nat => Nat.pow(x, n)))
       )
   }
 }
@@ -339,7 +339,7 @@ def instance unitInhabited : Inhabited(Unit) := Inhabited.mk(Unit, Unit.unit)
 
 def instance boolInhabited : Inhabited(Bool) := Inhabited.mk(Bool, Bool.false)
 
-def instance natInhabited : Inhabited(Nat) := Inhabited.mk(Nat, Nat.zero)
+def instance natInhabited : Inhabited(Nat) := Inhabited.mk(Nat, 0)
 
 struct BEq (A: Sort($u)) : Sort(Level.max(Level.one, u))
  | mk {A: Sort($u)} (beq: A -> A -> Bool) : BEq(A)
