@@ -54,6 +54,13 @@ object MatchChecker {
   /**
    * The caller has identified the scrutinee's saturated inductive family. Only whole-scrutinee variables grant value
    * refinement; constructor result indices are checked separately. Stuck equations retain a reachable branch.
+   *
+   * A proof variable converts with every constructor value of its proposition, so unification succeeds without linking
+   * it. A branch whose refinement succeeds links it explicitly to the constructor value it matched, whose type that
+   * refinement has unified with the scrutinee's. A stuck branch links nothing: its constructor's type was never unified
+   * with the scrutinee's, so the link would change the proof's type. Termination checking of recursion on proofs reads
+   * the link. Elsewhere the two convert, as proofs of one proposition, but the link is the proof's value in the branch,
+   * as a refined data variable's is: a nested match on the same proof sees a known constructor.
    */
   private def computeReachableCtors(scrut: Value, family: InductiveFamilyInstance, env: Env): Vector[ReachableCtor] = {
     import ValueEquivalence.UnificationFailure._
@@ -66,6 +73,17 @@ object MatchChecker {
       case Var(_, id, _) => DepSet.single(id)
       case _             => DepSet.empty
     }
+    val proofRoot = scrut match {
+      case Var(_, id, _) if getUniverse(scrutTpe) == PropTpe => Some(id)
+      case _                                                 => None
+    }
+    // Unification never links a proof root: it compares proofs by their propositions, and neither the scrutinee type
+    // nor a fresh constructor value mentions the root. The result-only path does not make it refinable.
+    def linkProofRoot(store: EqStore, ctorValue: Value): EqStore =
+      proofRoot match {
+        case Some(id) => store.allow(DepSet.single(id)).addLink(id, ValueOps.materialize(ctorValue, store))
+        case None     => store
+      }
     family.meta.constructorNames.flatMap { ctorName =>
       env(ctorName) match {
         case h: ConstructorHead =>
@@ -81,7 +99,7 @@ object MatchChecker {
             case other => other
           }
           val branchStore = refinement match {
-            case Right(store)           => Some(store)
+            case Right(store)           => Some(linkProofRoot(store, ctorValue))
             case Left(_: Contradiction) => None
             case Left(_: Stuck)         => Some(EqStore.empty)
           }

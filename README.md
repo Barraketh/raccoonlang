@@ -130,8 +130,12 @@ and each recursive call must pass a strict constructor subterm in that position.
 sequence of parameters: an earlier component may decrease, or an equal prefix can be followed by a later decrease. A
 `measure` annotation checks that an evaluated inductive-valued measure gets structurally smaller.
 
-All decrease metrics must be inductive values in `Type`/`Sort(u)`. Proofs in `Prop` cannot serve as metrics, and subterm
-search does not traverse proof fields. Recursive functions may still return proofs when they decrease Type-valued data.
+Decrease metrics must be inductive values. A function whose result is a proposition may also decrease a proof, as a
+`structural` metric or a `lexicographic` component; other functions' metrics must live in `Type`/`Sort(u)`, and measures
+always must. A proof metric decreases only by passing one of the matched proof's proof fields, or a proof field of
+those, unchanged: proofs are compared by identity, since proof irrelevance makes any two proofs of a proposition
+convertible. Subterm search for data metrics does not traverse proof fields. See
+[recursion on proofs](docs/kernel.md#recursion-on-proofs).
 
 The recursive function name is available only for direct recursive calls while checking the body. It cannot be stored in
 a `let`, passed as an argument, returned, or hidden inside another value.

@@ -232,7 +232,7 @@ class TerminationTests extends munit.FunSuite {
     typeError[NonDecreasingRecursiveCall](p)
   }
 
-  test("structural decrease metrics cannot live in Prop") {
+  test("structural recursion on a proof rejects a call on the matched proof itself") {
     val p =
       """
         |inductive P : Prop
@@ -246,12 +246,197 @@ class TerminationTests extends munit.FunSuite {
         |}
         |""".stripMargin
 
+    typeError[NonDecreasingRecursiveCall](p)
+  }
+
+  test("a structural decrease metric in Prop needs a function returning a proposition") {
+    val p =
+      """
+        |inductive P : Prop
+        | | base : P
+        | | wrap (p: P) : P
+        |
+        |def bad (p: P): Nat decreases structural(p) := {
+        |  match p returning Nat with
+        |  | P.base => Nat.zero
+        |  | P.wrap x => bad(x)
+        |}
+        |""".stripMargin
+
     val error = typeError[InvalidDecreaseSpec](p)
     assert(error.reason.contains("Prop"))
     assert(error.span.nonEmpty)
   }
 
-  test("every lexicographic decrease component must live in Type") {
+  test("recursion on a proof rejects rebuilt proofs of a field's proposition") {
+    Vector("P.wrap(x)", "P.base").foreach { argument =>
+      val p =
+        s"""
+           |inductive P : Prop
+           | | base : P
+           | | wrap (p: P) : P
+           |
+           |def bad (p: P): P decreases structural(p) := {
+           |  match p returning P with
+           |  | P.base => P.base
+           |  | P.wrap x => bad($argument)
+           |}
+           |""".stripMargin
+
+      typeError[NonDecreasingRecursiveCall](p)
+    }
+  }
+
+  test("recursion on a proof proves transitivity of a closure") {
+    val p =
+      """
+        |inductive Le indices (a: Nat)(b: Nat) : Prop
+        | | refl (n: Nat) : Le(n, n)
+        | | step (a: Nat)(b: Nat)(h: Le(a, b)) : Le(a, Nat.succ(b))
+        |
+        |def trans (a: Nat)(b: Nat)(c: Nat)(h1: Le(a, b))(h2: Le(b, c)): Le(a, c) decreases structural(h2) := {
+        |  match h2 returning Le(a, c) with
+        |  | Le.refl n => h1
+        |  | Le.step x y h => Le.step(a, y, trans(a, b, y, h1, h))
+        |}
+        |
+        |def two : Nat := Nat.succ(Nat.succ(Nat.zero))
+        |def oneTwo : Le(Nat.succ(Nat.zero), two) := Le.step(Nat.succ(Nat.zero), Nat.succ(Nat.zero), Le.refl(Nat.succ(Nat.zero)))
+        |def zeroOne : Le(Nat.zero, Nat.succ(Nat.zero)) := Le.step(Nat.zero, Nat.zero, Le.refl(Nat.zero))
+        |def zeroTwo : Le(Nat.zero, two) := trans(Nat.zero, Nat.succ(Nat.zero), two, zeroOne, oneTwo)
+        |""".stripMargin
+
+    runProgram(p)
+  }
+
+  test("recursion on a local reachability relation proves a conservation law") {
+    val p =
+      """
+        |inductive Step indices (A: List(Nat))(B: List(Nat)) : Prop
+        | | swap (x: Nat)(y: Nat) : Step(List.cons(x, List.cons(y, List.nil(Nat))), List.cons(y, List.cons(x, List.nil(Nat))))
+        |
+        |inductive Reach (init: List(Nat)) indices (C: List(Nat)) : Prop
+        | | initial {init: List(Nat)} : Reach(init, init)
+        | | step {init: List(Nat)} (A: List(Nat))(B: List(Nat))(frame: List(Nat))(h: Step(A, B))
+        |     (prev: Reach(init, List.append(A, frame))) : Reach(init, List.append(B, frame))
+        |
+        |def conserved (init: List(Nat))(C: List(Nat))(r: Reach(init, C)):
+        |    Eq(Nat, List.length(C), List.length(init)) decreases structural(r) := {
+        |  match r returning Eq(Nat, List.length(C), List.length(init)) with
+        |  | Reach.initial => Eq.refl(List.length(init))
+        |  | Reach.step A B frame h prev => {
+        |    match h returning Eq(Nat, List.length(List.append(B, frame)), List.length(init)) with
+        |    | Step.swap x y => conserved(init, List.append(A, frame), prev)
+        |  }
+        |}
+        |""".stripMargin
+
+    runProgram(p)
+  }
+
+  test("lexicographic recursion may decrease a proof component of a proposition-valued function") {
+    val p =
+      """
+        |inductive P : Prop
+        | | base : P
+        | | wrap (p: P) : P
+        |
+        |def flatten (p: P)(n: Nat): P decreases lexicographic(p, n) := {
+        |  match p returning P with
+        |  | P.base => {
+        |    match n returning P with
+        |    | Nat.zero => P.base
+        |    | Nat.succ k => flatten(p, k)
+        |  }
+        |  | P.wrap x => flatten(x, n)
+        |}
+        |
+        |def flat : P := flatten(P.wrap(P.wrap(P.base)), Nat.succ(Nat.succ(Nat.zero)))
+        |""".stripMargin
+
+    runProgram(p)
+  }
+
+  test("lexicographic recursion rejects a proof component that grows while a later one decreases") {
+    val p =
+      """
+        |inductive P : Prop
+        | | base : P
+        | | wrap (p: P) : P
+        |
+        |def grow (p: P)(n: Nat): P decreases lexicographic(p, n) := {
+        |  match n returning P with
+        |  | Nat.zero => p
+        |  | Nat.succ k => grow(P.wrap(p), k)
+        |}
+        |""".stripMargin
+
+    typeError[NonDecreasingRecursiveCall](p)
+  }
+
+  test("a nested match on a matched proof variable sees the constructor it matched") {
+    val p =
+      """
+        |inductive P : Prop
+        | | base : P
+        | | wrap (p: P) : P
+        |
+        |def unwrap (p: P): P := {
+        |  match p returning P with
+        |  | P.base => P.base
+        |  | P.wrap x => {
+        |    match p returning P with
+        |    | P.wrap y => y
+        |  }
+        |}
+        |""".stripMargin
+
+    runProgram(p)
+
+    val unreachable =
+      """
+        |inductive P : Prop
+        | | base : P
+        | | wrap (p: P) : P
+        |
+        |def unwrap (p: P): P := {
+        |  match p returning P with
+        |  | P.base => P.base
+        |  | P.wrap x => {
+        |    match p returning P with
+        |    | P.base => P.base
+        |    | P.wrap y => y
+        |  }
+        |}
+        |""".stripMargin
+
+    typeError[UnreachableCase](unreachable)
+  }
+
+  test("a stuck branch does not link a proof variable to a constructor its type was never unified with") {
+    // Both the value and the result-type refinement of `T.z` against `T(f(x))` are stuck on `f(x)`, so the branch
+    // keeps `p : T(f(x))`; a link to `T.z : T(Nat.zero)` would make returning `p` a `TypeMismatch`.
+    val p =
+      """
+        |inductive T indices (n: Nat) : Prop
+        | | z : T(Nat.zero)
+        |
+        |def f (n: Nat): Nat decreases structural(n) := {
+        |  match n returning Nat with
+        |  | Nat.zero => Nat.zero
+        |  | Nat.succ k => f(k)
+        |}
+        |
+        |def g (x: Nat)(p: T(f(x))): T(f(x)) := {
+        |  match p returning T(f(x)) with
+        |  | T.z => p
+        |}
+        |""".stripMargin
+
+    runProgram(p)
+  }
+
+  test("a lexicographic decrease component of a function not returning a proposition must live in Type") {
     Vector("p, n", "n, p").foreach { metrics =>
       val p =
         s"""
@@ -266,7 +451,22 @@ class TerminationTests extends munit.FunSuite {
            |""".stripMargin
 
       val error = typeError[InvalidDecreaseSpec](p)
-      assert(error.reason.contains("Prop"))
+      assert(error.reason.contains("only for functions returning a proposition"), error.reason)
+    }
+  }
+
+  test("a proof measure is rejected as a measure, whatever the function returns") {
+    Vector("Nat", "P").foreach { result =>
+      val p =
+        s"""
+           |inductive P : Prop
+           | | intro : P
+           |
+           |def bad (p: P): $result decreases measure(p) := bad(p)
+           |""".stripMargin
+
+      val error = typeError[InvalidDecreaseSpec](p)
+      assert(error.reason.contains("decrease measures must live in Type"), error.reason)
     }
   }
 

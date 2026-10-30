@@ -4,12 +4,21 @@ import com.raccoonlang.Value._
 import com.raccoonlang.telescope.BinderOps
 import com.raccoonlang.{CoreAst => CA}
 
-/** Termination checking uses a temporary raw-recursive value installed as a local while checking the body. */
+/**
+ * Termination checking uses a temporary raw-recursive value installed as a local while checking the body.
+ *
+ * A function whose result is a proposition may also decrease a proof. Its calls are compared by identity, never by
+ * conversion: proof irrelevance makes every proof of a proposition convertible with every other, so conversion would
+ * accept any call. The raw recursive self reads the root through the branch's refinement, in which `MatchChecker` links
+ * a proof variable to the constructor value the branch matched, when that refinement succeeds.
+ */
 object TerminationChecker {
   def rawRecursiveSelf(name: String, vpi: VPi, spec: CA.DecreaseSpec, bodyEnv: Env): VLam = {
-    def requireInductiveMetric(value: Value, span: Span): Unit = {
-      if (TypeChecker.getUniverse(value.tpe) == PropTpe)
-        throw InvalidDecreaseSpec("decrease metrics must live in Type; proofs in Prop cannot be used", Some(span))
+    val provesProposition = vpi.tpe == PropTpe
+
+    /** A metric must have an inductive type; a proof is `InvalidDecreaseSpec` for `proofRejection`, if one is given. */
+    def requireInductiveMetric(value: Value, span: Span, proofRejection: Option[String]): Unit = {
+      if (isProof(value)) proofRejection.foreach(reason => throw InvalidDecreaseSpec(reason, Some(span)))
       value.tpe match {
         case ConstSpine(VConst(_, Inductive(_), _), _) =>
         case _ => throw InvalidDecreaseSpec(s"decrease metric ${value} must have an inductive type", Some(span))
@@ -27,15 +36,26 @@ object TerminationChecker {
             throw InvalidDecreaseSpec(s"${ref.name} is not a function parameter", Some(sp))
           }
         }
-        args.map(ref => bodyEnv(ref)).foreach(requireInductiveMetric(_, sp))
-        val refsWithIndices = args.zip(indices)
+        val metrics = args.map(ref => bodyEnv(ref))
+        val proofRejection =
+          Option.unless(provesProposition)(
+            "decrease metrics in Prop are allowed only for functions returning a proposition"
+          )
+        metrics.foreach(requireInductiveMetric(_, sp, proofRejection))
+        // Each component's order: proofs by identity, data by conversion.
+        val components = args.zip(indices).zip(metrics).map { case ((ref, idx), metric) =>
+          val (smaller, same): ((Value, Value) => Boolean, (Value, Value) => Boolean) =
+            if (isProof(metric)) (isStrictSubproof, (candidate, root) => candidate.key == root.key)
+            else (isStrictSubterm, ValueEquivalence.defEq)
+          (ref, idx, smaller, same)
+        }
 
         (callArgs, nativeEnv) => {
-          val decreasedAt = refsWithIndices.find { case (ref, idx) =>
+          val decreasedAt = components.find { case (ref, idx, smaller, same) =>
             val root = nativeEnv.apply(ref)
             val candidate = callArgs(idx)
-            if (isStrictSubterm(candidate, root)) true
-            else if (ValueEquivalence.defEq(candidate, root)) false
+            if (smaller(candidate, root)) true
+            else if (same(candidate, root)) false
             else
               throw NonDecreasingRecursiveCall(
                 name,
@@ -48,7 +68,8 @@ object TerminationChecker {
 
       case CA.DecreaseSpec.Measure(term, sp) =>
         val initialMeasure = TypeChecker.checkTerm(term, bodyEnv)
-        requireInductiveMetric(initialMeasure.value, sp)
+        val proofRejection = "decrease measures must live in Type; proofs in Prop cannot be used"
+        requireInductiveMetric(initialMeasure.value, sp, Some(proofRejection))
         val quoted = initialMeasure.residual
         (args, nativeEnv) => {
           val currentMeasure = Interpreter.evalTerm(quoted, nativeEnv)
@@ -106,6 +127,20 @@ object TerminationChecker {
 
   private def isFieldOrStrictSubterm(candidate: Value, field: Value): Boolean =
     // Proof fields cannot expose data subterms, since proof irrelevance hides their structure.
-    TypeChecker.getUniverse(field.tpe) != PropTpe &&
-      (ValueEquivalence.defEq(candidate, field) || isStrictSubterm(candidate, field))
+    !isProof(field) && (ValueEquivalence.defEq(candidate, field) || isStrictSubterm(candidate, field))
+
+  /**
+   * Whether `candidate` is a proof field of `root`, or of one of its proof fields, by structural key. Keys distinguish
+   * proofs that conversion identifies, so a rebuilt proof of a field's proposition is not mistaken for the field. As in
+   * `ValueEquivalence.defEq`, equal keys are trusted to mean equal values. The search does not enter data fields, such
+   * as the field of `Fact.mk(h)`.
+   */
+  private def isStrictSubproof(candidate: Value, root: Value): Boolean =
+    root match {
+      case VCtor(_, fields, _) =>
+        fields.exists(field => isProof(field) && (field.key == candidate.key || isStrictSubproof(candidate, field)))
+      case _ => false
+    }
+
+  private def isProof(value: Value): Boolean = TypeChecker.getUniverse(value.tpe) == PropTpe
 }

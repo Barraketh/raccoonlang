@@ -214,3 +214,37 @@ annotation, or must remain inside the branch.
 The feature introduces no runtime value form or equality rule. Equality,
 structural keys, substitution, quotation, and termination checking use their
 existing representations and algorithms.
+
+## Recursion on proofs
+
+A recursive function whose classifier is `Prop`, so whose result is a
+proposition, may decrease a proof: as its `structural` metric, or as a
+component of a `lexicographic` metric. A function with any other result may
+not, and a `measure` must live in `Type`/`Sort(u)` in every function.
+`TerminationChecker.rawRecursiveSelf` enforces both when it installs the raw
+recursive self.
+
+The decrease test cannot use conversion. Proof irrelevance makes every proof of
+a proposition convertible with every other, so a converted comparison would
+accept any call, including a call on the matched proof itself. A proof
+component instead decreases when the call passes, by structural key, a proof
+field of the current root or a proof field of one of those, transitively. It
+is unchanged when its key equals the root's. Any other proof is neither, and
+the call is `NonDecreasingRecursiveCall`; this covers a rebuilt proof of a
+field's proposition. As in conversion, equal keys are trusted to mean equal
+values. The search follows proof fields only; it does not enter data fields,
+even one that stores a proof. Data components keep the converted order,
+and data subterm search still skips proof fields.
+
+The root is read through the branch's refinement. Unification compares proofs
+by their propositions and so never links a proof variable to the constructor a
+branch matched. `MatchChecker.computeReachableCtors` therefore links a proof
+variable scrutinee to its constructor value in each reachable branch whose
+refinement succeeds, once that refinement has unified the constructor's type
+with the scrutinee's. A branch whose refinement is stuck links nothing: its
+constructor's type was never unified with the scrutinee's, and the link would
+change the proof's type. Termination checking reads the link. Elsewhere a proof
+and the constructor value it is linked to convert, as proofs of one
+proposition, but the link is the proof's value in the branch, as for a refined
+data variable: a nested match on the same variable sees a known constructor, so
+its other cases are `UnreachableCase`.
