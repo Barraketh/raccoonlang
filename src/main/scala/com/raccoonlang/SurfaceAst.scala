@@ -23,10 +23,6 @@ object SurfaceAst {
     def span: Span
   }
 
-  sealed trait DecreaseSpec {
-    def span: Span
-  }
-
   object ConstBody {
     final case class TermBody(term: Term) extends ConstBody {
       override def span: Span = term.span
@@ -35,10 +31,19 @@ object SurfaceAst {
     final case class Builtin(span: Span) extends ConstBody
   }
 
-  object DecreaseSpec {
-    final case class Structural(arg: String, span: Span) extends DecreaseSpec
-    final case class Lexicographic(args: Vector[String], span: Span) extends DecreaseSpec
-    final case class Measure(term: Term, span: Span) extends DecreaseSpec
+  /**
+   * A `decreases` clause: its components, compared lexicographically. `structural(x)` is the one component `x`, and
+   * `measure(e)` the one component `measure(e)`.
+   */
+  final case class DecreaseSpec(components: Vector[MetricComponent], span: Span)
+
+  sealed trait MetricComponent {
+    def span: Span
+  }
+
+  object MetricComponent {
+    final case class Param(name: String, span: Span) extends MetricComponent
+    final case class Measure(term: Term, span: Span) extends MetricComponent
   }
 
   object TypePattern {

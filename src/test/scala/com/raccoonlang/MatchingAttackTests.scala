@@ -390,8 +390,10 @@ class MatchingAttackTests extends munit.FunSuite {
     )
   }
 
-  test("mut-14 OVER-REJECTION a proof-decreasing member cannot call a data-decreasing one, and a measure is not <") {
-    // Each component compares by one order, so a proof root never has a data candidate below it.
+  test("mut-14 OVER-REJECTION a proof-decreasing member cannot call a data-decreasing one") {
+    // Each component compares by one order, so a proof root never has a data candidate below it. A rank writes the
+    // block: f decreases lexicographic(h, measure(0)) and g lexicographic(h, measure(1)), so g's call back keeps h and
+    // drops the rank (RankAttackTests, rank-1).
     rejectsWith[NonDecreasingRecursiveCall](
       peano +
         """
@@ -406,8 +408,33 @@ class MatchingAttackTests extends munit.FunSuite {
           |}
           |""".stripMargin
     )
-    // b < k + b + 1, but the measure order is the structural subterm order.
-    rejectsWith[NonDecreasingRecursiveCall](
+    // Since 2.10, f's call is accepted, but g's call back to f is not: there f's measure, y + x, is above g's root y
+    // unless x is zero. Each call decreases from its caller's metric, and no one-component metric of g lies strictly
+    // between f's measure k + 1 + b and its next one, b + k; as in the proof case, the block terminates because f's
+    // measure decreases over two calls. Ranks write it: f decreases lexicographic(measure(Nat.add(a, b)), measure(0))
+    // and g lexicographic(measure(Nat.add(x, y)), measure(1)), whose metric (k + b, 1) lies between (RankAttackTests,
+    // rank-2).
+    val refusal = intercept[NonDecreasingRecursiveCall](
+      runChecked(
+        """
+          |mutual {
+          |  def f (a: Nat)(b: Nat) : Nat decreases measure(Nat.add(a, b)) := {
+          |    match a returning Nat with
+          |    | Nat.zero => 0
+          |    | Nat.succ k => g(k, b)
+          |  }
+          |
+          |  def g (x: Nat)(y: Nat) : Nat decreases structural(y) := f(y, x)
+          |}
+          |""".stripMargin
+      )
+    )
+    assertEquals(refusal.function, "f")
+  }
+
+  test("mut-14 CONTROL a measure is ordered by <, so a member's call may drop a summand of it (2.10)") {
+    // b < k + 1 + b, though b is no structural subterm of it.
+    accepts(
       """
         |mutual {
         |  def f (a: Nat)(b: Nat) : Nat decreases measure(Nat.add(a, b)) := {
@@ -416,8 +443,14 @@ class MatchingAttackTests extends munit.FunSuite {
         |    | Nat.succ k => g(k, b)
         |  }
         |
-        |  def g (x: Nat)(y: Nat) : Nat decreases structural(y) := f(y, x)
+        |  def g (x: Nat)(y: Nat) : Nat decreases structural(y) := {
+        |    match y returning Nat with
+        |    | Nat.zero => x
+        |    | Nat.succ j => f(0, j)
+        |  }
         |}
+        |
+        |def t : Eq(Nat, f(3, 0), 2) := Eq.refl(2)
         |""".stripMargin
     )
   }

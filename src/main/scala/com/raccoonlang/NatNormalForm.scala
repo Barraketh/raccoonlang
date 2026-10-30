@@ -800,7 +800,26 @@ private[raccoonlang] object NatNormalForm {
     }
   }
 
-  /** A candidate is smaller when it converts to the root with a positive number of known successors removed. */
+  /**
+   * A lower bound on `larger - smaller` that holds for every value of their atoms, or none, on the signed difference
+   * `ble` decides `smaller <= larger` by. Cancelling the common part leaves `larger - smaller = p - n`, and there is a
+   * bound when `n` is zero, as `ble` is true when its first part is. Then `p` is its constant plus terms with positive
+   * coefficients over Nat-valued factors, so it is at least that constant whatever natural numbers its atoms, variables
+   * and opaque Nat-valued terms alike, stand for: after any substitution, and at run time. Cancellation identifies
+   * atoms only by conversion, which substitution preserves. Values that are not both Nat have no bound: conversion may
+   * compare values of different types, and `fromValue` reads any constructor as zero.
+   */
+  def differenceBound(larger: Value, smaller: Value): Option[BigInt] =
+    if (!isNat(larger) || !isNat(smaller)) None
+    else {
+      val (positive, negative) = cancelCommon(fromValue(larger), fromValue(smaller))
+      Option.when(negative.isZeroForm)(positive.constant)
+    }
+
+  /**
+   * A candidate is smaller when it converts to the root with a positive number of known successors removed: a fast case
+   * of a positive `differenceBound(root, candidate)`, which compares constants and term keys and cancels nothing.
+   */
   def isStrictlySmaller(candidate: Value, root: VNatPoly): Boolean = {
     val rootForm = root.form
     rootForm.constant > 0 && isNat(candidate) && {

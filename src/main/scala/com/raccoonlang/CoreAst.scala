@@ -22,8 +22,6 @@ object CoreAst {
     def span: Span
   }
 
-  sealed trait DecreaseSpec extends Ast
-
   object ConstBody {
     final case class TermBody(term: Term) extends ConstBody {
       override def span: Span = term.span
@@ -32,9 +30,23 @@ object CoreAst {
     final case class Builtin(span: Span) extends ConstBody
   }
 
-  object DecreaseSpec {
-    final case class Lexicographic(args: Vector[LocalRef], span: Span) extends DecreaseSpec
-    final case class Measure(term: Term, span: Span) extends DecreaseSpec
+  /**
+   * A recursive function's metric: its components, compared lexicographically (`TerminationChecker.Metric`). A
+   * `structural(x)` clause is the one component `x`, and a `measure(e)` clause the one component `measure(e)`.
+   */
+  final case class DecreaseSpec(components: Vector[MetricComponent], span: Span) extends Ast
+
+  sealed trait MetricComponent {
+    def span: Span
+  }
+
+  object MetricComponent {
+
+    /** A parameter, whose value is the component. */
+    final case class Param(ref: LocalRef, span: Span) extends MetricComponent
+
+    /** A term over the parameters, evaluated again at each call. */
+    final case class Measure(term: Term, span: Span) extends MetricComponent
   }
 
   final case class Recursion(selfRef: LocalRef, decreases: DecreaseSpec)
@@ -220,10 +232,10 @@ object CoreAst {
     // A lambda is a type term, since a type may hold one.
     def lam(written: Term.Lam): Term.Lam = {
       val copiedRecursion = written.recursion.map { r =>
-        r.copy(decreases = r.decreases match {
-          case DecreaseSpec.Measure(term, sp) => DecreaseSpec.Measure(copy(term), sp)
-          case lexicographic                  => lexicographic
-        })
+        r.copy(decreases = r.decreases.copy(components = r.decreases.components.map {
+          case MetricComponent.Measure(term, sp) => MetricComponent.Measure(copy(term), sp)
+          case param: MetricComponent.Param      => param
+        }))
       }
       Term.Lam(
         pi(written.ty),

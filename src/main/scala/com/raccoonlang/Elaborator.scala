@@ -1018,14 +1018,13 @@ object Elaborator {
     }
 
   private def elabDecreaseSpec(spec: SA.DecreaseSpec, env: ResolveEnv): CA.DecreaseSpec =
-    spec match {
-      case SA.DecreaseSpec.Structural(arg, sp) =>
-        CA.DecreaseSpec.Lexicographic(Vector(elabDecreaseRef(arg, sp, env)), sp)
-      case SA.DecreaseSpec.Lexicographic(args, sp) =>
-        CA.DecreaseSpec.Lexicographic(args.map(arg => elabDecreaseRef(arg, sp, env)), sp)
-      case SA.DecreaseSpec.Measure(term, sp) =>
-        CA.DecreaseSpec.Measure(elabTerm(term, env), sp)
-    }
+    CA.DecreaseSpec(
+      spec.components.map {
+        case SA.MetricComponent.Param(name, sp)   => CA.MetricComponent.Param(elabDecreaseRef(name, sp, env), sp)
+        case SA.MetricComponent.Measure(term, sp) => CA.MetricComponent.Measure(elabTerm(term, env), sp)
+      },
+      spec.span
+    )
 
   private sealed trait LoweredBindingPattern {
     def ref: CA.LocalRef

@@ -45,8 +45,12 @@ constant subtrahend, so every result is stable under substitution.
 
 Unequal symbolic forms do not establish contradiction. Refinement keeps
 whole-variable linking and successor cancellation, and otherwise leaves
-arithmetic equations stuck. Structural termination peels known successors;
-monomials, factors, and summands are not structural subterms. Positivity treats
+arithmetic equations stuck. A Nat's structural subterms are its known
+predecessors; monomials, factors, and summands are not structural subterms.
+Termination orders a Nat metric component by `<` instead, decided on the same
+signed difference: a candidate is smaller when the root minus it cancels to a
+positive constant plus terms, so `b` is below `a + b + 1` but not below
+`a + b` ([mutual blocks](#mutual-blocks)). Positivity treats
 factor bases and symbolic exponents, including sums, as arguments of the Nat
 operations, so a target occurring in one is never positive. The [Nat normal forms design](nat-normal-forms.md)
 specifies the laws, the representation, and quotation.
@@ -450,10 +454,10 @@ is a use or a read as L5 says.
 
 A recursive function whose classifier is `Prop`, so whose result is a
 proposition, may decrease a proof: as its `structural` metric, or as a
-component of a `lexicographic` metric. A function with any other result may
-not, and a `measure` must live in `Type`/`Sort(u)` in every function.
-`TerminationChecker.rawRecursiveSelf` enforces both when it installs the raw
-recursive self.
+parameter component of a `lexicographic` metric. A function with any other
+result may not, and a measure, a clause or a component, must live in
+`Type`/`Sort(u)` in every function. `TerminationChecker.metric` enforces both
+when it checks the metric.
 
 The decrease test cannot use conversion. Proof irrelevance makes every proof of
 a proposition convertible with every other, so a converted comparison would
@@ -464,8 +468,9 @@ is unchanged when its key equals the root's. Any other proof is neither, and
 the call is `NonDecreasingRecursiveCall`; this covers a rebuilt proof of a
 field's proposition. As in conversion, equal keys are trusted to mean equal
 values. The search follows proof fields only; it does not enter data fields,
-such as the field of `Fact.mk(h)`. Data components keep the converted order,
-and data subterm search still skips proof fields.
+such as the field of `Fact.mk(h)`. Data components keep their orders, by
+conversion and structural subterms, or `<` on Nat, and data subterm search
+still skips proof fields.
 
 The root is read through the branch's refinement. Unification compares proofs
 by their propositions and so never links a proof variable to the constructor a
@@ -522,13 +527,48 @@ none. Then each body is checked
 with every member bound, after its parameters, to the raw call from it to that
 member, which only an application head may name. A call decreases when the
 callee's metric at its arguments is lexicographically smaller than the
-caller's at its own arguments, read through the caller's branch refinement,
-each component by the structural subterm order on data or the field order on
-proofs ([recursion on proofs](#recursion-on-proofs)). So all members' metrics
-have one length: a `structural` or `lexicographic` clause has a component for
-each parameter it names, and a `measure` is one component. Each component's
-order is one well-founded order on all values, so every chain of calls through
-the block descends. Once checked, the members are published together, each
+caller's at its own arguments, read through the caller's branch refinement;
+a single recursive definition's calls are checked the same way. Each
+component compares by the order of the caller's value: a proof by the field
+order ([recursion on proofs](#recursion-on-proofs)), a Nat, measure or
+parameter alike, by `<`, and other data by the structural subterm order. A
+Nat candidate is smaller when the caller's value minus it is at least 1 on
+the normal forms, as `Nat.ble` decides
+([natural number normal forms](#natural-number-normal-forms)), and the
+comparison moves on past a component that is equal or, on Nat, at most the
+caller's. So all members' metrics have one length. `structural(x)` is one
+component, the parameter `x`, and `measure(e)` is one, a measure. A
+`lexicographic` clause lists its components, each a parameter or a measure,
+written `measure(e)`: `lexicographic(n, measure(Nat.add(a, b)))`. A measure
+component follows a `measure` clause's rules: it lives in `Type`/`Sort(u)`, is
+evaluated again at each call's arguments, and only reads them (L6). Every
+component compares by one well-founded order on all values, whatever it comes
+from: `<` on Nat contains the structural order on Nat, and no value of another
+type is below a Nat, so a chain that reaches a Nat descends by `<` from there.
+What the forms decide holds for every value of their atoms, so at run time,
+and every chain of calls through the block descends, by the lexicographic
+product of that order.
+
+A constant measure is a *rank*. It writes a cycle whose metric decreases only
+over a round trip: each member gets its rank as a last component, so that a
+call which keeps the earlier components goes to a lower rank.
+
+```text
+mutual {
+  def f (n: Nat)(h: P(n)) : True decreases lexicographic(h, measure(0)) := {
+    match h returning True with
+    | P.z => True.intro
+    | P.s m h2 => g(m, h2)
+  }
+
+  def g (n: Nat)(h: P(n)) : True decreases lexicographic(h, measure(1)) := f(n, h)
+}
+```
+
+`f`'s call passes a proof field of `h`; `g`'s passes `h` back unchanged, from
+rank 1 to rank 0. Without the ranks, `g`'s call would not decrease.
+
+Once checked, the members are published together, each
 closed over the published block, where a running member finds each peer by its
 name.
 
@@ -811,10 +851,10 @@ is copyable and `List(Protocol.Supply)` is linear.
   `let (…) := p` keeps every field. One whose field's type mentions an earlier
   field reads the record in its codomain, and one that returns a proof or a
   type is a read extent: applying it reads the record and does not consume it.
-- **L6 Recursion** may decrease through linear data. A `structural` or
-  `lexicographic` clause only names parameters and is not a use; a `measure`
-  term is evaluated again at every call without consuming anything, so it is a
-  read extent of its own.
+- **L6 Recursion** may decrease through linear data. A parameter component of
+  a metric only names a parameter and is not a use; a measure, a clause or a
+  component, is evaluated again at every call without consuming anything, so it
+  is a read extent of its own.
 - **L7 Binders.** Instance binders and `let instance` have unrestricted types
   (`LinearInstance`), since instance search copies instances. A type-pattern
   capture of linear type, such as a capture of a linear parameter of a

@@ -80,9 +80,10 @@ object LanguageParser {
     "mutual"
   )
 
+  private val identChar = P("a letter or digit", c => c.isLetterOrDigit || c == '_')
+
   private val identAtom =
-    (P("a letter", c => c.isLetter) ~ P("a letter or digit", c => c.isLetterOrDigit || c == '_')
-      .rep(0)).!.filter("an identifier", s => !keywords.contains(s))
+    (P("a letter", c => c.isLetter) ~ identChar.rep(0)).!.filter("an identifier", s => !keywords.contains(s))
 
   private val rootName = "_root_"
   private val rootIdent: Parser[String] = P(rootName).!
@@ -462,24 +463,29 @@ object LanguageParser {
       term.map(ConstBody.TermBody.apply)
 
   private def decreasesP(implicit sourceId: Option[SourceId]): Parser[DecreaseSpec] = {
-    val structural =
-      (kwTight("structural") ~/ symTight("(") ~/ ident ~ symTight(")"))
+    val param = ident.flatSpanned(sourceId).map { case (name, span) => MetricComponent.Param(name, span) }
+
+    // The keyword is a whole word, so a parameter whose name starts with it, such as `measured`, is no measure.
+    val measure =
+      (kwTight("measure") ~ notFollowedBy(identChar, "the end of 'measure'") ~/ symTight("(") ~/ term ~ symTight(")"))
         .flatSpanned(sourceId)
-        .map { case (arg, span) => DecreaseSpec.Structural(arg, span) }
+        .map { case (measureTerm, span) => MetricComponent.Measure(measureTerm, span) }
+
+    val structural =
+      (kwTight("structural") ~/ symTight("(") ~/ param ~ symTight(")"))
+        .flatSpanned(sourceId)
+        .map { case (component, span) => DecreaseSpec(Vector(component), span) }
 
     val lexicographic =
-      (kwTight("lexicographic") ~/ symTight("(") ~/ ident.rep(1, sym(",")) ~ symTight(")"))
+      (kwTight("lexicographic") ~/ symTight("(") ~/ (measure | param).rep(1, sym(",")) ~ symTight(")"))
         .flatSpanned(sourceId)
-        .map { case (args, span) => DecreaseSpec.Lexicographic(args, span) }
+        .map { case (components, span) => DecreaseSpec(components, span) }
 
-    val measure =
-      (kwTight("measure") ~/ symTight("(") ~/ term ~ symTight(")"))
-        .flatSpanned(sourceId)
-        .map { case (measureTerm, span) => DecreaseSpec.Measure(measureTerm, span) }
+    val oneMeasure = measure.map(component => DecreaseSpec(Vector(component), component.span))
 
     // The specification follows the keyword on its line or starts a later one.
     val keyword = (skipWS ~ P("decreases") ~ (lineSep | wsSep)).named("'decreases'")
-    keyword ~/ (structural | lexicographic | measure).named("structural(x), lexicographic(x, ...) or measure(e)")
+    keyword ~/ (structural | lexicographic | oneMeasure).named("structural(x), lexicographic(x, ...) or measure(e)")
   }
 
   /**

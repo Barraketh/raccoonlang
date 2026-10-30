@@ -469,12 +469,15 @@ positive, reduces to the equation after subtracting `min(c,d)`. Zero versus a
 positive constant, and unequal constants, are contradictions. Unequal symbolic
 forms are `Stuck`, not `Contradiction`.
 
-For structural termination, a Nat candidate is smaller only when it converts to
-the root with a positive number of known successors removed: its constant is
-smaller and its terms are equivalent. For example, `n+m` is smaller than
-`n+m+1`, but `n` is not smaller than `n+m`. Monomials, factors, and atoms are
-not structural subterms. Other constructors use the ordinary subterm rule,
-including when a field is a form.
+A Nat candidate is a structural subterm only when it converts to the root with
+a positive number of known successors removed: its constant is smaller and its
+terms are equivalent. For example, `n+m` is a subterm of `n+m+1`, but `n` is
+not. Monomials, factors, and atoms are not structural subterms. Other
+constructors use the ordinary subterm rule, including when a field is a form.
+Termination orders a Nat metric component by `<`, which contains this order: a
+candidate is smaller when the root minus it cancels to a positive constant plus
+terms, the signed difference `Nat.ble` decides by, so `n` is smaller than
+`n+m+1`, though not than `n+m`.
 
 Positivity and absence checks treat a form's operands, its factor bases and
 symbolic exponents, as arguments of the Nat operations: an occurrence of the

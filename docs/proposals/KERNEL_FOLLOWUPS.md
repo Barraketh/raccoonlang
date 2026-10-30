@@ -34,7 +34,7 @@ model, and a gap it finds is the model's to close.
 | 2.7 | Match equations (implemented) | expressiveness | port | — |
 | 2.8 | Partial application and lambdas in types (decided: lambdas in types, implemented) | expressiveness | new | 3 |
 | 2.9 | Implicit arguments on definitions and inferred erased binders | expressiveness | partly port | — |
-| 2.10 | Over-rejections found by the matching review (for decision) | expressiveness | new | — |
+| 2.10 | Over-rejections found by the matching review (`Nat` metrics by `<` and rank components: decided and implemented; par-5 kept; positivity and guards for decision) | expressiveness | new | — |
 | 3.1 | Kind polymorphism (decided and implemented) | design | new | 10 |
 | 3.2 | Linear closures | design | new | 11 |
 | 3.3 | Supply splitting | design | new | 6 |
@@ -380,9 +380,10 @@ makes erased constructor binders).
 
 ### 2.10 Over-rejections found by the matching review
 
-**For decision, 2026-10-30.** The matching review (`MatchingAttackTests`) found three sound programs the kernel
-refuses. Each is for the user to judge against the principle that a sound program is rejected only when accepting it
-would cost significant implementation or performance.
+**Decided 2026-10-30,** except the last item, which is for decision. The matching review (`MatchingAttackTests`)
+found three sound programs the kernel refuses, and ordering `Nat` metrics by `<` two more. Each is for the user to
+judge against the principle that a sound program is rejected only when accepting it would cost significant
+implementation or performance.
 
 - **par-5: tracking is decided at the binder.** In
   `def dup (A: Univ($k, $u))(o: CopyOpt(A))(b: Univ(k, $v))(y: b)(z: b)`, `y` is tracked, since its kind is the
@@ -393,6 +394,8 @@ would cost significant implementation or performance.
   every tracked local whose refined type is copyable, before the binder rule reads the summary, and give such a local
   no provenance there: a filter in `MatchChecker.checkBranch`, small, but a change to an invariant the ledger and S1 now
   rely on, that a local's tracking never changes.
+  **Decided 2026-10-30:** kept. It keeps the invariant that a local's tracking never changes, which the ledger and
+  relaxed S1's provenance rely on, and the workaround is one `let`.
 - **mut-14: a proof-decreasing member cannot call a data-decreasing one.** Members compare metrics component by
   component, each by the order of the caller's current value, so a data candidate against a proof root is neither
   smaller nor equal. A disjoint sum of the two orders, one ranked below the other, would accept calls in one direction
@@ -401,6 +404,15 @@ would cost significant implementation or performance.
   unchanged; accepting it needs a different principle, such as size-change termination, which sees that the proof
   shrinks over the two calls. The workaround is to inline the member that passes the proof back, so that every call
   decreases. Significant cost; keeping the restriction is recommended.
+  **Decided 2026-10-30:** rank components: a `lexicographic` component may be a measure, `measure(e)`, as well as a
+  parameter, and a constant measure is a rank. **Implemented** (`docs/kernel.md`, "Mutual blocks"; `RankAttackTests`):
+  a measure component follows a `measure` clause's rules, in `Type`/`Sort(u)`, evaluated again at each call and only
+  reading its arguments (L6), a parameter component keeps its own, and every component keeps `compare`'s order, so the
+  metric's order stays the lexicographic product of well-founded ones. The review's blocks, as written, are still
+  refused (mut-14 in `MatchingAttackTests`); ranks are the way to write them. In the proof block, `f` decreases
+  `lexicographic(h, measure(0))` and `g` `lexicographic(h, measure(1))`, so `g`'s call keeps `h` and lowers the rank;
+  in the measure block, `f` decreases `lexicographic(measure(Nat.add(a, b)), measure(0))` and `g`
+  `lexicographic(measure(Nat.add(x, y)), measure(1))`. The adversarial review found no break.
 - **mut-14: measures are ordered structurally, not by `<`.** In a block with
   `f (a: Nat)(b: Nat) decreases measure(Nat.add(a, b))` calling `g(k, b)` from `a = Nat.succ(k)`, the candidate `b`
   is below `k + b + 1` numerically but is no structural subterm of it, since summands are not structural subterms
@@ -410,6 +422,28 @@ would cost significant implementation or performance.
   values by it and stay well-founded; the comparison is stable under substitution. A
   moderate change to `TerminationChecker` with a real gain in expressiveness, comparable to well-founded recursion on
   `<`; it also applies to single definitions.
+  **Decided 2026-10-30:** order `Nat` components by `<`. **Implemented** (`docs/kernel.md`, "Mutual blocks";
+  `NatOrderAttackTests`): a `Nat` component, a measure or a parameter, in a block or a single definition, is smaller
+  when the caller's value, refined in the branch, minus the candidate is at least 1 on the normal forms
+  (`NatNormalForm.differenceBound`), and at most the caller's value when it is at least 0. Other components keep their
+  orders, and the structural test runs first, so nothing that checked before does arithmetic. The review's block itself
+  stays refused, now at `g`'s call back to `f`: the candidate `y + x` is above `g`'s root `y` unless `x` is zero, and no
+  one-component metric of `g` lies strictly between `f`'s measure `k + 1 + b` and its next one, `b + k`. Like the proof
+  case, it terminates only because `f`'s measure decreases over two calls (mut-14 in `MatchingAttackTests`), and ranks
+  write it (above). The adversarial review found no break.
+- **lt-16: a term is not known positive, and a guard is not read.** `<` decides only what the normal forms' signed
+  difference shows (`NatOrderAttackTests`, lt-16). With `f (n: Nat) decreases measure(Nat.pow(2, n))`, the call
+  `f(k)` from `n = Nat.succ(k)` is refused: the difference `2^(k+1) - 2^k` is the term `2^k`, with no constant, though
+  a power of a positive base is at least 1, and `Nat.ble(1, 2^k)` is stuck for the same reason. With
+  `up (i: Nat)(n: Nat) decreases measure(Nat.sub(n, i))`, the call `up(Nat.succ(i), n)` in the `false` case of
+  `match Nat.ble(n, i)` is refused: `sub(n, i)` and `sub(n, i + 1)` are unrelated atoms, and the comparison does not
+  read the case's guard, `i < n`. Accepting the first needs a lower bound for terms known positive, such as a power of
+  a positive constant, in `NatNormalForm.differenceBound`: small, though `<` would then decide more than `Nat.ble`
+  unless `ble` takes the same bound. Accepting the second means letting termination use the branch's facts: the case
+  would record what its scrutinee's value gives, `Nat.ble(n, i) = false`, and the comparison would derive
+  `sub(n, i + 1) < sub(n, i)` from it, a larger change to refinement and `compare`. The workarounds are a measure
+  whose difference has a constant, such as `n` for `2^n`, and recursion on the count left, `n - i`, rather than on a
+  guard. For decision.
 
 Two more follow the spec and need no change. **root-5:** since 2.4 links the root at a variable index, a nested match
 on the same root sees its constructor and its other cases are `UnreachableCase`, as they always were for a family

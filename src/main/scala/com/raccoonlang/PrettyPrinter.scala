@@ -76,11 +76,15 @@ object PrettyPrinter {
     }
 
   private def printDecreaseSpec(spec: CoreAst.DecreaseSpec): String =
-    spec match {
-      case CoreAst.DecreaseSpec.Lexicographic(args, _) =>
-        s"decreases lexicographic(${args.map(_.name).mkString(", ")})"
-      case CoreAst.DecreaseSpec.Measure(term, _) =>
-        s"decreases measure(${printCoreTerm(term)})"
+    spec.components match {
+      case Vector(measure: CoreAst.MetricComponent.Measure) => s"decreases ${printMetricComponent(measure)}"
+      case components => s"decreases lexicographic(${components.map(printMetricComponent).mkString(", ")})"
+    }
+
+  def printMetricComponent(component: CoreAst.MetricComponent): String =
+    component match {
+      case CoreAst.MetricComponent.Param(ref, _)    => ref.name
+      case CoreAst.MetricComponent.Measure(term, _) => s"measure(${printCoreTerm(term)})"
     }
 
   def printBinder(b: CoreAst.Binder): String = {

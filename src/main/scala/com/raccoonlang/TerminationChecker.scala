@@ -17,25 +17,33 @@ import com.raccoonlang.{CoreAst => CA}
 object TerminationChecker {
 
   /**
-   * A recursive function's metric: a tuple of components, ordered lexicographically, each by the structural subterm
-   * order on data or the proof field order on proofs (docs/kernel.md, "Recursion on proofs"). `current` reads the
-   * components at the function's own arguments in a caller's environment, refined in the branch the call is in, and
-   * `atCall` computes them at a call's arguments. A `structural` or `lexicographic` clause names parameters, whose
-   * values are its components; a `measure` is one component, its term evaluated again at each call, which reads its
-   * arguments and consumes nothing (L6).
+   * A recursive function's metric: a tuple of components, ordered lexicographically, each by the order of the caller's
+   * current value (`compare`): `<` on Nat, the structural subterm order on other data, and the proof field order on
+   * proofs (docs/kernel.md, "Recursion on proofs"). `at` reads the components in an environment that binds the
+   * function's parameters: a caller's body environment, refined in the branch the call is in, for its current values,
+   * and the parameters instantiated at a call's arguments for the call's. A parameter component is the parameter's
+   * value. A measure component is its term's value there, so it is evaluated again at each call; it reads its arguments
+   * and consumes nothing (L6). A constant measure is a rank, which orders the members of a mutual block whose calls
+   * keep the earlier components.
    */
   private[raccoonlang] final class Metric(
       val name: String,
       val vpi: VPi,
-      val span: Span,
-      val componentNames: Vector[String],
-      val current: Env => Vector[Value],
-      val atCall: Vector[Value] => Vector[Value]
+      val spec: CA.DecreaseSpec,
+      val at: Env => Vector[Value]
   )
 
-  /** `spec`, checked as the metric of the function `name` of type `vpi`, whose parameters `bodyEnv` binds. */
+  /**
+   * `spec`, checked as the metric of the function `name` of type `vpi`, whose parameters `bodyEnv` binds. Every
+   * component has an inductive type. A parameter component may be a proof only in a function returning a proposition,
+   * and a measure component is never one, as a `measure` clause never was (docs/kernel.md, "Recursion on proofs").
+   */
   private[raccoonlang] def metric(name: String, vpi: VPi, spec: CA.DecreaseSpec, bodyEnv: Env): Metric = {
-    val provesProposition = vpi.tpe == PropTpe
+    val paramProofRejection =
+      Option.unless(vpi.tpe == PropTpe)(
+        "decrease metrics in Prop are allowed only for functions returning a proposition"
+      )
+    val measureProofRejection = Some("decrease measures must live in Type; proofs in Prop cannot be used")
 
     /** A metric must have an inductive type; a proof is `InvalidDecreaseSpec` for `proofRejection`, if one is given. */
     def requireInductiveMetric(value: Value, span: Span, proofRejection: Option[String]): Unit = {
@@ -46,61 +54,43 @@ object TerminationChecker {
       }
     }
 
-    spec match {
-      case CA.DecreaseSpec.Lexicographic(args, sp) =>
-        if (args.isEmpty) throw InvalidDecreaseSpec("lexicographic decreases needs at least one argument", Some(sp))
-        if (args.distinct.length != args.length)
-          throw InvalidDecreaseSpec("lexicographic decreases arguments must be distinct", Some(sp))
+    val params = spec.components.collect { case CA.MetricComponent.Param(ref, _) => ref }
+    if (params.distinct.length != params.length)
+      throw InvalidDecreaseSpec("lexicographic decreases arguments must be distinct", Some(spec.span))
 
-        val indices = args.map { ref =>
-          vpi.binders.indices.find(idx => vpi.binders(idx).localRef.id == ref.id).getOrElse {
-            throw InvalidDecreaseSpec(s"${ref.name} is not a function parameter", Some(sp))
-          }
-        }
-        val proofRejection =
-          Option.unless(provesProposition)(
-            "decrease metrics in Prop are allowed only for functions returning a proposition"
-          )
-        args.foreach(ref => requireInductiveMetric(bodyEnv(ref), sp, proofRejection))
-        new Metric(
-          name,
-          vpi,
-          sp,
-          indices.map(idx => vpi.binders(idx).name),
-          env => args.map(ref => env(ref)),
-          callArgs => indices.map(callArgs)
-        )
-
-      case CA.DecreaseSpec.Measure(term, sp) =>
+    // How to read each component in an environment that binds the parameters. The parser gives a clause at least one
+    // component; a metric without any would refuse every call.
+    val readers: Vector[Env => Value] = spec.components.map {
+      case CA.MetricComponent.Param(ref, sp) =>
+        if (!vpi.binders.exists(_.localRef.id == ref.id))
+          throw InvalidDecreaseSpec(s"${ref.name} is not a function parameter", Some(sp))
+        requireInductiveMetric(bodyEnv(ref), sp, paramProofRejection)
+        env => env(ref)
+      case CA.MetricComponent.Measure(term, sp) =>
         val initialMeasure = TypeChecker.checkTerm(term, bodyEnv)
         // Every call evaluates the measure again on its arguments without consuming them, so it is a read extent of
-        // its own (L6), and its reads are no uses. A `structural` or `lexicographic` clause only names parameters.
+        // its own (L6), and its reads are no uses. A parameter component only names a parameter.
         TypeChecker.readBoundary(initialMeasure.lin)
-        val proofRejection = "decrease measures must live in Type; proofs in Prop cannot be used"
-        requireInductiveMetric(initialMeasure.value, sp, Some(proofRejection))
+        requireInductiveMetric(initialMeasure.value, sp, measureProofRejection)
         val quoted = initialMeasure.residual
-        new Metric(
-          name,
-          vpi,
-          sp,
-          Vector("the measure"),
-          env => Vector(Interpreter.evalTerm(quoted, env)),
-          callArgs => Vector(Interpreter.evalTerm(quoted, BinderOps.instantiateFull(vpi.binders, vpi.env, callArgs)))
-        )
+        env => Interpreter.evalTerm(quoted, env)
     }
+    new Metric(name, vpi, spec, env => readers.map(read => read(env)))
   }
 
   /**
    * The members of a mutual block compare their metrics component by component, so all have the same number of
-   * components; that is all the block needs, since every component's order is one well-founded order on all values.
+   * components; that is all the block needs, since every component compares by one well-founded order on all values
+   * (`compare`).
    */
   private[raccoonlang] def requireCompatible(metrics: Vector[Metric]): Unit =
     metrics.headOption.foreach { first =>
-      metrics.find(_.componentNames.length != first.componentNames.length).foreach { other =>
+      def length(metric: Metric): Int = metric.spec.components.length
+      metrics.find(length(_) != length(first)).foreach { other =>
         throw InvalidDecreaseSpec(
           s"the members of a mutual block decrease metrics of one length: ${first.name} has " +
-            s"${first.componentNames.length} components and ${other.name} ${other.componentNames.length}",
-          Some(other.span)
+            s"${length(first)} components and ${other.name} ${length(other)}",
+          Some(other.spec.span)
         )
       }
     }
@@ -108,26 +98,27 @@ object TerminationChecker {
   /**
    * The raw value a call from `caller` to `callee` runs while `caller` 's body is checked: it checks that the call
    * decreases and is otherwise a stuck application of `callee`, which only an application head may reference
-   * (`LocalResidualPolicy.AppHeadOnly`). Each component's order is the one its current value takes: proofs by key, data
-   * by conversion and structural descent. `callerBodyEnv` binds the caller's parameters; branch refinement materializes
-   * it, so `current` reads the caller's arguments as the branch refined them.
+   * (`LocalResidualPolicy.AppHeadOnly`). Each component's order is the one its current value takes (`compare`).
+   * `callerBodyEnv` binds the caller's parameters; branch refinement materializes it, so the caller's metric is read at
+   * its arguments as the branch refined them. The callee's is read at the call's arguments, in the environment its
+   * result type is computed in.
    */
   private[raccoonlang] def rawRecursiveCall(callee: Metric, caller: Metric, callerBodyEnv: Env): VLam = {
-    def checkDecrease(callArgs: Vector[Value], nativeEnv: Env): Unit = {
-      val candidates = callee.atCall(callArgs)
-      val roots = caller.current(nativeEnv)
-      val decreasedAt = candidates.zip(roots).zip(callee.componentNames).find { case ((candidate, root), component) =>
-        val (smaller, same) =
-          if (isProof(root)) (isStrictSubproof(candidate, root), candidate.key == root.key)
-          else (isStrictSubterm(candidate, root), ValueEquivalence.defEq(candidate, root))
-        if (smaller) true
-        else if (same) false
-        else
-          throw NonDecreasingRecursiveCall(
-            callee.name,
-            s"$component is neither equal to nor smaller than the current argument",
-            None
-          )
+    def checkDecrease(calleeEnv: Env, nativeEnv: Env): Unit = {
+      val candidates = callee.at(calleeEnv)
+      val roots = caller.at(nativeEnv)
+      val decreasedAt = candidates.zip(roots).zip(callee.spec.components).find { case ((candidate, root), component) =>
+        compare(candidate, root) match {
+          case Comparison.Smaller  => true
+          case Comparison.NoLarger => false
+          case Comparison.Neither =>
+            throw NonDecreasingRecursiveCall(
+              callee.name,
+              s"${PrettyPrinter.printMetricComponent(component)} at the call is neither equal to nor smaller than the " +
+                "caller's",
+              None
+            )
+        }
       }
       if (decreasedAt.isEmpty)
         throw NonDecreasingRecursiveCall(callee.name, "no lexicographic component decreases", None)
@@ -139,8 +130,8 @@ object TerminationChecker {
       ValueId.Const(callee.name),
       LamBody.Native(
         (args, nativeEnv) => {
-          checkDecrease(args, nativeEnv)
           val envWithArgs = BinderOps.instantiateFull(vpi.binders, vpi.env, args)
+          checkDecrease(envWithArgs, nativeEnv)
           val resultTy = vpi.codomain(envWithArgs)
           VApp(VConst(callee.name, Symbol, vpi), args, resultTy)
         },
@@ -155,6 +146,63 @@ object TerminationChecker {
     val own = metric(name, vpi, spec, bodyEnv)
     rawRecursiveCall(own, own, bodyEnv)
   }
+
+  /** How a call's metric component compares with the caller's current one, its root. */
+  private sealed trait Comparison
+  private object Comparison {
+
+    /** Below the root: the call decreases at this component. */
+    case object Smaller extends Comparison
+
+    /** Equal to the root, or a Nat at most it: the comparison goes on to the next component. */
+    case object NoLarger extends Comparison
+
+    /** Neither: the call does not decrease. */
+    case object Neither extends Comparison
+  }
+
+  /**
+   * The order of a component is the one its root takes. A proof is below a proof it is a proof field of
+   * (`isStrictSubproof`) and equal to one with its key. Other data is below a value it is a structural subterm of and
+   * equal to one it converts with. A Nat is also below a Nat by `<`, and at most it by `<=`, decided on the normal
+   * forms' signed difference as `Nat.ble` decides (`NatNormalForm.differenceBound`). The structural test comes first
+   * and conversion second, so a call that the structural order alone accepts does no arithmetic.
+   *
+   * Every chain of calls descends, because every component compares by one relation on all values, the union of the
+   * proof field order, the structural subterm order and `<` on Nat, and it is well-founded:
+   *   - `<` on Nat is well-founded and contains the structural order on Nat, which removes known successors
+   *     (`NatNormalForm.isStrictlySmaller`).
+   *   - No value of another type is below a Nat: a Nat's structural subterms are Nats, since its only constructor with
+   *     a field, `succ`, holds a Nat (its root is zero, a form, or an atom of a family without structure eta), a Nat is
+   *     no proof, and `<` relates only Nats, since `differenceBound` checks both sides. So a descending chain that
+   *     reaches a Nat descends by `<` from there on, and one that never does descends by the structural and proof field
+   *     orders, which are well-founded.
+   *   - Lexicographically, a prefix of components that are equal or at most the root's descends too: along a chain of
+   *     calls the first component never increases, so it decreases only finitely often and is then constant, and the
+   *     rest descend in turn.
+   *   - What the forms decide holds at run time. A bound on the difference holds for every natural value of the forms'
+   *     atoms, which are variables or opaque Nat-valued terms, so under every substitution of the variables, and so for
+   *     the values the call runs with; and the root is read through the branch's refinement, which holds whenever the
+   *     call runs.
+   *   - A call's component is the root the callee reads when the call runs, so the chain the checks order is the chain
+   *     of calls that runs. A parameter component is the call's argument. A measure is a checked term over the
+   *     parameters alone, which names no member of the block, so evaluating it terminates and gives the same value at
+   *     the call's arguments as when the callee runs on them. Where a component comes from does not enter the order, so
+   *     a measure component, a constant rank among them, is ordered like any other value of its type.
+   */
+  private def compare(candidate: Value, root: Value): Comparison =
+    if (isProof(root))
+      if (isStrictSubproof(candidate, root)) Comparison.Smaller
+      else if (candidate.key == root.key) Comparison.NoLarger
+      else Comparison.Neither
+    else if (isStrictSubterm(candidate, root)) Comparison.Smaller
+    else if (ValueEquivalence.defEq(candidate, root)) Comparison.NoLarger
+    else
+      NatNormalForm.differenceBound(root, candidate) match {
+        case Some(bound) if bound > 0 => Comparison.Smaller
+        case Some(_)                  => Comparison.NoLarger
+        case None                     => Comparison.Neither
+      }
 
   private def isStrictSubterm(candidate: Value, root: Value): Boolean =
     root match {

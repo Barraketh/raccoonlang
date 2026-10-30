@@ -85,6 +85,14 @@ class ParserTests extends munit.FunSuite {
     )
   }
 
+  test("a lexicographic component is a parameter or a measure, and measure is a whole word") {
+    assertEquals(
+      result("def f (measured: Nat)(b: Nat): Nat decreases lexicographic(measured, measure(b)) := b\nf(1, 2)\n"),
+      "2"
+    )
+    assertEquals(parseError("def f (n: Nat): Nat decreases lexicographic(n, measure 0) := 0\n"), "Failed to parse '('")
+  }
+
   // ------------ Binder types and arrows ------------
 
   test("a binder type may be an application followed by an arrow, or an application of an application") {

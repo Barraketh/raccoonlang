@@ -139,12 +139,16 @@ In `zeroShapeOnly`, the `NatShape.isSucc` branch is unreachable because the scru
 ### Termination Checking
 
 Recursive functions must say why recursive calls are smaller. A `structural` annotation names one inductive parameter,
-and each recursive call must pass a strict constructor subterm in that position. A `lexicographic` annotation checks a
-sequence of parameters: an earlier component may decrease, or an equal prefix can be followed by a later decrease. A
-`measure` annotation checks that an evaluated inductive-valued measure gets structurally smaller.
+and each recursive call must pass a strict constructor subterm in that position. A `measure` annotation checks that an
+evaluated inductive-valued measure gets structurally smaller. A `lexicographic` annotation checks a sequence of
+components, each a parameter or a measure written `measure(e)`: an earlier component may decrease, or an equal prefix
+can be followed by a later decrease. A `Nat` component, a parameter or a measure, is ordered by `<` instead, decided on
+its normal form: `b` is below `a + b + 1` but not below `a + b`, and a prefix component may be at most the current one
+rather than equal. In a `mutual` block, a constant measure is a rank: when `f` decreases `lexicographic(h, measure(0))`
+and `g` decreases `lexicographic(h, measure(1))`, `g` may call `f` with `h` unchanged.
 
 Decrease metrics must be inductive values. A function whose result is a proposition may also decrease a proof, as a
-`structural` metric or a `lexicographic` component; other functions' metrics must live in `Type`/`Sort(u)`, and measures
+`structural` metric or a `lexicographic` parameter; other functions' metrics must live in `Type`/`Sort(u)`, and measures
 always must. A proof metric decreases only by passing one of the matched proof's proof fields, or a proof field of
 those, unchanged: proofs are compared by identity, since proof irrelevance makes any two proofs of a proposition
 convertible. Subterm search for data metrics does not traverse proof fields. See
