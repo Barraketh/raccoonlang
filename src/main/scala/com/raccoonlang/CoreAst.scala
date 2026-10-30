@@ -300,7 +300,23 @@ object CoreAst {
         ctors: Vector[ConstructorDecl],
         span: Span
     ) extends Decl
+
+    /**
+     * Inductive families that may name each other in their constructors, checked and published together
+     * (docs/kernel.md, "Mutual blocks").
+     */
+    final case class MutualInductives(families: Vector[InductiveDecl], span: Span) extends Decl
+
+    /** Recursive definitions that may call each other, checked and published together. */
+    final case class MutualDefs(members: Vector[MutualDef], span: Span) extends Decl
   }
+
+  /**
+   * A member of a mutual block of definitions: its lambda, without a recursion of its own, and its metric. After its
+   * parameters, its body binds `peers`, a slot for each member of the block, itself included, in the block's order,
+   * through which it calls them.
+   */
+  final case class MutualDef(name: String, lam: Term.Lam, decreases: DecreaseSpec, peers: Vector[LocalRef], span: Span)
 
   case class Program(decls: Vector[Decl], body: Option[Term])
 }

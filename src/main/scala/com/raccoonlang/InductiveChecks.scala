@@ -42,13 +42,14 @@ object InductiveChecks {
   private object PositivityTarget {
 
     /**
-     * The family being declared. It is fresh: no value made before its declaration can name it, so a reference to it
-     * starts only at its own head, and reaches a value only through what that value is built from.
+     * The families being declared, one or a mutual block. They are fresh: no value made before their declaration can
+     * name them, so a reference to one starts only at its own head, and reaches a value only through what that value is
+     * built from.
      */
-    final case class InductiveHead(name: String) extends PositivityTarget {
+    final case class InductiveBlock(names: Set[String]) extends PositivityTarget {
       override def isDirectOccurrence(value: Value): Boolean =
         value match {
-          case VConst(valueName, Inductive(_), _) => valueName == name
+          case VConst(valueName, Inductive(_), _) => names(valueName)
           case _                                  => false
         }
 
@@ -110,11 +111,11 @@ object InductiveChecks {
    */
   private def thunkDoesNotContain(target: PositivityTarget, thunk: NeutralThunk): Boolean =
     target match {
-      case PositivityTarget.InductiveHead(name) =>
+      case PositivityTarget.InductiveBlock(names) =>
         doesNotOccur(target, thunk.tpe) &&
         thunk.id.captures.forall(doesNotOccur(target, _)) &&
         thunk.env.locals.forall(_.valueOption.forall(doesNotOccur(target, _))) &&
-        !mentionsGlobal(thunk.term, name)
+        !names.exists(mentionsGlobal(thunk.term, _))
       case local: PositivityTarget.LocalVar => !local.mayOccurIn(thunk)
     }
 
@@ -144,7 +145,7 @@ object InductiveChecks {
       case ElabAst.Term.Body(lets, res, _) => terms(lets.flatMap(let => let.ty.toVector :+ let.value) :+ res)
       case ElabAst.Term.Match(scrut, motive, cases, _, _) => terms((scrut +: motive.toVector) ++ cases.map(_.body))
       case ElabAst.Term.Pi(binders, out, _, _, _) => binders.exists(b => binderType(b.ty)) || mentionsGlobal(out, name)
-      case ElabAst.Term.Lam(ty, body, _, _, _, _) => mentionsGlobal(ty, name) || mentionsGlobal(body, name)
+      case ElabAst.Term.Lam(ty, body, _, _, _, _, _) => mentionsGlobal(ty, name) || mentionsGlobal(body, name)
     }
   }
 
@@ -187,9 +188,14 @@ object InductiveChecks {
 
   /**
    * Checks that the target only occurs positively in value: 1) Does not occur in the domain of any Pis 2) Only appears
-   * in positive args of Inductives
+   * in positive args of Inductives. A family of the block being declared has the positive arguments `assumed` gives it,
+   * since its metadata is provisional; every other family's are its metadata's.
    */
-  private def occursPositively(target: PositivityTarget, value: Value): Boolean =
+  private def occursPositively(
+      target: PositivityTarget,
+      value: Value,
+      assumed: Map[String, DepSet] = Map.empty
+  ): Boolean =
     if (target.isDirectOccurrence(value)) true
     else
       value match {
@@ -198,28 +204,30 @@ object InductiveChecks {
 
         case InductiveFamilyValue(instance) =>
           if (target.isDirectOccurrence(instance.head)) true
-          else
+          else {
+            val positiveArgs = assumed.getOrElse(instance.head.name, instance.meta.positiveArgs)
             instance.args.zipWithIndex.forall { case (arg, idx) =>
-              if (instance.meta.positiveArgs.contains(idx)) occursPositively(target, arg)
+              if (positiveArgs.contains(idx)) occursPositively(target, arg, assumed)
               else doesNotOccur(target, arg)
             }
+          }
 
         // Factor bases and symbolic exponents are arguments of Nat operations, which have no positive positions.
         case poly: VNatPoly => doesNotOccur(target, poly)
 
         // Payloads and the end are arguments of constructors; only the layers' types may contain the target.
-        case word: VWord => forallWordParts(word, doesNotOccur(target, _), occursPositively(target, _))
+        case word: VWord => forallWordParts(word, doesNotOccur(target, _), occursPositively(target, _, assumed))
 
         case app: VApp =>
           doesNotOccur(target, app.head) &&
           app.args.forall(arg => doesNotOccur(target, arg)) &&
-          occursPositively(target, app.tpe)
+          occursPositively(target, app.tpe, assumed)
 
         case pi: VPi =>
           val freshEnv = BinderOps.freshen(pi)
           val freshArgs = pi.binders.map(binder => freshEnv(binder.localRef))
           freshArgs.forall(arg => doesNotOccur(target, arg.tpe)) &&
-          occursPositively(target, pi.codomain(freshEnv))
+          occursPositively(target, pi.codomain(freshEnv), assumed)
 
         case _: ConstructorHead => true
 
@@ -230,36 +238,37 @@ object InductiveChecks {
       }
 
   /**
-   * Checks that we don't have things of the shape Foo(Foo(A)) as a constructor field of Foo.
+   * Checks that we don't have things of the shape Foo(Foo(A)) as a constructor field of Foo, nor, in a mutual block,
+   * Foo(Bar(A)) for a sibling Bar: the block's families' own arguments do not contain the block.
    */
-  private def sameFamilyArgsDoNotContain(inductiveName: String, target: PositivityTarget, value: Value): Boolean =
+  private def sameFamilyArgsDoNotContain(target: PositivityTarget, value: Value): Boolean =
     value match {
       // A stuck computation that does not mention the family holds no application of it.
       case thunk: NeutralThunk => thunkDoesNotContain(target, thunk)
 
       case InductiveFamilyValue(instance) =>
-        if (instance.head.name == inductiveName)
+        if (target.isDirectOccurrence(instance.head))
           instance.args.forall(arg => doesNotOccur(target, arg))
         else
-          instance.args.forall(arg => sameFamilyArgsDoNotContain(inductiveName, target, arg))
+          instance.args.forall(arg => sameFamilyArgsDoNotContain(target, arg))
 
       case poly: VNatPoly =>
-        poly.form.operands.forall(operand => sameFamilyArgsDoNotContain(inductiveName, target, operand))
+        poly.form.operands.forall(operand => sameFamilyArgsDoNotContain(target, operand))
 
       case word: VWord =>
-        def visit(part: Value): Boolean = sameFamilyArgsDoNotContain(inductiveName, target, part)
+        def visit(part: Value): Boolean = sameFamilyArgsDoNotContain(target, part)
         forallWordParts(word, visit, visit)
 
       case app: VApp =>
         doesNotOccur(target, app.head) &&
-        app.args.forall(arg => sameFamilyArgsDoNotContain(inductiveName, target, arg)) &&
-        sameFamilyArgsDoNotContain(inductiveName, target, app.tpe)
+        app.args.forall(arg => sameFamilyArgsDoNotContain(target, arg)) &&
+        sameFamilyArgsDoNotContain(target, app.tpe)
 
       case pi: VPi =>
         val freshEnv = BinderOps.freshen(pi)
         val freshArgs = pi.binders.map(binder => freshEnv(binder.localRef))
-        freshArgs.forall(arg => sameFamilyArgsDoNotContain(inductiveName, target, arg.tpe)) &&
-        sameFamilyArgsDoNotContain(inductiveName, target, pi.codomain(freshEnv))
+        freshArgs.forall(arg => sameFamilyArgsDoNotContain(target, arg.tpe)) &&
+        sameFamilyArgsDoNotContain(target, pi.codomain(freshEnv))
 
       case lam: VLam => lambdaDoesNotContain(target, lam)
 
@@ -268,13 +277,18 @@ object InductiveChecks {
         true
     }
 
-  private def positiveArgIndexes(args: Vector[Value], values: Vector[Value]): DepSet = {
+  /** The indexes of the variables among `args` that occur positively in every one of `values`, reading `assumed`. */
+  private def positiveArgIndexes(
+      args: Vector[Value],
+      values: Vector[Value],
+      assumed: Map[String, DepSet] = Map.empty
+  ): DepSet = {
     val positive = DepSet.newBuilder
     args.zipWithIndex.foreach { case (arg, idx) =>
       arg match {
         case Var(_, id, _) =>
           val target = PositivityTarget.LocalVar(id)
-          if (values.forall(value => occursPositively(target, value)))
+          if (values.forall(value => occursPositively(target, value, assumed)))
             positive.add(idx)
         case _ =>
       }
@@ -283,8 +297,8 @@ object InductiveChecks {
   }
 
   /**
-   * How a constructor's stored fields recurse: the indexes of fields whose types mention the family being declared, and
-   * whether there is exactly one, whose type is the family applied to its own parameters.
+   * How a constructor's stored fields recurse: the indexes of fields whose types mention a family of the block being
+   * declared, and whether there is exactly one, whose type is the constructor's own family at its own parameters.
    */
   private final case class ConstructorRecursion(
       ctor: ConstructorDecl,
@@ -314,15 +328,13 @@ object InductiveChecks {
         case _ => None
       }
 
-  private def installInductive(
+  /** The constructors of `decl`, published in `envWithHeads`, which has the final heads of its whole block. */
+  private def installConstructors(
       decl: Decl.InductiveDecl,
-      baseEnv: Env,
-      inductiveHead: VConst,
+      envWithHeads: Env,
       listShape: Option[(String, ListShape)]
-  ): Env = {
-    val envWithInductive = baseEnv.putGlobal(decl.header.name, inductiveHead)
-
-    decl.ctors.foldLeft(envWithInductive) { case (curEnv, ctor) =>
+  ): Env =
+    decl.ctors.foldLeft(envWithHeads) { case (curEnv, ctor) =>
       val allBinders = ctor.erasedBinders ++ ctor.fields
       val fullTypeTerm =
         if (allBinders.isEmpty) ctor.resultTy
@@ -346,7 +358,6 @@ object InductiveChecks {
         )
       )
     }
-  }
 
   private def familyArgsOf(result: Value): Vector[Value] =
     result match {
@@ -354,38 +365,113 @@ object InductiveChecks {
       case _                   => Vector.empty
     }
 
-  def evalInductiveDecl(decl: Decl.InductiveDecl, env: Env): Env = {
-    // All direct Value matches in this function and its private helpers
-    // rely on EqStore.empty: no Vars are solved in this pass.
+  /**
+   * One family of a block, checked against the block's provisional heads: its type and initial metadata, its universe,
+   * the positive arguments its header allows, each constructor's result arguments with its field types, for the block's
+   * positive arguments, how each constructor recurses, and its structure eta.
+   */
+  private final case class CheckedFamily(
+      decl: Decl.InductiveDecl,
+      familyType: Value,
+      initialMeta: InductiveMeta,
+      universe: Universe,
+      headerPositive: DepSet,
+      constructorFields: Vector[(Vector[Value], Vector[Value])],
+      recursion: Vector[ConstructorRecursion],
+      eta: Option[EtaInfo]
+  ) {
+    def name: String = decl.header.name
+  }
 
-    val header = decl.header
-    val name = header.name
-    val ty = {
-      if (header.binders.isEmpty) decl.header.resultTy
-      else Term.Pi(header.binders, decl.header.resultTy, decl.header.span, NodeId.fresh())
+  /**
+   * Which arguments of each family of a block are positive, so may hold a nested occurrence of a later family: the
+   * greatest assignment, within what each family's header allows, under which each of them occurs positively in every
+   * constructor's fields when the block's own families are read by that assignment. It starts from the headers' and
+   * only shrinks, since occurring positively is monotone in the assignment, so it ends. Reading the block's families by
+   * their provisional metadata, every argument positive, would accept an argument whose positivity rests on a position
+   * that turns out not to be positive.
+   */
+  private def blockPositiveArgs(families: Vector[CheckedFamily]): Map[String, DepSet] = {
+    var assumed = families.map(family => family.name -> family.headerPositive).toMap
+    var stable = false
+    while (!stable) {
+      val next = families.map { family =>
+        family.name -> family.constructorFields.foldLeft(family.headerPositive) { case (positive, (args, fields)) =>
+          positive & positiveArgIndexes(args, fields, assumed)
+        }
+      }.toMap
+      stable = next == assumed
+      assumed = next
+    }
+    assumed
+  }
+
+  /**
+   * Inductive families, one or a mutual block (docs/kernel.md, "Mutual blocks"), checked and published together. Each
+   * family's type is checked where no family of the block exists yet; its constructors are checked with every family's
+   * provisional head, against its own declared universe (L1), uniformity and result, and strict positivity in every
+   * family of the block. Each family's universe, size rule and structure eta are its own; a field is recursive when it
+   * mentions any family of the block, and the positive arguments are a fixed point over the block. Only when every
+   * family has checked are the final heads, then the constructors, published.
+   */
+  def evalInductiveBlock(decls: Vector[Decl.InductiveDecl], env: Env): Env = {
+    // All direct Value matches in this function and its private helpers rely on EqStore.empty: no Vars are solved in
+    // this pass.
+    val provisional = decls.map { decl =>
+      val header = decl.header
+      val ty =
+        if (header.binders.isEmpty) header.resultTy
+        else Term.Pi(header.binders, header.resultTy, header.span, NodeId.fresh())
+      val familyType = TypeChecker.getType(ty, env)
+      val initialMeta =
+        InductiveMeta(
+          decl.ctors.map(ctor => ConstructorMeta(ctor.shortName, ctor.canonicalName)),
+          header.binders.length,
+          header.params.length,
+          decl.ctors.length == 1,
+          DepSet.from(0 until header.arity)
+        )
+      (decl, familyType, initialMeta)
+    }
+    val checkEnv = provisional.foldLeft(env) { case (cur, (decl, familyType, meta)) =>
+      cur.putGlobal(decl.header.name, VConst(decl.header.name, Inductive(meta), familyType))
+    }
+    val target = PositivityTarget.InductiveBlock(decls.map(_.header.name).toSet)
+    val checked = provisional.map { case (decl, familyType, meta) =>
+      checkFamily(decl, familyType, meta, checkEnv, target)
     }
 
-    val inductiveTypeCheck = TypeChecker.getType(ty, env)
+    val positiveArgs = blockPositiveArgs(checked)
+    // Only after all constructor checks succeed do we add the block to the environment: every final head, then the
+    // constructors, whose types name the heads.
+    val withHeads = checked.foldLeft(env) { (cur, family) =>
+      val meta = family.initialMeta.copy(positiveArgs = positiveArgs(family.name), eta = family.eta)
+      cur.putGlobal(family.name, VConst(family.name, Inductive(meta), family.familyType))
+    }
+    checked.foldLeft(withHeads) { (cur, family) =>
+      installConstructors(family.decl, cur, listShape(family.decl, family.universe, family.recursion))
+    }
+  }
 
-    val initialPositiveArgs = DepSet.from(0 until header.arity)
-    val initialMeta =
-      InductiveMeta(
-        decl.ctors.map(ctor => ConstructorMeta(ctor.shortName, ctor.canonicalName)),
-        decl.header.binders.length,
-        decl.header.params.length,
-        decl.ctors.length == 1,
-        initialPositiveArgs
-      )
-
-    val inductivedHead = VConst(name, Inductive(initialMeta), inductiveTypeCheck)
-
-    val checkEnvWithInductive = env.putGlobal(name, inductivedHead)
+  /**
+   * The family `decl` of the block whose provisional heads `blockEnv` holds, `recursiveTarget` being the block, where
+   * `inductiveTypeCheck` is the family's type and `initialMeta` its provisional metadata.
+   */
+  private def checkFamily(
+      decl: Decl.InductiveDecl,
+      inductiveTypeCheck: Value,
+      initialMeta: InductiveMeta,
+      blockEnv: Env,
+      recursiveTarget: PositivityTarget
+  ): CheckedFamily = {
+    val header = decl.header
+    val name = header.name
     val envWithFamilyBinders = {
       inductiveTypeCheck match {
         case pi: VPi =>
-          assert(checkEnvWithInductive.locals.isEmpty) // Sanity check
-          BinderOps.freshen(pi.binders, checkEnvWithInductive)
-        case _ => checkEnvWithInductive
+          assert(blockEnv.locals.isEmpty) // Sanity check
+          BinderOps.freshen(pi.binders, blockEnv)
+        case _ => blockEnv
       }
     }
 
@@ -394,7 +480,6 @@ object InductiveChecks {
       case other       => throw InductiveTypeNotASort(other, Some(header.resultTy.span))
     }
 
-    val recursiveTarget = PositivityTarget.InductiveHead(name)
     val familyArgs =
       inductiveTypeCheck match {
         case pi: VPi => pi.binders.map(binder => envWithFamilyBinders(binder.localRef))
@@ -402,7 +487,8 @@ object InductiveChecks {
       }
     val argumentSizeBound = familyUniverse match {
       case PropTpe => None // Impredicative Prop families have no nominal principles.
-      // Families of every kind are nominal, so all obey the size check; kinds cost nothing.
+      // Families of every kind are nominal, so all obey the size check; kinds cost nothing. Each family of a block is
+      // bounded by its own declared level.
       case VUniv(_, level) => Some(level)
     }
     header.binders.zip(familyArgs).foreach { case (binder, argument) =>
@@ -415,11 +501,12 @@ object InductiveChecks {
           throw FamilyArgumentTooLarge(name, binder.name, required, Some(binder.span))
       }
     }
-    var positiveArgs = positiveArgIndexes(familyArgs, familyArgs.map(_.tpe))
+    // A header names no family of its block, so this needs no assumption about the block's positive arguments.
+    val headerPositive = positiveArgIndexes(familyArgs, familyArgs.map(_.tpe))
 
-    val recursion = decl.ctors.map { ctor =>
-      val (erasedBinders, _) = BinderOps.toVBinders(ctor.erasedBinders, checkEnvWithInductive)
-      val envWithErased = BinderOps.freshen(erasedBinders, checkEnvWithInductive)
+    val constructors = decl.ctors.map { ctor =>
+      val (erasedBinders, _) = BinderOps.toVBinders(ctor.erasedBinders, blockEnv)
+      val envWithErased = BinderOps.freshen(erasedBinders, blockEnv)
       val (fieldBinders, _) = BinderOps.toVBinders(ctor.fields, envWithErased)
       val fieldsEnv = BinderOps.freshen(fieldBinders, envWithErased)
       val fieldVars = fieldBinders.map(binder => fieldsEnv(binder.localRef))
@@ -458,7 +545,7 @@ object InductiveChecks {
 
       val constructorUniverse = TypeChecker.getUniverse(outputTpe)
 
-      // Whether each stored field's type mentions the family being declared.
+      // Whether each stored field's type mentions a family of the block, so recurses.
       val recursiveFieldFlags = ctor.fields.zip(fieldVars).map { case (binder, field) =>
         def requireBelow(tpeLevel: Level, inductiveLevel: Level): Unit =
           if (!Level.leq(tpeLevel, inductiveLevel))
@@ -482,10 +569,8 @@ object InductiveChecks {
             requireBelow(level, inductiveLevel)
         }
 
-        // 3) Every stored constructor field type must be strictly positive in the inductive
-        if (
-          !occursPositively(recursiveTarget, field.tpe) || !sameFamilyArgsDoNotContain(name, recursiveTarget, field.tpe)
-        )
+        // 3) Every stored constructor field type must be strictly positive in every family of the block
+        if (!occursPositively(recursiveTarget, field.tpe) || !sameFamilyArgsDoNotContain(recursiveTarget, field.tpe))
           throw NonStrictlyPositive(
             inductive = name,
             ctor = ctor.canonicalName,
@@ -496,8 +581,6 @@ object InductiveChecks {
 
         !doesNotOccur(recursiveTarget, field.tpe)
       }
-
-      positiveArgs = positiveArgs & positiveArgIndexes(outputArgs, fieldTypes)
 
       // The result's arguments are the family's own parameters by the uniformity check above.
       val recursiveFields = recursiveFieldFlags.indices.filter(recursiveFieldFlags).toVector
@@ -511,21 +594,22 @@ object InductiveChecks {
           }
         case _ => false
       }
-      ConstructorRecursion(ctor, recursiveFields, soleFieldIsOwnInstance)
+      ((outputArgs, fieldTypes), ConstructorRecursion(ctor, recursiveFields, soleFieldIsOwnInstance))
     }
+    val recursion = constructors.map(_._2)
 
-    // Structure eta: one constructor, no indices, no recursive field, not in Prop.
+    // Structure eta: one constructor, no indices, no recursive field, which mentions no family of the block, not in Prop.
     val eta = (decl.ctors, recursion) match {
       case (Vector(ctor), Vector(only))
           if header.indices.isEmpty && familyUniverse != PropTpe && only.recursiveFields.isEmpty =>
         val allBinders = ctor.erasedBinders ++ ctor.fields
         val (resultArgs, fieldVars, templateIds) =
           if (allBinders.isEmpty)
-            (familyArgsOf(TypeChecker.getType(ctor.resultTy, checkEnvWithInductive)), Vector.empty, DepSet.empty)
+            (familyArgsOf(TypeChecker.getType(ctor.resultTy, blockEnv)), Vector.empty, DepSet.empty)
           else
             TypeChecker.getType(
               Term.Pi(allBinders, ctor.resultTy, ctor.span, NodeId.fresh()),
-              checkEnvWithInductive
+              blockEnv
             ) match {
               case pi: VPi =>
                 val fresh = BinderOps.freshen(pi)
@@ -562,11 +646,15 @@ object InductiveChecks {
         }
       }
     }
-    val meta = initialMeta.copy(positiveArgs = positiveArgs, eta = determinedEta)
-
-    val inductiveHeadCheck = VConst(name, Inductive(meta), inductiveTypeCheck)
-
-    // Only after all constructor checks succeed do we add the decl to the environments.
-    installInductive(decl, env, inductiveHeadCheck, listShape(decl, familyUniverse, recursion))
+    CheckedFamily(
+      decl,
+      inductiveTypeCheck,
+      initialMeta,
+      familyUniverse,
+      headerPositive,
+      constructors.map(_._1),
+      recursion,
+      determinedEta
+    )
   }
 }

@@ -148,9 +148,9 @@ class ProtocolTypesTests extends munit.FunSuite {
     )
   }
 
-  // Structural recursion on an indexed linear family with a variable index: docs/implemented/LINEAR_PROTOCOLS.md, open
-  // question 16.
-  test("a packet recursion on its own index decreases by a measure, not structurally") {
+  // Structural recursion on an indexed linear family with a variable index (KERNEL_FOLLOWUPS 2.4): matching the packet
+  // refines its index and links the packet to its constructor, whose field is then a structural subterm.
+  test("a packet recursion at a variable index decreases structurally on the packet, or by a measure") {
     def join(decreases: String): String =
       swap +
         s"""
@@ -163,9 +163,15 @@ class ProtocolTypesTests extends munit.FunSuite {
            |}
            |""".stripMargin
     run(join("measure(List.length(A))"))
-    // Matching the packet refines its index A, a variable, so the value refinement linking `left` to the constructor is
-    // stuck and the termination checker sees no smaller argument. An explicit index parameter is no different.
-    assertErrorAt[NonDecreasingRecursiveCall](join("structural(left)"), "(rest, right)")
+    run(join("structural(left)"))
+    // The rest is smaller than the packet; the packet itself is not.
+    assertErrorAt[NonDecreasingRecursiveCall](
+      join("structural(left)").replace(
+        "join(rest, right)",
+        "join(Protocol.Toks.cons(Protocol.Proto.mk(Atom, Step), init, s, a, t, C, rest), right)"
+      ),
+      "(Protocol.Toks.cons(Protocol.Proto.mk(Atom, Step), init, s, a, t, C, rest), right)"
+    )
   }
 
   test("Reach induction bounds the atoms of an observed packet by the initial inventory") {

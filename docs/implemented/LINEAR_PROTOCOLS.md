@@ -408,16 +408,10 @@ section is named.
 15. (resolved: `Lin`, `List.Perm` and the `Protocol` kernel declarations
     cannot be redeclared (`AlreadyDefined`), while the library may add members
     to the `Protocol` namespace.)
-16. **Structural recursion on indexed families with variable indices.** For a
-    data or linear family, `decreases structural(v)` is
-    `NonDecreasingRecursiveCall` when `v`'s index is a variable, captured or a
-    parameter: the link from the scrutinee to its constructor may refine only
-    the scrutinee and the constructor's fresh variables, so the index equation
-    leaves it stuck. Packet functions recurse on their unrestricted index
-    list, or use `measure(List.length(A))`. Indexed Prop families are not
-    affected, since a proof scrutinee is linked to its constructor in every
-    branch whose refinement succeeds (item 8).
-    Tracked in KERNEL_FOLLOWUPS 2.4.
+16. (resolved: the unification linking a variable scrutinee to its constructor
+    also refines the variables of the scrutinee's type, so at a variable index
+    `decreases structural(v)` sees the fields as smaller, and packet functions
+    such as `Toks.append` recurse on the packet; KERNEL_FOLLOWUPS 2.4.)
 17. (resolved: universes are not cumulative, so `A := Nat` is refused where
     `A : Lin(0)`, and `Eq.refl(A)` at a linear `A` has its declared type;
     KERNEL_FOLLOWUPS 1.2.)

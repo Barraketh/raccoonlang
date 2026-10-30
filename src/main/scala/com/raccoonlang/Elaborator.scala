@@ -59,7 +59,7 @@ object Elaborator {
       namespace: GlobalName,
       opens: List[OpenScope],
       reservedLocals: Set[String],
-      recursiveSelfAlias: Option[(GlobalName, CA.LocalRef)]
+      recursiveAliases: Map[GlobalName, CA.LocalRef]
   ) {
     def enterLocalScope: ResolveEnv = copy(scopes = Map.empty[String, CA.LocalRef] :: scopes)
 
@@ -77,13 +77,8 @@ object Elaborator {
 
     def resolveQualifiedLocal(path: SurfacePath): Option[CA.LocalRef] =
       if (path.parts.isEmpty) None
-      else
-        recursiveSelfAlias.flatMap { case (fullName, ref) =>
-          val matches =
-            if (path.root) path.parts == fullName
-            else namespace.inits.exists(prefix => prefix ++ path.parts == fullName)
-          Option.when(matches)(ref)
-        }
+      else if (path.root) recursiveAliases.get(path.parts)
+      else namespace.inits.collectFirst(Function.unlift(prefix => recursiveAliases.get(prefix ++ path.parts)))
 
     /**
      * Resolve the first segment, then commit to that object while descending the remaining path.
@@ -202,8 +197,8 @@ object Elaborator {
     def hasLocal(name: String): Boolean =
       scopes.exists(_.contains(name))
 
-    def reserveRecursiveSelfName(name: String): ResolveEnv =
-      copy(reservedLocals = reservedLocals + name)
+    def reserveRecursiveNames(names: Iterable[String]): ResolveEnv =
+      copy(reservedLocals = reservedLocals ++ names)
 
     def allocate(name: String): (CA.LocalRef, ResolveEnv) = {
       val ref = CA.LocalRef(nextLocal, name)
@@ -211,16 +206,24 @@ object Elaborator {
     }
 
     def bindRecursiveSelf(name: String, fullName: GlobalName): (CA.LocalRef, ResolveEnv) = {
-      if (!reservedLocals.contains(name)) throw WTF(s"$name is not reserved for recursive self binding")
-      val (ref, nextEnv) = allocate(name)
-      (
-        ref,
-        nextEnv.copy(
-          scopes = (scopes.head + (name -> ref)) :: scopes.tail,
-          recursiveSelfAlias = Some(fullName -> ref)
-        )
-      )
+      val (refs, nextEnv) = bindRecursivePeers(Vector(name -> fullName))
+      (refs.head, nextEnv)
     }
+
+    /**
+     * Bind each member of a recursive group, by its short name and its full name, to the next slots, in order. The
+     * names are reserved, so no parameter shadows them; these bindings are the only ones a reserved name may have.
+     */
+    def bindRecursivePeers(peers: Vector[(String, GlobalName)]): (Vector[CA.LocalRef], ResolveEnv) =
+      peers.foldLeft((Vector.empty[CA.LocalRef], this)) { case ((refs, cur), (name, fullName)) =>
+        if (!cur.reservedLocals.contains(name)) throw WTF(s"$name is not reserved for recursive binding")
+        val (ref, next) = cur.allocate(name)
+        val bound = next.copy(
+          scopes = (next.scopes.head + (name -> ref)) :: next.scopes.tail,
+          recursiveAliases = next.recursiveAliases + (fullName -> ref)
+        )
+        (refs :+ ref, bound)
+      }
 
     def bindNamed(name: String, allowShadow: Boolean): (CA.LocalRef, ResolveEnv) =
       if (reservedLocals.contains(name)) throw AlreadyDefined(name)
@@ -270,7 +273,7 @@ object Elaborator {
         Vector.empty,
         List(Map.empty[String, ResolvedObject]),
         Set.empty,
-        None
+        Map.empty
       )
 
     /** Primitive names only; the kernel's own declarations elaborate here. */
@@ -317,6 +320,10 @@ object Elaborator {
 
       case SA.Command.Block(body, span) =>
         Vector(SA.Command.Block(expandStructSelectors(body), span))
+
+      // A block's families have their selectors after it, once every family of it is published.
+      case mutual @ SA.Command.Mutual(body, _) =>
+        mutual +: body.collect { case family: SA.Command.Decl.InductiveDecl => family }.flatMap(structSelectorNamespace)
 
       case other => Vector(other)
     }
@@ -1064,7 +1071,7 @@ object Elaborator {
         val name = env.qualify(c.header.name)
         val nameText = globalName(name)
         val headerEnv = c.decreases match {
-          case Some(_) => env.reserveRecursiveSelfName(c.header.name)
+          case Some(_) => env.reserveRecursiveNames(Vector(c.header.name))
           case None    => env
         }
         val header = elabHeader(c.header.funcHeader, headerEnv)
@@ -1117,37 +1124,92 @@ object Elaborator {
         )
       case c: SurfaceAst.Command.Decl.InductiveDecl =>
         val name = env.qualify(c.header.name)
-        val nameText = globalName(name)
-        c.ctors.foreach { ctor =>
-          checkConstructorParamDiscipline(c.header, ctor, globalName(name :+ ctor.name))
-        }
-        val headerEnv = env.enterLocalScope
-        val (params, envWithParams) = elabBinders(c.header.params, headerEnv)
-        val (indices, envWithIndices) = elabBinders(c.header.indices, envWithParams)
-        val resultTy = elabType(c.header.resultTy, envWithIndices)
-        val header = CA.InductiveHeader(nameText, params, indices, resultTy, c.span)
-
-        // Constructors may refer to the inductive head, but not to sibling constructors yet.
-        val ctorBaseEnv = env.addGlobal(name)
-        val ctorNames = c.ctors.map(ctor => name :+ ctor.name)
-        val ctors =
-          c.ctors.zip(ctorNames).map { case (ctor, ctorName) =>
-            val (erasedBinders, envWithErased) = elabBinders(ctor.erasedBinders, ctorBaseEnv.enterLocalScope)
-            val (fields, envWithFields) = elabBinders(ctor.fields, envWithErased)
-            CA.ConstructorDecl(
-              canonicalName = globalName(ctorName),
-              shortName = ctor.name,
-              erasedBinders = erasedBinders,
-              fields = fields,
-              resultTy = elabType(ctor.resultTy, envWithFields),
-              span = ctor.span
-            )
-          }
-        val nextEnv = ctorNames.foldLeft(env.addGlobal(name)) { case (cur, ctorName) =>
-          cur.addGlobal(ctorName)
-        }
-        (CA.Decl.InductiveDecl(header, ctors, c.span), nextEnv)
+        val withHead = env.addGlobal(name)
+        val (decl, ctorNames) = elabInductive(c, name, env, withHead)
+        (decl, ctorNames.foldLeft(withHead)(_ addGlobal _))
     }
+
+  /**
+   * The family `c`, named `name`: its header resolved in `env`, and its constructors in `ctorEnv`, which also has the
+   * family's head and, in a mutual block, its siblings' heads, but no constructor. Returns it with its constructors'
+   * names.
+   */
+  private def elabInductive(
+      c: SA.Command.Decl.InductiveDecl,
+      name: GlobalName,
+      env: ResolveEnv,
+      ctorEnv: ResolveEnv
+  ): (CA.Decl.InductiveDecl, Vector[GlobalName]) = {
+    c.ctors.foreach { ctor =>
+      checkConstructorParamDiscipline(c.header, ctor, globalName(name :+ ctor.name))
+    }
+    val headerEnv = env.enterLocalScope
+    val (params, envWithParams) = elabBinders(c.header.params, headerEnv)
+    val (indices, envWithIndices) = elabBinders(c.header.indices, envWithParams)
+    val resultTy = elabType(c.header.resultTy, envWithIndices)
+    val header = CA.InductiveHeader(globalName(name), params, indices, resultTy, c.span)
+
+    val ctorNames = c.ctors.map(ctor => name :+ ctor.name)
+    val ctors =
+      c.ctors.zip(ctorNames).map { case (ctor, ctorName) =>
+        val (erasedBinders, envWithErased) = elabBinders(ctor.erasedBinders, ctorEnv.enterLocalScope)
+        val (fields, envWithFields) = elabBinders(ctor.fields, envWithErased)
+        CA.ConstructorDecl(
+          canonicalName = globalName(ctorName),
+          shortName = ctor.name,
+          erasedBinders = erasedBinders,
+          fields = fields,
+          resultTy = elabType(ctor.resultTy, envWithFields),
+          span = ctor.span
+        )
+      }
+    (CA.Decl.InductiveDecl(header, ctors, c.span), ctorNames)
+  }
+
+  /**
+   * A mutual block (docs/kernel.md, "Mutual blocks"): only inductive families, whose constructors see every family's
+   * head, or only recursive definitions, whose bodies call every member through a slot of their own. Each name is
+   * published once the whole block has checked.
+   */
+  private def elabMutual(mutual: SA.Command.Mutual, env: ResolveEnv): (CA.Decl, ResolveEnv) = {
+    def invalid(reason: String, span: Span) = InvalidMutualBlock(reason, Some(span))
+    val families = mutual.body.collect { case family: SA.Command.Decl.InductiveDecl => family }
+    val definitions = mutual.body.collect { case definition: SA.Command.Decl.ConstDecl => definition }
+    if (mutual.body.isEmpty) throw invalid("a mutual block declares at least one family or definition", mutual.span)
+    if (families.length == mutual.body.length) {
+      val names = families.map(family => env.qualify(family.header.name))
+      val withHeads = names.foldLeft(env)(_ addGlobal _)
+      val elaborated = families.zip(names).map { case (family, name) => elabInductive(family, name, env, withHeads) }
+      (
+        CA.Decl.MutualInductives(elaborated.map(_._1), mutual.span),
+        elaborated.flatMap(_._2).foldLeft(withHeads)(_ addGlobal _)
+      )
+    } else if (definitions.length == mutual.body.length) {
+      val names = definitions.map(definition => env.qualify(definition.header.name))
+      val withNames = names.foldLeft(env)(_ addGlobal _)
+      val reserved = env.reserveRecursiveNames(definitions.map(_.header.name))
+      val peers = definitions.map(_.header.name).zip(names)
+      val members = definitions.zip(names).map { case (definition, name) =>
+        if (definition.isInstance) throw invalid("a mutual definition is not an instance", definition.span)
+        val decreases = definition.decreases.getOrElse {
+          throw invalid("every mutual definition has a decreases annotation", definition.span)
+        }
+        val term = definition.body match {
+          case SA.ConstBody.TermBody(term) => term
+          case SA.ConstBody.Builtin(sp)    => throw invalid("a mutual definition is not a builtin", sp)
+        }
+        val header = elabHeader(definition.header.funcHeader, reserved)
+        header.ty match {
+          case pi: CA.Term.Pi =>
+            val (peerRefs, bodyEnv) = header.bodyEnv.bindRecursivePeers(peers)
+            val lam = elabLam(pi, bodyEnv, term, Some(globalName(name)), None, definition.span, withNames)
+            CA.MutualDef(globalName(name), lam, elabDecreaseSpec(decreases, header.bodyEnv), peerRefs, definition.span)
+          case _ => throw InvalidDecreaseSpec("decreases requires a function definition", Some(decreases.span))
+        }
+      }
+      (CA.Decl.MutualDefs(members, mutual.span), withNames)
+    } else throw invalid("a mutual block declares only inductive families or only definitions", mutual.span)
+  }
 
   private def elabCommands(commands: Vector[SA.Command], env: ResolveEnv): (Vector[CA.Decl], ResolveEnv) = {
     val decls = Vector.newBuilder[CA.Decl]
@@ -1171,6 +1233,10 @@ object Elaborator {
         val (bodyDecls, innerEnd) = elabCommands(body, innerStart)
         decls ++= bodyDecls
         curEnv = curEnv.exitScoped(innerEnd)
+      case mutual: SA.Command.Mutual =>
+        val (nextDecl, nextEnv) = elabMutual(mutual, curEnv)
+        decls += nextDecl
+        curEnv = nextEnv
     }
     (decls.result(), curEnv)
   }

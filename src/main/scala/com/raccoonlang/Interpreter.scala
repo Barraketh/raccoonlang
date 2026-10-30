@@ -190,10 +190,14 @@ object Interpreter {
       case LamBody.Core(term, coreEnv) =>
         val bodyEnv = getEnvWithArgs(lam.tpe, coreEnv, args)
 
-        // Update env with recursive reference
-        val recurEnv = term.recursiveSelf match {
+        // Update env with recursive reference; a member of a mutual block reads its block's members from the globals
+        // its environment was closed over, where the block is published.
+        val selfEnv = term.recursiveSelf match {
           case Some(ref) => bodyEnv.putLocal(ref, lam)
           case None      => bodyEnv
+        }
+        val recurEnv = term.recursivePeers.foldLeft(selfEnv) { case (env, (ref, name)) =>
+          env.putLocal(ref, coreEnv(name))
         }
         evalTerm(term.body, recurEnv)
     }
@@ -370,7 +374,19 @@ object Interpreter {
         val checkValue = VConst(name, Symbol, tyV)
         putGlobal(env, name, checkValue, isInstance)
 
-      case d: Decl.InductiveDecl => InductiveChecks.evalInductiveDecl(d, env)
+      case d: Decl.InductiveDecl => InductiveChecks.evalInductiveBlock(Vector(d), env)
+
+      case Decl.MutualInductives(families, _) => InductiveChecks.evalInductiveBlock(families, env)
+
+      // Every member is a function, so none is linear (S2). The block is published as lazy globals, each the checked
+      // lambda closed over the published environment, so that a running member finds its peers by name there.
+      case Decl.MutualDefs(members, _) =>
+        val checked = TypeChecker.checkMutualDefs(members, env)
+        lazy val values: Map[String, Value] =
+          members.zip(checked).map { case (member, (lam, vpi)) => member.name -> evalLam(lam, vpi, published) }.toMap
+        lazy val published: Env =
+          members.foldLeft(env)((cur, member) => cur.putLazyGlobal(member.name, () => values(member.name)))
+        published
 
     }
 

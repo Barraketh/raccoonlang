@@ -44,14 +44,15 @@ object ValueQuote {
             ElabAst.Let(reindex(l.localRef), l.ty.map(inlineTypeTerm), inlineTerm(l.value), l.span, l.isInstance)
           }
           ElabAst.Term.Body(nextLets, inlineTerm(res), bodySpan)
-        case ElabAst.Term.Lam(ty, body, lamSpan, name, recursiveSelf, _) =>
+        case ElabAst.Term.Lam(ty, body, lamSpan, name, recursiveSelf, _, recursivePeers) =>
           ElabAst.Term.Lam(
             inlineTypeTerm(ty).asInstanceOf[ElabAst.Term.Pi],
             inlineTerm(body),
             lamSpan,
             name,
             recursiveSelf,
-            NodeId.fresh()
+            NodeId.fresh(),
+            recursivePeers
           )
         case ElabAst.Term.Match(scrut, motive, cases, matchSpan, _) =>
           ElabAst.Term.Match(

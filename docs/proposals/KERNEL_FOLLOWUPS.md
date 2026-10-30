@@ -1,7 +1,9 @@
 # Kernel follow-ups after linear protocols
 
 **Status: 2026-10-30.** Candidate changes for review and decision. 3.5 is
-decided and implemented; the others are not implemented. They were found while
+decided and implemented. On `kernel-followups-matching`, 1.3 is confirmed, the
+bugs 1.5 and 1.6 are fixed, and 2.4 to 2.7 are implemented; each item's status
+line says how. They were found while
 implementing [linear protocols](../implemented/LINEAR_PROTOCOLS.md), porting
 Track A (`lemur-raccoon/experiments/protocols-clean`), and running the
 adversarial linearity review (`LinearEscapeTests`). Items marked *port* exist
@@ -21,11 +23,12 @@ model, and a gap it finds is the model's to close.
 | 1.3 | Applying a stuck application, or a projection of a call (fixed) | bug | new | — |
 | 1.4 | Smaller defects: an unlocated internal error, `AlreadyDefined` without a span, open shadowing | bug | new | — |
 | 1.5 | Branch fields typed at fresh parameters when an index equation is stuck (fixed) | bug | port | — |
+| 1.6 | Positive arguments of a family read its own occurrences as positive (fixed) | bug | new | — |
 | 2.1 | Structure eta (implemented) | expressiveness | port | — |
 | 2.2 | Positivity of stuck computations (implemented) | expressiveness | port | 18 |
 | 2.3 | Bundled protocol families (implemented) | expressiveness | follows | — |
-| 2.4 | Structural recursion on indexed families with variable indices | expressiveness | new | 16 |
-| 2.5 | Mutual inductives and mutual recursion | expressiveness | port | — |
+| 2.4 | Structural recursion on indexed families with variable indices (implemented) | expressiveness | new | 16 |
+| 2.5 | Mutual inductives and mutual recursion (implemented) | expressiveness | port | — |
 | 2.6 | Wildcard case (implemented) | expressiveness | port | — |
 | 2.7 | Match equations (implemented) | expressiveness | port | — |
 | 2.8 | Partial application and lambdas in types | expressiveness | new | 3 |
@@ -140,6 +143,20 @@ unknowns of the constructor's side. A witness whose type is narrower than its pa
 `A: Univ($k, $u)`, is related by the refinement, as an index is. The ledger and the read rules are unaffected: the
 fields are the same locals, tracked by the same types, now at the scrutinee's parameters.
 
+### 1.6 Positive arguments read a family's own occurrences as positive
+
+**Fixed 2026-10-30** with mutual families (2.5; `docs/kernel.md`, "Mutual blocks"; `MutualTests`).
+
+**Problem.** A family's positive arguments, those that may hold a nested occurrence of a later family, were computed in
+one pass over its constructors, reading the family's own occurrences by its provisional metadata, in which every
+argument is positive. So `inductive F (A: Type)(B: Type) | leaf | mk (f: (a: A) -> Nat)(x: F(B, A))` had `B`
+positive, although it reaches `F`'s negative first argument, and `inductive H | mk (h: F(Nat, H))` was accepted with
+`H` in a negative position. Found while porting the mutual families' positivity, which `main-new` computes as a fixed
+point.
+
+**Fix.** The positive arguments are the greatest fixed point over the block, a single family being a block of one,
+starting from what the headers allow.
+
 ## 2 Expressiveness gaps that force encodings
 
 ### 2.1 Structure eta (*port*)
@@ -221,6 +238,15 @@ item.
 
 ### 2.4 Structural recursion on indexed families with variable indices (open question 16)
 
+**Implemented 2026-10-30** (`docs/kernel.md`, "Refinement outcomes"; `ProtocolTypesTests`). The unification that links
+a variable scrutinee to the matched constructor refines the variables of the scrutinee's type too, exactly the set the
+result refinement may refine, so a variable index is solved and the scrutinee linked in one step. The full suite and
+the refinement tests pass unchanged. The proof-root link stays separate: unification compares proofs by their
+propositions and never links one, and a Prop family's instances do not unify structurally, so a proof scrutinee still
+takes the result refinement and its explicit link, made only where that refinement succeeds. `lib/Protocol`'s
+`Toks.append` now recurses on the packet; `Toks.split`, whose packet is at the computed index `List.append(A, B)`,
+still recurses on `A`.
+
 **Problem.** `decreases structural(v)` on an indexed data or linear family
 fails with `NonDecreasingRecursiveCall` whenever the index is a variable,
 whether it is a captured index or an explicit parameter. Linear packets are
@@ -243,6 +269,15 @@ proof-root linking, which could then become the same link.
 **Evidence.** `ProtocolTypesTests` pins the failing and the working form.
 
 ### 2.5 Mutual inductives and mutual recursion (*port*)
+
+**Implemented 2026-10-30** (`docs/kernel.md`, "Mutual blocks"; `MutualTests`): `mutual { … }` of only families or only
+definitions, checked and published as a block. Families are checked each against its own declared universe (L1, L2,
+the size rule), with strict positivity in every family of the block and positive arguments as a fixed point over it
+(which fixed 1.6). Definitions call their peers through raw calls that compare the callee's metric at the call with
+the caller's own; the ledger and the read rules are those of any application. Two departures from `main-new`, neither
+needed for soundness: the families need not share a parameter telescope, since `main-clean` already lets a recursive
+occurrence stand at other parameters (L9), and a block may mix `measure` with one-component metrics, since every
+component is ordered by one well-founded order on all values.
 
 **Proposal.** Already planned. `main-new` has mutual families; its nominal
 size rule charges "each mutual family's own grade". For linear families,

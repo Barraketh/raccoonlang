@@ -321,7 +321,7 @@ object Ledger {
           .map(b => binderType(b.ty))
           .collectFirst { case Some(span) => span }
           .orElse(firstReference(id, out))
-      case EA.Term.Lam(ty, body, _, _, _, _) => firstReference(id, ty).orElse(firstReference(id, body))
+      case EA.Term.Lam(ty, body, _, _, _, _, _) => firstReference(id, ty).orElse(firstReference(id, body))
     }
   }
 }

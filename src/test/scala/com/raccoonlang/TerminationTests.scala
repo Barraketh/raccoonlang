@@ -607,4 +607,62 @@ class TerminationTests extends munit.FunSuite {
 
     typeError[CannotQuoteValue](p)
   }
+
+  // KERNEL_FOLLOWUPS 2.4: at a variable index, captured or a parameter, matching refines the index and links the
+  // scrutinee to its constructor, whose fields are then structural subterms of it.
+  private val vec =
+    """
+      |inductive Vec (A: Type) indices (n: Nat) : Type
+      | | nil {A: Type} : Vec(A, Nat.zero)
+      | | cons {A: Type} (m: Nat)(tail: Vec(A, m)) (head: A) : Vec(A, Nat.succ(m))
+      |""".stripMargin
+
+  test("structural recursion on an indexed family at a variable index") {
+    val p =
+      vec +
+        """
+          |def len (A: Type)(n: Nat)(v: Vec(A, n)): Nat decreases structural(v) := {
+          |  match v returning Nat with
+          |  | Vec.nil => Nat.zero
+          |  | Vec.cons m tail head => Nat.succ(len(A, m, tail))
+          |}
+          |
+          |def lenCaptured (v: Vec($A, $n)): Nat decreases structural(v) := {
+          |  match v returning Nat with
+          |  | Vec.nil => Nat.zero
+          |  | Vec.cons m tail head => Nat.succ(lenCaptured(tail))
+          |}
+          |
+          |{
+          |  lenCaptured(Vec.cons(Nat, Nat.succ(Nat.zero), Vec.cons(Nat, Nat.zero, Vec.nil(Nat), Nat.zero), Nat.zero))
+          |}
+          |""".stripMargin
+    assertEquals(runProgram(p).map(toShape), Some(succS(succS(zeroS))))
+    typeError[NonDecreasingRecursiveCall](
+      vec +
+        """
+          |def loop (A: Type)(n: Nat)(v: Vec(A, n)): Nat decreases structural(v) := {
+          |  match v returning Nat with
+          |  | Vec.nil => Nat.zero
+          |  | Vec.cons m tail head => loop(A, Nat.succ(m), Vec.cons(A, m, tail, head))
+          |}
+          |""".stripMargin
+    )
+  }
+
+  test("at a variable index, a nested match on the linked scrutinee sees its constructor") {
+    runProgram(
+      vec +
+        """
+          |def again (A: Type)(k: Nat)(v: Vec(A, k)): Nat := {
+          |  match v returning Nat with
+          |  | Vec.nil => Nat.zero
+          |  | Vec.cons m tail head => {
+          |    match v returning Nat with
+          |    | Vec.cons m2 tail2 head2 => (fun (e: Eq(Vec(A, m), tail2, tail)): Nat => m)(Eq.refl(tail))
+          |  }
+          |}
+          |""".stripMargin
+    )
+  }
 }

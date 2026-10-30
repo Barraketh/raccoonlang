@@ -41,7 +41,8 @@ object LanguageParser {
     "lexicographic",
     "measure",
     "indices",
-    "in"
+    "in",
+    "mutual"
   )
 
   private val identAtom =
@@ -404,7 +405,14 @@ object LanguageParser {
       .flatSpanned(sourceId)
       .map { case (h, cs, sp) => InductiveDecl(h, cs, sp) }
 
-  private def commandP(implicit sourceId: Option[SourceId]): Parser[Command] = declP | namespaceP | openP | blockP
+  private def commandP(implicit sourceId: Option[SourceId]): Parser[Command] =
+    declP | namespaceP | openP | mutualP | blockP
+
+  /** `mutual { declarations }`: only declarations, which the elaborator requires to be all families or all defs. */
+  private def mutualP(implicit sourceId: Option[SourceId]): Parser[Mutual] =
+    (kw("mutual") ~/ sym('{') ~/ skipAllWs ~ declP.rep(0, lineSep.rep(1)) ~ skipAllWs ~ symTight('}'))
+      .flatSpanned(sourceId)
+      .map(Mutual.tupled)
 
   private def commandsP(implicit sourceId: Option[SourceId]): Parser[Vector[Command]] =
     skipAllWs ~ commandP.rep(0, lineSep.rep(1)) ~ skipAllWs

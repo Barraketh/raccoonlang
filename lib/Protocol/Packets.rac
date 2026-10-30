@@ -3,24 +3,18 @@ import Protocol.Laws
 // Packet operations over the kernel's `Protocol.Toks`: concatenation, splitting, reordering, a framed step, and
 // token-first wrappers that return a packet together with a fact about it.
 //
-// Every function recurses structurally on its unrestricted index list and matches the packet in each branch: matching
-// a packet refines its index but does not link the packet to the constructor, so structural recursion on the packet
-// itself is rejected (docs/implemented/LINEAR_PROTOCOLS.md, open question 16). A `List.Perm` proof cannot be
-// eliminated into a linear result, so packets reorder by these functions; each reordering's permutation lemma carries
-// validity along.
+// A function whose packet is at a variable index recurses structurally on the packet, whose match refines the index
+// and links the packet to its constructor. One whose packet is at a computed index, such as `split`'s
+// `List.append(A, B)`, recurses on the unrestricted list that the index is computed from, matching the packet in each
+// branch, where the list's constructor makes the index known. A `List.Perm` proof cannot be eliminated into a linear
+// result, so packets reorder by these functions; each reordering's permutation lemma carries validity along.
 namespace Protocol {
   namespace Toks {
     def append (P: Proto)(init: List(P.Atom))(s: Inst(P, init))(A: List(P.Atom))(B: List(P.Atom))
-        (left: Toks(P, init, s, A))(right: Toks(P, init, s, B)): Toks(P, init, s, List.append(A, B)) decreases structural(A) := {
-      match A with
-      | List.nil => {
-        match left with
-        | Toks.nil => right
-      }
-      | List.cons a rest => {
-        match left with
-        | Toks.cons b t C more => Toks.cons(P, init, s, a, t, List.append(rest, B), Toks.append(P, init, s, rest, B, more, right))
-      }
+        (left: Toks(P, init, s, A))(right: Toks(P, init, s, B)): Toks(P, init, s, List.append(A, B)) decreases structural(left) := {
+      match left with
+      | Toks.nil => right
+      | Toks.cons a t C more => Toks.cons(P, init, s, a, t, List.append(C, B), Toks.append(P, init, s, C, B, more, right))
     }
 
     def split (P: Proto)(init: List(P.Atom))(s: Inst(P, init))(A: List(P.Atom))(B: List(P.Atom))

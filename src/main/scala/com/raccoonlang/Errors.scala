@@ -20,6 +20,7 @@ object TypeError {
     case e: UnreachableCase                 => e.copy(span = Some(sp))
     case e: MissingCase                     => e.copy(span = Some(sp))
     case e: RedundantCase                   => e.copy(span = Some(sp))
+    case e: InvalidMutualBlock              => e.copy(span = Some(sp))
     case e: MatchEquationUnavailable        => e.copy(span = Some(sp))
     case e: MatchEquationIndexed            => e.copy(span = Some(sp))
     case e: NotAType                        => e.copy(span = Some(sp))
@@ -134,6 +135,11 @@ final case class MatchEquationUnavailable(reason: String, span: Option[Span] = N
 final case class MatchEquationIndexed(ctor: String, span: Option[Span] = None) extends TypeError {
   override def msg: String =
     s"The equation of the case $ctor relates values of different types: its refinement does not equate the constructor's indices with the scrutinee's"
+}
+
+/** A `mutual` block that is empty, mixes families with definitions, or has a member it cannot hold. */
+final case class InvalidMutualBlock(reason: String, span: Option[Span] = None) extends TypeError {
+  override def msg: String = s"Invalid mutual block: $reason"
 }
 
 /** A wildcard case that stands for no constructor: the other cases name every reachable one. */

@@ -186,6 +186,18 @@ parameters. A witness whose type is narrower than its parameter's, such as
 refinement relates it as it relates an index, so `k := Kind.copy` in that
 branch.
 
+A scrutinee that is a variable, the root, is unified with the constructor
+applied to the branch's fields, which links the root to that value once their
+types unify. That type unification refines the variables of the scrutinee's
+type, its indices included, as the refinement of the constructor's result
+does, so at a variable index, such as `v: Vec(A, n)` or a packet
+`Toks(P, init, s, A)`, the index is solved and the root linked in one step. In
+the branch the root's value is the constructor value, as a nested match on it
+sees, and termination checking reads it: a field is a structural subterm of the
+root at a variable index as at a known one. A proof root is linked explicitly
+instead ([recursion on proofs](#recursion-on-proofs)), and any other scrutinee
+is related by the result refinement alone.
+
 After structural comparison and variable refinement, an exhaustive classifier
 identifies data constructor values, fully applied Type-family instances,
 Type-valued function types, and Type universes as rigid forms. Different
@@ -218,7 +230,8 @@ Dependent function domains and results are evaluated under fresh typed binders.
 A universe used as a function domain costs its successor classifier level;
 a universe used as an argument type or function codomain costs its own level.
 The resulting bound must be at most the family's declared level for every
-valuation of symbolic level variables.
+valuation of symbolic level variables. Each family of a [mutual
+block](#mutual-blocks) is bounded by its own declared level.
 
 Thus `List(A: Type): Type` and a family with arguments `A: Type` and
 `B: A -> Type` can remain in `Type`. A record is charged by its fields, since
@@ -433,6 +446,58 @@ proposition, but the link is the proof's value in the branch, as for a refined
 data variable: a nested match on the same variable sees a known constructor, so
 its other cases are `UnreachableCase`.
 
+## Mutual blocks
+
+`mutual { … }` declares inductive families only, or recursive definitions only,
+that may refer to each other. A block is checked as a whole and published only
+once every member has checked, each under its full name.
+
+**Families.** Each family's header, its parameters, indices and universe, is
+checked where no family of the block exists yet, so it names none. Its
+constructors are checked with every family's provisional head, see no
+constructor, and return their own family at its own parameters (uniformity);
+the families need not share parameters. Each family is checked against its own
+declared universe: its fields' kinds and levels (L1), its arguments (L2) and
+their sizes ([family argument size](#family-argument-size)) are its own, and a
+sibling's field is read by the sibling's declared universe at its arguments,
+so a copyable family holds no field of a linear sibling, while a linear one may
+hold a copyable sibling. Strict positivity is in every family of the block: an
+occurrence of a sibling is positive where one of the family itself would be,
+and no family of the block occurs in the arguments of one. A field is
+recursive when it mentions any family of the block, which decides each
+family's list shape and structure eta. Each family has its own constructors,
+which its matches cover.
+
+A family's *positive arguments*, those that may hold a nested occurrence of a
+family declared later, are the greatest fixed point over its block: an argument
+is positive when its header allows it and it occurs positively in every
+constructor's fields, each family of the block read by the assignment being
+computed. A single family is a block of one. Reading the block's own
+occurrences as positive in every argument would accept `F (A)(B)` with fields
+`(a: A) -> Nat` and `F(B, A)` as positive in `B`, which reaches the negative
+position of `A`, and so a negative `H` through `F(Nat, H)`.
+
+**Definitions.** Each member is a function definition with a `decreases`
+clause and a term body; none is an instance or a builtin. Its type is checked
+first, where no member exists yet, so it names none. Then each body is checked
+with every member bound, after its parameters, to the raw call from it to that
+member, which only an application head may name. A call decreases when the
+callee's metric at its arguments is lexicographically smaller than the
+caller's at its own arguments, read through the caller's branch refinement,
+each component by the structural subterm order on data or the field order on
+proofs ([recursion on proofs](#recursion-on-proofs)). So all members' metrics
+have one length: a `structural` or `lexicographic` clause has a component for
+each parameter it names, and a `measure` is one component. Each component's
+order is one well-founded order on all values, so every chain of calls through
+the block descends. Once checked, the members are published together, each
+closed over the published block, where a running member finds each peer by its
+name.
+
+A call to a member is an application, so the ledger and the read rules are
+those of any lambda: it uses its linear arguments once, or only reads them in
+a read extent, where its linear inputs keep separation. Mutual families and
+definitions follow L1 to L9 as single ones do.
+
 ## Axioms
 
 Any module may declare an `axiom`. Its type is checked; its consistency is the
@@ -517,15 +582,13 @@ a field type, structure eta was missing, and the size rule charged a `Proto`
 its whole `Sort(Level.one)`. Declaration-time positivity, structure eta and the
 refined size rule removed all three.
 
-Structural recursion on a packet whose index is a variable, such as
-`decreases structural(left)` for `left: Toks(P, init, s, A)`, is
-`NonDecreasingRecursiveCall`, as for every indexed data or linear family:
-matching the packet refines its index variable but does not link the packet to
-the constructor, which is what the termination checker reads. An indexed Prop
-family is not affected, since a proof scrutinee is linked explicitly (see
-[recursion on proofs](#recursion-on-proofs)). A packet function recurses
-structurally on its unrestricted index list instead, matching the packet in
-each branch, or decreases by `measure(List.length(A))`.
+A packet function whose packet is at a variable index recurses structurally
+on the packet, `decreases structural(left)` for `left: Toks(P, init, s, A)`:
+matching the packet refines its index and links the packet to its constructor
+(see [refinement outcomes](#refinement-outcomes)). One whose packet is at a
+computed index, such as `List.append(A, B)`, recurses on the unrestricted list
+that the index is computed from, matching the packet in each branch, where that
+list's constructor makes the index known.
 
 The kernel evaluates in two stages. `Kernel.coreEnv` holds `Sort`, `Lin`,
 `Bool`, `Nat`, `List`, `Char` and `String` with their natives; `Kernel.env` evaluates
@@ -618,7 +681,8 @@ are ordinary checked definitions; like every protocol theorem, they are trustwor
   consumes a pair of packets and drops the other one (L5), so the library destructures them.
 - **Protocols.** The laws take a protocol `P: Proto`, as the kernel families do; `Protocol.Rel(Atom)` abbreviates a step
   relation's type, and a concrete protocol is `Proto.mk(Atom, Step)`.
-- **Packets** recurse structurally on their unrestricted index list and match the packet in each branch (see above).
+- **Packets** recurse structurally on the packet at a variable index, and otherwise on the unrestricted list their
+  index is computed from, matching the packet in each branch (see above).
   A `List.Perm` proof cannot be eliminated into a linear result, so packets reorder by `exchange` and `swap`, each with
   the permutation lemma that carries validity along.
 - **Name resolution.** Members of the enclosing namespaces resolve before opened aliases (see

@@ -5,7 +5,9 @@ import com.raccoonlang.telescope.BinderOps
 import com.raccoonlang.{CoreAst => CA}
 
 /**
- * Termination checking uses a temporary raw-recursive value installed as a local while checking the body.
+ * Termination checking uses a temporary raw-recursive value installed as a local while checking the body: for a
+ * recursive definition its own self, and for a member of a mutual block one per member of the block, itself included.
+ * Each checks, at a call, that the callee's metric at the call's arguments is smaller than the caller's at its own.
  *
  * A function whose result is a proposition may also decrease a proof. Its calls are compared by identity, never by
  * conversion: proof irrelevance makes every proof of a proposition convertible with every other, so conversion would
@@ -13,7 +15,26 @@ import com.raccoonlang.{CoreAst => CA}
  * a proof variable to the constructor value the branch matched, when that refinement succeeds.
  */
 object TerminationChecker {
-  def rawRecursiveSelf(name: String, vpi: VPi, spec: CA.DecreaseSpec, bodyEnv: Env): VLam = {
+
+  /**
+   * A recursive function's metric: a tuple of components, ordered lexicographically, each by the structural subterm
+   * order on data or the proof field order on proofs (docs/kernel.md, "Recursion on proofs"). `current` reads the
+   * components at the function's own arguments in a caller's environment, refined in the branch the call is in, and
+   * `atCall` computes them at a call's arguments. A `structural` or `lexicographic` clause names parameters, whose
+   * values are its components; a `measure` is one component, its term evaluated again at each call, which reads its
+   * arguments and consumes nothing (L6).
+   */
+  private[raccoonlang] final class Metric(
+      val name: String,
+      val vpi: VPi,
+      val span: Span,
+      val componentNames: Vector[String],
+      val current: Env => Vector[Value],
+      val atCall: Vector[Value] => Vector[Value]
+  )
+
+  /** `spec`, checked as the metric of the function `name` of type `vpi`, whose parameters `bodyEnv` binds. */
+  private[raccoonlang] def metric(name: String, vpi: VPi, spec: CA.DecreaseSpec, bodyEnv: Env): Metric = {
     val provesProposition = vpi.tpe == PropTpe
 
     /** A metric must have an inductive type; a proof is `InvalidDecreaseSpec` for `proofRejection`, if one is given. */
@@ -25,7 +46,7 @@ object TerminationChecker {
       }
     }
 
-    val checkDecrease: (Vector[Value], Env) => Unit = spec match {
+    spec match {
       case CA.DecreaseSpec.Lexicographic(args, sp) =>
         if (args.isEmpty) throw InvalidDecreaseSpec("lexicographic decreases needs at least one argument", Some(sp))
         if (args.distinct.length != args.length)
@@ -36,35 +57,19 @@ object TerminationChecker {
             throw InvalidDecreaseSpec(s"${ref.name} is not a function parameter", Some(sp))
           }
         }
-        val metrics = args.map(ref => bodyEnv(ref))
         val proofRejection =
           Option.unless(provesProposition)(
             "decrease metrics in Prop are allowed only for functions returning a proposition"
           )
-        metrics.foreach(requireInductiveMetric(_, sp, proofRejection))
-        // Each component's order: proofs by identity, data by conversion.
-        val components = args.zip(indices).zip(metrics).map { case ((ref, idx), metric) =>
-          val (smaller, same): ((Value, Value) => Boolean, (Value, Value) => Boolean) =
-            if (isProof(metric)) (isStrictSubproof, (candidate, root) => candidate.key == root.key)
-            else (isStrictSubterm, ValueEquivalence.defEq)
-          (ref, idx, smaller, same)
-        }
-
-        (callArgs, nativeEnv) => {
-          val decreasedAt = components.find { case (ref, idx, smaller, same) =>
-            val root = nativeEnv.apply(ref)
-            val candidate = callArgs(idx)
-            if (smaller(candidate, root)) true
-            else if (same(candidate, root)) false
-            else
-              throw NonDecreasingRecursiveCall(
-                name,
-                s"${vpi.binders(idx).name} is neither equal to nor smaller than the current argument",
-                None
-              )
-          }
-          if (decreasedAt.isEmpty) throw NonDecreasingRecursiveCall(name, "no lexicographic component decreases", None)
-        }
+        args.foreach(ref => requireInductiveMetric(bodyEnv(ref), sp, proofRejection))
+        new Metric(
+          name,
+          vpi,
+          sp,
+          indices.map(idx => vpi.binders(idx).name),
+          env => args.map(ref => env(ref)),
+          callArgs => indices.map(callArgs)
+        )
 
       case CA.DecreaseSpec.Measure(term, sp) =>
         val initialMeasure = TypeChecker.checkTerm(term, bodyEnv)
@@ -74,29 +79,81 @@ object TerminationChecker {
         val proofRejection = "decrease measures must live in Type; proofs in Prop cannot be used"
         requireInductiveMetric(initialMeasure.value, sp, Some(proofRejection))
         val quoted = initialMeasure.residual
-        (args, nativeEnv) => {
-          val currentMeasure = Interpreter.evalTerm(quoted, nativeEnv)
-          val callEnv = BinderOps.instantiateFull(vpi.binders, vpi.env, args)
-          val candidate = Interpreter.evalTerm(quoted, callEnv)
-          if (!isStrictSubterm(candidate, currentMeasure))
-            throw NonDecreasingRecursiveCall(name, "measure does not structurally decrease", None)
-        }
+        new Metric(
+          name,
+          vpi,
+          sp,
+          Vector("the measure"),
+          env => Vector(Interpreter.evalTerm(quoted, env)),
+          callArgs => Vector(Interpreter.evalTerm(quoted, BinderOps.instantiateFull(vpi.binders, vpi.env, callArgs)))
+        )
+    }
+  }
+
+  /**
+   * The members of a mutual block compare their metrics component by component, so all have the same number of
+   * components; that is all the block needs, since every component's order is one well-founded order on all values.
+   */
+  private[raccoonlang] def requireCompatible(metrics: Vector[Metric]): Unit =
+    metrics.headOption.foreach { first =>
+      metrics.find(_.componentNames.length != first.componentNames.length).foreach { other =>
+        throw InvalidDecreaseSpec(
+          s"the members of a mutual block decrease metrics of one length: ${first.name} has " +
+            s"${first.componentNames.length} components and ${other.name} ${other.componentNames.length}",
+          Some(other.span)
+        )
+      }
     }
 
+  /**
+   * The raw value a call from `caller` to `callee` runs while `caller` 's body is checked: it checks that the call
+   * decreases and is otherwise a stuck application of `callee`, which only an application head may reference
+   * (`LocalResidualPolicy.AppHeadOnly`). Each component's order is the one its current value takes: proofs by key, data
+   * by conversion and structural descent. `callerBodyEnv` binds the caller's parameters; branch refinement materializes
+   * it, so `current` reads the caller's arguments as the branch refined them.
+   */
+  private[raccoonlang] def rawRecursiveCall(callee: Metric, caller: Metric, callerBodyEnv: Env): VLam = {
+    def checkDecrease(callArgs: Vector[Value], nativeEnv: Env): Unit = {
+      val candidates = callee.atCall(callArgs)
+      val roots = caller.current(nativeEnv)
+      val decreasedAt = candidates.zip(roots).zip(callee.componentNames).find { case ((candidate, root), component) =>
+        val (smaller, same) =
+          if (isProof(root)) (isStrictSubproof(candidate, root), candidate.key == root.key)
+          else (isStrictSubterm(candidate, root), ValueEquivalence.defEq(candidate, root))
+        if (smaller) true
+        else if (same) false
+        else
+          throw NonDecreasingRecursiveCall(
+            callee.name,
+            s"$component is neither equal to nor smaller than the current argument",
+            None
+          )
+      }
+      if (decreasedAt.isEmpty)
+        throw NonDecreasingRecursiveCall(callee.name, "no lexicographic component decreases", None)
+    }
+
+    val vpi = callee.vpi
     VLam(
       vpi,
-      ValueId.Const(name),
+      ValueId.Const(callee.name),
       LamBody.Native(
         (args, nativeEnv) => {
           checkDecrease(args, nativeEnv)
           val envWithArgs = BinderOps.instantiateFull(vpi.binders, vpi.env, args)
           val resultTy = vpi.codomain(envWithArgs)
-          VApp(VConst(name, Symbol, vpi), args, resultTy)
+          VApp(VConst(callee.name, Symbol, vpi), args, resultTy)
         },
-        bodyEnv,
+        callerBodyEnv,
         isRawRecursive = true
       )
     )
+  }
+
+  /** A recursive definition's raw self: the call from it to itself. */
+  def rawRecursiveSelf(name: String, vpi: VPi, spec: CA.DecreaseSpec, bodyEnv: Env): VLam = {
+    val own = metric(name, vpi, spec, bodyEnv)
+    rawRecursiveCall(own, own, bodyEnv)
   }
 
   private def isStrictSubterm(candidate: Value, root: Value): Boolean =

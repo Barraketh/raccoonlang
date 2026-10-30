@@ -120,7 +120,7 @@ object TypeChecker {
             loop(l.value, appHead = false)
           }
           loop(res, appHead = false)
-        case EA.Term.Lam(_, _, _, _, _, _) =>
+        case _: EA.Term.Lam =>
         case EA.Term.Match(scrut, motive, cases, _, _) =>
           loop(scrut, appHead = false)
           motive.foreach(loop(_, appHead = false))
@@ -326,6 +326,48 @@ object TypeChecker {
         case None => bodyEnv
       }
 
+    val checkedLam = checkLamBody(l, checkedVpi, recurEnv, Vector.empty)
+    val capturedIndexes = CapturedIndexes.getCapturedIndexes(checkedLam, env)
+    rejectLinearCaptures(checkedLam, capturedIndexes, env)
+    val value = Interpreter.evalLam(checkedLam, vpi, env, capturedIndexes)
+    // A function value uses nothing of its context (F5), and its body is its own extent, whose violations the ledger
+    // has reported.
+    CheckedTerm(value, checkedLam, LinearInfo.empty)
+  }
+
+  /**
+   * The members of a mutual block of definitions (docs/kernel.md, "Mutual blocks"), checked in `env`, which holds none
+   * of them: each one's type, then each body with every member bound at its peer slots to the raw call from it to that
+   * member, which checks that the call decreases from its own metric (`TerminationChecker.rawRecursiveCall`). Returns
+   * each member's checked lambda and type; `Interpreter` publishes them together.
+   */
+  private[raccoonlang] def checkMutualDefs(members: Vector[CA.MutualDef], env: Env): Vector[(EA.Term.Lam, VPi)] = {
+    val headers = members.map { member =>
+      val checkedVpi = checkPi(member.lam.ty, env)
+      (member, checkedVpi, TerminationChecker.metric(member.name, checkedVpi.vpi, member.decreases, checkedVpi.bodyEnv))
+    }
+    TerminationChecker.requireCompatible(headers.map(_._3))
+    val names = members.map(_.name)
+    headers.map { case (member, checkedVpi, callerMetric) =>
+      val recurEnv =
+        member.peers.zip(headers).foldLeft(checkedVpi.bodyEnv) { case (current, (ref, (callee, _, calleeMetric))) =>
+          val raw = TerminationChecker.rawRecursiveCall(calleeMetric, callerMetric, checkedVpi.bodyEnv)
+          current.putLocal(ref, raw, residualPolicy = LocalResidualPolicy.AppHeadOnly(callee.name))
+        }
+      (checkLamBody(member.lam, checkedVpi, recurEnv, member.peers.zip(names)), checkedVpi.vpi)
+    }
+  }
+
+  /**
+   * A lambda's body, checked in `recurEnv`, its parameters' environment with its recursive slots bound, and the checked
+   * lambda, whose `recursivePeers` are given for a member of a mutual block.
+   */
+  private def checkLamBody(
+      l: CA.Term.Lam,
+      checkedVpi: CheckedPi,
+      recurEnv: Env,
+      recursivePeers: Vector[(CA.LocalRef, String)]
+  ): EA.Term.Lam = {
     val checkedBody = checkTermAgainst(
       l.body,
       recurEnv,
@@ -337,21 +379,15 @@ object TypeChecker {
     // codomain may read it (F3); the ledger does not count reads.
     val bodyIsRead = Linearity.role(checkedBody.value) == Linearity.Role.TypeOrProof
     checkedVpi.residual.binders.foreach(binder => Ledger.bind(binder.localRef, checkedBody.lin.uses, bodyIsRead))
-    val checkedLam =
-      EA.Term.Lam(
-        checkedVpi.residual,
-        checkedBody.residual,
-        l.span,
-        l.name,
-        l.recursion.map(_.selfRef),
-        l.nodeId
-      )
-    val capturedIndexes = CapturedIndexes.getCapturedIndexes(checkedLam, env)
-    rejectLinearCaptures(checkedLam, capturedIndexes, env)
-    val value = Interpreter.evalLam(checkedLam, vpi, env, capturedIndexes)
-    // A function value uses nothing of its context (F5), and its body is its own extent, whose violations the ledger
-    // has reported.
-    CheckedTerm(value, checkedLam, LinearInfo.empty)
+    EA.Term.Lam(
+      checkedVpi.residual,
+      checkedBody.residual,
+      l.span,
+      l.name,
+      l.recursion.map(_.selfRef),
+      l.nodeId,
+      recursivePeers
+    )
   }
 
   /**

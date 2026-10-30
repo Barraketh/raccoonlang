@@ -222,6 +222,12 @@ object SurfaceAst {
 
     case class Block(body: Vector[Command], span: Span) extends Command
 
+    /**
+     * `mutual { declarations }`: inductive families, or recursive definitions, that may refer to each other, checked
+     * and published together (docs/kernel.md, "Mutual blocks").
+     */
+    case class Mutual(body: Vector[Decl], span: Span) extends Command
+
     sealed trait AliasRule
     object AliasRule {
       case object Wildcard extends AliasRule

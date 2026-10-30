@@ -156,6 +156,7 @@ object ModuleLoader {
       case SA.Command.Namespace(_, _, span) => span
       case SA.Command.Open(_, _, _, span)   => span
       case SA.Command.Block(_, span)        => span
+      case SA.Command.Mutual(_, span)       => span
     }
 
   private def declSpan(decl: SA.Command.Decl): Span =

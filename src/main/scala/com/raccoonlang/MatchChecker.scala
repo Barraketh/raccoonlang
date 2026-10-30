@@ -78,8 +78,13 @@ object MatchChecker {
   }
 
   /**
-   * The caller has identified the scrutinee's saturated inductive family. Only whole-scrutinee variables grant value
-   * refinement; constructor result indices are checked separately. Stuck equations retain a reachable branch.
+   * The caller has identified the scrutinee's saturated inductive family. A scrutinee that is a variable, the root, is
+   * unified with the constructor value, which links it once their types unify: that type unification refines the
+   * variables of the scrutinee's type, its indices included, exactly as the result refinement does, so a variable index
+   * is solved and the root linked in one step. Termination checking reads the link: a field of the constructor value is
+   * then a structural subterm of the root, at a variable index as at a known one. Any other scrutinee is related by the
+   * result refinement alone, of the constructor's result indices with the scrutinee type's. Stuck equations retain a
+   * reachable branch.
    *
    * A proof variable converts with every constructor value of its proposition, so unification succeeds without linking
    * it. A branch whose refinement succeeds links it explicitly to the constructor value it matched, whose type that
@@ -115,16 +120,15 @@ object MatchChecker {
         case h: ConstructorHead =>
           val FreshCtor(fieldArgs, _, resultTy) = freshCtor(h, family)
           val ctorValue = ConstructorValue(h, fieldArgs, resultTy)
-          // The constructor value's own unknowns: its fields and the captures its parameters do not determine. What it
-          // shares with the scrutinee type is the scrutinee's parameters, which only the result refinement may refine.
-          val ctorRefinable = ctorValue.synDeps -- scrutTpe.synDeps
-          val valueRefinable = rootRefinable ++ ctorRefinable
-          val typeRefinable = scrutTpe.synDeps ++ ctorRefinable
+          // Both refinements may refine the scrutinee type's variables and the constructor value's own unknowns, its
+          // fields and the captures its parameters do not determine; it shares only the scrutinee's parameters with the
+          // scrutinee type.
+          val refinable = scrutTpe.synDeps ++ ctorValue.synDeps
 
-          val valueRefinement = tryUnify(scrut, ctorValue, valueRefinable)
+          val valueRefinement = tryUnify(scrut, ctorValue, rootRefinable ++ refinable)
           val refinement = valueRefinement match {
             case Left(_: Stuck) =>
-              refineConstructorResult(resultTy, scrutTpe, EqStore.empty.allow(typeRefinable))
+              refineConstructorResult(resultTy, scrutTpe, EqStore.empty.allow(refinable))
             case other => other
           }
           val branchStore = refinement match {
@@ -312,8 +316,8 @@ object MatchChecker {
     }
 
     /**
-     * What the case `br` binds its equation to, when the match names one: a hypothesis of `Eq(T, e, C(fields))`, at
-     * the scrutinee's value `branchScrut` and its type in the case, and `constructed`, the constructor applied to the
+     * What the case `br` binds its equation to, when the match names one: a hypothesis of `Eq(T, e, C(fields))`, at the
+     * scrutinee's value `branchScrut` and its type in the case, and `constructed`, the constructor applied to the
      * case's fields at its own result type. In an indexed family the two need the case's refinement to share a type;
      * when it left them apart the equation is `MatchEquationIndexed`.
      */

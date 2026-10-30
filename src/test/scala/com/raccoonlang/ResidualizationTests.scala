@@ -43,7 +43,7 @@ class ResidualizationTests extends munit.FunSuite {
       case EA.Term.Body(lets, res, _) =>
         lets.exists(l => l.ty.exists(ty => containsGlobal(ty, name)) || containsGlobal(l.value, name)) ||
         containsGlobal(res, name)
-      case EA.Term.Lam(ty, body, _, _, _, _) =>
+      case EA.Term.Lam(ty, body, _, _, _, _, _) =>
         containsGlobal(ty, name) ||
         containsGlobal(body, name)
       case EA.Term.Match(scrut, motive, cases, _, _) =>
@@ -141,7 +141,7 @@ class ResidualizationTests extends munit.FunSuite {
         |""".stripMargin
 
     resultTerm(checkBody(p).term) match {
-      case EA.Term.Lam(_, body, _, _, _, _) =>
+      case EA.Term.Lam(_, body, _, _, _, _, _) =>
         assert(containsGlobal(body, "id"))
         assert(containsGlobal(body, "Nat.zero"))
       case other => fail(s"Expected literal lambda body, got $other")
