@@ -958,8 +958,12 @@ class SuspensionAttackTests extends munit.FunSuite {
   // 8. The other ports: tail loops, memoized materialization and EvaluationTooDeep, meeting suspended proofs.
   // ------------------------------------------------------------------------------------------------------------------
 
-  /** A tail loop of `n` steps whose accumulator holds a proof built from the previous one's, through data. */
-  private def chain(n: Int): String =
+  /**
+   * A tail loop of `n` steps whose accumulator holds a proof built from the previous one's, through data, and `t`, a
+   * match on the last one into a proposition, or with `demand` a large elimination of it.
+   */
+  private def chain(n: Int, demand: Boolean = false): String = {
+    val (motive, result) = if (demand) ("Nat", "0") else ("True", "a")
     s"""
        |def step (h: And(True, True)) : And(True, True) := {
        |  match h returning And(True, True) with
@@ -979,23 +983,32 @@ class SuspensionAttackTests extends munit.FunSuite {
        |
        |def chain : Fact(And(True, True)) := go($n, Fact.mk(And.intro(True, True, True.intro, True.intro)))
        |
-       |def t : True := {
-       |  match unfactAnd(chain) returning True with
-       |  | And.intro a b => a
+       |def t : $motive := {
+       |  match unfactAnd(chain) returning $motive with
+       |  | And.intro a b => $result
        |}
        |""".stripMargin
-
-  test("port-1 CONTROL a tail loop accumulates suspended proofs, and a match demands the last one") {
-    onSmallStack(accepts(chain(1000)))
   }
 
-  test("port-2 OVER-REJECTION a long chain of suspended proofs through data exhausts the stack eager evaluation kept") {
+  test("port-1 CONTROL a tail loop accumulates suspended proofs, and a match demands the last one") {
+    // A large elimination, since a match into a proposition no longer demands it (changed by proof match suspension).
+    onSmallStack(accepts(chain(1000, demand = true)))
+  }
+
+  test("port-2 FIXED a long chain of suspended proofs through data checks on the stack eager evaluation kept") {
     // Each step of the loop suspends step(unfactAnd(acc)), whose argument holds the previous step's call, so the chain
     // is as long as the loop. Eager evaluation ran each call as it was made, on a value already in normal form, and
-    // checked this program on the same 4 MiB stack. t's match is into a proposition, so since proof match suspension
-    // nothing forces the chain, which recursed once per step; its dependencies still do, where the closedness check of
-    // the global `chain` computes them, so `chain` is EvaluationTooDeep.
-    onSmallStack(rejectsWith[EvaluationTooDeep](chain(5000)))
+    // checked this program on the same 4 MiB stack. The build before proof match suspension refused a chain of 5000
+    // with EvaluationTooDeep, and the CLI's 256 MiB stack one of 1000000: forcing it, which t's match demanded, and its
+    // dependencies, which the closedness check of the globals computes, recursed once per step. t's match is into a
+    // proposition, so nothing forces the chain now, and dependencies are computed in a loop.
+    onSmallStack(accepts(chain(1000000)))
+  }
+
+  test("port-2b LIMIT a demanded chain of suspended proofs through data still forces one step inside the next") {
+    // A large elimination demands the chain: each step's run forces the previous one where its match needs it, as
+    // eager evaluation never had to.
+    onSmallStack(rejectsWith[EvaluationTooDeep](chain(100000, demand = true)))
   }
 
   test("port-3 CONTROL a long chain of proof calls that each return the next forces in a loop, without stack") {

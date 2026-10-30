@@ -121,22 +121,75 @@ object Value {
     found.result()
   }
 
-  private[raccoonlang] def envDeps(env: Env): DepSet = {
-    val res = DepSet.newBuilder
-    env.locals.foreach(_.valueOption.foreach(value => res.unionInPlace(value.synDeps)))
-    res.result()
+  /** Calls `f` on the value of each local of `env` that holds one. */
+  private def foreachLocal(env: Env, f: Value => Unit): Unit = env.locals.foreach(_.valueOption.foreach(f))
+
+  /**
+   * A value whose dependencies are the union of its parts' (`foreachPart`), computed on first read and kept. They are
+   * computed in a loop over the parts whose own are not yet known, deepest first (`composeDeps`), so a chain of such
+   * values, such as suspended proofs that hold one another through data, takes no host stack in proportion to its
+   * length (docs/kernel.md, "Evaluation depth"). The evaluator is single-threaded, so the cache needs no lock.
+   */
+  sealed abstract class Composite extends Value {
+
+    /** Calls `f` on each part whose dependencies are this value's; it may call it on one part more than once. */
+    protected def foreachPart(f: Value => Unit): Unit
+
+    /** The dependencies once computed, and `null` before; never changed once set. */
+    private var deps: DepSet = null
+
+    final override def synDeps: DepSet = {
+      if (deps eq null) Composite.composeDeps(this)
+      deps
+    }
+
+    /** Computes the dependencies from the parts' when every composite part's is known, and says whether it did. */
+    private def tryCompose(): Boolean = {
+      var ready = true
+      foreachPart {
+        case part: Composite if part.deps eq null => ready = false
+        case _                                    =>
+      }
+      if (ready) {
+        val res = DepSet.newBuilder
+        foreachPart(part => res.unionInPlace(part.synDeps))
+        deps = res.result()
+      }
+      ready
+    }
+  }
+
+  private object Composite {
+
+    /**
+     * Computes `root` 's dependencies, and those of every composite part below it whose are not yet known, in a loop: a
+     * value waits on a stack until its parts' are known. Values are built from their parts, so the parts form no cycle;
+     * a part shared by several values is computed once, and a later visit finds it known.
+     */
+    def composeDeps(root: Composite): Unit =
+      if (!root.tryCompose()) {
+        val waiting = new java.util.ArrayDeque[Composite]()
+        waiting.push(root)
+        while (!waiting.isEmpty) {
+          val next = waiting.peek()
+          if ((next.deps ne null) || next.tryCompose()) waiting.pop()
+          else
+            next.foreachPart {
+              case part: Composite if part.deps eq null => waiting.push(part)
+              case _                                    =>
+            }
+        }
+      }
   }
 
   sealed trait LamBody {
-    def synDeps: DepSet
+
+    /** The environment the body runs in, whose locals' dependencies its lambda's include. */
+    def env: Env
   }
   object LamBody {
-    final case class Core(term: ElabAst.Term.Lam, env: Env) extends LamBody {
-      override lazy val synDeps: DepSet = envDeps(env)
-    }
-    final case class Native(run: (Vector[Value], Env) => Value, env: Env, isRawRecursive: Boolean) extends LamBody {
-      override lazy val synDeps: DepSet = envDeps(env)
-    }
+    final case class Core(term: ElabAst.Term.Lam, env: Env) extends LamBody
+    final case class Native(run: (Vector[Value], Env) => Value, env: Env, isRawRecursive: Boolean) extends LamBody
   }
 
   case object LevelTpe extends TopLevelValue {
@@ -361,13 +414,11 @@ object Value {
     override def synDeps: DepSet = form.synDeps
   }
 
-  case class VApp(head: Value, args: Vector[Value], tpe: Value, blockerIds: DepSet = DepSet.empty) extends Value {
-    override lazy val synDeps: DepSet = {
-      val res = DepSet.newBuilder
-      res.unionInPlace(head.synDeps)
-      args.foreach(v => res.unionInPlace(v.synDeps))
-      res.unionInPlace(tpe.synDeps)
-      res.result()
+  case class VApp(head: Value, args: Vector[Value], tpe: Value, blockerIds: DepSet = DepSet.empty) extends Composite {
+    override protected def foreachPart(f: Value => Unit): Unit = {
+      f(head)
+      args.foreach(f)
+      f(tpe)
     }
 
     require(args.nonEmpty || blockerIds.isEmpty, "Blocked application requires at least one argument")
@@ -426,7 +477,7 @@ object Value {
    *   - Its key is its forced value's (`ValueKey`), so equal keys still mean convertible values, and termination
    *     checking compares proofs as it compared the forced values.
    */
-  sealed abstract class VSuspendedProof extends Value {
+  sealed abstract class VSuspendedProof extends Composite {
 
     /**
      * The forced value once `Interpreter.force` has computed it, or materialization has carried it over from the
@@ -443,11 +494,9 @@ object Value {
   final class VProofCall private[raccoonlang] (val fn: VLam, val args: Vector[Value]) extends VSuspendedProof {
     override lazy val tpe: Value = Interpreter.applicationType(fn.tpe, args)
 
-    override lazy val synDeps: DepSet = {
-      val res = DepSet.newBuilder
-      res.unionInPlace(fn.synDeps)
-      args.foreach(v => res.unionInPlace(v.synDeps))
-      res.result()
+    override protected def foreachPart(f: Value => Unit): Unit = {
+      f(fn)
+      args.foreach(f)
     }
   }
 
@@ -468,7 +517,7 @@ object Value {
       case None         => throw WTF("A proof match's checked match states no motive", Some(term.span))
     }
 
-    override lazy val synDeps: DepSet = envDeps(env)
+    override protected def foreachPart(f: Value => Unit): Unit = foreachLocal(env, f)
   }
 
   /**
@@ -484,11 +533,9 @@ object Value {
       case _ => Interpreter.force(this).tpe
     }
 
-    override lazy val synDeps: DepSet = {
-      val res = DepSet.newBuilder
-      res.unionInPlace(fn.synDeps)
-      args.foreach(v => res.unionInPlace(v.synDeps))
-      res.result()
+    override protected def foreachPart(f: Value => Unit): Unit = {
+      f(fn)
+      args.foreach(f)
     }
   }
 
@@ -499,12 +546,10 @@ object Value {
    * captures are everything the match reads.
    */
   case class NeutralThunk(term: ElabAst.Term.Match, env: Env, id: MatchId, tpe: Value, blockerIds: DepSet)
-    extends Value {
-    override lazy val synDeps: DepSet = {
-      val res = DepSet.newBuilder
-      res.unionInPlace(tpe.synDeps)
-      id.captures.foreach(v => res.unionInPlace(v.synDeps))
-      res.result()
+    extends Composite {
+    override protected def foreachPart(f: Value => Unit): Unit = {
+      f(tpe)
+      id.captures.foreach(f)
     }
   }
 
@@ -519,22 +564,15 @@ object Value {
       tpe: VPi,
       id: ValueId,
       body: LamBody
-  ) extends Value {
-    override lazy val synDeps: DepSet = {
-      val res = DepSet.newBuilder
-      res.unionInPlace(tpe.synDeps)
-      res.unionInPlace(body.synDeps)
+  ) extends Composite {
+    override protected def foreachPart(f: Value => Unit): Unit = {
+      f(tpe)
+      foreachLocal(body.env, f)
       id match {
-        case ValueId.Const(_) => res.result()
-        case ValueId.LocalId(_, params) =>
-          if (params.isEmpty) res.result()
-          else {
-            params.foreach(v => res.unionInPlace(v.synDeps))
-            res.result()
-          }
+        case ValueId.Const(_)             =>
+        case ValueId.LocalId(_, captures) => captures.foreach(f)
       }
     }
-
   }
 
   /**

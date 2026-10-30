@@ -954,15 +954,20 @@ declaration, the prelude's included, or of the program's body, and becomes
 them observes one. The body's boundary covers checking and evaluating it,
 applying an entry to the root supply, and printing the result, which forces the
 proof calls in it. A demanded proof call runs where it is demanded, so its
-depth adds to its demander's. A proof call whose argument holds another call,
-directly or through data, recurses into it to compute its dependencies, and
-into its run where it is demanded and forces that call: a large elimination of
-it, or a demanded proof match on it, where eager evaluation had run the inner
-call already. A chain of such calls, built by a loop, needs stack in proportion
-to its length where its dependencies are computed, as a global's closedness
-check computes them, or where it is demanded. A match into a proposition does
-not demand it. An overflow while loading, parsing or elaborating is not a
-diagnostic.
+depth adds to its demander's.
+
+A value's dependencies are computed in a loop, not by recursion, for the forms
+that hold other values as parts: applications, suspended proofs, stuck matches
+and lambdas. Each such value computes them once, when first read, after the
+parts whose own are not yet known, deepest first. So a long chain of such
+values, such as proof calls that hold one another through data, needs no stack
+in proportion to its length where its dependencies are read, as a global's
+closedness check reads them. A proof call whose argument holds another call
+still recurses into the inner call's run where it is demanded and forces that
+call, by a large elimination of it or a demanded proof match on it, where eager
+evaluation had run the inner call already. A chain built by a loop then needs
+stack in proportion to its length; a match into a proposition does not demand
+it. An overflow while loading, parsing or elaborating is not a diagnostic.
 
 ## Axioms
 
