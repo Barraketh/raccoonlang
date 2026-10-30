@@ -54,8 +54,8 @@ object ProgramFixtures {
     /** The value of the program's body. */
     def runProgram(src: String)(implicit loc: munit.Location): Value = run(src).getOrElse(fail("Program has no body"))
 
-    /** The value of the program's body, printed. */
-    def result(src: String)(implicit loc: munit.Location): String = PrettyPrinter.print(runProgram(src))
+    /** The value of the program's body, printed as the CLI prints it, so a proof call in it that fails to run fails. */
+    def result(src: String)(implicit loc: munit.Location): String = PrettyPrinter.printResult(runProgram(src))
 
     /** The environment after the program's declarations, which must check. */
     def declsEnv(src: String)(implicit loc: munit.Location): Env = {

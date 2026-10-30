@@ -557,10 +557,11 @@ object Interpreter {
 
   /**
    * The program's result as the CLI prints it. Printing forces the proof calls inside it (docs/kernel.md, "Proof
-   * calls"), which is evaluation of the body, so an overflow there is `EvaluationTooDeep` at the body, `body`.
+   * calls"), which is evaluation of the body: an error a run raises is the program's, as it was when the body evaluated
+   * them, and an overflow is `EvaluationTooDeep` at the body, `body`.
    */
   def show(result: Value, body: Span): String =
-    try PrettyPrinter.print(result)
+    try PrettyPrinter.printResult(result)
     catch { case _: StackOverflowError => throw EvaluationTooDeep(Some(body)) }
 
   /**

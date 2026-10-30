@@ -341,10 +341,40 @@ object PrettyPrinter {
   def printElabTerm(t: ElabAst.Ast): String = unboundSyntax.printElabTerm(t)
 
   /**
+   * A proof call's run failed while the program's result was printed (`printResult`): `cause`, which must reach the
+   * caller rather than the shorter forms `print` falls back to. A control throwable, so no `NonFatal` handler on the
+   * way catches it.
+   */
+  private final class ForcingFailed(val cause: Throwable) extends scala.util.control.ControlThrowable
+
+  /**
    * Values as source-like text. A variable that `names` names prints by that name, as a binder of the function type or
    * lambda being printed does; any other prints with its id, `x#12`, so that distinct variables of one name differ.
+   *
+   * A proof call prints as its forced value (docs/kernel.md, "Proof calls"), so printing runs the calls that nothing
+   * ran before. With `result`, the value is a program's result: a run that fails is the program's failure, and is
+   * thrown as `ForcingFailed`, or as itself for a stack overflow. Otherwise the value is part of a diagnostic, which
+   * runs outside every evaluation boundary: a call whose run fails, even by exhausting the stack, prints as the call.
    */
-  private final class ValuePrinter(names: Map[Value.VarId, String]) {
+  private final class ValuePrinter(names: Map[Value.VarId, String], result: Boolean) {
+
+    /** The calls of a diagnostic whose run failed, which are not run again: a failed run memoizes nothing. */
+    private val failed = new java.util.IdentityHashMap[Value.VProofCall, java.lang.Boolean]()
+
+    /** The value `call` prints as: its forced value, or, in a diagnostic whose run of it fails, `None`. */
+    private def forced(call: Value.VProofCall): Option[Value] =
+      if (result)
+        try Some(Interpreter.force(call))
+        catch { case NonFatal(failure) => throw new ForcingFailed(failure) }
+      else if (failed.containsKey(call)) None
+      else
+        try Some(Interpreter.force(call))
+        catch {
+          case NonFatal(_) | _: StackOverflowError =>
+            failed.put(call, java.lang.Boolean.TRUE)
+            None
+        }
+
     private def printNatForm(poly: Value.VNatPoly): String = {
       val constant = poly.form.constant
       val terms = poly.form.terms
@@ -375,7 +405,7 @@ object PrettyPrinter {
     /** A value that prints as loose syntax, so it is parenthesized where an atom is expected. */
     private def isLoose(value: Value): Boolean =
       value match {
-        case call: Value.VProofCall                     => isLoose(Interpreter.force(call))
+        case call: Value.VProofCall                     => forced(call).exists(isLoose)
         case _: Value.VPi                               => true
         case Value.VLam(_, _: Value.ValueId.LocalId, _) => true
         case thunk: Value.NeutralThunk                  => projection(thunk).isEmpty
@@ -466,7 +496,8 @@ object PrettyPrinter {
     private def printPi(pi: Value.VPi): String = {
       val fresh = telescope.BinderOps.freshen(pi)
       val opened = pi.binders.flatMap(b => b.captures.map(_.localRef) :+ b.localRef).map(ref => ref.name -> fresh(ref))
-      val inner = new ValuePrinter(names ++ boundNames(opened))
+      // Opened on fresh variables, the type's parts are no part of a result's value: they print as a diagnostic's do.
+      val inner = new ValuePrinter(names ++ boundNames(opened), result = false)
       val syntax = underEnv(pi.env)
       val binders = pi.binders.map { binder =>
         binder.ty match {
@@ -494,7 +525,8 @@ object PrettyPrinter {
           val fresh = telescope.BinderOps.freshen(lam.tpe)
           val opened =
             lam.tpe.binders.flatMap(b => b.captures.map(_.localRef) :+ b.localRef).map(ref => ref.name -> fresh(ref))
-          val inner = new ValuePrinter(names ++ boundNames(opened))
+          // Opened on fresh variables, the body is no part of a result's value: it prints as a diagnostic's does.
+          val inner = new ValuePrinter(names ++ boundNames(opened), result = false)
           val body = Interpreter.runLam(lam, lam.tpe.binders.map(b => fresh(b.localRef)))
           s"fun ${underEnv(lam.tpe.env).printElabBinders(lam.tpe.binders.map(toBinder))} => ${inner.print(body)}"
       }
@@ -518,8 +550,8 @@ object PrettyPrinter {
       projection(thunk).getOrElse(underEnv(thunk.env).printElabMatch(thunk.term))
 
     def print(value: Value): String = value match {
-      // Printed as its forced value, which eager evaluation printed (docs/kernel.md, "Proof calls").
-      case call: Value.VProofCall                      => print(Interpreter.force(call))
+      // Printed as its forced value, which eager evaluation printed (docs/kernel.md, "Proof calls"), or as the call.
+      case call: Value.VProofCall                      => forced(call).fold(printApp(call.fn, call.args))(print)
       case packed.Strings.Literal(text)                => UnicodeScalarString.renderQuoted(text)
       case nil if Kernel.isListNil(nil)                => "[]"
       case word: Value.VWord                           => printWord(word)
@@ -553,10 +585,21 @@ object PrettyPrinter {
    * A value as source-like text. A `String.mk` whose list ends in `nil` and holds only closed scalar characters prints
    * as a literal; any other string prints as its constructor applied to its list. A function type prints as one, a
    * record's projection as `base.field`, and a stuck match as its syntax. Printing never fails: a value whose binders
-   * or body cannot be opened prints in a shorter form.
+   * or body cannot be opened prints in a shorter form, and a proof call whose run fails prints as the call. This is how
+   * a diagnostic shows a value.
    */
-  def print(value: Value): String =
-    try new ValuePrinter(Map.empty).print(value)
+  def print(value: Value): String = printWith(value, result = false)
+
+  /**
+   * A program's result as `print` shows it, except that a proof call whose run fails is the program's failure: its
+   * error is thrown, as is a stack overflow, which `Interpreter.show` reports at the body.
+   */
+  def printResult(value: Value): String =
+    try printWith(value, result = true)
+    catch { case failed: ForcingFailed => throw failed.cause }
+
+  private def printWith(value: Value, result: Boolean): String =
+    try new ValuePrinter(Map.empty, result).print(value)
     catch {
       case NonFatal(_) =>
         value match {

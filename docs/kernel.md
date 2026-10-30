@@ -841,7 +841,10 @@ which converts with the one before. In particular:
   before anything is evaluated.
 - **Running a program** forces its result, and printing forces the proof calls
   inside it, so a program prints what it printed before; a running program
-  reads a proof only where the list above forces it.
+  reads a proof only where the list above forces it. A run that fails while
+  the result prints fails the program, as it did when the body ran it. A
+  diagnostic is printed outside every evaluation boundary, so there a call
+  whose run fails, by an error or by exhausting the stack, prints as the call.
 - **A recursive call's check** inside a local lambda in a recursive body ran
   again whenever eager evaluation applied the lambda during checking; it ran
   first when the lambda's body was checked, on its parameters, and the subterm
@@ -873,7 +876,11 @@ declaration, the prelude's included, or of the program's body, and becomes
 them observes one. The body's boundary covers checking and evaluating it,
 applying an entry to the root supply, and printing the result, which forces the
 proof calls in it. A demanded proof call runs where it is demanded, so its
-depth adds to its demander's. An overflow while loading, parsing or elaborating
+depth adds to its demander's. A proof call whose argument holds another call,
+directly or through data, recurses into it to compute its dependencies, and
+into its run where its body matches on it, where eager evaluation had run the
+inner call already: a chain of such calls, built by a loop, needs stack in
+proportion to its length. An overflow while loading, parsing or elaborating
 is not a diagnostic.
 
 ## Axioms
