@@ -531,14 +531,106 @@ object Elaborator {
       case SA.Term.Derive(goal, span) =>
         SA.Term.Derive(rewriteTypeTerm(structName, selfName, goal, previousFields), span)
 
-      case SA.Term.Pi(binder, body, span) =>
-        rejectShadowingCapture(structName, binder, previousFields)
-        SA.Term.Pi(
-          binder.copy(ty = rewriteBinderType(structName, selfName, binder.ty, previousFields)),
-          rewriteTypeTerm(structName, selfName, body, previousFields),
+      case pi: SA.Term.Pi => rewritePi(structName, selfName, pi, previousFields)
+
+      case lam: SA.Term.Lam => rewriteLam(structName, selfName, lam, previousFields)
+    }
+
+  private def rewritePi(
+      structName: String,
+      selfName: String,
+      pi: SA.Term.Pi,
+      previousFields: Set[String]
+  ): SA.Term.Pi = {
+    rejectShadowingCapture(structName, pi.binder, previousFields)
+    SA.Term.Pi(
+      pi.binder.copy(ty = rewriteBinderType(structName, selfName, pi.binder.ty, previousFields)),
+      rewriteTypeTerm(structName, selfName, pi.body, previousFields),
+      pi.span
+    )
+  }
+
+  /**
+   * A lambda in a field's type, as a selector's type states it: its binders, codomain and body with each earlier field
+   * replaced by its selector's call, where the field is in scope. A parameter, a case's field or a `let` that rebinds a
+   * field's name shadows it for the rest of its scope. A type capture that does gives the family no selectors, as a
+   * function type's binder does.
+   */
+  private def rewriteLam(
+      structName: String,
+      selfName: String,
+      lam: SA.Term.Lam,
+      previousFields: Set[String]
+  ): SA.Term.Lam = {
+    var fields = previousFields
+    val params = lam.header.params.map { binder =>
+      binderTypeCaptureNames(binder.ty).find(fields.contains).foreach { name =>
+        throw InvalidStruct(structName, s"type capture $name shadows an earlier field", Some(binder.span))
+      }
+      val rewritten = binder.copy(ty = rewriteBinderType(structName, selfName, binder.ty, fields))
+      fields -= binder.name
+      rewritten
+    }
+    val header = lam.header.copy(params = params, ty = rewriteTypeTerm(structName, selfName, lam.header.ty, fields))
+    SA.Term.Lam(header, rewriteTerm(structName, selfName, lam.body, fields), lam.span)
+  }
+
+  /** `rewriteTypeTerm` for a lambda's body, a term, where a local that rebinds a field's name shadows it. */
+  private def rewriteTerm(
+      structName: String,
+      selfName: String,
+      term: SA.Term,
+      previousFields: Set[String]
+  ): SA.Term = {
+    def rewrite(t: SA.Term): SA.Term = rewriteTerm(structName, selfName, t, previousFields)
+    def rewriteType(t: SA.TypeTerm): SA.TypeTerm = rewriteTypeTerm(structName, selfName, t, previousFields)
+    def patternNames(pattern: SA.Term.BindingPattern): Vector[String] =
+      pattern match {
+        case SA.Term.BindingPattern.Bind(name, _)     => Vector(name)
+        case _: SA.Term.BindingPattern.Discard        => Vector.empty
+        case SA.Term.BindingPattern.Unpack(fields, _) => fields.flatMap(patternNames)
+      }
+    term match {
+      case SA.Term.Ident(name, span) if previousFields.contains(name) =>
+        SA.Term.App(
+          SA.Term.Select(SA.Term.Ident(structName, span), name, span),
+          Vector(SA.Term.Ident(selfName, span)),
           span
         )
+      case _: SA.Term.Ident | _: SA.Term.NatLit | _: SA.Term.StrLit => term
+      case SA.Term.Select(base, field, span)                        => SA.Term.Select(rewrite(base), field, span)
+      case SA.Term.App(fn, args, span)                              => SA.Term.App(rewrite(fn), args.map(rewrite), span)
+      case pi: SA.Term.Pi             => rewritePi(structName, selfName, pi, previousFields)
+      case SA.Term.Derive(goal, span) => SA.Term.Derive(rewriteType(goal), span)
+      case lam: SA.Term.Lam           => rewriteLam(structName, selfName, lam, previousFields)
+      // A match's equation is bound in each case, as a case's fields are.
+      case SA.Term.Match(scrut, motive, cases, wildcard, equation, span) =>
+        val inCases = previousFields -- equation.map(_.name)
+        val rewrittenCases =
+          cases.map(c => c.copy(body = rewriteTerm(structName, selfName, c.body, inCases -- c.argNames)))
+        val rewrittenWildcard = wildcard.map(w => w.copy(body = rewriteTerm(structName, selfName, w.body, inCases)))
+        SA.Term.Match(rewrite(scrut), motive.map(rewriteType), rewrittenCases, rewrittenWildcard, equation, span)
+      case SA.Term.Body(statements, out, span) =>
+        var fields = previousFields
+        val rewritten = statements.map { statement =>
+          def value(t: SA.Term): SA.Term = rewriteTerm(structName, selfName, t, fields)
+          def tpe(t: SA.TypeTerm): SA.TypeTerm = rewriteTypeTerm(structName, selfName, t, fields)
+          statement match {
+            case SA.Term.UseStmt(use)   => SA.Term.UseStmt(use.copy(normalizer = value(use.normalizer)))
+            case open: SA.Term.OpenStmt => open
+            case SA.Term.LetStmt(let: SA.Term.Let.Binding) =>
+              val next = SA.Term.LetStmt(let.copy(ty = let.ty.map(tpe), value = value(let.value)))
+              fields --= patternNames(let.pattern)
+              next
+            case SA.Term.LetStmt(let: SA.Term.Let.Instance) =>
+              val next = SA.Term.LetStmt(let.copy(ty = let.ty.map(tpe), value = value(let.value)))
+              fields -= let.name
+              next
+          }
+        }
+        SA.Term.Body(rewritten, rewriteTerm(structName, selfName, out, fields), span)
     }
+  }
 
   private def selectorCall(structName: String, fieldName: String, selfName: String, span: Span): SA.TypeTerm =
     SA.Term.TApp(
@@ -718,6 +810,19 @@ object Elaborator {
     case pi: SA.Term.Pi             => elabPi(pi, env)
     case SA.Term.NatLit(number, sp) => CA.Term.NatLit(number, sp)
     case SA.Term.StrLit(text, sp)   => CA.Term.StrLit(text, sp)
+    case l: SA.Term.Lam             => elabAnonymousLam(l, env)
+  }
+
+  /**
+   * A lambda written as a term or inside a type. Its header's locals are scoped to it, as a function type's are, so a
+   * lambda in a binder type leaves the binder's own slot where the checker puts it.
+   */
+  private def elabAnonymousLam(l: SA.Term.Lam, env: ResolveEnv): CA.Term.Lam = {
+    val header = elabHeader(l.header, env)
+    header.ty match {
+      case pi: CA.Term.Pi => elabLam(pi, header.bodyEnv, l.body, None, None, l.span, env)
+      case _              => throw WTF("A lambda binds a parameter", Some(l.span))
+    }
   }
 
   private def elabPattern(pattern: SA.TypePattern, env: ResolveEnv): (CA.TypePattern, ResolveEnv) =
@@ -1014,13 +1119,7 @@ object Elaborator {
     case pi: SA.Term.Pi             => elabPi(pi, env)
     case SA.Term.NatLit(number, sp) => CA.Term.NatLit(number, sp)
     case SA.Term.StrLit(text, sp)   => CA.Term.StrLit(text, sp)
-    case l: SA.Term.Lam =>
-      val header = elabHeader(l.header, env)
-      header.ty match {
-        case pi: CA.Term.Pi =>
-          elabLam(pi, header.bodyEnv, l.body, None, None, l.span, env)
-        case _ => throw new RuntimeException("WTF")
-      }
+    case l: SA.Term.Lam             => elabAnonymousLam(l, env)
     case b: SA.Term.Body =>
       elabBodyStatements(b.statements, b.out, env.enterOpenScope, b.span)
     case SA.Term.Match(scrut, motive, cases, wildcard, equation, sp) =>

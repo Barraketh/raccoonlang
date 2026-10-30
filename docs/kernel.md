@@ -132,6 +132,31 @@ takes linear elements too, though the eta-expansion
 `fun (xs: SList($A)): List(A) => f(xs)` of an `f` of the second type has the
 first.
 
+## Lambdas in types
+
+A lambda may stand in a type wherever the type holds a term: as an argument of
+an application in a binder type, a codomain, a `let` annotation, a field or
+constructor result type, or a motive, as in
+`List.Every(xs, fun (x: Nat): Prop => Nat.le(x, 3))`. There is no partial
+application: a function takes all its explicit parameters at once, so a
+predicate argument is written as a lambda. A lambda in a type is checked as any
+lambda, and is a function value, never a type: a lambda as a whole binder type
+is `NotAType`. It is part of a read extent (S1), so it may have linear
+parameters, which its body uses at most once (F4), but it captures no linear
+local (F5).
+
+Conversion compares two lambdas by their bodies on shared fresh arguments, so
+`fun (a: Nat): Prop => Eq(Nat, a, a)` and `fun (b: Nat): Prop => Eq(Nat, b, b)`
+convert. A body stuck on a match it writes itself converts only with that same
+match, as every stuck match does: a predicate defined by cases that two types
+must share is a definition. Positivity opens a lambda in a field type on fresh
+arguments, so the family being declared occurs in neither its type nor its body
+([family argument size](#family-argument-size)), and the size rules read the
+types a lambda gives. A record's selector states a field type's lambda with the
+earlier fields selected from the record, except where the lambda rebinds their
+names; in a linear record such a lambda would capture the record, so that
+selector is `LinearCapture` (F5), and the field is reached by destructuring.
+
 ## Nominal Type families
 
 Fully applied, Type-valued inductive families obey these nominal principles,
@@ -814,7 +839,8 @@ is copyable and `List(Protocol.Supply)` is linear.
   at most once in the lambda's body, or only read when the body is a read
   extent.
 - **F5 No linear captures.** A lambda references no linear local bound outside
-  it, in its body or its type, read or not (`LinearCapture`, at the reference).
+  it, in its body or its type, read or not (`LinearCapture`, at the reference),
+  including a lambda inside a type ([lambdas in types](#lambdas-in-types)).
   A read would run when the function is applied, where nothing ties the captured
   local's liveness to the arguments'. A callback that should own a linear value
   takes it as an argument.

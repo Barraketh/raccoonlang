@@ -125,6 +125,7 @@ object Interpreter {
     case lit: ETerm.StrLit      => lit.value
     case word: ETerm.Word       => evalWord(word, env)
     case pi: ETerm.Pi           => evalPi(pi, env)
+    case l: ETerm.Lam           => evalLam(l, env)
   }
 
   private def evalRef(ref: ETerm.Ref, env: Env): Value = {
@@ -231,7 +232,6 @@ object Interpreter {
       term match {
         case ETerm.App(fn, args, _) => evalApplyTerm(fn, args, env)
         case tt: ElabAst.TypeTerm   => evalTypeTerm(tt, env)
-        case l: ETerm.Lam           => evalLam(l, env)
         case m: ETerm.Match         => evalMatch(m, env)
         case b: ETerm.Body          => evalBody(b, env)
       }

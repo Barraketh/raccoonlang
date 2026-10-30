@@ -44,16 +44,6 @@ object ValueQuote {
             ElabAst.Let(reindex(l.localRef), l.ty.map(inlineTypeTerm), inlineTerm(l.value), l.span, l.isInstance)
           }
           ElabAst.Term.Body(nextLets, inlineTerm(res), bodySpan)
-        case ElabAst.Term.Lam(ty, body, lamSpan, name, recursiveSelf, _, recursivePeers) =>
-          ElabAst.Term.Lam(
-            inlineTypeTerm(ty).asInstanceOf[ElabAst.Term.Pi],
-            inlineTerm(body),
-            lamSpan,
-            name,
-            recursiveSelf,
-            NodeId.fresh(),
-            recursivePeers
-          )
         case ElabAst.Term.Match(scrut, motive, cases, matchSpan, _) =>
           ElabAst.Term.Match(
             inlineTerm(scrut),
@@ -83,12 +73,17 @@ object ValueQuote {
             case ElabAst.Term.WordPiece.Splice(list) => ElabAst.Term.WordPiece.Splice(inlineTerm(list))
           }
           ElabAst.Term.Word(consHead, nextPieces, wordSpan)
-        case ElabAst.Term.Pi(binders, out, classifier, piSpan, _) =>
-          val nextBinders = binders.map { b =>
-            b.copy(localRef = reindex(b.localRef), ty = inlineBinderType(b.ty))
-          }
-          ElabAst.Term.Pi(nextBinders, inlineTypeTerm(out), classifier, piSpan, NodeId.fresh())
+        case pi: ElabAst.Term.Pi => inlinePi(pi)
+        case ElabAst.Term.Lam(ty, body, lamSpan, name, recursiveSelf, _, recursivePeers) =>
+          ElabAst.Term.Lam(inlinePi(ty), inlineTerm(body), lamSpan, name, recursiveSelf, NodeId.fresh(), recursivePeers)
       }
+
+    private def inlinePi(pi: ElabAst.Term.Pi): ElabAst.Term.Pi = {
+      val nextBinders = pi.binders.map { b =>
+        b.copy(localRef = reindex(b.localRef), ty = inlineBinderType(b.ty))
+      }
+      ElabAst.Term.Pi(nextBinders, inlineTypeTerm(pi.out), pi.classifier, pi.span, NodeId.fresh())
+    }
 
     private def inlineTypePattern(tp: ElabAst.TypePattern): ElabAst.TypePattern =
       tp match {

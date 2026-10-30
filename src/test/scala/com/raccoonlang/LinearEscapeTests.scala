@@ -427,12 +427,16 @@ class LinearEscapeTests extends munit.FunSuite {
     accepts(lib + "inductive Ok : Type\n | mk (t: Tag(count(LNats.nil))) : Ok\n")
   }
 
-  // Lambdas in binder types do not parse (KERNEL_FOLLOWUPS 2.8); a lambda with a linear parameter in a type is allowed.
-  test("a lambda inside a binder-type pattern does not parse") {
-    unparsable(
-      lib +
-        "def apply (f: (xs: LNats) -> Nat) : Type := Nat\n" +
-        "def bad (x: apply(fun (ys: LNats): Nat => count(ys))) : Nat := 0\n"
+  // A lambda may stand in a type (KERNEL_FOLLOWUPS 2.8). One with a linear parameter is allowed there (S1), uses that
+  // parameter at most once (F4), and captures no outer linear local, though the type is a read (F5).
+  test("a lambda inside a binder-type pattern: its linear parameter is tracked, and it captures no linear local") {
+    val apply = lib + "def apply (f: (xs: LNats) -> Nat) : Type := Nat\n"
+    accepts(apply + "def ok (x: apply(fun (ys: LNats): Nat => count(ys))) : Nat := 0\n")
+    rejectsWith[LinearReused](
+      apply + "def bad (x: apply(fun (ys: LNats): Nat => Nat.add(count(ys), count(ys)))) : Nat := 0\n"
+    )
+    rejectsWith[LinearCapture](
+      apply + "def bad (zs: LNats)(x: apply(fun (ys: LNats): Nat => Nat.add(count(ys), count(zs)))) : Nat := 0\n"
     )
   }
 

@@ -92,7 +92,7 @@ object CoreAst {
 
     final case class Body(lets: Vector[Let], res: Term, span: Span) extends Term
 
-    // Lambda: fun (x : A): B => body
+    // Lambda: fun (x : A): B => body. A type term, since a type may hold one, as an application's argument.
     final case class Lam(
         ty: Pi,
         uses: Vector[Use],
@@ -101,7 +101,7 @@ object CoreAst {
         name: Option[String],
         recursion: Option[Recursion],
         nodeId: NodeId
-    ) extends Term
+    ) extends TypeTerm
 
     sealed trait MatchTerm extends Term {
       def scrut: Term
@@ -215,7 +215,26 @@ object CoreAst {
         case Term.Derive(goal, span)                       => Term.Derive(tpe(goal), span)
         case written: Term.Pi                              => pi(written)
         case Term.App(fn, args, span)                      => Term.App(copy(fn), args.map(copy), span)
+        case written: Term.Lam                             => lam(written)
       }
+    // A lambda is a type term, since a type may hold one.
+    def lam(written: Term.Lam): Term.Lam = {
+      val copiedRecursion = written.recursion.map { r =>
+        r.copy(decreases = r.decreases match {
+          case DecreaseSpec.Measure(term, sp) => DecreaseSpec.Measure(copy(term), sp)
+          case lexicographic                  => lexicographic
+        })
+      }
+      Term.Lam(
+        pi(written.ty),
+        written.uses.map(use => use.copy(normalizer = copy(use.normalizer))),
+        copy(written.body),
+        written.span,
+        written.name,
+        copiedRecursion,
+        NodeId.fresh()
+      )
+    }
     def pi(written: Term.Pi): Term.Pi =
       Term.Pi(written.binders.map(binder), tpe(written.out), written.span, NodeId.fresh())
     def binder(b: Binder): Binder =
@@ -239,22 +258,6 @@ object CoreAst {
         case tt: TypeTerm => tpe(tt)
         case Term.Body(lets, res, span) =>
           Term.Body(lets.map(let => let.copy(ty = let.ty.map(tpe), value = copy(let.value))), copy(res), span)
-        case Term.Lam(ty, uses, body, span, name, recursion, _) =>
-          val copiedRecursion = recursion.map { r =>
-            r.copy(decreases = r.decreases match {
-              case DecreaseSpec.Measure(term, sp) => DecreaseSpec.Measure(copy(term), sp)
-              case lexicographic                  => lexicographic
-            })
-          }
-          Term.Lam(
-            pi(ty),
-            uses.map(use => use.copy(normalizer = copy(use.normalizer))),
-            copy(body),
-            span,
-            name,
-            copiedRecursion,
-            NodeId.fresh()
-          )
         case Term.Match(scrut, motive, cases, wildcard, equation, span, _) =>
           Term.Match(
             copy(scrut),

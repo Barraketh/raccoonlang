@@ -45,6 +45,7 @@ object PrettyPrinter {
       case select: Term.Select    => printCoreTerm(select)
       case Term.Derive(goal, _)   => s"derive[${pt(goal)}]"
       case app: Term.App          => printCoreTerm(app)
+      case lam: Term.Lam          => printCoreTerm(lam)
       case Term.Pi(binders, out, _, _) =>
         val bindersStr = binders
           .map(printPiBinder)
@@ -60,6 +61,7 @@ object PrettyPrinter {
       case Term.Derive(_, _)   => pt(t)
       case _: Term.App         => pt(t)
       case Term.Pi(_, _, _, _) => s"(${pt(t)})"
+      case _: Term.Lam         => s"(${pt(t)})"
     }
 
     def printPiBinder(b: CoreAst.Binder): String =
@@ -224,6 +226,7 @@ object PrettyPrinter {
       case Term.NatLit(number, _) => number.toString
       case Term.StrLit(text, _)   => UnicodeScalarString.renderQuoted(text)
       case word: Term.Word        => printElabWord(word)
+      case lam: Term.Lam          => printElabTerm0(lam)
       case Term.Pi(binders, out, _, _, _) =>
         val bindersStr = binders
           .map(printElabPiBinder)
@@ -238,6 +241,7 @@ object PrettyPrinter {
       case Term.StrLit(_, _)      => pt(t)
       case _: Term.Word           => pt(t)
       case Term.Pi(_, _, _, _, _) => s"(${pt(t)})"
+      case _: Term.Lam            => s"(${pt(t)})"
     }
 
     def printElabPiBinder(b: ElabAst.Binder): String =

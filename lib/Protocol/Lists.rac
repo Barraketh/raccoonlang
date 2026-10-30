@@ -130,7 +130,7 @@ namespace List {
 
   // ---------------------------------------------------------------- Every and Pairwise
 
-  // Types cannot contain lambdas, so predicates that appear in statements are named.
+  // Named predicates, which statements could also write as lambdas (docs/kernel.md, "Lambdas in types").
   def andP (A: Sort($u))(f: A -> Prop)(g: A -> Prop): A -> Prop := fun (x: A): Prop => And(f(x), g(x))
 
   def trueP (A: Sort($u)): A -> Prop := fun (x: A): Prop => True

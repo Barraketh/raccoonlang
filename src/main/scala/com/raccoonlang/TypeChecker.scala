@@ -210,6 +210,8 @@ object TypeChecker {
       case pi: CA.Term.Pi =>
         val checked = checkPi(pi, env)
         CheckedTypeTerm(checked.vpi, checked.residual, LinearInfo.empty)
+      // A lambda inside a type, such as a predicate argument: a function value, which uses nothing (F5).
+      case l: CA.Term.Lam => checkLam(l, env)
       case ref: CA.Term.Ref =>
         val residual = elabRef(ref)
         val value = Interpreter.evalTypeTerm(residual, env)
@@ -307,7 +309,7 @@ object TypeChecker {
     (selectorName, checkApplyValue(selector, Vector(baseValue)))
   }
 
-  private def checkLam(l: CA.Term.Lam, env: Env): CheckedTerm = {
+  private def checkLam(l: CA.Term.Lam, env: Env): CheckedTypeTerm = {
     val checkedVpi = checkPi(l.ty, env)
     val vpi = checkedVpi.vpi
     val bodyEnv = checkedVpi.bodyEnv
@@ -332,7 +334,7 @@ object TypeChecker {
     val value = Interpreter.evalLam(checkedLam, vpi, env, capturedIndexes)
     // A function value uses nothing of its context (F5), and its body is its own extent, whose violations the ledger
     // has reported.
-    CheckedTerm(value, checkedLam, LinearInfo.empty)
+    CheckedTypeTerm(value, checkedLam, LinearInfo.empty)
   }
 
   /**
@@ -428,7 +430,6 @@ object TypeChecker {
   def checkTerm(term: CA.Term, env: Env): CheckedTerm =
     try {
       term match {
-        case l: CA.Term.Lam => checkLam(l, env)
         case derive: CA.Term.Derive =>
           val goal = getType(derive.goal, env)
           val value = InstanceSearch.solve(goal, env)

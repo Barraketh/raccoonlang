@@ -94,9 +94,10 @@ object ElabAst {
     final case class Body(lets: Vector[Let], res: Term, span: Span) extends Term
 
     /**
-     * `recursiveSelf` is a recursive definition's own slot, bound after its parameters to the lambda itself when it
-     * runs. A member of a mutual block has `recursivePeers` instead: a slot for each member of its block, in the
-     * block's order, bound to the global each names.
+     * A lambda; a type term, since a type may hold one, as an application's argument. `recursiveSelf` is a recursive
+     * definition's own slot, bound after its parameters to the lambda itself when it runs. A member of a mutual block
+     * has `recursivePeers` instead: a slot for each member of its block, in the block's order, bound to the global each
+     * names.
      */
     final case class Lam(
         ty: Pi,
@@ -106,7 +107,7 @@ object ElabAst {
         recursiveSelf: Option[CoreAst.LocalRef],
         nodeId: NodeId,
         recursivePeers: Vector[(CoreAst.LocalRef, String)] = Vector.empty
-    ) extends Term
+    ) extends TypeTerm
 
     final case class Match(
         scrut: Term,

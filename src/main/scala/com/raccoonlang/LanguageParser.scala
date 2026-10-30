@@ -128,8 +128,10 @@ object LanguageParser {
   private def simplePi(implicit sourceId: Option[SourceId]): Parser[Pi] =
     (param ~ skipAllWs ~ sym("->") ~/ skipAllWs ~ typeTerm).flatSpanned(sourceId).map { Pi.tupled }
 
+  /** A type's atoms. A lambda is one, so that a type may apply a family or a function to a predicate. */
   private def typeAtom(implicit sourceId: Option[SourceId]): Parser[TypeTerm] =
-    simplePi |
+    lambda |
+      simplePi |
       deriveP |
       sym('(') ~ skipAllWs ~ typeTerm ~ layoutSymTight(')') |
       rootTypeTerm |
@@ -258,10 +260,10 @@ object LanguageParser {
 
   // no longer support `using normalizer` in parser; replaced by `use` statements
 
-  private def lambda(implicit sourceId: Option[SourceId]): Parser[Term] =
+  private def lambda(implicit sourceId: Option[SourceId]): Parser[Lam] =
     (kw("fun") ~/ funcHeader ~ sym("=>") ~/ skipAllWs ~ term)
       .flatSpanned(sourceId)
-      .map[SurfaceAst.Term] { case (header, body, span) => Lam(header, body, span) }
+      .map { case (header, body, span) => Lam(header, body, span) }
 
   private def caseHead: Parser[(Vector[String], Boolean)] = {
     val shortName = (symTight(".") ~/ ident).map(name => (Vector(name), true))

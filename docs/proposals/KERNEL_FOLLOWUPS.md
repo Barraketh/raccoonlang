@@ -31,7 +31,7 @@ model, and a gap it finds is the model's to close.
 | 2.5 | Mutual inductives and mutual recursion (implemented) | expressiveness | port | — |
 | 2.6 | Wildcard case (implemented) | expressiveness | port | — |
 | 2.7 | Match equations (implemented) | expressiveness | port | — |
-| 2.8 | Partial application and lambdas in types | expressiveness | new | 3 |
+| 2.8 | Partial application and lambdas in types (decided: lambdas in types, implemented) | expressiveness | new | 3 |
 | 2.9 | Implicit arguments on definitions and inferred erased binders | expressiveness | partly port | — |
 | 3.1 | Kind polymorphism (decided and implemented) | design | new | 10 |
 | 3.2 | Linear closures | design | new | 11 |
@@ -315,7 +315,7 @@ be unrestricted, since `Eq` has no linear carrier (L8).
 
 ### 2.8 Partial application and lambdas in types (open question 3)
 
-**Decided 2026-10-30:** no partial application. Raccoon functions are n-ary telescopes, and partial application would hide arity errors, while at a linear argument it would be a linear closure. Every use in Track A was a predicate inside a statement, so lambdas in types cover it. Lambdas in types stay in scope.
+**Decided 2026-10-30:** no partial application. Raccoon functions are n-ary telescopes, and partial application would hide arity errors, while at a linear argument it would be a linear closure. Every use in Track A was a predicate inside a statement, so lambdas in types cover it. Lambdas in types stay in scope. **Implemented** (`docs/kernel.md`, "Lambdas in types"; `LambdaInTypeTests`): a lambda parses and checks in binder types, codomains, annotations, field types and motives, under F4, F5 and S1; positivity and the size rules read it as a function value. A linear record's selector whose field type's lambda names an earlier field is `LinearCapture`, by F5.
 
 **Problem.**
 - A two-argument function value cannot be applied to one argument, so every

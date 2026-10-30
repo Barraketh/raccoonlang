@@ -94,8 +94,11 @@ object SurfaceAst {
     // Application: f(a) (term-level)
     final case class App(fn: Term, args: Vector[Term], span: Span) extends Term
 
-    // Lambda: fun (x : A)(y: B): B => body
-    final case class Lam(header: FuncHeader, body: Term, span: Span) extends Term
+    /**
+     * Lambda: `fun (x : A)(y: B): B => body`. It may also stand in a type, as an argument of an application there, such
+     * as the predicate of `List.Every(xs, fun (x: Nat): Prop => True)`; F5 and S1 apply to it as to any lambda.
+     */
+    final case class Lam(header: FuncHeader, body: Term, span: Span) extends Term with TypeTerm
 
     /**
      * A match's cases, then its wildcard case if it has one, which is always its last. `equation` is the equation it
