@@ -118,4 +118,7 @@ These are already settled and not reassessed:
      *Status of #4: done on `perf-evaluation`: the CLI runs on a `--stack`
      thread, 256 MB by default, and an overflow is `EvaluationTooDeep` at the
      declaration or the body, printing the result included.*
+     *Status of #5: done on `perf-evaluation`: `Interpreter` steps return a
+     tail, which `evalSteps` evaluates in a loop; `count(300000, 0)` runs on a
+     1 MB stack.*
   4. then re-measure, and decide on #7 and on §2's policy question 4.

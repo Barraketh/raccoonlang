@@ -846,7 +846,19 @@ term raises no other error.
 
 ### Evaluation depth
 
-Checking and evaluation recurse on the host stack. The CLI runs its whole
+Evaluation takes no host stack for a term in tail position, whose value is the
+value of the term being evaluated: a block's result after its lets, a match's
+chosen branch, and a core lambda's body where the lambda is applied, after the
+application's arguments. The evaluator continues with that term in a loop
+instead of recursing into it. The loop changes no value, neutral or blocking
+set, and an error is located at the innermost term being evaluated, as before:
+it removes host frames only, so evaluation that exhausted the stack may now
+finish. A native's result, a constructor's or a neutral head's application,
+and a proof call are values at once; a demanded proof call runs its body in a
+loop of its own.
+
+Recursion outside tail position, and checking, recurse on the host stack. The
+CLI runs its whole
 pipeline on a thread whose stack `--stack` sets, 256 MB unless it is given. A
 stack overflow is caught only at the boundary of a declaration, the prelude's
 included, or of the program's body, and becomes `EvaluationTooDeep`, located

@@ -163,7 +163,7 @@ object Interpreter {
 
   def evalTypeTerm(tt: ElabAst.TypeTerm, env: Env): Value = tt match {
     case ref: ETerm.Ref         => evalRef(ref, env)
-    case ETerm.App(fn, args, _) => evalApplyTerm(fn, args, env)
+    case ETerm.App(fn, args, _) => evalSteps(applyTermStep(fn, args, env))
     case proj: ETerm.Proj       => StructEta.project(evalTerm(proj.base, env), proj.index)
     case lit: ETerm.NatLit      => lit.value
     case lit: ETerm.StrLit      => lit.value
@@ -185,11 +185,14 @@ object Interpreter {
 
   /**
    * `fn` applied to `vArgs`, which fit its binders. Applying a proof demands it. A lambda binds its arguments itself
-   * (`runLam`), or reads them as a native, so only their count is checked here; any other head's application has the
+   * (`lamStep`), or reads them as a native, so only their count is checked here; any other head's application has the
    * head's codomain at them as its type. A checked lambda whose function type is a proposition is not run, outside a
    * demanded proof: the application is a proof call (`VProofCall`).
    */
-  def evalApply(fn: Value, vArgs: Vector[Value]): Value = {
+  def evalApply(fn: Value, vArgs: Vector[Value]): Value = evalSteps(applyStep(fn, vArgs))
+
+  /** `evalApply` 's step: a lambda that runs continues with its body, its tail. */
+  private def applyStep(fn: Value, vArgs: Vector[Value]): AnyRef = {
     require(vArgs.nonEmpty, "evalApply requires at least one argument")
 
     force(fn) match {
@@ -198,7 +201,7 @@ object Interpreter {
         if (pi.binders.length != vArgs.length) throw ArityMismatch(pi.binders.length, vArgs.length)
         lam.body match {
           case _: LamBody.Core if pi.tpe == PropTpe && forcing == 0 => new VProofCall(lam, vArgs)
-          case _                                                    => runLam(lam, vArgs)
+          case _                                                    => lamStep(lam, vArgs)
         }
       case head =>
         head.tpe match {
@@ -218,11 +221,14 @@ object Interpreter {
     }
   }
 
-  private def evalApplyTerm(fn: ElabAst.Term, args: Vector[ElabAst.Term], env: Env): Value = {
+  /**
+   * An application's head and arguments are evaluated first, since evaluation is strict; a callee's body is its tail.
+   */
+  private def applyTermStep(fn: ElabAst.Term, args: Vector[ElabAst.Term], env: Env): AnyRef = {
     val vf = evalTerm(fn, env)
     val vArgs = args.map(a => evalTerm(a, env))
     if (vArgs.isEmpty) throw CannotApplyNonFunction(vf.tpe)
-    evalApply(vf, vArgs)
+    applyStep(vf, vArgs)
   }
 
   def evalLam(l: ETerm.Lam, vpi: VPi, env: Env): VLam =
@@ -240,18 +246,24 @@ object Interpreter {
     VLam(vpi, id, LamBody.Core(l, RuntimeEnv.closeForEval(env, capturedIndexes)))
   }
 
-  def runLam(lam: VLam, args: Vector[Value]): Value = {
+  def runLam(lam: VLam, args: Vector[Value]): Value = evalSteps(lamStep(lam, args))
+
+  /** A native's result, or a core lambda's body, its tail, in the env binding its arguments. */
+  private def lamStep(lam: VLam, args: Vector[Value]): AnyRef = {
     lam.body match {
       case LamBody.Native(run, nativeEnv, _) => run(args, nativeEnv)
       // A recursive definition's self slot holds the lambda itself; a member of a mutual block reads its block's
       // members from the globals its environment was closed over, where the block is published.
       case LamBody.Core(term, coreEnv) =>
-        runCore(
-          lam.tpe,
-          term,
-          coreEnv,
-          args,
-          index => if (term.recursiveSelf.isDefined) lam else coreEnv(term.recursivePeers(index)._2)
+        new Tail(
+          term.body,
+          coreBodyEnv(
+            lam.tpe,
+            term,
+            coreEnv,
+            args,
+            index => if (term.recursiveSelf.isDefined) lam else coreEnv(term.recursivePeers(index)._2)
+          )
         )
     }
   }
@@ -264,20 +276,20 @@ object Interpreter {
    */
   def runLamOnRecursive(lam: VLam, args: Vector[Value], recursive: Vector[Value]): Value =
     lam.body match {
-      case LamBody.Core(term, coreEnv) => runCore(lam.tpe, term, coreEnv, args, recursive)
+      case LamBody.Core(term, coreEnv) => evalTerm(term.body, coreBodyEnv(lam.tpe, term, coreEnv, args, recursive))
       case native                      => throw WTF(s"A native function has no recursive slots: $native")
     }
 
   /**
-   * `term` 's body over `coreEnv` on `args`, its recursive slots bound in order to `recursive(0)`, `recursive(1)`, …
+   * The env in which `term` 's body runs over `coreEnv` on `args`: its parameters bound to `args`, and its recursive
+   * slots bound in order to `recursive(0)`, `recursive(1)`, …
    */
-  private def runCore(tpe: VPi, term: ETerm.Lam, coreEnv: Env, args: Vector[Value], recursive: Int => Value): Value = {
+  private def coreBodyEnv(tpe: VPi, term: ETerm.Lam, coreEnv: Env, args: Vector[Value], recursive: Int => Value): Env = {
     val bodyEnv = getEnvWithArgs(tpe, coreEnv, args)
     val selfEnv = term.recursiveSelf.fold(bodyEnv)(ref => bodyEnv.putLocal(ref, recursive(0)))
-    val recurEnv = term.recursivePeers.iterator.zipWithIndex.foldLeft(selfEnv) { case (env, ((ref, _), index)) =>
+    term.recursivePeers.iterator.zipWithIndex.foldLeft(selfEnv) { case (env, ((ref, _), index)) =>
       env.putLocal(ref, recursive(index))
     }
-    evalTerm(term.body, recurEnv)
   }
 
   private def forceThunk(thunk: NeutralThunk, eqStore: EqStore): Value =
@@ -303,13 +315,39 @@ object Interpreter {
       case v       => throw NotAKind(v)
     }
 
-  def evalTerm(term: ElabAst.Term, env: Env): Value =
+  /**
+   * A term in tail position, whose value is the value of the term being evaluated, with the env it is evaluated in
+   * (docs/kernel.md, "Evaluation depth"). A step returns one instead of recursing into it, and `evalSteps` evaluates it
+   * in a loop, so a tail position costs no host stack.
+   */
+  private final class Tail(val term: ElabAst.Term, val env: Env)
+
+  def evalTerm(term: ElabAst.Term, env: Env): Value = evalSteps(stepAt(term, env))
+
+  /**
+   * Takes steps, from `first`, a value or a `Tail`, until one is a value. Each tail's step is located at it, as the
+   * recursion it replaces was: the innermost evaluated term that carries a span gives an error its place.
+   */
+  private def evalSteps(first: AnyRef): Value = {
+    var next = first
+    while (next.isInstanceOf[Tail]) {
+      val tail = next.asInstanceOf[Tail]
+      next = stepAt(tail.term, tail.env)
+    }
+    next.asInstanceOf[Value]
+  }
+
+  /**
+   * One step of `term` in `env`: its value, or its tail. The tails are a block's result after its lets, a match's
+   * chosen branch, and a core lambda's body where it is applied, after the arguments.
+   */
+  private def stepAt(term: ElabAst.Term, env: Env): AnyRef =
     TypeChecker.at(term.span) {
       term match {
-        case ETerm.App(fn, args, _) => evalApplyTerm(fn, args, env)
+        case ETerm.App(fn, args, _) => applyTermStep(fn, args, env)
         case tt: ElabAst.TypeTerm   => evalTypeTerm(tt, env)
-        case m: ETerm.Match         => evalMatch(m, env)
-        case b: ETerm.Body          => evalBody(b, env)
+        case m: ETerm.Match         => matchStep(m, env)
+        case b: ETerm.Body          => bodyStep(b, env)
       }
     }
 
@@ -353,9 +391,12 @@ object Interpreter {
     NeutralThunk(m, closedEnv, MatchId(layout.code, layout.captures(env)), outType, ReductionBlockers.of(scrut))
   }
 
-  private def evalMatch(m: ETerm.Match, env: Env): Value = {
+  private def evalMatch(m: ETerm.Match, env: Env): Value = evalSteps(matchStep(m, env))
+
+  /** The match `m` in `env`: its scrutinee, then `matchOnStep`, stuck at its motive or else at the scrutinee's type. */
+  private def matchStep(m: ETerm.Match, env: Env): AnyRef = {
     val scrut = evalTerm(m.scrut, env)
-    evalMatchOn(m, scrut, env, m.motive.fold(scrut.tpe)(evalTypeTerm(_, env)))
+    matchOnStep(m, scrut, env, m.motive.fold(scrut.tpe)(evalTypeTerm(_, env)))
   }
 
   /**
@@ -363,7 +404,11 @@ object Interpreter {
    * branch. A value at a structure eta type takes the one branch with its eta view, its field projections
    * (`StructEta`). Any other value is stuck, a value of `outType`.
    */
-  private[raccoonlang] def evalMatchOn(m: ETerm.Match, scrut0: Value, env: Env, outType: => Value): Value = {
+  private[raccoonlang] def evalMatchOn(m: ETerm.Match, scrut0: Value, env: Env, outType: => Value): Value =
+    evalSteps(matchOnStep(m, scrut0, env, outType))
+
+  /** `evalMatchOn` 's step: the chosen branch's body is its tail. */
+  private def matchOnStep(m: ETerm.Match, scrut0: Value, env: Env, outType: => Value): AnyRef = {
     val scrut = force(scrut0)
     val (ctorName, args) = scrut match {
       case ConstructorValue(head, fields) => (head.name, fields)
@@ -386,16 +431,17 @@ object Interpreter {
     }
     // A named equation, after the fields: the scrutinee is the case's constructor applied to them, so reflexivity.
     val newEnv = branch.equation.fold(fieldsEnv)(ref => fieldsEnv.putLocal(ref, MatchEquation.proof(env, scrut)))
-    evalTerm(branch.body, newEnv)
+    new Tail(branch.body, newEnv)
   }
 
-  def evalBody(body: ETerm.Body, env: Env): Value = {
+  /** A block's lets, in order; its result is its tail. */
+  private def bodyStep(body: ETerm.Body, env: Env): AnyRef = {
     val newEnv = body.lets.foldLeft(env) { case (curEnv, l) =>
       val res = evalTerm(l.value, curEnv)
       val instanceKey = if (l.isInstance) Some(InstanceSearch.instanceKey(l.localRef.name, res)) else None
       curEnv.putLocal(l.localRef, res, instanceKey)
     }
-    evalTerm(body.res, newEnv)
+    new Tail(body.res, newEnv)
   }
 
   private def putGlobal(env: Env, name: String, value: Value, isInstance: Boolean): Env =
