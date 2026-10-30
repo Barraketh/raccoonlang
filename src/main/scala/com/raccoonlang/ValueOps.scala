@@ -6,7 +6,10 @@ import com.raccoonlang.packed.Words
 object ValueOps {
 
   /** Transitively substitute solved dependencies and resume affected blocked computations before rebuilding values. */
-  def materialize(value: Value, eqStore: EqStore): Value = new Materializer(eqStore, DepSet.empty).materialize(value)
+  def materialize(value: Value, eqStore: EqStore): Value = {
+    val materializer = new Materializer(eqStore, DepSet.empty)
+    materializer.session(materializer.materialize(value))
+  }
 
   def materializeEnv(env: Env, eqStore: EqStore): Env = new Materializer(eqStore, DepSet.empty).materializeEnv(env)
 
@@ -16,24 +19,68 @@ object ValueOps {
    * (`Value.forcedDeps`). A proof call's own dependencies over-approximate its forced value's; this is the value eager
    * evaluation held where a link must not mention a variable that only a proof call's arguments mention (`EqStore`).
    */
-  def forceProofCalls(value: Value, eqStore: EqStore, ids: DepSet): Value =
-    new Materializer(eqStore, ids).materialize(value)
+  def forceProofCalls(value: Value, eqStore: EqStore, ids: DepSet): Value = {
+    val materializer = new Materializer(eqStore, ids)
+    materializer.session(materializer.materialize(value))
+  }
 
   /**
    * One materialization: the solved variables of `eqStore`, and the proof calls `forcing` names (`forceProofCalls`),
-   * which is empty for plain materialization, which keeps proof calls suspended.
+   * which is empty for plain materialization, which keeps proof calls suspended. It is a function of the value and the
+   * store, which are immutable, so within a session it materializes each value and environment, by identity, once: a
+   * graph whose parts are shared, such as a tree whose two children are one value, is rebuilt in time linear in its
+   * distinct parts, and keeps its sharing. A session is a root call, or the mapping of an environment that one
+   * returned, which runs later; between sessions it keeps no table, so a value holding a materialized environment does
+   * not retain the work that built it.
    */
-  private final class Materializer(eqStore: EqStore, forcing: DepSet) {
-    def materializeEnv(env: Env): Env = {
-      MappedEnv(env, value => materialize(value))
+  private[raccoonlang] final class Materializer(val eqStore: EqStore, forcing: DepSet) {
+    private var depth = 0
+    private var values: java.util.IdentityHashMap[Value, Value] = null
+    private var envs: java.util.IdentityHashMap[Env, Env] = null
+
+    /** `body`, whose materializations share their results, and those of any session it is inside. */
+    def session[A](body: => A): A = {
+      if (depth == 0) {
+        values = new java.util.IdentityHashMap[Value, Value]()
+        envs = new java.util.IdentityHashMap[Env, Env]()
+      }
+      depth += 1
+      try body
+      finally {
+        depth -= 1
+        if (depth == 0) {
+          values = null
+          envs = null
+        }
+      }
     }
+
+    def materializeEnv(env: Env): Env =
+      if (depth == 0) MappedEnv(env, this)
+      else {
+        val known = envs.get(env)
+        if (known ne null) known
+        else {
+          val mapped = MappedEnv(env, this)
+          envs.put(env, mapped)
+          mapped
+        }
+      }
 
     def materialize(value: Value): Value = {
       if (!mayNeedMaterialization(value)) return value
+      if (depth == 0) return session(materialize(value))
+      val known = values.get(value)
+      if (known ne null) return known
 
-      val resolved = Interpreter.resolveInEqStore(value, eqStore)
-      if (!mayNeedMaterialization(resolved)) return resolved
+      val resolved = Interpreter.resolveInEqStore(value, this)
+      val result = if (mayNeedMaterialization(resolved)) rebuild(resolved) else resolved
+      values.put(value, result)
+      if (resolved ne value) values.put(resolved, result)
+      result
+    }
 
+    private def rebuild(resolved: Value): Value =
       resolved match {
         case LevelTpe | KindTpe | KernelObject | PropTpe => resolved
         case level: Level                                => materializeLevel(level)
@@ -79,7 +126,6 @@ object ValueOps {
           if (call.forced ne null) next.forced = Interpreter.force(materialize(call.forced))
           if (next.synDeps.intersects(forcing)) materialize(Interpreter.force(next)) else next
       }
-    }
 
     private def mayChange(deps: DepSet): Boolean = deps.intersects(eqStore.solvedIds) || deps.intersects(forcing)
 
@@ -88,13 +134,13 @@ object ValueOps {
       (eqStore.subst.nonEmpty || forcing.nonEmpty) && mayChange(value.synDeps)
 
     private def materializeLevel(level: Level): Level =
-      Interpreter.resolveInEqStore(level, eqStore) match {
+      Interpreter.resolveInEqStore(level, this) match {
         case l: Level => l
         case other    => throw NotALevel(other)
       }
 
     private def materializeKind(kind: Kind): Kind =
-      Interpreter.resolveInEqStore(kind, eqStore) match {
+      Interpreter.resolveInEqStore(kind, this) match {
         case k: Kind => k
         case other   => throw NotAKind(other)
       }
@@ -151,10 +197,12 @@ object ValueOps {
     }
   }
 
-  private final case class MappedEnv(base: Env, mapValue: Value => Value) extends DelegatingEnv {
+  /** `base` with its local values materialized, all of them in one session, when one is first read. */
+  private final case class MappedEnv(base: Env, materializer: Materializer) extends DelegatingEnv {
     override def updateBase(newBase: Env): Env = copy(base = newBase)
 
-    override lazy val locals: Vector[Binding] = base.locals.map(_.mapValue(mapValue))
+    override lazy val locals: Vector[Binding] =
+      materializer.session(base.locals.map(_.mapValue(materializer.materialize)))
 
     override def localBinding(ref: CoreAst.LocalRef): Binding =
       if (ref.id >= 0 && ref.id < locals.length) locals(ref.id)

@@ -765,6 +765,14 @@ application evaluates its head and then its arguments to values, a block its
 lets and then its result, and a match its scrutinee before choosing a branch.
 The same evaluator runs a program's body once it has checked.
 
+A branch's refinement solves variables, and the checker reads values through it
+by materializing them: substituting the solutions and resuming the
+computations they blocked. Materialization is a function of the value and the
+solutions, so one materialization rebuilds each value and environment it
+meets, by identity, once: a graph whose parts are shared, such as a tree whose
+two children are one value, is rebuilt in time linear in its distinct parts,
+and stays shared.
+
 ### Proof calls
 
 A call to a checked lambda whose function type is a proposition (F2) is a
@@ -858,15 +866,15 @@ and a proof call are values at once; a demanded proof call runs its body in a
 loop of its own.
 
 Recursion outside tail position, and checking, recurse on the host stack. The
-CLI runs its whole
-pipeline on a thread whose stack `--stack` sets, 256 MB unless it is given. A
-stack overflow is caught only at the boundary of a declaration, the prelude's
-included, or of the program's body, and becomes `EvaluationTooDeep`, located
-at the whole declaration or body; no rule inside them observes one. The body's
-boundary covers checking and evaluating it, applying an entry to the root
-supply, and printing the result, which forces the proof calls in it. A demanded
-proof call runs where it is demanded, so its depth adds to its demander's. An
-overflow while loading, parsing or elaborating is not a diagnostic.
+CLI runs its whole pipeline on a thread whose stack `--stack` sets, 256 MB
+unless it is given. A stack overflow is caught only at the boundary of a
+declaration, the prelude's included, or of the program's body, and becomes
+`EvaluationTooDeep`, located at the whole declaration or body; no rule inside
+them observes one. The body's boundary covers checking and evaluating it,
+applying an entry to the root supply, and printing the result, which forces the
+proof calls in it. A demanded proof call runs where it is demanded, so its
+depth adds to its demander's. An overflow while loading, parsing or elaborating
+is not a diagnostic.
 
 ## Axioms
 

@@ -318,4 +318,27 @@ class ValueOpsTests extends munit.FunSuite {
     assertNotEquals(ctorA.key, ctorB.key)
     assert(!ValueEquivalence.defEq(ctorA, ctorB))
   }
+
+  test("materialization rebuilds a shared part once and keeps the sharing") {
+    val x = FreshVar.freshVar("x", valueType)
+    val node = symbolicValue("node")
+    // A tree whose two children are one value, `levels` deep: 2^levels paths through levels + 1 distinct values.
+    val levels = 16
+    val tree = (0 until levels).foldLeft[Value](VApp(symbolicValue("leaf"), Vector(x), valueType)) { (child, _) =>
+      VApp(node, Vector(child, child), valueType)
+    }
+
+    val materialized = ValueOps.materialize(tree, solve(x, symbolicValue("Solved")))
+
+    var current = materialized
+    (0 until levels).foreach { _ =>
+      current match {
+        case VApp(_, Vector(left, right), _, _) =>
+          assert(left eq right, "the shared child was rebuilt twice")
+          current = left
+        case other => fail(s"expected a node, got $other")
+      }
+    }
+    assert(!materialized.synDeps.contains(x.id))
+  }
 }

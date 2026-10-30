@@ -43,16 +43,24 @@ object Interpreter {
       Kind.join(joined, solved)
     }
 
+  /** `resolveInEqStore` in a materialization session of its own. */
+  def resolveInEqStore(v: Value, eqStore: EqStore): Value = {
+    val materializer = new ValueOps.Materializer(eqStore, DepSet.empty)
+    materializer.session(resolveInEqStore(v, materializer))
+  }
+
   /**
    * Force links and resume blocked computations when a scheduling dependency has been solved. Materialization handles
-   * transitive substitution of heads and arguments. Stop retrying when reduction returns the same blockers, even if a
-   * solved dependency remains syntactically present in an opaque result.
+   * transitive substitution of heads and arguments, in the session of `materializer`, whose store is `eqStore`. Stop
+   * retrying when reduction returns the same blockers, even if a solved dependency remains syntactically present in an
+   * opaque result.
    */
-  def resolveInEqStore(v: Value, eqStore: EqStore): Value = {
+  private[raccoonlang] def resolveInEqStore(v: Value, materializer: ValueOps.Materializer): Value = {
+    val eqStore = materializer.eqStore
     def retryUnlessStuckOn(next: Value, previousBlockers: DepSet): Value =
       next match {
         case Blocked(nextBlockers) if nextBlockers == previousBlockers => next
-        case _                                                         => resolveInEqStore(next, eqStore)
+        case _                                                         => resolveInEqStore(next, materializer)
       }
 
     val v0 = eqStore.force(v)
@@ -60,17 +68,18 @@ object Interpreter {
       case Blocked(blockerIds) if blockerIds.intersects(eqStore.solvedIds) =>
         v0 match {
           case VBlockedApp(h, args, tpe, oldBlockers) =>
-            val h0 = ValueOps.materialize(h, eqStore)
-            val materializedArgs = args.map(arg => ValueOps.materialize(arg, eqStore))
+            val h0 = materializer.materialize(h)
+            val materializedArgs = args.map(materializer.materialize)
             h0 match {
               case lam: VLam => retryUnlessStuckOn(runLam(lam, materializedArgs), oldBlockers)
               case nextHead @ ReductionBlockers(nextBlockers) =>
-                val next = VBlockedApp(nextHead, materializedArgs, ValueOps.materialize(tpe, eqStore), nextBlockers)
+                val next = VBlockedApp(nextHead, materializedArgs, materializer.materialize(tpe), nextBlockers)
                 retryUnlessStuckOn(next, oldBlockers)
               case other =>
-                resolveInEqStore(evalApply(other, materializedArgs), eqStore)
+                resolveInEqStore(evalApply(other, materializedArgs), materializer)
             }
-          case vm: NeutralThunk if vm.blockerIds.nonEmpty => retryUnlessStuckOn(forceThunk(vm, eqStore), vm.blockerIds)
+          case vm: NeutralThunk if vm.blockerIds.nonEmpty =>
+            retryUnlessStuckOn(forceThunk(vm, materializer), vm.blockerIds)
           case _ => throw WTF(s"Blocked extractor matched unexpected value $v0")
         }
 
@@ -292,8 +301,8 @@ object Interpreter {
     }
   }
 
-  private def forceThunk(thunk: NeutralThunk, eqStore: EqStore): Value =
-    evalMatch(thunk.term, ValueOps.materializeEnv(thunk.env, eqStore))
+  private def forceThunk(thunk: NeutralThunk, materializer: ValueOps.Materializer): Value =
+    evalMatch(thunk.term, materializer.materializeEnv(thunk.env))
 
   private def evalLam(l: ETerm.Lam, env: Env): VLam = {
     val vpi = evalPi(l.ty, env)

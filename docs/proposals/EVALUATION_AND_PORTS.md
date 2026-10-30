@@ -1,6 +1,7 @@
 # Checking cost, and what to port from `main-new`
 
-**Status: 2026-10-30. Findings and proposals, none adopted.** This comes
+**Status: 2026-10-30. Findings and proposals. §4's performance items 1–3
+are implemented on branch `perf-evaluation`; see their status lines.** This comes
 from profiling the GPU experiment's slowest module, and from comparing
 `main-new` with `main-clean` feature by feature; the two branches share no
 history. The two correctness ports below are taken into the kernel
@@ -121,4 +122,16 @@ These are already settled and not reassessed:
      *Status of #5: done on `perf-evaluation`: `Interpreter` steps return a
      tail, which `evalSteps` evaluates in a loop; `count(300000, 0)` runs on a
      1 MB stack.*
+     *Status of #6: done on `perf-evaluation`: `ValueOps.Materializer`
+     memoizes by identity within a session, a root call or the mapping of an
+     environment one returned, and keeps no table between sessions. The shared
+     24-level tree checks in 0.7 s, as its control does.*
   4. then re-measure, and decide on #7 and on §2's policy question 4.
+     *Status: re-measured on `perf-evaluation`. `GpuClientFootprint` 15.7 s →
+     1.7 s, `GpuClient` 2.0 s → 1.4 s, `GpuCounterexample` 2.2 s → 1.9 s, as
+     separate processes; the verifier's verdicts and diagnostics are unchanged.
+     A module's check is now mostly the JVM warming up: warm, in one process,
+     `GpuClientFootprint` checks in 0.1 s. Binding environments (§2 item 3) is
+     about a third of warm checking, but about a tenth of a cold run's
+     samples, so `main-new`'s prepared frames would pay only once checking
+     runs warm. #7 and the policy question remain open.*
