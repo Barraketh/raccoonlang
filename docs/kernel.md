@@ -108,7 +108,14 @@ rebuilds `Prod(Bool, Nat)`, and refuses the argument. A head that nests its
 argument deeper matches no argument at all: with
 `def S2 (A: Sort($u)) : Sort(u) := List(List(A))`, `S2($A)` opened on
 `List(List(Nat))` reads `A := List(Nat)`, rebuilds `List(List(List(Nat)))`,
-and refuses it. Both refusals are sound.
+and refuses it. A universe of constant kind has the positions of `Sort(l)` or
+`Lin(l)`, its level at position 0, and one of a variable kind has none: with
+`def L (u: Level) : Sort(Level.succ(u)) := Lin(u)`, `L($u)` opened on
+`Lin(Level.zero)` reads `u := Level.zero` and rebuilds it, and opened on
+`Type` reads the same level, rebuilds `Lin(Level.zero)`, and refuses it. So a
+head over `Univ` matches no universe: with
+`def U (k: Kind)(u: Level) : Sort(Level.succ(u)) := Univ(k, u)`, `U($k, $u)`
+finds no position 1. These refusals are sound.
 
 ## Function-type equality
 

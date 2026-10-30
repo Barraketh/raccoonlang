@@ -221,13 +221,23 @@ object TypePatternOps {
 
   /**
    * The value at `path` in `value`, read by position for `capture`. A position that `value` does not have is
-   * `FailedToOpenCapture`: the argument's type does not have the pattern's shape there.
+   * `FailedToOpenCapture`: the argument's type does not have the pattern's shape there. A universe of constant kind
+   * reads as `Sort(l)` or `Lin(l)`, with its level at position 0, and one of a variable kind has no position.
    */
   private def project(value: Value, path: List[Int], capture: CoreAst.LocalRef): Value = {
     def projectStep(value: Value, idx: Int): Value =
       value match {
-        case _ if idx == TypeOfStep   => value.tpe
+        case _ if idx == TypeOfStep => value.tpe
+        // A universe is read by position only under a head that computes, such as `L($u)` with an alias
+        // `L(u) := Lin(u)`; under a universe head, a capture is a level or kind capture (`openCaptures`). The read is
+        // the same at either constant kind, and only a guess. Argument checking, instance search (`tryCandidate`) and
+        // function-type equality (`defEqPi`) bind by `bindValueAndCheck`, which re-checks it (`checkOpenedPattern`):
+        // the level must be the alias's argument, and the type rebuilt from it, `L(l)`, must convert with the universe
+        // read. So `L($u)` opens on `Lin(l)` and is refused at `Sort(l)`, and an alias for `Sort` the other way round.
+        // `bindValue` reads without the check, on the fresh values of a pattern's own telescope, which fit by
+        // construction, and on an application's arguments when it is evaluated, which were checked first.
         case VSort(level) if idx == 0 => level
+        case VLin(level) if idx == 0  => level
         case ConstructorValue(_, fields) =>
           fields.lift(idx).getOrElse(throw FailedToOpenCapture(capture.name, value, idx))
         case VApp(_, args, _, _) => args.lift(idx).getOrElse(throw FailedToOpenCapture(capture.name, value, idx))

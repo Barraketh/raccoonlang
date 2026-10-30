@@ -257,16 +257,17 @@ final case class CaptureWithoutOpening(name: String, span: Option[Span] = None) 
       "a Level.succ of it, and a kind capture the kind itself"
 }
 
-/**
- * A type-pattern capture that cannot be read off an argument's type, which has no argument `idx` at the position the
- * capture reads: the type does not have the pattern's shape there, such as `Nat` for `Box($A)`, or `Lin(u)` for `L($u)`
- * with an alias `L(u) := Lin(u)`, which reads a universe's level by position only as `Sort` does.
- */
 /** A type pattern the checker cannot open, such as one with a capture under a projection. */
 final case class InvalidTypePattern(reason: String, span: Option[Span] = None) extends TypeError {
   override def msg: String = s"Invalid type pattern: $reason"
 }
 
+/**
+ * A type-pattern capture that cannot be read off an argument's type, which has no argument `idx` at the position the
+ * capture reads: the type does not have the pattern's shape there, such as `Nat` for `Box($A)`, or `Lin(u)` for
+ * `U($k, $u)` with an alias `U(k, u) := Univ(k, u)`, since a universe reads by position only as `Sort(l)` or `Lin(l)`,
+ * with its level at position 0.
+ */
 final case class FailedToOpenCapture(capture: String, v: Value, idx: Int, span: Option[Span] = None) extends TypeError {
   override def msg: String = s"The type-pattern capture $$$capture cannot be read off $v, which has no argument $idx"
 }

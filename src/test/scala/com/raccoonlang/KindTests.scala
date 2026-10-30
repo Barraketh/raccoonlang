@@ -177,14 +177,36 @@ class KindTests extends munit.FunSuite {
       "(A)",
       "Box(A)\n"
     )
-    // Through a user alias for Lin, the capture reads a universe's level by position, which only Sort has.
-    val alias =
-      base + "def L (u: Level) : Sort(Level.succ(u)) := Lin(u)\ninductive Box (A: Univ($k, $u)) : Univ(k, u)\n" +
-        " | mk (a: $A in L($u)) : Box(A)\n\ninductive LB : Lin(Level.zero)\n | mk (n: Nat) : LB\n\n"
-    val error = assertErrorAt[FailedToOpenCapture](alias + "def f (b: LB) : Box(LB) := Box.mk(b)\n", "(b)")
+    assertErrorAt[TypeMismatch](
+      base + "def L (u: Level) : Sort(Level.succ(u)) := Lin(u)\ninductive Box (A: Sort($u)) : Sort(u)\n | mk (a: $A in L($u)) : Box(A)\n",
+      "(A)",
+      "Box(A)\n"
+    )
+  }
+
+  // KERNEL_FOLLOWUPS 1.4: a capture through a user alias for Lin used to be FailedToOpenCapture.
+  test(
+    "a constructor capture through a user alias for Lin fits a kind-polymorphic parameter, and an alias for Univ does not open"
+  ) {
+    // The capture reads the universe's level at position 0, as through an alias for Sort, and the binding re-checks
+    // that L(Level.zero) converts with Lin(Level.zero). The box is linear.
+    def boxOf(alias: String, field: String): String =
+      base + alias + "inductive Box (A: Univ($k, $u)) : Univ(k, u)\n" +
+        s" | mk (a: $$A in $field) : Box(A)\n\ninductive LB : Lin(Level.zero)\n | mk (n: Nat) : LB\n\n"
+    val linAlias = boxOf("def L (u: Level) : Sort(Level.succ(u)) := Lin(u)\n", "L($u)")
+    run(linAlias + "def f (b: LB) : Box(LB) := Box.mk(b)\n")
+    assertErrorAt[LinearReused](
+      linAlias + "def f (b: Box(LB)) : Prod(Box(LB), Box(LB)) := Prod.mk(Box(LB), Box(LB), b, b)\n",
+      "b",
+      "b)\n"
+    )
+    // A universe reads only as Sort(l) or Lin(l), so an alias whose parameters are not those arguments in order still
+    // cannot be read: a located FailedToOpenCapture that names the capture.
+    val univAlias = boxOf("def U (k: Kind)(u: Level) : Sort(Level.succ(u)) := Univ(k, u)\n", "U($k, $u)")
+    val error = assertErrorAt[FailedToOpenCapture](univAlias + "def f (b: LB) : Box(LB) := Box.mk(b)\n", "(b)")
     assertEquals(
       error.getMessage,
-      "The type-pattern capture $u cannot be read off Lin(Level.zero), which has no argument 0"
+      "The type-pattern capture $u cannot be read off Lin(Level.zero), which has no argument 1"
     )
   }
 

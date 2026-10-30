@@ -648,17 +648,30 @@ class LinearEscapeTests extends munit.FunSuite {
 
   // ------------ Batch 2: universe level captures ------------
 
-  test("a user alias for Lin used as a capture constraint does not open on a linear type") {
-    rejects(
+  // A capture under an alias reads a universe's level at position 0 for Lin as for Sort; the binding re-checks that the
+  // alias rebuilds the universe read, L(Level.zero) as Lin(Level.zero) (KERNEL_FOLLOWUPS 1.4). Sound: useL is the
+  // identity on a linear value, used once.
+  test("a user alias for Lin used as a capture constraint opens on a linear type") {
+    accepts(
       lib +
         "def L (u: Level) : Sort(Level.succ(u)) := Lin(u)\n" +
         "def useL (x: $A in L($u)) : A := x\n" +
-        "def bad (xs: LNats) : Nat := count(useL(xs))\n"
+        "def f (xs: LNats) : Nat := count(useL(xs))\n"
     )
   }
 
+  test("a value captured through a user alias for Lin is linear") {
+    rejectsWith[LinearReused](
+      lib +
+        "def L (u: Level) : Sort(Level.succ(u)) := Lin(u)\n" +
+        "def dupL (x: $A in L($u)) : LPair(A, A) := LPair.mk(x, x)\n"
+    )
+  }
+
+  // Held by function-type equality: each telescope must admit the other's generic arguments, and a Lin(u) type is no
+  // S(u). Before the Lin alias opened, apply1 itself was refused.
   test("a Sort-alias capture function does not pass where a Lin-alias capture function is expected") {
-    rejects(
+    rejectsWith[TypeMismatch](
       lib +
         "def L (u: Level) : Sort(Level.succ(u)) := Lin(u)\n" +
         "def S (u: Level) : Sort(Level.succ(u)) := Sort(u)\n" +
@@ -672,8 +685,9 @@ class LinearEscapeTests extends munit.FunSuite {
     rejects(lib + "def Lin (l: Level) : Type := Nat\n")
   }
 
+  // The alias reads the level of Lin(Level.zero), and the re-check refuses LNats as a Foo.Lin(Level.zero), a Type.
   test("a namespace-local Lin alias for Sort does not turn a Lin pattern into a Sort pattern for a linear argument") {
-    rejects(
+    rejectsWith[TypeMismatch](
       lib +
         """
           |namespace Foo {
@@ -686,6 +700,135 @@ class LinearEscapeTests extends munit.FunSuite {
           |  Nat.add(count(a), count(b))
           |}
           |""".stripMargin
+    )
+  }
+
+  // ------------ Batch 2: universe aliases ------------
+
+  // A capture under an alias for a universe reads the universe's level at position 0, whichever constant kind it has.
+  // The attacks give an alias a universe of the other kind, which the binding's re-check refuses (`checkOpenedPattern`).
+  private val aliases =
+    lib +
+      "def L (u: Level) : Sort(Level.succ(u)) := Lin(u)\n" +
+      "def S (u: Level) : Sort(Level.succ(u)) := Sort(u)\n"
+
+  test("an alias opens only on the universe it names: L at Lin(Level.zero), S at Sort(Level.zero)") {
+    accepts(aliases + "def T (A: L($u)) : Nat := 0\ndef ok : Nat := T(LNats)\n")
+    accepts(aliases + "def T (A: S($u)) : Nat := 0\ndef ok : Nat := T(Nat)\n")
+    rejectsWith[TypeMismatch](aliases + "def T (A: L($u)) : Nat := 0\ndef bad : Nat := T(Nat)\n")
+    rejectsWith[TypeMismatch](aliases + "def T (A: S($u)) : Nat := 0\ndef bad : Nat := T(LNats)\n")
+    // The universe Lin(Level.zero) is in Sort(Level.one), whose level L rebuilds as Lin(Level.one).
+    rejectsWith[TypeMismatch](aliases + "def T (A: L($u)) : Nat := 0\ndef bad : Nat := T(Lin(Level.zero))\n")
+    // A universe of a variable kind has no position to read.
+    rejectsWith[FailedToOpenCapture](
+      aliases + "def useL (x: $A in L($u)) : A := x\ndef bad (A: Univ($k, $u))(x: A) : A := useL(x)\n"
+    )
+  }
+
+  test("a Sort alias does not copy a linear value: as a constraint, nested in a list, or as a cast to Sort") {
+    rejectsWith[TypeMismatch](
+      aliases + "def dupS (x: $A in S($u)) : Prod(A, A) := Prod.mk(A, A, x, x)\n" +
+        "def bad (xs: LNats) : Nat := {\n  let (a, b) := dupS(xs)\n  Nat.add(count(a), count(b))\n}\n"
+    )
+    rejectsWith[TypeMismatch](
+      aliases + "def dupList (xs: List($A in S($u))) : Prod(List(A), List(A)) := Prod.mk(List(A), List(A), xs, xs)\n" +
+        "def bad (xs: List(LNats)) : Nat := {\n  let (a, b) := dupList(xs)\n  0\n}\n"
+    )
+    rejectsWith[TypeMismatch](
+      aliases + "def CopyOf (A: S($u)) : Sort(u) := A\n" +
+        "def dup (A: S($u))(x: CopyOf(A)) : Prod(CopyOf(A), CopyOf(A)) := Prod.mk(CopyOf(A), CopyOf(A), x, x)\n" +
+        "def bad (xs: LNats) : Nat := {\n  let (a, b) := dup(LNats, xs)\n  Nat.add(count(a), count(b))\n}\n"
+    )
+  }
+
+  test("a Lin alias takes no copyable value, and a Lin-alias capture function does not pass for a Sort-alias one") {
+    rejectsWith[TypeMismatch](aliases + "def useL (x: $A in L($u)) : A := x\ndef bad (n: Nat) : Nat := useL(n)\n")
+    rejectsWith[TypeMismatch](
+      aliases + "def useL (x: $A in L($u)) : A := x\n" +
+        "def applyS (f: (x: $A in S($u)) -> A)(n: Nat) : Nat := f(n)\n" +
+        "def bad : Nat := applyS(useL, 3)\n"
+    )
+    // Control: the function passes for its own type.
+    accepts(
+      aliases + "def useL (x: $A in L($u)) : A := x\n" +
+        "def applyL (f: (x: $A in L($u)) -> A)(xs: LNats) : LNats := f(xs)\n" +
+        "def ok (xs: LNats) : Nat := count(applyL(useL, xs))\n"
+    )
+  }
+
+  test("a constructor field through a Lin alias stays linear, and one through a Sort alias takes no linear value") {
+    val box = aliases + "inductive LBox (A: Univ($k, $u)) : Univ(k, u)\n | mk (a: $A in L($u)) : LBox(A)\n\n"
+    accepts(box + "def ok (xs: LNats) : LBox(LNats) := LBox.mk(xs)\n")
+    rejectsWith[LinearReused](
+      box + "def bad (xs: LNats) : Prod(LBox(LNats), LBox(LNats)) := {\n  let b := LBox.mk(xs)\n" +
+        "  Prod.mk(LBox(LNats), LBox(LNats), b, b)\n}\n"
+    )
+    rejectsWith[LinearReused](
+      box + "def bad (b: LBox(LNats)) : Prod(LNats, LNats) := {\n  match b with\n" +
+        "  | LBox.mk a => Prod.mk(LNats, LNats, a, a)\n}\n"
+    )
+    rejectsWith[TypeMismatch](box + "def bad : LBox(Nat) := LBox.mk(3)\n")
+    // A copyable family cannot declare the Lin-alias field.
+    rejectsWith[TypeMismatch](aliases + "inductive CBox (A: Sort($u)) : Sort(u)\n | mk (a: $A in L($u)) : CBox(A)\n")
+    // A Sort-alias field, whose value a match may copy, is built at no linear value.
+    val sbox = aliases + "inductive SBox (A: Univ($k, $u)) : Univ(k, u)\n | mk (a: $A in S($u)) : SBox(A)\n\n"
+    accepts(sbox + "def ok : SBox(Nat) := SBox.mk(3)\n")
+    rejectsWith[TypeMismatch](
+      sbox + "def dup (s: SBox($A)) : Nat := {\n  match s with\n  | SBox.mk a => {\n" +
+        "    let p := Prod.mk(A, A, a, a)\n    0\n  }\n}\n" +
+        "def bad (xs: LNats) : Nat := dup(SBox.mk(xs))\n"
+    )
+  }
+
+  // A head's own parameter opens through the alias too: on fresh values where a pattern is declared or opened
+  // (`openPatternPrefix`), and on the values a binding reads, where it is re-checked.
+  test("a pattern head whose parameter is a Lin-alias or Sort-alias pattern keeps the alias's kind") {
+    val heads =
+      aliases +
+        "inductive W (A: Univ($k, $u)) : Sort(u)\n | mk {A: Univ($k, $u)} : W(A)\n\n" +
+        "def WL (A: L($u)) : Sort(u) := W(A)\ndef WS (A: S($u)) : Sort(u) := W(A)\n"
+    accepts(heads + "def keep (w: WL($B))(x: B) : B := x\ndef ok (xs: LNats) : Nat := count(keep(W.mk(LNats), xs))\n")
+    rejectsWith[LinearReused](heads + "def dupWL (w: WL($B))(x: B) : Prod(B, B) := Prod.mk(B, B, x, x)\n")
+    rejectsWith[TypeMismatch](heads + "def keep (w: WL($B)) : Nat := 0\ndef bad : Nat := keep(W.mk(Nat))\n")
+    rejectsWith[TypeMismatch](
+      heads + "def dupWS (w: WS($B))(x: B) : Prod(B, B) := Prod.mk(B, B, x, x)\n" +
+        "def bad (xs: LNats) : Nat := {\n  let (a, b) := dupWS(W.mk(LNats), xs)\n  Nat.add(count(a), count(b))\n}\n"
+    )
+  }
+
+  test("instance search through an alias pattern finds no copier for a linear type") {
+    val d =
+      aliases +
+        "inductive D (A: Univ($k, $u)) : Sort(u)\n | mk {A: Univ($k, $u)} (f: (x: A) -> Prod(A, A)) : D(A)\n\n" +
+        "def dup [d: D($A)] (x: A) : Prod(A, A) := {\n  match d with\n  | D.mk f => f(x)\n}\n"
+    val ds = "def instance ds (A: S($u)) : D(A) := D.mk(A, fun (x: A): Prod(A, A) => Prod.mk(A, A, x, x))\n"
+    accepts(d + ds + "def ok : Prod(Nat, Nat) := dup(derive[D(Nat)], 3)\n")
+    rejectsWith[NoInstanceFound](
+      d + ds + "def bad (xs: LNats) : Nat := {\n  let (a, b) := dup(derive[D(LNats)], xs)\n" +
+        "  Nat.add(count(a), count(b))\n}\n"
+    )
+    // A Lin-alias candidate cannot copy, and a Lin-alias instance binder would be a linear instance.
+    rejectsWith[LinearReused](
+      d + "def instance dl (A: L($u)) : D(A) := D.mk(A, fun (x: A): Prod(A, A) => Prod.mk(A, A, x, x))\n"
+    )
+    rejectsWith[LinearInstance](aliases + "def bad [x: $A in L($u)] : Nat := 0\n")
+  }
+
+  test("instance search opens a Lin-alias candidate on a linear type, and not on a copyable one") {
+    val mark =
+      aliases + "inductive Mark (A: Univ($k, $u)) : Sort(u)\n | mk {A: Univ($k, $u)} : Mark(A)\n\n" +
+        "def instance tl (A: L($u)) : Mark(A) := Mark.mk(A)\n"
+    accepts(mark + "def ok : Mark(LNats) := derive[Mark(LNats)]\n")
+    rejectsWith[NoInstanceFound](mark + "def bad : Mark(Nat) := derive[Mark(Nat)]\n")
+  }
+
+  // A universe reads only as Sort(l) or Lin(l), so K's capture reads a level, which the re-check refuses as a kind. The
+  // program is sound, so this is the limit of KERNEL_FOLLOWUPS 1.4, not an attack that the reading lets through.
+  test("an alias that takes a universe's kind reads the level, which is refused as a kind") {
+    rejectsWith[TypeMismatch](
+      aliases + "def K (k: Kind) : Sort(Level.one) := Univ(k, Level.zero)\n" +
+        "def useK (x: $A in K($k)) : A := x\n" +
+        "def bad (xs: LNats) : Nat := count(useK(xs))\n"
     )
   }
 

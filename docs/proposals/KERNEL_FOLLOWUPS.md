@@ -106,13 +106,19 @@ symptoms.
 
 ### 1.4 Smaller defects
 
-**Decided 2026-10-30:** for the open-name precedence, a selective open (`open X.{a}`) beats a name in the enclosing namespace, and a wildcard open keeps today's rule. The other defects are plain fixes. **Implemented:** names resolve to locals, then selective open aliases, then the enclosing namespaces, then wildcard aliases (`docs/namespaces.md`; `NamespaceTests`). `AlreadyDefined` is located at the redeclared name or binder. The capture mismatch is still reachable, as a `TypeMismatch` in a constructor's result or a pattern argument, and through a user alias for `Lin` as `FailedToOpenCapture`; both are located now, at the argument that does not fit, and the latter names the capture.
+**Decided 2026-10-30:** for the open-name precedence, a selective open (`open X.{a}`) beats a name in the enclosing namespace, and a wildcard open keeps today's rule. The other defects are plain fixes. **Implemented:** names resolve to locals, then selective open aliases, then the enclosing namespaces, then wildcard aliases (`docs/namespaces.md`; `NamespaceTests`). `AlreadyDefined` is located at the redeclared name or binder. The capture mismatch is still reachable, as a `TypeMismatch` in a constructor's result or a pattern argument, located at the argument that does not fit. A capture through a user alias for `Lin`, such as `$u` in `L($u)` with `L(u) := Lin(u)`, now opens as one through an alias for `Sort` does: a universe of constant kind reads as `Sort(l)` or `Lin(l)`, with its level at position 0, and the binding's re-check (`docs/kernel.md`, "Type patterns") requires `L(l)` to convert with the universe read, so a value opened through `L` stays linear (`LinearEscapeTests`, "universe aliases"; `KindTests`).
 
 - **Unlocated internal error.** A constructor capture that does not match its
   parameter's universe throws "Cannot return idx 0 of Lin(…)" with no location.
   It should be a located type error. (Fixed for `Sort` and `Lin` captures, which
-  now open on any universe and give a located `TypeMismatch`; a capture through
-  a user alias for `Lin` still reports it.)
+  now open on any universe and give a located `TypeMismatch`, and for a capture
+  through a user alias for `Lin`, which now opens. An alias whose parameters are
+  not the target's arguments in order is still refused: a two-parameter
+  `U(k, u) := Univ(k, u)`, since a universe reads only as `Sort(l)` or `Lin(l)`,
+  is a located `FailedToOpenCapture` that names the capture, and a permuted
+  `Flip(B, A) := Prod(A, B)` a `TypeMismatch` from the re-check. Accepting them
+  would need the alias unfolded in the pattern; **deferred 2026-10-30** until a
+  program needs it.)
 - **`AlreadyDefined` has no span**, so the redeclaration tests compare names.
 
 A design question rides along: **should opened names win over the enclosing
