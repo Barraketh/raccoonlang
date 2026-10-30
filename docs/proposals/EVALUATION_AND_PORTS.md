@@ -111,5 +111,8 @@ These are already settled and not reassessed:
      an occurs check, so the decisions they make conservative confirm them
      through forced values. `GpuClientFootprint` 16.1 s → 1.5 s.*
   2. #2 of §2, the environment instantiation;
+     *Status: done on `perf-evaluation`: `evalApply` instantiates a function
+     type only for a head that is no lambda, whose application's type needs
+     it. With proofs suspended, it saves little (`GpuClient` 1.37 s → 1.31 s).*
   3. #4, #5 and #6;
   4. then re-measure, and decide on #7 and on §2's policy question 4.

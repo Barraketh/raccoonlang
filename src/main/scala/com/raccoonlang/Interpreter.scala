@@ -184,33 +184,33 @@ object Interpreter {
   }
 
   /**
-   * `fn` applied to `vArgs`, which fit its binders. Applying a proof demands it. A checked lambda whose function type
-   * is a proposition is not run, outside a demanded proof: the application is a proof call (`VProofCall`), whose
-   * arguments are checked against the binders' count here, where running it would have checked them.
+   * `fn` applied to `vArgs`, which fit its binders. Applying a proof demands it. A lambda binds its arguments itself
+   * (`runLam`), or reads them as a native, so only their count is checked here; any other head's application has the
+   * head's codomain at them as its type. A checked lambda whose function type is a proposition is not run, outside a
+   * demanded proof: the application is a proof call (`VProofCall`).
    */
   def evalApply(fn: Value, vArgs: Vector[Value]): Value = {
     require(vArgs.nonEmpty, "evalApply requires at least one argument")
 
     force(fn) match {
-      case lam @ VLam(pi, _, _: LamBody.Core) if pi.tpe == PropTpe && forcing == 0 =>
+      case lam: VLam =>
+        val pi = lam.tpe
         if (pi.binders.length != vArgs.length) throw ArityMismatch(pi.binders.length, vArgs.length)
-        new VProofCall(lam, vArgs)
+        lam.body match {
+          case _: LamBody.Core if pi.tpe == PropTpe && forcing == 0 => new VProofCall(lam, vArgs)
+          case _                                                    => runLam(lam, vArgs)
+        }
       case head =>
         head.tpe match {
           case pi: VPi =>
-            val envWithArgs = getEnvWithArgs(pi, pi.env, vArgs)
+            def resultTy: Value = applicationType(pi, vArgs)
             head match {
-              case lam @ VLam(_, _, _) => runLam(lam, vArgs)
-              case h: VConst           => VApp(h, vArgs, pi.codomain(envWithArgs))
-              case h: ConstructorHead =>
-                val resultTy = pi.codomain(envWithArgs)
-                val fields = vArgs.drop(h.numErased)
-                ConstructorValue(h, fields, resultTy)
-              case blocker @ ReductionBlockers(blockerIds) =>
-                VBlockedApp(blocker, vArgs, pi.codomain(envWithArgs), blockerIds)
+              case h: VConst                               => VApp(h, vArgs, resultTy)
+              case h: ConstructorHead                      => ConstructorValue(h, vArgs.drop(h.numErased), resultTy)
+              case blocker @ ReductionBlockers(blockerIds) => VBlockedApp(blocker, vArgs, resultTy, blockerIds)
               // A neutral function with nothing to wait on, such as a field projection of an axiom or a stuck
               // application of one, applies to a neutral application (KERNEL_FOLLOWUPS 1.3).
-              case neutral @ (_: NeutralThunk | _: VApp) => VApp(neutral, vArgs, pi.codomain(envWithArgs))
+              case neutral @ (_: NeutralThunk | _: VApp) => VApp(neutral, vArgs, resultTy)
               case _                                     => throw CannotApplyNonFunction(head)
             }
           case _ => throw CannotApplyNonFunction(head.tpe)
