@@ -80,6 +80,11 @@ namespace False {
   def elim (h: False)(C: Sort($u)): C := {
     match h returning C with
   }
+
+  // `elim` into a proposition, which no `Sort(u)` holds.
+  def elimProp (h: False)(C: Prop): C := {
+    match h returning C with
+  }
 }
 
 inductive True : Prop
@@ -204,6 +209,79 @@ namespace Nat {
   def le (a: Nat)(b: Nat): Prop := Eq(Bool, Nat.ble(a, b), Bool.true)
 
   def lt (a: Nat)(b: Nat): Prop := Nat.le(Nat.succ(a), b)
+
+  def max (a: Nat)(b: Nat): Nat := Bool.cond(Nat.ble(a, b), Nat, b, a)
+
+  // Order laws. The native comparison cancels common terms, so `le(n, n)` and closed instances are definitional, and a
+  // comparison that computes to `false` is refuted by an empty match; the general laws are short recursions.
+  def lt_irrefl (n: Nat)(h: Nat.lt(n, n)): False := {
+    match h returning False with
+  }
+
+  def lt_ne (a: Nat)(b: Nat)(h: Nat.lt(a, b)): Not(Eq(Nat, a, b)) :=
+    fun (e: Eq(Nat, a, b)): False => Nat.lt_irrefl(b, Eq.substProp(e, fun (x: Nat): Prop => Nat.lt(x, b), h))
+
+  def lt_zero (g: Nat)(h: Nat.lt(g, 0))(C: Prop): C := {
+    match h returning C with
+  }
+
+  def le_succ (a: Nat)(b: Nat)(h: Nat.le(a, b)): Nat.le(a, Nat.succ(b)) decreases structural(a) := {
+    match a returning Nat.le(a, Nat.succ(b)) with
+    | Nat.zero => Eq.refl(Bool.true)
+    | Nat.succ a0 => {
+      match b returning Nat.le(Nat.succ(a0), Nat.succ(b)) with
+      | Nat.zero => {
+        match h returning Nat.le(Nat.succ(a0), 1) with
+      }
+      | Nat.succ b0 => Nat.le_succ(a0, b0, h)
+    }
+  }
+
+  def le_trans (a: Nat)(b: Nat)(c: Nat)(h1: Nat.le(a, b))(h2: Nat.le(b, c)): Nat.le(a, c) decreases structural(a) := {
+    match a returning Nat.le(a, c) with
+    | Nat.zero => Eq.refl(Bool.true)
+    | Nat.succ a0 => {
+      match b returning Nat.le(Nat.succ(a0), c) with
+      | Nat.zero => {
+        match h1 returning Nat.le(Nat.succ(a0), c) with
+      }
+      | Nat.succ b0 => {
+        match c returning Nat.le(Nat.succ(a0), c) with
+        | Nat.zero => {
+          match h2 returning Nat.le(Nat.succ(a0), 0) with
+        }
+        | Nat.succ c0 => Nat.le_trans(a0, b0, c0, h1, h2)
+      }
+    }
+  }
+
+  def lt_le (g: Nat)(n: Nat)(w: Nat)(lt: Nat.lt(g, n))(le: Nat.le(n, w)): Nat.lt(g, w) := Nat.le_trans(Nat.succ(g), n, w, lt, le)
+
+  // Totality: `not (a <= b)` gives `b <= a`.
+  def ble_flip (a: Nat)(b: Nat)(h: Eq(Bool, Nat.ble(a, b), Bool.false)): Nat.le(b, a) decreases structural(a) := {
+    match a returning Nat.le(b, a) with
+    | Nat.zero => {
+      match h returning Nat.le(b, 0) with
+    }
+    | Nat.succ a0 => {
+      match b returning Nat.le(b, Nat.succ(a0)) with
+      | Nat.zero => Eq.refl(Bool.true)
+      | Nat.succ b0 => Nat.ble_flip(a0, b0, h)
+    }
+  }
+
+  // `max` by the comparison it makes, read off an equation for it.
+  def le_max_left (a: Nat)(b: Nat): Nat.le(a, Nat.max(a, b)) :=
+    (fun (c: Bool)(e: Eq(Bool, Nat.ble(a, b), c)): Nat.le(a, Bool.cond(c, Nat, b, a)) => match c returning Nat.le(a, Bool.cond(c, Nat, b, a)) with
+      | Bool.true => e
+      | Bool.false => Eq.refl(Bool.true)
+    )(Nat.ble(a, b), Eq.refl(Nat.ble(a, b)))
+
+  def le_max_right (a: Nat)(b: Nat): Nat.le(b, Nat.max(a, b)) :=
+    (fun (c: Bool)(e: Eq(Bool, Nat.ble(a, b), c)): Nat.le(b, Bool.cond(c, Nat, b, a)) => match c returning Nat.le(b, Bool.cond(c, Nat, b, a)) with
+      | Bool.true => Eq.refl(Bool.true)
+      | Bool.false => Nat.ble_flip(a, b, e)
+    )(Nat.ble(a, b), Eq.refl(Nat.ble(a, b)))
 }
 
 inductive Option (A: Univ($k, $u)) : Univ(k, u)
@@ -308,6 +386,173 @@ namespace List {
     | List.cons head tail => {
       let rest := List.filter(tail, p)
       Bool.cond(p(head), List(A), List.cons(head, rest), rest)
+    }
+  }
+}
+
+// Permutations, membership and `flatMap`. As above, everything is universe-polymorphic, and an element type is captured
+// from the first argument that determines it, a list, a `Perm`, a `Mem` or an element (`List($A in Sort($u))`,
+// `$A in Sort($u)`). Element types are copyable, since permutations, membership and equations of lists are over copyable
+// data; an element type that first appears in a function argument is an explicit `(A: Sort($u))`.
+namespace List {
+  // Laws of the kernel's `List.Perm`.
+  namespace Perm {
+    def refl (xs: List($A in Sort($u))): Perm(A, xs, xs) decreases structural(xs) := {
+      match xs returning Perm(A, xs, xs) with
+      | List.nil => Perm.nil(A)
+      | List.cons x rest => Perm.cons(A, x, rest, rest, Perm.refl(rest))
+    }
+
+    def of_eq (xs: List($A in Sort($u)))(ys: List(A))(e: Eq(List(A), xs, ys)): Perm(A, xs, ys) :=
+      Eq.substProp(e, fun (zs: List(A)): Prop => Perm(A, xs, zs), Perm.refl(xs))
+
+    def symm (xs: List($A in Sort($u)))(ys: List(A))(p: Perm(A, xs, ys)): Perm(A, ys, xs) decreases structural(p) := {
+      match p returning Perm(A, ys, xs) with
+      | .nil => Perm.nil(A)
+      | .cons x l1 l2 q => Perm.cons(A, x, l2, l1, Perm.symm(l1, l2, q))
+      | .swap x y l => Perm.swap(A, y, x, l)
+      | .trans l1 l2 l3 q1 q2 => Perm.trans(A, l3, l2, l1, Perm.symm(l2, l3, q2), Perm.symm(l1, l2, q1))
+    }
+
+    def append_right (xs: List($A in Sort($u)))(ys: List(A))(F: List(A))(p: Perm(A, xs, ys)):
+        Perm(A, List.append(xs, F), List.append(ys, F)) decreases structural(p) := {
+      match p returning Perm(A, List.append(xs, F), List.append(ys, F)) with
+      | .nil => Perm.refl(F)
+      | .cons x l1 l2 q => Perm.cons(A, x, List.append(l1, F), List.append(l2, F), Perm.append_right(l1, l2, F, q))
+      | .swap x y l => Perm.swap(A, x, y, List.append(l, F))
+      | .trans l1 l2 l3 q1 q2 => Perm.trans(A, List.append(l1, F), List.append(l2, F), List.append(l3, F),
+          Perm.append_right(l1, l2, F, q1), Perm.append_right(l2, l3, F, q2))
+    }
+
+    def append_left (F: List($A in Sort($u)))(xs: List(A))(ys: List(A))(p: Perm(A, xs, ys)):
+        Perm(A, List.append(F, xs), List.append(F, ys)) decreases structural(F) := {
+      match F returning Perm(A, List.append(F, xs), List.append(F, ys)) with
+      | List.nil => p
+      | List.cons f rest => Perm.cons(A, f, List.append(rest, xs), List.append(rest, ys), Perm.append_left(rest, xs, ys, p))
+    }
+
+    // `a :: (xs ++ ys) ~ xs ++ (a :: ys)`.
+    def middle (a: $A in Sort($u))(xs: List(A))(ys: List(A)):
+        Perm(A, List.cons(a, List.append(xs, ys)), List.append(xs, List.cons(a, ys))) decreases structural(xs) := {
+      match xs returning Perm(A, List.cons(a, List.append(xs, ys)), List.append(xs, List.cons(a, ys))) with
+      | List.nil => Perm.refl(List.cons(a, ys))
+      | List.cons x rest => Perm.trans(A, List.cons(a, List.cons(x, List.append(rest, ys))), List.cons(x, List.cons(a, List.append(rest, ys))),
+          List.cons(x, List.append(rest, List.cons(a, ys))),
+          Perm.swap(A, x, a, List.append(rest, ys)), Perm.cons(A, x, List.cons(a, List.append(rest, ys)), List.append(rest, List.cons(a, ys)), Perm.middle(a, rest, ys)))
+    }
+
+    def append_comm (xs: List($A in Sort($u)))(ys: List(A)): Perm(A, List.append(xs, ys), List.append(ys, xs)) decreases structural(xs) := {
+      match xs returning Perm(A, List.append(xs, ys), List.append(ys, xs)) with
+      | List.nil => Perm.refl(ys)
+      | List.cons x rest => Perm.trans(A, List.cons(x, List.append(rest, ys)), List.cons(x, List.append(ys, rest)), List.append(ys, List.cons(x, rest)),
+          Perm.cons(A, x, List.append(rest, ys), List.append(ys, rest), Perm.append_comm(rest, ys)), Perm.middle(x, ys, rest))
+    }
+
+    // `ys ++ (xs ++ F) ~ xs ++ (ys ++ F)`.
+    def swap_front (xs: List($A in Sort($u)))(ys: List(A))(F: List(A)):
+        Perm(A, List.append(ys, List.append(xs, F)), List.append(xs, List.append(ys, F))) := {
+      let left := List.append_assoc(ys, xs, F)
+      let right := List.append_assoc(xs, ys, F)
+      let mid := Perm.append_right(List.append(ys, xs), List.append(xs, ys), F, Perm.append_comm(ys, xs))
+      Eq.substProp(right, fun (zs: List(A)): Prop => Perm(A, List.append(ys, List.append(xs, F)), zs),
+        Eq.substProp(left, fun (zs: List(A)): Prop => Perm(A, zs, List.append(List.append(xs, ys), F)), mid))
+    }
+  }
+
+  // `Mem(A, a, xs)`: `a` is an element of `xs`.
+  inductive Mem (A: Sort($u)) indices (a: A)(xs: List(A)) : Prop
+   | head (a: $A in Sort($u))(xs: List(A)) : Mem(A, a, List.cons(a, xs))
+   | tail (a: $A in Sort($u))(x: A)(xs: List(A))(m: Mem(A, a, xs)) : Mem(A, a, List.cons(x, xs))
+
+  namespace Mem {
+    def nil_absurd (a: $A in Sort($u))(m: Mem(A, a, List.nil(A)))(C: Prop): C := {
+      match m returning C with
+    }
+
+    // One position of a cons cell: the head, or a member of the tail.
+    def cons_cases (a: $A in Sort($u))(x: A)(xs: List(A))(m: Mem(A, a, List.cons(x, xs))): Or(Eq(A, a, x), Mem(A, a, xs)) := {
+      match m returning Or(Eq(A, a, x), Mem(A, a, xs)) with
+      | .head y ys => Or.inl(Mem(A, y, ys), Eq.refl(y))
+      | .tail y z zs old => Or.inr(Eq(A, y, z), old)
+    }
+
+    def append_left (a: $A in Sort($u))(xs: List(A))(ys: List(A))(m: Mem(A, a, xs)): Mem(A, a, List.append(xs, ys)) decreases structural(m) := {
+      match m returning Mem(A, a, List.append(xs, ys)) with
+      | .head y zs => Mem.head(y, List.append(zs, ys))
+      | .tail y z zs old => Mem.tail(y, z, List.append(zs, ys), Mem.append_left(y, zs, ys, old))
+    }
+
+    def append_right (a: $A in Sort($u))(xs: List(A))(ys: List(A))(m: Mem(A, a, ys)): Mem(A, a, List.append(xs, ys)) decreases structural(xs) := {
+      match xs returning Mem(A, a, List.append(xs, ys)) with
+      | List.nil => m
+      | List.cons x rest => Mem.tail(a, x, List.append(rest, ys), Mem.append_right(a, rest, ys, m))
+    }
+
+    def perm (a: $A in Sort($u))(xs: List(A))(ys: List(A))(p: Perm(A, xs, ys))(m: Mem(A, a, xs)): Mem(A, a, ys) decreases structural(p) := {
+      match p returning Mem(A, a, ys) with
+      | .nil => m
+      | .cons x l1 l2 q => {
+        match Mem.cons_cases(a, x, l1, m) returning Mem(A, a, List.cons(x, l2)) with
+        | Or.inl e => Eq.substProp(Eq.symm(e), fun (z: A): Prop => Mem(A, z, List.cons(x, l2)), Mem.head(x, l2))
+        | Or.inr old => Mem.tail(a, x, l2, Mem.perm(a, l1, l2, q, old))
+      }
+      | .swap x y l => {
+        match Mem.cons_cases(a, y, List.cons(x, l), m) returning Mem(A, a, List.cons(x, List.cons(y, l))) with
+        | Or.inl e => Eq.substProp(Eq.symm(e), fun (z: A): Prop => Mem(A, z, List.cons(x, List.cons(y, l))), Mem.tail(y, x, List.cons(y, l), Mem.head(y, l)))
+        | Or.inr rest => {
+          match Mem.cons_cases(a, x, l, rest) returning Mem(A, a, List.cons(x, List.cons(y, l))) with
+          | Or.inl e => Eq.substProp(Eq.symm(e), fun (z: A): Prop => Mem(A, z, List.cons(x, List.cons(y, l))), Mem.head(x, List.cons(y, l)))
+          | Or.inr old => Mem.tail(a, x, List.cons(y, l), Mem.tail(a, y, l, old))
+        }
+      }
+      | .trans l1 l2 l3 q1 q2 => Mem.perm(a, l2, l3, q2, Mem.perm(a, l1, l2, q1, m))
+    }
+  }
+
+  // `flatMap(xs, B, f)`: `f` of each element, concatenated.
+  def flatMap (xs: List($A in Sort($u)))(B: Sort($v))(f: A -> List(B)): List(B) decreases structural(xs) := {
+    match xs returning List(B) with
+    | List.nil => List.nil(B)
+    | List.cons x rest => List.append(f(x), flatMap(rest, B, f))
+  }
+
+  namespace flatMap {
+    def append (A: Sort($u))(B: Sort($v))(f: A -> List(B))(xs: List(A))(ys: List(A)):
+        Eq(List(B), flatMap(List.append(xs, ys), B, f), List.append(flatMap(xs, B, f), flatMap(ys, B, f))) decreases structural(xs) := {
+      match xs returning Eq(List(B), flatMap(List.append(xs, ys), B, f), List.append(flatMap(xs, B, f), flatMap(ys, B, f))) with
+      | List.nil => Eq.refl(flatMap(ys, B, f))
+      | List.cons x rest => Eq.trans(congrArg(flatMap.append(A, B, f, rest, ys), List(B), fun (zs: List(B)): List(B) => List.append(f(x), zs)),
+          Eq.symm(List.append_assoc(f(x), flatMap(rest, B, f), flatMap(ys, B, f))))
+    }
+
+    def perm (A: Sort($u))(B: Sort($v))(f: A -> List(B))(xs: List(A))(ys: List(A))(p: Perm(A, xs, ys)):
+        Perm(B, flatMap(xs, B, f), flatMap(ys, B, f)) decreases structural(p) := {
+      match p returning Perm(B, flatMap(xs, B, f), flatMap(ys, B, f)) with
+      | .nil => Perm.nil(B)
+      | .cons x l1 l2 q => Perm.append_left(f(x), flatMap(l1, B, f), flatMap(l2, B, f), flatMap.perm(A, B, f, l1, l2, q))
+      | .swap x y l => Perm.swap_front(f(x), f(y), flatMap(l, B, f))
+      | .trans l1 l2 l3 q1 q2 => Perm.trans(B, flatMap(l1, B, f), flatMap(l2, B, f), flatMap(l3, B, f), flatMap.perm(A, B, f, l1, l2, q1), flatMap.perm(A, B, f, l2, l3, q2))
+    }
+
+    def assoc (A: Sort($u))(B: Sort($v))(C: Sort($w))(f: A -> List(B))(g: B -> List(C))(xs: List(A)):
+        Eq(List(C), flatMap(flatMap(xs, B, f), C, g), flatMap(xs, C, fun (a: A): List(C) => flatMap(f(a), C, g))) decreases structural(xs) := {
+      match xs returning Eq(List(C), flatMap(flatMap(xs, B, f), C, g), flatMap(xs, C, fun (a: A): List(C) => flatMap(f(a), C, g))) with
+      | List.nil => Eq.refl(List.nil(C))
+      | List.cons x rest => Eq.trans(flatMap.append(B, C, g, f(x), flatMap(rest, B, f)),
+          congrArg(flatMap.assoc(A, B, C, f, g, rest), List(C), fun (zs: List(C)): List(C) => List.append(flatMap(f(x), C, g), zs)))
+    }
+
+    def singleton (xs: List($A in Sort($u))): Eq(List(A), flatMap(xs, A, fun (a: A): List(A) => List.cons(a, List.nil(A))), xs) decreases structural(xs) := {
+      match xs returning Eq(List(A), flatMap(xs, A, fun (a: A): List(A) => List.cons(a, List.nil(A))), xs) with
+      | List.nil => Eq.refl(List.nil(A))
+      | List.cons x rest => congrArg(flatMap.singleton(rest), List(A), fun (zs: List(A)): List(A) => List.cons(x, zs))
+    }
+
+    def mem (A: Sort($u))(B: Sort($v))(f: A -> List(B))(xs: List(A))(a: A)(b: B)(inside: Mem(A, a, xs))(here: Mem(B, b, f(a))):
+        Mem(B, b, flatMap(xs, B, f)) decreases structural(inside) := {
+      match inside returning Mem(B, b, flatMap(xs, B, f)) with
+      | .head y ys => Mem.append_left(b, f(y), flatMap(ys, B, f), here)
+      | .tail y z zs old => Mem.append_right(b, f(z), flatMap(zs, B, f), flatMap.mem(A, B, f, zs, y, b, old, here))
     }
   }
 }

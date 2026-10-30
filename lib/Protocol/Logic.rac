@@ -7,10 +7,8 @@ namespace Logic {
 
   def inr (a: Prop)(y: $b in Prop): Or(a, b) := Or.inr(a, y)
 
-  // The prelude's `False.elim` targets `Sort(u)`, which excludes propositions.
-  def absurd (h: False)(C: Prop): C := {
-    match h returning C with
-  }
+  // The prelude's `False.elimProp`, kept under this name for its users.
+  def absurd (h: False)(C: Prop): C := False.elimProp(h, C)
 
   def falseNeTrue (h: Eq(Bool, Bool.false, Bool.true))(C: Prop): C := {
     match h returning C with

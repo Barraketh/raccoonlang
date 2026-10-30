@@ -80,6 +80,8 @@ Note that at this point I have done 0 optimization - these performance wins are 
   `append(l, nil) = l` definitional; native `length` maps lists to Nat sums, so the length law
   `length(append(l, r)) = length(l) + length(r)` holds by conversion
     - Associativity is the prelude theorem `List.append_assoc`; it computes whenever the first list ends in `nil`
+    - The prelude also has membership (`List.Mem`), the laws of the kernel's `List.Perm`, `List.flatMap` with its laws,
+      `Nat.max` and the order laws of `Nat.le` and `Nat.lt`
     - See [kernel lists](docs/packed_lists.md#kernel-list)
 - Kernel `Char` and `String` with string literals `"…"`: JSON-style escapes (`\"`, `\\`, `\/`, `\b`, `\f`, `\n`,
   `\r`, `\t`, `\uXXXX`, with surrogate pairs for scalars beyond U+FFFF) denoting Unicode scalar values; the prelude's
@@ -389,8 +391,9 @@ At a linear `xs`, `count(xs)` after `count(xs)` is `LinearReused`, while a branc
 - `Packets`: `append`, `split`, `exchange`, `swap`, a framed step, and token-first `inspect`, which observes a packet
   and returns it with a fact;
 - the building blocks `Exclusive` and `Shares`;
-- support: `Lists` (membership, `Every`, `Pairwise`, `Nodup`, `flatMap`, permutation lemmas), `Nats` (order laws) and
-  `Logic`.
+- support: `Lists` (`Subset`, `Every`, `Pairwise`, `Nodup`) and `Logic`. Membership (`List.Mem`), the `List.Perm`
+  laws, `List.flatMap`, `Nat.max`, the `Nat.le`/`Nat.lt` order laws and `False.elimProp` are in the prelude; `Nats`
+  remains, empty, for its importers.
 
 Protocol theorems hold only without user axioms, so run them with `--no-user-axioms`. See
 [resource protocols](docs/kernel.md#the-protocol-library).

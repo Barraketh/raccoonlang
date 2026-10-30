@@ -177,6 +177,51 @@ class PreludeTests extends munit.FunSuite {
     assertEquals(ctorName(byCases), "Nat.zero")
   }
 
+  // KERNEL_FOLLOWUPS §4: what lib/Protocol had to supply, which needs no import now.
+  test("Prelude False.elimProp, Nat.max and the order laws check and apply") {
+    typecheckDecls(
+      """
+        |def fromFalse (h: False): Eq(Nat, 0, 1) := False.elimProp(h, Eq(Nat, 0, 1))
+        |def irrefl (n: Nat)(h: Nat.lt(n, n)): False := Nat.lt_irrefl(n, h)
+        |def apart (a: Nat)(b: Nat)(h: Nat.lt(a, b)): Not(Eq(Nat, a, b)) := Nat.lt_ne(a, b, h)
+        |def belowZero (g: Nat)(h: Nat.lt(g, 0)): False := Nat.lt_zero(g, h, False)
+        |def widened : Nat.lt(2, 7) := Nat.lt_le(2, 5, 7, Eq.refl(Bool.true), Eq.refl(Bool.true))
+        |def chain (a: Nat)(b: Nat)(c: Nat)(x: Nat.le(a, b))(y: Nat.le(b, c)): Nat.le(a, Nat.succ(c)) :=
+        |  Nat.le_succ(a, c, Nat.le_trans(a, b, c, x, y))
+        |def flip (a: Nat)(b: Nat)(h: Eq(Bool, Nat.ble(a, b), Bool.false)): Nat.le(b, a) := Nat.ble_flip(a, b, h)
+        |def bounds (a: Nat)(b: Nat): And(Nat.le(a, Nat.max(a, b)), Nat.le(b, Nat.max(a, b))) :=
+        |  And.intro(Nat.le(a, Nat.max(a, b)), Nat.le(b, Nat.max(a, b)), Nat.le_max_left(a, b), Nat.le_max_right(a, b))
+        |""".stripMargin
+    )
+    assertEquals(runProgram("Nat.max(3, 5)\n").toString, "5")
+    assertEquals(runProgram("Nat.max(5, 3)\n").toString, "5")
+  }
+
+  test("Prelude List.Mem, the List.Perm laws and List.flatMap check and apply") {
+    typecheckDecls(
+      """
+        |def xs : List(Nat) := List.cons(1, List.cons(2, List.nil(Nat)))
+        |def ys : List(Nat) := List.cons(2, List.cons(1, List.nil(Nat)))
+        |def swapped : List.Perm(Nat, xs, ys) := List.Perm.swap(Nat, 2, 1, List.nil(Nat))
+        |def back : List.Perm(Nat, ys, xs) := List.Perm.symm(xs, ys, swapped)
+        |def two : List.Mem(Nat, 2, xs) := List.Mem.tail(2, 1, List.cons(2, List.nil(Nat)), List.Mem.head(2, List.nil(Nat)))
+        |def moved : List.Mem(Nat, 2, ys) := List.Mem.perm(2, xs, ys, swapped, two)
+        |def none (m: List.Mem(Nat, 3, List.nil(Nat))): False := List.Mem.nil_absurd(3, m, False)
+        |def doubled (zs: List(Nat)): List(Nat) := List.flatMap(zs, Nat, fun (n: Nat): List(Nat) => List.cons(n, List.cons(n, List.nil(Nat))))
+        |def unit (zs: List(Nat)): Eq(List(Nat), List.flatMap(zs, Nat, fun (a: Nat): List(Nat) => List.cons(a, List.nil(Nat))), zs) :=
+        |  List.flatMap.singleton(zs)
+        |def permuted : List.Perm(Nat, doubled(xs), doubled(ys)) :=
+        |  List.flatMap.perm(Nat, Nat, fun (n: Nat): List(Nat) => List.cons(n, List.cons(n, List.nil(Nat))), xs, ys, swapped)
+        |""".stripMargin
+    )
+    assertEquals(
+      runProgram(
+        "List.length(List.flatMap(List.cons(1, List.cons(2, List.nil(Nat))), Nat, fun (n: Nat): List(Nat) => List.cons(n, List.cons(n, List.nil(Nat)))))\n"
+      ).toString,
+      "4"
+    )
+  }
+
   test("Prelude Bool and Nat APIs reduce") {
     val boolRes =
       runProgram(

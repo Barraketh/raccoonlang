@@ -435,10 +435,15 @@ catch it.
 
 ## 4 Not kernel
 
-- **Prelude gaps:**
-  - `False.elim` into a proposition (Track A);
-  - `max` and the order lemmas for `≤` and `<` (`lib/Protocol/Nats` has some);
-  - list `Mem`, `Perm` lemmas and `flatMap` (`lib/Protocol/Lists`).
+- **Prelude gaps** (**filled 2026-10-30**, `PreludeTests`):
+  - `False.elim` into a proposition (Track A) (now `False.elimProp`);
+  - `max` and the order lemmas for `≤` and `<` (`lib/Protocol/Nats` has some)
+    (now `Nat.max`, `Nat.le_max_left` and `Nat.le_max_right`, and `Nats`'s
+    laws under their names; `Nats` stays, empty, for its importers);
+  - list `Mem`, `Perm` lemmas and `flatMap` (`lib/Protocol/Lists`) (moved
+    under their names, with `flatMap`'s laws stated with lambdas; `Subset`,
+    `Every`, `Pairwise`, `Nodup` and the maps `single` and `compose` stay in
+    the library, which still checks).
 - **Parser** (**fixed 2026-10-30**, `ParserTests`; README, "Syntax and layout";
   EVALUATION_AND_PORTS #10, from `main-new`'s `ef5a2d31`, `c352d5bd` and
   `d50f04ee`):

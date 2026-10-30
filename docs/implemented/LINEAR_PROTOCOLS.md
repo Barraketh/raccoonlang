@@ -286,8 +286,9 @@ kernel declarations ([The protocol library](../kernel.md#the-protocol-library)).
 over a `Proto`, as the kernel families take one; `Morphism` has
 `transport`, `pullback` and `comp`; `Packets` has `append`, `split`,
 `exchange`, `swap`, a framed `step` and the token-first `inspect`; `Exclusive`
-and `Shares` are building blocks; `Lists`, `Nats` and `Logic` hold supporting
-lemmas. Packets travel in the kernel's kind-polymorphic `List` and the
+and `Shares` are building blocks; `Lists` and `Logic` hold supporting
+lemmas, beyond the prelude's membership, permutation, `flatMap` and order
+laws. Packets travel in the kernel's kind-polymorphic `List` and the
 prelude's `Prod`, with `Fact` for a proof beside them, and `Eq.subst` moves a
 packet along an equation of its index.
 
