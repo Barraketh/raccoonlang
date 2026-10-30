@@ -71,11 +71,29 @@ It was measured at `78a5f3a6`, using JFR, call counters and a width sweep.
    `Vector :+` per local, the rebuilt wrapper, and `zip` and `foldLeft` in
    `instantiateFull`: about 55% of the eager profile. `main-new`'s prepared
    frames are the full version. Not measured.
-4. **A policy question, not prototyped: keep a match from a suspended proof
-   into `Prop` suspended.** Proofs that are demanded only for small
+4. **A policy question: keep a match from a suspended proof into `Prop`
+   suspended.** Proofs that are demanded only for small
    elimination would then cost nothing. But the checker's known-constructor
    path would then require every case that is reachable by type, and fields
    would become fresh variables.
+   *Status: prototyped on `proof-match-suspension`, pending your decision
+   (kernel.md, "Proof calls"). A match from a suspended proof into a
+   proposition is a proof match, `VProofMatch`, and applying a suspended
+   proof of a function proposition is a proof application, `VProofApply`. The
+   checker reads such a scrutinee by its proposition and checks the match by
+   type, whatever forced it before; a stated large motive still forces it. Of
+   the 888-program corpus, 5 change, all of the expected kind: 2 become
+   `MissingCase` and 3 are no longer `UnreachableCase`. Of the 1,652 programs
+   the test suites ran, 11 change outcome, each in a test whose expectation
+   changed, and one reports its `MissingCase` at another match. One new
+   over-rejection is pinned: recursion on a field of a matched proof call
+   whose forced value was a proof variable (pm-5). port-2's
+   1,000,000-step chain checks on 4 MiB once dependencies are also computed in
+   a loop. GPU verifier: verdicts unchanged, 28/29 with the known
+   `LambdaInType` friction difference, and diagnostics unchanged but for
+   variable numbers. `GpuCounterexample` 1.94 s →
+   1.46 s cold, 320 → 106 ms warm; `GpuClientFootprint` and `GpuClient`
+   unchanged.*
 
 ## 3 Candidates from `main-new`
 
@@ -134,4 +152,5 @@ These are already settled and not reassessed:
      `GpuClientFootprint` checks in 0.1 s. Binding environments (§2 item 3) is
      about a third of warm checking, but about a tenth of a cold run's
      samples, so `main-new`'s prepared frames would pay only once checking
-     runs warm. #7 and the policy question remain open.*
+     runs warm. #7 remains open; the policy question is prototyped, see §2
+     item 4.*
