@@ -334,6 +334,23 @@ class SuspensionAttackTests extends munit.FunSuite {
     )
   }
 
+  test("term-14 a candidate whose forcing for the key test is NatValueTooLarge is refused with it") {
+    // The comparison forces the candidate, which eager evaluation ran as the call's argument.
+    rejectsWith[NatValueTooLarge](
+      acc +
+        """
+          |def bigAcc (n: Nat)(h: Acc2) : Acc2 := {
+          |  let x := Nat.pow(2, n)
+          |  h
+          |}
+          |def walk (h: Acc2) : True decreases structural(h) := {
+          |  match h returning True with
+          |  | Acc2.step h1 => walk(bigAcc(4294967296, h1))
+          |}
+          |""".stripMargin
+    )
+  }
+
   // ------------------------------------------------------------------------------------------------------------------
   // 2. Hidden failures: what an undemanded proof's run would raise. Only exhausting a resource is skipped.
   // ------------------------------------------------------------------------------------------------------------------
@@ -794,6 +811,23 @@ class SuspensionAttackTests extends munit.FunSuite {
           |}
           |""".stripMargin
     )
+  }
+
+  test("memo-4 a demanded run that fails leaves no forcing behind: later proof calls are suspended again") {
+    // The global count of running forced calls is restored however a run ends, so the next program's undemanded
+    // proof, too deep for the stack, is not run.
+    onSmallStack {
+      rejectsWith[NatValueTooLarge](
+        big +
+          """
+            |def t : True := {
+            |  match big(4294967296) returning True with
+            |  | True.intro => True.intro
+            |}
+            |""".stripMargin
+      )
+      accepts(deep + "def t : True := deep(100000)\n")
+    }
   }
 
   test("ref-2 FIXED an eta projection's type holds no template variable that only a proof call's argument mentions") {

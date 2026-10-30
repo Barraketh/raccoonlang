@@ -818,7 +818,10 @@ refines nothing more. The decisions that a dependency makes conservative
 confirm it through forced values instead: the occurs check, positivity, a
 record's eta eligibility, and instance search's test of a solved argument. A
 link whose value mentions its variable only in a proof call's arguments holds
-that value with those calls forced, as it did before.
+that value with those calls forced, as it did before. So does each value built
+on such a decision: instance search's solved argument, and an eta projection's
+type, which forces the calls that mention a template variable no family
+argument determines, such as a capture, so that no projection's type holds one.
 
 **Why the results do not change.** A forced value is the value eager
 evaluation computed: evaluation is deterministic, the arguments are values, and
