@@ -373,7 +373,8 @@ resulting value when the program body produces one.
 as a no-op for compatibility with source files that name their prelude dependency.
 
 Prelude declarations can use `:= builtin` when their canonical name has a native implementation in the runtime builtin
-registry. `Sort`, `Bool`, `Nat`, `List`, `Char`, `String`, their constructors and selectors, the native Nat arithmetic,
+registry. A builtin's declared type is trusted, not checked, so a program, or a module it imports, cannot declare one
+(`ProgramBuiltin`). `Sort`, `Bool`, `Nat`, `List`, `Char`, `String`, their constructors and selectors, the native Nat arithmetic,
 subtraction, and comparisons, and the native `List.append` and `List.length` are built into the kernel: every
 environment has them, including with `--no-prelude`, and they cannot be redeclared.
 
@@ -383,6 +384,11 @@ sbt 'run --root examples examples/nats.rac'
 
 `--root <dir>` can be repeated. `import Lib.Nat` searches source roots for `Lib/Nat.rac`. When no root is specified,
 the entry file's directory is used.
+
+Axioms declared by the program or its imports are unchecked assumptions. The CLI lists them on standard error, and
+`--no-user-axioms` rejects them instead, at the first one's declaration. The prelude's axioms are the trusted bootstrap
+and are always allowed; a custom `--prelude`'s axioms are listed on standard error in both modes. See
+[axioms](docs/kernel.md#axioms).
 
 ### Build the native binary
 

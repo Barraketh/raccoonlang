@@ -248,3 +248,26 @@ and the constructor value it is linked to convert, as proofs of one
 proposition, but the link is the proof's value in the branch, as for a refined
 data variable: a nested match on the same variable sees a known constructor, so
 its other cases are `UnreachableCase`.
+
+## Axioms
+
+Any module may declare an `axiom`. Its type is checked; its consistency is the
+author's responsibility. The prelude's axioms, such as `Nat.mul_add`, are the
+trusted bootstrap. Axioms declared by the program or the modules it imports are
+user axioms: `Interpreter.axioms` lists them, in declaration order, from the
+program's own declarations, since the loader merges every loaded module into the
+program while the prelude's declarations stay in `Prelude.Config.core`.
+
+A `:= builtin` declaration is trusted further than an axiom: its native's
+behaviour is taken to match its declared type, which is not checked. Only the
+kernel and the prelude declare builtins. `Interpreter.run` rejects one declared
+by the program, or a module it imports, as `ProgramBuiltin` at its `builtin`,
+before evaluating any declaration, whatever the axiom policy. A custom prelude
+given with `--prelude` is trusted as the bundled one is, builtins and axioms
+included; the CLI lists its axioms on standard error.
+
+The CLI reports user axioms on standard error. With `--no-user-axioms`,
+`Interpreter.run` rejects the first one as `UserAxiom` at its declaration
+before evaluating any declaration. A theorem checked under that flag depends on
+the kernel, the prelude, and nothing the program assumed. The default stays
+permissive.

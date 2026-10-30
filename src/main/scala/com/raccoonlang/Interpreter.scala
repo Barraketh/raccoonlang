@@ -288,6 +288,7 @@ object Interpreter {
     decl match {
       case Decl.ConstDecl(name, ty, body, span, isInstance, lazyGlobal) =>
         body match {
+          // Only kernel and prelude sources declare builtins (`run`), and their declared types are trusted.
           case CoreAst.ConstBody.Builtin(_) =>
             if (isInstance) throw WTF("Builtin declarations cannot be instances", Some(span))
             def value(env: Env): Value = Builtins.instantiate(name, TypeChecker.getType(ty, env), span)
@@ -325,13 +326,34 @@ object Interpreter {
 
   }
 
-  def run(p: Program, prelude: Prelude.Config = Prelude.default): Option[Value] = {
+  /**
+   * Runs a program over its prelude. Before any declaration is evaluated, a `:= builtin` declared by the program itself
+   * is `ProgramBuiltin` at its `builtin`: `Builtins.instantiate` trusts a builtin's declared type, so only the kernel
+   * and the prelude declare builtins. With `allowUserAxioms` false, an axiom declared by the program itself is then
+   * `UserAxiom` at its span; the prelude's axioms are the trusted bootstrap and are unaffected.
+   */
+  def run(p: Program, prelude: Prelude.Config = Prelude.default, allowUserAxioms: Boolean = true): Option[Value] = {
+    p.decls.foreach {
+      case Decl.ConstDecl(name, _, CoreAst.ConstBody.Builtin(builtin), _, _, _) =>
+        throw ProgramBuiltin(name, Some(builtin))
+      case _ =>
+    }
+    if (!allowUserAxioms) axioms(p).headOption.foreach(axiom => throw UserAxiom(axiom.name, Some(axiom.span)))
     val env =
       p.decls.foldLeft(initialEnv(prelude)) { case (curWorlds, decl) => evalDecl(decl, curWorlds) }
     p.body.map { b =>
       TypeChecker.checkTerm(b, env).value
     }
   }
+
+  /**
+   * The axioms `p` declares, in declaration order. For a program, these are its user axioms, the unchecked assumptions
+   * outside the trusted bootstrap: the loader merges every loaded module into the program, while the prelude's
+   * declarations live in `Prelude.Config.core`, and a program declares no builtin (`run`). For a prelude's `core`, they
+   * are the prelude's trusted axioms.
+   */
+  def axioms(p: Program): Vector[Decl.AxiomDecl] =
+    p.decls.collect { case axiom: Decl.AxiomDecl => axiom }
 
   /** Values the elaborator also knows by name; the kernel's declarations are evaluated on top of these. */
   private[raccoonlang] def primitiveEnv: Env =

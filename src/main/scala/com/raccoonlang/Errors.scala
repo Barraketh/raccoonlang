@@ -63,7 +63,20 @@ object TypeError {
     case e: NonDecreasingRecursiveCall      => e.copy(span = Some(sp))
     case e: InvalidRecursiveOccurrence      => e.copy(span = Some(sp))
     case e: NatValueTooLarge                => e.copy(span = Some(sp))
+    case e: UserAxiom                       => e.copy(span = Some(sp))
+    case e: ProgramBuiltin                  => e.copy(span = Some(sp))
   }
+}
+
+final case class UserAxiom(name: String, span: Option[Span] = None) extends TypeError {
+  val msg: String = s"axiom $name is not allowed: user axioms are disabled by --no-user-axioms"
+}
+
+/**
+ * A `:= builtin` in a program: only the kernel and the prelude declare builtins, whose types are trusted, not checked.
+ */
+final case class ProgramBuiltin(name: String, span: Option[Span] = None) extends TypeError {
+  val msg: String = s"builtin $name is not allowed: only the kernel and the prelude declare builtins"
 }
 
 final case class UnificationFailed(v1: Value, v2: Value, span: Option[Span] = None) extends TypeError {
