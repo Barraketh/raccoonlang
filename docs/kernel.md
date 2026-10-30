@@ -3,10 +3,10 @@
 ## Natural number normal forms
 
 `Bool`, `Nat`, their constructors, and the native `Nat.add`, `Nat.mul`,
-`Nat.pow`, `Nat.sub`, `Nat.pred`, `Nat.isZero`, `Nat.beq`, and `Nat.ble` are
-kernel declarations present beneath every prelude and program; they cannot be
-redeclared. Ordinary source functions acquire no arithmetic laws merely from
-their names.
+`Nat.pow`, `Nat.sub`, `Nat.pred`, `Nat.isZero`, `Nat.beq`, `Nat.ble`,
+`Nat.div`, and `Nat.mod` are kernel declarations present beneath every prelude
+and program; they cannot be redeclared. Ordinary source functions acquire no
+arithmetic laws merely from their names.
 
 Arithmetic evaluates to sums of products with arbitrary-precision nonnegative
 coefficients, constants, and exponents. The normal forms decide exactly these
@@ -42,6 +42,14 @@ stuck on the canonical parts. A sum inside a factor is opaque to cancellation.
 They satisfy the recursive equations, such as
 `sub(a, succ(b)) = pred(sub(a, b))`. A stuck subtraction absorbs only a known
 constant subtrahend, so every result is stable under substitution.
+
+Division and remainder compute on closed arguments. An open application
+reduces only where a numeral argument fixes the result: a zero divisor gives
+`div(a, 0) = 0` and `mod(a, 0) = a`, as in Lean, a divisor of one gives
+`div(a, 1) = a` and `mod(a, 1) = 0`, and a zero dividend gives zero. Otherwise
+it is stuck on its arguments, an atom of the normal forms that converts by
+congruence and resumes under substitution. No law about them is definitional
+at a symbolic divisor, and the prelude assumes none.
 
 Unequal symbolic forms do not establish contradiction. Refinement keeps
 whole-variable linking and successor cancellation, and otherwise leaves

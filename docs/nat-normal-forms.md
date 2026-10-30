@@ -12,8 +12,8 @@ limits, budgets, or fuel.
 ## Terms
 
 - An **atom** is a Nat value that is neither zero nor a normal form: a
-  variable, a stuck application (including a stuck native subtraction), a
-  stuck match, or an axiom constant.
+  variable, a stuck application (including a stuck native subtraction,
+  division, or remainder), a stuck match, or an axiom constant.
 - A **numeral** is a closed natural number, stored as a `BigInt`.
 - A **numeral power** is a factor with a known positive exponent, such as
   `x^2`. A **symbolic power** is a factor whose exponent is a Nat value with
@@ -30,18 +30,20 @@ limits, budgets, or fuel.
 Nat and Bool are built into the kernel. `Kernel` declares `Bool` with `false`
 and `true`, `Nat` with exactly `Nat.zero : Nat` and `Nat.succ : Nat -> Nat`, and
 native `Nat.add`, `Nat.mul`, `Nat.pow`, `Nat.sub`, `Nat.pred`, `Nat.isZero`,
-`Nat.beq`, and `Nat.ble`. These declarations are elaborated and evaluated once,
-beneath every prelude and program, including with `--no-prelude`. Preludes and
-programs cannot redeclare those names, so every value of type Nat or Bool belongs
-to these families and quotation can name the native operations directly. Nothing
-validates a Nat declaration because no other Nat declaration can exist;
-namespaced inductives such as `Lib.Nat` are unrelated families. Ordinary source
-functions acquire no arithmetic laws from their names.
+`Nat.beq`, `Nat.ble`, `Nat.div`, and `Nat.mod`. These declarations are
+elaborated and evaluated once, beneath every prelude and program, including
+with `--no-prelude`. Preludes and programs cannot redeclare those names, so
+every value of type Nat or Bool belongs to these families and quotation can
+name the native operations directly. Nothing validates a Nat declaration
+because no other Nat declaration can exist; namespaced inductives such as
+`Lib.Nat` are unrelated families. Ordinary source functions acquire no
+arithmetic laws from their names.
 
 The prelude adds source definitions such as `Nat.le`, `Nat.lt`, and
 `Nat.decEq`, one axiom about the natives, `Nat.mul_add`, and the theorems
 `Nat.mul_pow` and `Nat.pow_mul`, all described below. They live in the prelude
-because `Eq` is a prelude family.
+because `Eq` is a prelude family. Division and remainder have no axioms
+([below](#division-and-remainder)).
 
 ## Literals
 
@@ -403,6 +405,74 @@ result is an application of the native function that resumes once a dependency
 of its arguments is solved. Stuck `beq` results also convert with their arguments
 swapped: equivalent atoms can have different keys and therefore reverse the
 stored key order.
+
+## Division and remainder
+
+`Nat.div` is floor division and `Nat.mod` its remainder, with Lean's
+conventions for a zero divisor: `div(a, 0) = 0` and `mod(a, 0) = a`. So
+`a = b * div(a, b) + mod(a, b)` holds for every `a` and `b`, and
+`mod(a, b) < b` whenever `0 < b`. These are also the conventions of the
+natives in the compiler the GPU sources were written for.
+
+| Function | Reduces | Otherwise stuck as |
+| --- | --- | --- |
+| `div(a, b)` | closed arguments; `div(a, 0) = 0`, `div(a, 1) = a`, `div(0, b) = 0` | `div(a, b)` |
+| `mod(a, b)` | closed arguments; `mod(a, 0) = a`, `mod(a, 1) = 0`, `mod(0, b) = 0` | `mod(a, b)` |
+
+Closed arguments compute on their `BigInt` constants. An open application
+reduces only where a numeral argument fixes the result, whatever the other
+argument is, as zero or as that argument: a divisor of zero or one, or a
+dividend of zero. At any other numeral the result depends on the other
+argument's value. `div(a, 2)` halves `a`, and `div(1, b)` is one at `b = 1`
+and zero at every other `b`; neither is a normal form of the other argument.
+
+An application that does not reduce is stuck on its two arguments as given,
+which are already normal forms. It is an atom: it rearranges, collects coefficients, and
+cancels like a variable, so `div(x, 4) + 2 * div(x, 4)` is `3 * div(x, 4)` and
+`div(x, 4) < div(x, 4) + 1` holds by cancellation. Two stuck applications of the same native
+convert when their arguments convert, so `mod(a + (b + 1), c)` is
+`mod((b + a) + 1, c)`. Like every stuck native application, it resumes when a
+dependency of either argument is solved, and it quotes and displays as a call
+of the native, such as `Nat.div(x, 4) + 1`.
+
+Each reduction is a valid identity, and substitution preserves its condition,
+because a numeral stays a numeral. A reduced result therefore stays correct
+under substitution, and a stuck application reduces once its substituted
+arguments meet a condition, so substituting then normalizing agrees with
+normalizing then substituting. The conditions read only the arguments'
+representations: zero is `Nat.zero`, a numeral is a form without terms, and no
+value with atoms converts with either. So they are decided on conversion
+classes, and convertible arguments give convertible results.
+
+**Left out.** These valid identities need more than a numeral argument:
+`mod(a, a) = 0`, `div(4 * a, 4) = a`, `mod(4 * a + 1, 4) = 1`, and
+`div(div(a, b), c) = div(a, b * c)`. Each needs a canonicalization of its own,
+such as dividing coefficients over aligned atoms or merging nested quotients,
+with its own argument for stability under substitution. The GPU sources need
+none of them.
+
+Refinement never inverts division or refutes an equation by it:
+`div(x, 2) = div(y, 2)` does not give `x = y`, and an empty match cannot
+refute `div(x, 2) = 3`. Unification links a refinable variable to a stuck
+application like any other value, and otherwise leaves an equation that
+conversion does not decide stuck.
+
+**No laws.** At a symbolic divisor, neither the division law nor the remainder
+bound is definitional, and the prelude assumes neither. The GPU proofs use
+division in two ways. They compute it on closed numbers, as in
+`Nat.mod(v, Cuda.u32Limit)` for a known `v`. They also carry stuck
+applications such as `Nat.mod(Nat.add(value, lane), Cuda.u32Limit)` through
+conversion and induction, and rewrite along hypotheses such as
+`Eq(Nat, Nat.mod(offset, 4), 0)`. If proofs come to need the laws, the axioms
+to add would be the standard characterization, in the style of `Nat.mul_add`:
+`a = b * div(a, b) + mod(a, b)`, and `0 < b -> mod(a, b) < b`. Both hold of
+the natives, and at the reducing numerals they hold by conversion alone. The
+bound must keep its premise, because `mod(a, 0) = a` turns it into `a < 0` at
+`b = 0`.
+
+**Termination.** A measure compares a stuck application as an atom, so
+`div(n, 4) + k` decreases with `k`. A call at `div(n, 2)` does not decrease
+`n`, because `div(n, 2) < n` needs a law and fails at `n = 0`.
 
 ## Atom equality and conversion
 

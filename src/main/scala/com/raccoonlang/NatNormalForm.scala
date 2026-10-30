@@ -775,6 +775,48 @@ private[raccoonlang] object NatNormalForm {
     else stuck(Kernel.ble, Kernel.boolType, positive.toValue, negative.toValue)
   }
 
+  /** The number a Nat value denotes when it has no atoms: zero, or a form without terms. */
+  private def numeralValue(value: Value): Option[BigInt] =
+    value match {
+      case VCtor(_, _, _)                            => Some(BigInt(0))
+      case poly: VNatPoly if poly.form.terms.isEmpty => Some(poly.form.constant)
+      case _                                         => None
+    }
+
+  /**
+   * Floor division, with Lean's convention `div(a, 0) = 0`. Closed arguments compute. An open application reduces only
+   * where a numeral argument fixes the result, whatever the other argument is, as zero or as that argument:
+   * `div(a, 0) = 0`, `div(a, 1) = a`, and `div(0, b) = 0`. At any other numeral, as in `div(a, 2)` or `div(1, b)`, the
+   * result depends on the other argument's value. Otherwise the application is stuck on both arguments as given, an
+   * atom that converts by congruence and resumes when a dependency of either is solved.
+   *
+   * Every reduction is a valid identity whose condition substitution preserves, since a numeral stays a numeral, so
+   * results are stable under substitution. The cases read only the arguments' representation, which decides them on
+   * conversion classes: zero is `Nat.zero`, a numeral is a form without terms, and no value with atoms converts with
+   * either. No law relates a stuck application to its arguments (docs/nat-normal-forms.md).
+   */
+  def div(dividend: Value, divisor: Value): Value =
+    (numeralValue(dividend), numeralValue(divisor)) match {
+      case (_, Some(b)) if b == 0 => Kernel.zeroValue
+      case (_, Some(b)) if b == 1 => dividend
+      case (Some(a), Some(b))     => numeral(a / b).toValue
+      case (Some(a), _) if a == 0 => Kernel.zeroValue
+      case _                      => stuck(Kernel.div, Kernel.natType, dividend, divisor)
+    }
+
+  /**
+   * Remainder, with Lean's convention `mod(a, 0) = a`, so `a = b * div(a, b) + mod(a, b)` for every `b`. It reduces in
+   * the cases of `div`, for the same reasons: `mod(a, 0) = a`, `mod(a, 1) = 0`, `mod(0, b) = 0`, and closed arguments.
+   */
+  def mod(dividend: Value, divisor: Value): Value =
+    (numeralValue(dividend), numeralValue(divisor)) match {
+      case (_, Some(b)) if b == 0 => dividend
+      case (_, Some(b)) if b == 1 => Kernel.zeroValue
+      case (Some(a), Some(b))     => numeral(a % b).toValue
+      case (Some(a), _) if a == 0 => Kernel.zeroValue
+      case _                      => stuck(Kernel.mod, Kernel.natType, dividend, divisor)
+    }
+
   /**
    * Unify a pair with at least one form after definitional equality and whole-variable linking fail: cancel only common
    * positive successor prefixes. Other arithmetic equations remain stuck.

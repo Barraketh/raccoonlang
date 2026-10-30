@@ -71,9 +71,12 @@ Note that at this point I have done 0 optimization - these performance wins are 
 - Extensible definitional equality through type-driven expression normalization
 - Canonical sums of products for builtin Nat addition, multiplication, and powers, deciding associativity,
   commutativity, units, numeral arithmetic, and the exponent product law `x^a * x^b = x^(a + b)` by conversion, plus
-  native truncated subtraction and comparisons
+  native truncated subtraction, comparisons, division, and remainder
     - Distributivity is the prelude axiom `Nat.mul_add`; `(x * y)^a` and `(x^a)^b` are the prelude theorems
       `Nat.mul_pow` and `Nat.pow_mul`
+    - `Nat.div` and `Nat.mod` follow Lean at a zero divisor (`div(a, 0) = 0`, `mod(a, 0) = a`) and stay stuck on
+      open arguments unless a divisor of zero or one or a dividend of zero fixes the result; no law about them is
+      assumed
     - Decimal literals such as `0` and `42` denote kernel Nat values of any size, in terms and types
     - See [the Nat normal forms design](docs/nat-normal-forms.md) for the laws, representation, and kernel integration
 - Kernel `List` with packed storage and a native `append` that follows the source definition with the right unit

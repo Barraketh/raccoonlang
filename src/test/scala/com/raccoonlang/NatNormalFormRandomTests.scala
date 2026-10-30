@@ -237,4 +237,49 @@ class NatNormalFormRandomTests extends munit.FunSuite {
     }
     assert(decided > 300, s"only $decided decisions")
   }
+
+  test("division and remainder agree with arithmetic, and substitution commutes with them") {
+    val random = new Random(31337L)
+    val points = assignments(random)
+    val variables = atoms.collect { case variable: Var => variable }
+    def solving(links: Vector[(Var, Value)]): EqStore =
+      links.foldLeft(EqStore.empty.allow(DepSet(links.map(_._1.id): _*))) { case (store, (variable, value)) =>
+        store.addLink(variable.id, value)
+      }
+    // Numerals 0 and 1 reduce an open application, and 2 does not.
+    def operand(): Expr = if (random.nextInt(3) == 0) Num(random.nextInt(3)) else generate(random, 2)
+    val operations = Vector[(VLam, (Value, Value) => Value, (BigInt, BigInt) => BigInt)](
+      (Kernel.div, NatNormalForm.div, (a, b) => if (b == 0) 0 else a / b),
+      (Kernel.mod, NatNormalForm.mod, (a, b) => if (b == 0) a else a % b)
+    )
+    var reduced = 0
+    var stuck = 0
+    for (_ <- 0 until 300; (function, operation, arithmetic) <- operations) {
+      val dividend = operand()
+      val divisor = operand()
+      val result = operation(build(dividend), build(divisor))
+      if (stuckOn(function, result)) stuck += 1 else reduced += 1
+      // Solving every atom as a numeral resumes a stuck application and evaluates a reduced one.
+      points.foreach { point =>
+        val expected = arithmetic(evaluate(dividend, point), evaluate(divisor, point))
+        assertEquals(
+          ValueOps.materialize(result, solving(variables.zip(point.map(constant)))).key,
+          constant(expected).key,
+          s"$dividend, $divisor at $point"
+        )
+      }
+      // Solving one atom as an expression over the others gives the operation of the substituted arguments.
+      val index = random.nextInt(atoms.length)
+      val replacement = replaceAtom(generate(random, 2), index, Num(2))
+      assertEquals(
+        ValueOps.materialize(result, solving(Vector(variables(index) -> build(replacement)))).key,
+        operation(
+          build(replaceAtom(dividend, index, replacement)),
+          build(replaceAtom(divisor, index, replacement))
+        ).key,
+        s"$dividend, $divisor with $index := $replacement"
+      )
+    }
+    assert(reduced > 100 && stuck > 100, s"$reduced reduced and $stuck stuck")
+  }
 }

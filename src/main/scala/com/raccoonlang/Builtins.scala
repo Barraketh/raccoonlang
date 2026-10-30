@@ -88,6 +88,8 @@ private object Builtins {
       "Nat.isZero" -> Native((_, _, args) => NatNormalForm.isZero(args(0))),
       "Nat.beq" -> Native((_, _, args) => NatNormalForm.beq(args(0), args(1))),
       "Nat.ble" -> Native((_, _, args) => NatNormalForm.ble(args(0), args(1))),
+      "Nat.div" -> Native((_, _, args) => NatNormalForm.div(args(0), args(1))),
+      "Nat.mod" -> Native((_, _, args) => NatNormalForm.mod(args(0), args(1))),
       "List.append" -> Native((_, _, args) => Words.append(args(0), args(1))),
       "List.length" -> Native((_, _, args) => Words.length(args(0))),
       "Protocol.Supply" -> Opaque,
