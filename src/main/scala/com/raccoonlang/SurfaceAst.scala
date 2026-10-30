@@ -173,26 +173,32 @@ object SurfaceAst {
 
   object Command {
 
+    /** An inductive's header; `nameSpan` is its name's, where a redeclaration is reported. */
     case class InductiveHeader(
         name: String,
         params: Vector[Binder],
         indices: Vector[Binder],
         resultTy: TypeTerm,
-        span: Span
+        span: Span,
+        nameSpan: Span
     ) {
       def binders: Vector[Binder] = params ++ indices
     }
 
+    /** A constructor; `nameSpan` is its name's, where a redeclaration is reported. */
     case class ConstructorDecl(
         name: String,
         erasedBinders: Vector[Binder],
         fields: Vector[Binder],
         resultTy: TypeTerm,
-        span: Span
+        span: Span,
+        nameSpan: Span
     )
 
     // Global declarations and environment entries
-    sealed trait Decl extends Command
+    sealed trait Decl extends Command {
+      def span: Span
+    }
 
     object Decl {
       // Constant: name : type [:= value]. None means explicitly opaque; term definitions otherwise default to Inline.
@@ -238,7 +244,8 @@ object SurfaceAst {
       final case class Exclude(name: String) extends AliasRule
     }
 
-    case class DeclHeader(name: String, funcHeader: FuncHeader, span: Span)
+    /** A definition's or an axiom's header; `nameSpan` is its name's, where a redeclaration is reported. */
+    case class DeclHeader(name: String, funcHeader: FuncHeader, span: Span, nameSpan: Span)
   }
 
   case class Program(imports: Vector[Import], decls: Vector[Command], body: Option[Term])

@@ -38,6 +38,14 @@ object TypeChecker {
   private[raccoonlang] def readBoundary(lin: LinearInfo): Unit = lin.pending.foreach(error => throw error)
 
   /**
+   * Runs `body`, locating at `span` a type error it raises without a location: the innermost checked node that carries
+   * a span gives every error its place.
+   */
+  private[raccoonlang] def at[A](span: Span)(body: => A): A =
+    try body
+    catch { case e: TypeError if e.span.isEmpty => throw TypeError.withSpan(e, span) }
+
+  /**
    * A term's whole source span. An application's or a projection's own span covers only its trailer, the argument list
    * or `.field`, so errors that name a whole term, such as a linear subterm, extend it back over the head.
    */
@@ -177,6 +185,9 @@ object TypeChecker {
   }
 
   private[raccoonlang] def checkTypeTerm(term: CA.TypeTerm, env: Env): CheckedTypeTerm =
+    at(term.span)(checkTypeTermHere(term, env))
+
+  private def checkTypeTermHere(term: CA.TypeTerm, env: Env): CheckedTypeTerm =
     term match {
       case app: CA.Term.App =>
         // Each argument sees what the head and the earlier arguments consumed, for the bindings it makes; a read
@@ -196,7 +207,7 @@ object TypeChecker {
         CheckedTypeTerm(value, residual, Ledger.call(value, inputs, sourceSpan(app), env))
       case CA.Term.Select(base, field, span) =>
         val checkedBase = checkTerm(base, env)
-        val (selectorName, value) = checkSelect(checkedBase.value, field, span, env)
+        val (selectorName, value) = checkSelect(base, checkedBase.value, field, span, env)
         CheckedTypeTerm(
           value,
           EA.Term.App(EA.Term.GlobalRef(selectorName, span), Vector(checkedBase.residual), span),
@@ -296,9 +307,13 @@ object TypeChecker {
       case _                              => None
     }
 
-  private def checkSelect(baseValue: Value, field: String, span: Span, env: Env): (String, Value) = {
+  /**
+   * The selector `field` of the family of `baseValue`, the value of `base`, applied to it. A base whose type is no
+   * family instance has no selectors, so the selection names nothing (`noSelector`).
+   */
+  private def checkSelect(base: CA.Term, baseValue: Value, field: String, span: Span, env: Env): (String, Value) = {
     val vType = baseValue.tpe
-    val family = inductiveFamilyOf(vType).getOrElse(throw NotAType(vType))
+    val family = inductiveFamilyOf(vType).getOrElse(throw noSelector(base, baseValue, field))
     val indName = family.head.name
     val meta = family.meta
 
@@ -307,6 +322,30 @@ object TypeChecker {
     val selectorName = s"$indName.$field"
     val selector = env(selectorName)
     (selectorName, checkApplyValue(selector, Vector(baseValue)))
+  }
+
+  /**
+   * `base.field` where `base` 's type is no family instance: `NotFound`. A base that is a type former, a family or an
+   * opaque type such as `Protocol.Tok` in `Protocol.Tok.mk`, has no constructor of that name, since a constructor would
+   * have resolved as the family's member; anything else has no field.
+   */
+  private def noSelector(base: CA.Term, baseValue: Value, field: String): NotFound = {
+    def typeFormer(tpe: Value): Boolean =
+      tpe match {
+        case _: Universe => true
+        case pi: VPi     => typeFormer(pi.codomain(BinderOps.freshen(pi)))
+        case _           => false
+      }
+    baseValue match {
+      case VConst(name, Inductive(_) | Symbol, tpe) if typeFormer(tpe) =>
+        NotFound(s"$name.$field", reason = Some(s"$name has no constructor $field"))
+      case _ =>
+        val text = PrettyPrinter.printTerm(base)
+        NotFound(
+          s"$text.$field",
+          reason = Some(s"$text is of type ${baseValue.tpe}, which is no family, so has no fields")
+        )
+    }
   }
 
   private def checkLam(l: CA.Term.Lam, env: Env): CheckedTypeTerm = {
@@ -428,7 +467,7 @@ object TypeChecker {
   }
 
   def checkTerm(term: CA.Term, env: Env): CheckedTerm =
-    try {
+    at(term.span) {
       term match {
         case derive: CA.Term.Derive =>
           val goal = getType(derive.goal, env)
@@ -441,8 +480,6 @@ object TypeChecker {
           val checked = checkTypeTerm(term, env)
           CheckedTerm(checked.value, checked.residual, checked.lin)
       }
-    } catch {
-      case e: TypeError if e.span.isEmpty => throw TypeError.withSpan(e, term.span)
     }
 
   private[raccoonlang] def checkTermAgainst(
@@ -450,7 +487,7 @@ object TypeChecker {
       env: Env,
       expected: CheckedTypeTerm
   ): CheckedTerm =
-    try {
+    at(term.span) {
       val checked = term match {
         case body: CA.Term.Body           => checkBody(body, env, Some(expected))
         case matchTerm: CA.Term.MatchTerm => MatchChecker.checkMatch(matchTerm, env, Some(expected))
@@ -458,8 +495,6 @@ object TypeChecker {
       }
       checkType(checked.value, expected.value)
       checked
-    } catch {
-      case e: TypeError if e.span.isEmpty => throw TypeError.withSpan(e, term.span)
     }
 
 }

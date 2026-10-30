@@ -24,9 +24,15 @@ Inductive constructors always live under the inductive head. A top-level `Nat` i
 Dotted names are resolved by the first segment.
 
 - Locals win first. If `Nat` is a local, `Nat.zero` is a projection from that local.
+- Then selective open aliases are searched: those an `open` names explicitly, as `open Nat.{zero}` and
+  `open Nat.{zero as z}` do, in the innermost open scope that has one.
 - Otherwise, the current namespace is searched from most-specific to root.
-- Then open aliases are searched.
+- Then wildcard open aliases are searched, those `open Nat` or `open Nat.{*}` exposes, innermost scope first.
 - `_root_` bypasses locals, the current namespace, and opens.
+
+So naming a member explicitly in an `open` makes it win over a member of the same name in the enclosing namespaces, as
+a local import would, at the price of a name's meaning changing when such an open is added. A wildcard open never
+shadows a member of the enclosing namespaces.
 
 Once the first segment resolves, the rest of the path is resolved inside that object. There is no backtracking across
 opens. If `Tree` resolves to the current namespace's `Tree`, then `Tree.leaf` means child `leaf` of that object; it does
@@ -47,6 +53,7 @@ open _root_.Nat
 Rules:
 
 - `open Nat` is equivalent to `open Nat.{*}`.
+- A name that one open both includes explicitly and by its wildcard, as in `open Nat.{*, zero}`, is selective.
 - Opens are snapshots. Names added later to the namespace are not exposed by an earlier open.
 - Open aliases can be used as prefixes when the opened object has children, so `open Data.{Tree as DTree}` allows
   `DTree.leaf`.

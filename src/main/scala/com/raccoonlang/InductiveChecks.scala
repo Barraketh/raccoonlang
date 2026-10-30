@@ -625,7 +625,7 @@ object InductiveChecks {
             resultArgs,
             fieldVars,
             templateIds,
-            StructEta.projectors(ctor.canonicalName, ctor.fields.length)
+            StructEta.projectors(ctor.canonicalName, ctor.fields.map(_.name))
           )
         )
       case _ => None

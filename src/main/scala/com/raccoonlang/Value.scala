@@ -275,8 +275,6 @@ object Value {
       tpe: Universe
   ) extends Value {
     require(binders.nonEmpty, "VPi requires at least one binder")
-
-    override def toString: String = "VPi"
   }
 
   case class VConst(name: String, constType: ConstType, tpe: Value) extends Value {

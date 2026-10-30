@@ -882,8 +882,10 @@ class LinearEscapeTests extends munit.FunSuite {
     accepts(lib + "def ok (xs: LNats)(t: Tag(count(lid(xs)))) : Nat := count(xs)\n")
   }
 
-  test("a pattern head that selects from a tracked local is not a reference") {
-    rejects(
+  // A projection-headed binder type is the type it applies (KERNEL_FOLLOWUPS §4), so this is the parenthesized form
+  // below: y's type reads h, and the body consumes h once.
+  test("a pattern head that selects from a tracked local reads it, as the parenthesized form does") {
+    accepts(
       lib +
         """
           |inductive H : Lin(Level.one)

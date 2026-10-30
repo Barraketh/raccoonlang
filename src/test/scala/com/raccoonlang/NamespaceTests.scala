@@ -505,6 +505,103 @@ class NamespaceTests extends munit.FunSuite {
     }
   }
 
+  /** The source text where `src` is `AlreadyDefined`, which must be located. */
+  private def redeclaredAt(src: String): String = {
+    val error = intercept[AlreadyDefined](typecheckProgram(src))
+    val span = error.span.getOrElse(fail(s"${error.getMessage} has no span"))
+    src.substring(span.start, span.end)
+  }
+
+  // KERNEL_FOLLOWUPS 1.4.
+  test("AlreadyDefined is located at the redeclaration") {
+    assertEquals(redeclaredAt("def twice : Nat := 0\ndef twice : Nat := 1\n"), "twice")
+    assertEquals(redeclaredAt("namespace N {\n  axiom a : Nat\n}\nnamespace N {\n  axiom a : Nat\n}\n"), "a")
+    assertEquals(redeclaredAt("inductive T : Type\n | a : T\n\ninductive T : Type\n | b : T\n"), "T")
+    assertEquals(redeclaredAt("inductive T : Type\n | a : T\n | a : T\n"), "a")
+    assertEquals(redeclaredAt("def f (x: Nat)(x: Nat) : Nat := x\n"), "(x: Nat)")
+    assertEquals(
+      redeclaredAt(
+        "def f (n: Nat) : Nat := {\n  match n with\n  | Nat.succ k => k\n  | Nat.zero => 0\n}\n"
+          .replace("succ k", "succ k k")
+      ).trim,
+      "| Nat.succ k k => k"
+    )
+    assertEquals(
+      redeclaredAt("def bad (n: Nat): Nat decreases structural(n) := {\n  let bad := n\n  n\n}\n"),
+      "let bad := n"
+    )
+  }
+
+  // KERNEL_FOLLOWUPS 1.4: an explicitly opened name beats a member of the enclosing namespace; a wildcard does not.
+  test("a selective open beats the enclosing namespace, and a wildcard open does not") {
+    def program(open: String): String =
+      s"""
+         |namespace Lib {
+         |  def pick : Nat := Nat.succ(Nat.zero)
+         |}
+         |
+         |namespace Mine {
+         |  def pick : Nat := Nat.zero
+         |
+         |  $open
+         |
+         |  def chosen : Nat := pick
+         |}
+         |
+         |Mine.chosen
+         |""".stripMargin
+
+    assertEquals(ctorName(runProgram(program("open Lib.{pick}"))), "Nat.succ")
+    assertEquals(ctorName(runProgram(program("open Lib"))), "Nat.zero")
+    assertEquals(ctorName(runProgram(program("open Lib.{*}"))), "Nat.zero")
+    // A renamed alias is selective too, and so is a name a wildcard and an explicit rule both open.
+    assertEquals(
+      ctorName(
+        runProgram(
+          program("open Lib.{pick as chosen0}").replace("def chosen : Nat := pick", "def chosen : Nat := chosen0")
+        )
+      ),
+      "Nat.succ"
+    )
+    assertEquals(ctorName(runProgram(program("open Lib.{*, pick}"))), "Nat.succ")
+    // Locals still win.
+    assertEquals(
+      ctorName(
+        runProgram(
+          program("open Lib.{pick}")
+            .replace("def chosen : Nat := pick", "def chosen : Nat := {\n    let pick := Nat.zero\n    pick\n  }")
+        )
+      ),
+      "Nat.zero"
+    )
+  }
+
+  test("a selective open in an outer scope beats the namespace and a wildcard open in an inner one") {
+    val p =
+      """
+        |namespace A {
+        |  def x : Nat := Nat.succ(Nat.zero)
+        |}
+        |
+        |namespace B {
+        |  def x : Nat := Nat.zero
+        |}
+        |
+        |open A.{x}
+        |
+        |namespace C {
+        |  def x : Nat := Nat.zero
+        |
+        |  open B
+        |
+        |  def chosen : Nat := x
+        |}
+        |
+        |C.chosen
+        |""".stripMargin
+    assertEquals(ctorName(runProgram(p)), "Nat.succ")
+  }
+
   test("old double-colon qualified syntax is rejected") {
     val p =
       """

@@ -45,6 +45,7 @@ object TypeError {
     case e: InductiveTypeNotASort           => e.copy(span = Some(sp))
     case e: PatternCaptureNeedsExpectedType => e.copy(span = Some(sp))
     case e: CaptureWithoutOpening           => e.copy(span = Some(sp))
+    case e: InvalidTypePattern              => e.copy(span = Some(sp))
     case e: FailedToOpenCapture             => e.copy(span = Some(sp))
     case e: PropEliminationRestricted       => e.copy(span = Some(sp))
     case e: InvalidLevelSubtraction         => e.copy(span = Some(sp))
@@ -85,38 +86,38 @@ object TypeError {
 }
 
 final case class UserAxiom(name: String, span: Option[Span] = None) extends TypeError {
-  val msg: String = s"axiom $name is not allowed: user axioms are disabled by --no-user-axioms"
+  def msg: String = s"axiom $name is not allowed: user axioms are disabled by --no-user-axioms"
 }
 
 /**
  * A `:= builtin` in a program: only the kernel and the prelude declare builtins, whose types are trusted, not checked.
  */
 final case class ProgramBuiltin(name: String, span: Option[Span] = None) extends TypeError {
-  val msg: String = s"builtin $name is not allowed: only the kernel and the prelude declare builtins"
+  def msg: String = s"builtin $name is not allowed: only the kernel and the prelude declare builtins"
 }
 
 final case class UnificationFailed(v1: Value, v2: Value, span: Option[Span] = None) extends TypeError {
-  val msg: String = s"Failed to unify $v1 and $v2"
+  def msg: String = s"Failed to unify $v1 and $v2"
 }
 
 final case class CannotApplyNonFunction(got: Value, span: Option[Span] = None) extends TypeError {
-  val msg: String = s"Cannot apply non-fn type ${got}"
+  def msg: String = s"Cannot apply non-fn type ${got}"
 }
 
 final case class ArityMismatch(expected: Int, got: Int, span: Option[Span] = None) extends TypeError {
-  val msg: String = s"Cannot apply function - expected $expected params, got $got"
+  def msg: String = s"Cannot apply function - expected $expected params, got $got"
 }
 
 final case class UnknownConstructor(ctor: String, inductive: String, span: Option[Span] = None) extends TypeError {
-  val msg: String = s"Constructor $ctor does not belong to $inductive"
+  def msg: String = s"Constructor $ctor does not belong to $inductive"
 }
 
 final case class DuplicateCase(ctor: String, span: Option[Span] = None) extends TypeError {
-  val msg: String = s"Duplicate case for constructor $ctor"
+  def msg: String = s"Duplicate case for constructor $ctor"
 }
 
 final case class UnreachableCase(ctor: String, span: Option[Span] = None) extends TypeError {
-  val msg: String = s"Unreachable case for constructor $ctor"
+  def msg: String = s"Unreachable case for constructor $ctor"
 }
 
 final case class MissingCase(ctor: String, span: Option[Span] = None) extends TypeError {
@@ -148,19 +149,19 @@ final case class RedundantCase(span: Option[Span] = None) extends TypeError {
 }
 
 final case class VarAlreadyLinked(id: Long, span: Option[Span] = None) extends TypeError {
-  val msg: String = s"FreshVar $id already linked"
+  def msg: String = s"FreshVar $id already linked"
 }
 
 final case class CannotLinkToBottom(id: Long, span: Option[Span] = None) extends TypeError {
-  val msg: String = s"Cannot link to bottom of chain for var $id"
+  def msg: String = s"Cannot link to bottom of chain for var $id"
 }
 
 final case class NotAType(value: Value, span: Option[Span] = None) extends TypeError {
-  val msg: String = s"$value is not a type"
+  def msg: String = s"$value is not a type"
 }
 
 final case class NonInductiveMatch(tpe: Value, span: Option[Span] = None) extends TypeError {
-  val msg: String = s"Cannot match on non-inductive type $tpe"
+  def msg: String = s"Cannot match on non-inductive type $tpe"
 }
 
 final case class InvalidSingleConstructorMatch(
@@ -168,66 +169,69 @@ final case class InvalidSingleConstructorMatch(
     reason: String,
     span: Option[Span] = None
 ) extends TypeError {
-  val msg: String = s"Cannot use a constructor-omitting match on $tpe: $reason"
+  def msg: String = s"Cannot use a constructor-omitting match on $tpe: $reason"
 }
 
 final case class InvalidDestructuring(reason: String, span: Option[Span] = None) extends TypeError {
-  val msg: String = s"Invalid destructuring let: $reason"
+  def msg: String = s"Invalid destructuring let: $reason"
 }
 
 final case class MissingReturningClause(reason: String, span: Option[Span] = None) extends TypeError {
-  val msg: String = s"Match requires a returning clause: $reason"
+  def msg: String = s"Match requires a returning clause: $reason"
 }
 
-final case class NotFound(name: String, span: Option[Span] = None) extends TypeError {
-  val msg: String = s"$name not found"
+/**
+ * A name that resolves to nothing; `reason`, when given, says why, such as a family with no constructor of that name.
+ */
+final case class NotFound(name: String, span: Option[Span] = None, reason: Option[String] = None) extends TypeError {
+  def msg: String = s"$name not found" + reason.fold("")(r => s": $r")
 }
 
 final case class AlreadyDefined(name: String, span: Option[Span] = None) extends TypeError {
-  val msg: String = s"$name already defined"
+  def msg: String = s"$name already defined"
 }
 
 final case class AmbiguousName(name: String, candidates: Vector[String], span: Option[Span] = None) extends TypeError {
-  override val msg: String = s"$name is ambiguous: ${candidates.mkString(", ")}"
+  override def msg: String = s"$name is ambiguous: ${candidates.mkString(", ")}"
 }
 
 final case class UnsupportedImport(path: String, span: Option[Span] = None) extends TypeError {
-  override val msg: String = s"Unresolved import $path; load files through ModuleLoader before elaboration"
+  override def msg: String = s"Unresolved import $path; load files through ModuleLoader before elaboration"
 }
 
 final case class ModuleNotFound(importPath: String, searchedPaths: Vector[Path], span: Option[Span] = None)
   extends TypeError {
-  override val msg: String = s"Module $importPath not found. Searched: ${searchedPaths.mkString(", ")}"
+  override def msg: String = s"Module $importPath not found. Searched: ${searchedPaths.mkString(", ")}"
 }
 
 final case class CyclicImport(cycle: Vector[Path], span: Option[Span] = None) extends TypeError {
-  override val msg: String = s"Cyclic import: ${cycle.map(_.toString).mkString(" -> ")}"
+  override def msg: String = s"Cyclic import: ${cycle.map(_.toString).mkString(" -> ")}"
 }
 
 final case class ModuleParseError(path: Path, message: String, offset: Int, span: Option[Span] = None)
   extends TypeError {
-  override val msg: String = s"Failed to parse module ${path.toString}: $message"
+  override def msg: String = s"Failed to parse module ${path.toString}: $message"
 }
 
 final case class ImportedModuleHasBody(path: Path, span: Option[Span] = None) extends TypeError {
-  override val msg: String = s"Imported module ${path.toString} must not contain a program body"
+  override def msg: String = s"Imported module ${path.toString} must not contain a program body"
 }
 
 final case class ModuleReadFailed(path: Path, reason: String, span: Option[Span] = None) extends TypeError {
-  override val msg: String = s"Failed to read module ${path.toString}: $reason"
+  override def msg: String = s"Failed to read module ${path.toString}: $reason"
 }
 
 final case class LocalCaseHead(name: String, span: Option[Span] = None) extends TypeError {
-  override val msg: String =
+  override def msg: String =
     s"Case head $name is local; unqualified case heads must resolve to globals. Use .$name for short-name matching."
 }
 
 final case class TypeMismatch(expected: Value, actual: Value, span: Option[Span] = None) extends TypeError {
-  val msg: String = s"Type mismatch: expected type: $expected, actual: $actual"
+  def msg: String = s"Type mismatch: expected type: $expected, actual: $actual"
 }
 
 final case class PropositionAsTypeCarrier(span: Option[Span] = None) extends TypeError {
-  override val msg: String = "Expected a Type carrier, but got a proposition (of sort Prop)"
+  override def msg: String = "Expected a Type carrier, but got a proposition (of sort Prop)"
 }
 
 final case class NotALevel(v1: Value, span: Option[Span] = None) extends TypeError {
@@ -252,8 +256,18 @@ final case class CaptureWithoutOpening(name: String, span: Option[Span] = None) 
       "a Level.succ of it, and a kind capture the kind itself"
 }
 
-final case class FailedToOpenCapture(v: Value, idx: Int, span: Option[Span] = None) extends TypeError {
-  override def msg: String = s"Cannot return idx $idx of $v"
+/**
+ * A type-pattern capture that cannot be read off an argument's type, which has no argument `idx` at the position the
+ * capture reads: the type does not have the pattern's shape there, such as `Nat` for `Box($A)`, or `Lin(u)` for `L($u)`
+ * with an alias `L(u) := Lin(u)`, which reads a universe's level by position only as `Sort` does.
+ */
+/** A type pattern the checker cannot open, such as one with a capture under a projection. */
+final case class InvalidTypePattern(reason: String, span: Option[Span] = None) extends TypeError {
+  override def msg: String = s"Invalid type pattern: $reason"
+}
+
+final case class FailedToOpenCapture(capture: String, v: Value, idx: Int, span: Option[Span] = None) extends TypeError {
+  override def msg: String = s"The type-pattern capture $$$capture cannot be read off $v, which has no argument $idx"
 }
 
 final case class WTF(msg: String, span: Option[Span] = None) extends TypeError
@@ -264,7 +278,7 @@ final case class InvalidConstructorResult(
     got: Value,
     span: Option[Span] = None
 ) extends TypeError {
-  override val msg: String =
+  override def msg: String =
     s"Constructor $ctor must return $inductive but got $got"
 }
 
@@ -274,7 +288,7 @@ final case class InvalidErasedConstructorBinder(
     reason: String,
     span: Option[Span] = None
 ) extends TypeError {
-  override val msg: String =
+  override def msg: String =
     s"Invalid erased constructor binder $binder in $ctor: $reason"
 }
 
@@ -285,7 +299,7 @@ final case class NonUniformInductiveParam(
     got: Value,
     span: Option[Span] = None
 ) extends TypeError {
-  override val msg: String =
+  override def msg: String =
     s"Constructor $ctor of $inductive returns non-uniform parameter $param as $got"
 }
 
@@ -297,7 +311,7 @@ final case class InductiveUniverseTooSmall(
     inductiveUniverse: Value.Level,
     span: Option[Span] = None
 ) extends TypeError {
-  override val msg: String =
+  override def msg: String =
     s"Inductive $inductive lives in Sort $inductiveUniverse, but $where has type $fieldTy : Sort $fieldUniverse"
 }
 
@@ -321,7 +335,7 @@ final case class NonStrictlyPositive(
     fieldTy: Value,
     span: Option[Span] = None
 ) extends TypeError {
-  override val msg: String =
+  override def msg: String =
     s"Constructor $ctor of $inductive is not strictly positive in field $field : $fieldTy"
 }
 

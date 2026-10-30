@@ -29,28 +29,37 @@ object Elaborator {
       if (parts.isEmpty) Some(this)
       else children.get(parts.head).flatMap(_.lookup(parts.tail))
 
-    def insertGlobal(parts: GlobalName, fullName: GlobalName): NameNode =
+    /** This trie with `fullName` bound at `parts`; a name bound already is `AlreadyDefined` at `span`. */
+    def insertGlobal(parts: GlobalName, fullName: GlobalName, span: Option[Span]): NameNode =
       if (parts.isEmpty) {
         binding match {
-          case Some(_) => throw AlreadyDefined(globalName(fullName))
+          case Some(_) => throw AlreadyDefined(globalName(fullName), span)
           case None    => copy(binding = Some(fullName))
         }
       } else {
         val child = children.getOrElse(parts.head, NameNode())
-        val nextChild = child.insertGlobal(parts.tail, fullName)
+        val nextChild = child.insertGlobal(parts.tail, fullName, span)
         copy(children = children + (parts.head -> nextChild))
       }
   }
 
   private final case class ResolvedObject(path: GlobalName, node: NameNode)
-  private type OpenScope = Map[String, ResolvedObject]
+
+  /**
+   * An open's alias: the object it names, and whether an `open` named it explicitly, as `open X.{a}` or
+   * `open X.{a as b}` do, rather than by a wildcard. A selective alias resolves before the enclosing namespaces.
+   */
+  private final case class OpenAlias(obj: ResolvedObject, selective: Boolean)
+  private type OpenScope = Map[String, OpenAlias]
 
   /**
    * Source-name resolution state.
    *
    * Locals are resolved outside the global trie and always win on the first path segment. Global names and namespace
    * objects live in `root`. The recursive-self alias resolves qualified paths to a local ref while checking recursive
-   * bodies. Open scopes are snapshots of resolved objects, so later declarations do not affect an earlier `open`.
+   * bodies. Open scopes are snapshots of resolved objects, so later declarations do not affect an earlier `open`. A
+   * first segment resolves to a selective open's alias, then to a member of the enclosing namespaces, then to a
+   * wildcard open's alias, each in the innermost scope that has one (docs/namespaces.md).
    */
   private final case class ResolveEnv(
       scopes: List[Map[String, CA.LocalRef]],
@@ -63,7 +72,7 @@ object Elaborator {
   ) {
     def enterLocalScope: ResolveEnv = copy(scopes = Map.empty[String, CA.LocalRef] :: scopes)
 
-    def enterOpenScope: ResolveEnv = copy(opens = Map.empty[String, ResolvedObject] :: opens)
+    def enterOpenScope: ResolveEnv = copy(opens = Map.empty[String, OpenAlias] :: opens)
 
     def exitScoped(inner: ResolveEnv): ResolveEnv = copy(root = inner.root)
 
@@ -81,6 +90,13 @@ object Elaborator {
       else namespace.inits.collectFirst(Function.unlift(prefix => recursiveAliases.get(prefix ++ path.parts)))
 
     /**
+     * The object an open aliases as `name`, in the innermost open scope that has it; with `selectiveOnly`, a selective
+     * one.
+     */
+    private def openAlias(name: String, selectiveOnly: Boolean): Option[ResolvedObject] =
+      opens.collectFirst(Function.unlift(_.get(name).filter(alias => alias.selective || !selectiveOnly).map(_.obj)))
+
+    /**
      * Resolve the first segment, then commit to that object while descending the remaining path.
      *
      * There is intentionally no backtracking across opens after the first segment resolves. If `Tree` resolves to the
@@ -91,7 +107,10 @@ object Elaborator {
         path.parts.headOption
           .flatMap { first =>
             if (path.root) rootObject(Vector(first))
-            else scopedObject(Vector(first)).orElse(opens.collectFirst(Function.unlift(_.get(first))))
+            else
+              openAlias(first, selectiveOnly = true)
+                .orElse(scopedObject(Vector(first)))
+                .orElse(openAlias(first, selectiveOnly = false))
           }
 
       @tailrec
@@ -155,12 +174,12 @@ object Elaborator {
           .getOrElse(throw NotFound(openName, Some(open.span)))
 
       val excludes = open.rules.collect { case SA.Command.AliasRule.Exclude(name) => name }.toSet
-      val aliases = Vector.newBuilder[(String, ResolvedObject)]
+      val aliases = Vector.newBuilder[(String, OpenAlias)]
 
       if (open.rules.contains(SA.Command.AliasRule.Wildcard)) {
         namespace.node.children.toVector.sortBy(_._1).foreach { case (name, child) =>
           if (!excludes(name))
-            aliases += name -> ResolvedObject(namespace.path :+ name, child)
+            aliases += name -> OpenAlias(ResolvedObject(namespace.path :+ name, child), selective = false)
         }
       }
 
@@ -168,29 +187,38 @@ object Elaborator {
         case SA.Command.AliasRule.Include(name, as) =>
           namespace.node.children.get(name) match {
             case Some(child) =>
-              aliases += as.getOrElse(name) -> ResolvedObject(namespace.path :+ name, child)
+              aliases += as.getOrElse(name) -> OpenAlias(
+                ResolvedObject(namespace.path :+ name, child),
+                selective = true
+              )
             case None =>
               throw NotFound(globalName(namespace.path :+ name), Some(open.span))
           }
         case SA.Command.AliasRule.Wildcard | SA.Command.AliasRule.Exclude(_) =>
       }
 
+      // An alias opened twice for one object is selective when either open names it explicitly.
       val nextOpenScope =
-        aliases.result().foldLeft(opens.head) { case (scope, (alias, obj)) =>
-          scope.get(alias) match {
-            case Some(existing) if existing.path == obj.path =>
-              scope + (alias -> obj)
+        aliases.result().foldLeft(opens.head) { case (scope, (name, alias)) =>
+          scope.get(name) match {
+            case Some(existing) if existing.obj.path == alias.obj.path =>
+              scope + (name -> alias.copy(selective = alias.selective || existing.selective))
             case Some(existing) =>
-              throw AmbiguousName(alias, Vector(globalName(existing.path), globalName(obj.path)), Some(open.span))
+              throw AmbiguousName(
+                name,
+                Vector(globalName(existing.obj.path), globalName(alias.obj.path)),
+                Some(open.span)
+              )
             case None =>
-              scope + (alias -> obj)
+              scope + (name -> alias)
           }
         }
       copy(opens = nextOpenScope :: opens.tail)
     }
 
-    def addGlobal(name: GlobalName): ResolveEnv =
-      copy(root = root.insertGlobal(name, name))
+    /** Declares the global `name`, written at `span`, where a redeclaration is reported. */
+    def addGlobal(name: GlobalName, span: Span): ResolveEnv =
+      copy(root = root.insertGlobal(name, name, Some(span)))
 
     def qualify(name: String): GlobalName = namespace :+ name
 
@@ -225,23 +253,27 @@ object Elaborator {
         (refs :+ ref, bound)
       }
 
-    def bindNamed(name: String, allowShadow: Boolean): (CA.LocalRef, ResolveEnv) =
-      if (reservedLocals.contains(name)) throw AlreadyDefined(name)
-      else if (!allowShadow && scopes.head.contains(name)) throw AlreadyDefined(name)
+    /**
+     * Binds the local `name`, written at `span`. It may not rebind a recursive definition's own name, nor, unless
+     * `allowShadow`, a name of the same scope (`AlreadyDefined` at `span`).
+     */
+    def bindNamed(name: String, allowShadow: Boolean, span: Span): (CA.LocalRef, ResolveEnv) =
+      if (reservedLocals.contains(name)) throw AlreadyDefined(name, Some(span))
+      else if (!allowShadow && scopes.head.contains(name)) throw AlreadyDefined(name, Some(span))
       else {
         val (ref, nextEnv) = allocate(name)
         (ref, nextEnv.copy(scopes = (scopes.head + (name -> ref)) :: scopes.tail))
       }
 
-    def bind(name: String, allowShadow: Boolean = false): (Option[CA.LocalRef], ResolveEnv) =
+    def bind(name: String, span: Span, allowShadow: Boolean = false): (Option[CA.LocalRef], ResolveEnv) =
       if (name == "_") (None, this)
       else {
-        val (ref, nextEnv) = bindNamed(name, allowShadow)
+        val (ref, nextEnv) = bindNamed(name, allowShadow, span)
         (Some(ref), nextEnv)
       }
 
     def bindRequired(name: String, span: Span, allowShadow: Boolean = false): (CA.LocalRef, ResolveEnv) =
-      bind(name, allowShadow) match {
+      bind(name, span, allowShadow) match {
         case (Some(ref), nextEnv) => (ref, nextEnv)
         case (None, _)            => throw WTF("Anonymous binding is not supported here", Some(span))
       }
@@ -263,7 +295,7 @@ object Elaborator {
 
     private val builtinRoot: NameNode =
       BuiltinGlobals
-        .foldLeft(NameNode()) { case (root, name) => root.insertGlobal(name, name) }
+        .foldLeft(NameNode()) { case (root, name) => root.insertGlobal(name, name, None) }
 
     private def withRoot(root: NameNode): ResolveEnv =
       ResolveEnv(
@@ -271,7 +303,7 @@ object Elaborator {
         0,
         root,
         Vector.empty,
-        List(Map.empty[String, ResolvedObject]),
+        List(Map.empty[String, OpenAlias]),
         Set.empty,
         Map.empty
       )
@@ -428,7 +460,7 @@ object Elaborator {
     if (fields.isEmpty) return None
 
     val usedNames = (header.binders ++ ctor.erasedBinders ++ ctor.fields).map(_.name).toSet
-    val selfName = freshGeneratedName("__self", usedNames)
+    val selfName = freshGeneratedName(StructEta.SelfName, usedNames)
     val selfSpan = header.span
     val selfType = {
       val head = SA.Term.Ident(header.name, header.span)
@@ -447,6 +479,7 @@ object Elaborator {
           SA.Command.DeclHeader(
             field.name,
             SA.FuncHeader(Vector(selfBinder), resultTy, Span(selfSpan.start, resultTy.span.end, selfSpan.source)),
+            field.span,
             field.span
           )
         val body =
@@ -791,10 +824,13 @@ object Elaborator {
     }
   }
 
-  private def elabTypePatternHead(fn: SA.TypeTerm, env: ResolveEnv): CA.Term.Ref =
-    elabType(fn, env) match {
-      case ref: CA.Term.Ref => ref
-      case other            => throw WTF(s"Type pattern head must resolve to a reference, got $other", Some(fn.span))
+  /** A capture-free pattern as the type it denotes. */
+  private def patternAsType(pattern: SA.TypePattern): SA.TypeTerm =
+    pattern match {
+      case SA.TypePattern.Type(term)          => term
+      case SA.TypePattern.App(fn, args, span) => SA.Term.TApp(fn, args.map(patternAsType), span)
+      case SA.TypePattern.Capture(name, span, _) =>
+        throw WTF(s"A capture-free pattern holds the capture $name", Some(span))
     }
 
   private def elabType(ty: SA.TypeTerm, env: ResolveEnv): CA.TypeTerm = ty match {
@@ -830,12 +866,23 @@ object Elaborator {
       case SA.TypePattern.Type(term) =>
         (CA.TypePattern.Type(elabType(term, env)), env)
 
-      case SA.TypePattern.App(fn, args, sp) =>
-        val (nextArgs, nextEnv) = args.foldLeft((Vector.empty[CA.TypePattern], env)) { case ((curArgs, curEnv), arg) =>
-          val (nextArg, argEnv) = elabPattern(arg, curEnv)
-          (curArgs :+ nextArg, argEnv)
+      // A pattern's head is a name. A head that is a projection, such as `P.Step(A, B)` for a local `P`, is read as the
+      // type it applies, which needs no capture.
+      case app @ SA.TypePattern.App(fn, args, sp) =>
+        elabType(fn, env) match {
+          case head: CA.Term.Ref =>
+            val (nextArgs, nextEnv) = args.foldLeft((Vector.empty[CA.TypePattern], env)) {
+              case ((curArgs, curEnv), arg) =>
+                val (nextArg, argEnv) = elabPattern(arg, curEnv)
+                (curArgs :+ nextArg, argEnv)
+            }
+            (CA.TypePattern.App(head, nextArgs, sp), nextEnv)
+          case _ =>
+            typePatternCaptureNames(app).headOption.foreach { name =>
+              throw InvalidTypePattern(s"the capture $$$name is under a head that is not a name", Some(sp))
+            }
+            (CA.TypePattern.Type(elabType(patternAsType(app), env)), env)
         }
-        (CA.TypePattern.App(elabTypePatternHead(fn, env), nextArgs, sp), nextEnv)
 
       // A constraint's captures are bound before the capture itself, as at a binder.
       case SA.TypePattern.Capture(name, sp, constraint) =>
@@ -874,7 +921,7 @@ object Elaborator {
     val (ty, envWithCaptures) = elabBinderType(b.ty, env)
     val (ref, nextEnv) =
       if (b.name == "_") envWithCaptures.allocate(b.name)
-      else envWithCaptures.bindNamed(b.name, allowShadow = false)
+      else envWithCaptures.bindNamed(b.name, allowShadow = false, b.span)
     (CA.Binder(ref, ty, b.span, b.isInstance), nextEnv)
   }
 
@@ -989,8 +1036,8 @@ object Elaborator {
   ): (Vector[PatternSlot], ResolveEnv) =
     patterns.foldLeft((Vector.empty[PatternSlot], env)) { case ((nodes, curEnv), pattern) =>
       pattern match {
-        case SA.Term.BindingPattern.Bind(name, _) =>
-          val (ref, nextEnv) = curEnv.bindNamed(name, allowShadow = true)
+        case SA.Term.BindingPattern.Bind(name, span) =>
+          val (ref, nextEnv) = curEnv.bindNamed(name, allowShadow = true, span)
           (nodes :+ PatternSlot.Leaf(ref), nextEnv)
         case SA.Term.BindingPattern.Discard(_) =>
           val (ref, nextEnv) = curEnv.allocate("_")
@@ -1139,7 +1186,7 @@ object Elaborator {
           val caseEnv = env.enterLocalScope
           val (argRefs, fieldsEnv) =
             c.argNames.foldLeft((Vector.empty[Option[CA.LocalRef]], caseEnv)) { case ((curRefs, curEnv), argName) =>
-              val (ref, nextEnv) = curEnv.bind(argName)
+              val (ref, nextEnv) = curEnv.bind(argName, c.span)
               (curRefs :+ ref, nextEnv)
             }
           val (equationRef, bodyEnv) = withEquation(fieldsEnv)
@@ -1174,7 +1221,7 @@ object Elaborator {
           case None    => env
         }
         val header = elabHeader(c.header.funcHeader, headerEnv)
-        val envWithSelf = env.addGlobal(name)
+        val envWithSelf = env.addGlobal(name, c.header.nameSpan)
         val body = c.body match {
           case SA.ConstBody.Builtin(sp) =>
             if (c.decreases.nonEmpty)
@@ -1183,9 +1230,11 @@ object Elaborator {
                 Some(c.decreases.get.span)
               )
             CA.ConstBody.Builtin(sp)
+          // Only a header with parameters makes a function definition, whose body is the function's. A header without
+          // any, such as `def f : Nat -> Nat := Nat.succ`, declares a constant of its type, which may be a function.
           case SA.ConstBody.TermBody(term) =>
             header.ty match {
-              case pi: CA.Term.Pi =>
+              case pi: CA.Term.Pi if c.header.funcHeader.params.nonEmpty =>
                 val (recursion, bodyHeaderEnv) = c.decreases match {
                   case Some(decreases) =>
                     val (selfRef, nextEnv) = header.bodyEnv.bindRecursiveSelf(c.header.name, name)
@@ -1219,14 +1268,22 @@ object Elaborator {
         val header = elabHeader(c.header.funcHeader, env)
         (
           CA.Decl.AxiomDecl(nameText, header.ty, c.span, c.isInstance),
-          env.addGlobal(name)
+          env.addGlobal(name, c.header.nameSpan)
         )
       case c: SurfaceAst.Command.Decl.InductiveDecl =>
         val name = env.qualify(c.header.name)
-        val withHead = env.addGlobal(name)
+        val withHead = env.addGlobal(name, c.header.nameSpan)
         val (decl, ctorNames) = elabInductive(c, name, env, withHead)
-        (decl, ctorNames.foldLeft(withHead)(_ addGlobal _))
+        (decl, addConstructors(withHead, c, ctorNames))
     }
+
+  /** `env` with the constructors of `c`, named `ctorNames` in its order, declared at their names. */
+  private def addConstructors(
+      env: ResolveEnv,
+      c: SA.Command.Decl.InductiveDecl,
+      ctorNames: Vector[GlobalName]
+  ): ResolveEnv =
+    c.ctors.zip(ctorNames).foldLeft(env) { case (cur, (ctor, ctorName)) => cur.addGlobal(ctorName, ctor.nameSpan) }
 
   /**
    * The family `c`, named `name`: its header resolved in `env`, and its constructors in `ctorEnv`, which also has the
@@ -1277,15 +1334,21 @@ object Elaborator {
     if (mutual.body.isEmpty) throw invalid("a mutual block declares at least one family or definition", mutual.span)
     if (families.length == mutual.body.length) {
       val names = families.map(family => env.qualify(family.header.name))
-      val withHeads = names.foldLeft(env)(_ addGlobal _)
+      val withHeads = families.zip(names).foldLeft(env) { case (cur, (family, name)) =>
+        cur.addGlobal(name, family.header.nameSpan)
+      }
       val elaborated = families.zip(names).map { case (family, name) => elabInductive(family, name, env, withHeads) }
       (
         CA.Decl.MutualInductives(elaborated.map(_._1), mutual.span),
-        elaborated.flatMap(_._2).foldLeft(withHeads)(_ addGlobal _)
+        families.zip(elaborated).foldLeft(withHeads) { case (cur, (family, (_, ctorNames))) =>
+          addConstructors(cur, family, ctorNames)
+        }
       )
     } else if (definitions.length == mutual.body.length) {
       val names = definitions.map(definition => env.qualify(definition.header.name))
-      val withNames = names.foldLeft(env)(_ addGlobal _)
+      val withNames = definitions.zip(names).foldLeft(env) { case (cur, (definition, name)) =>
+        cur.addGlobal(name, definition.header.nameSpan)
+      }
       val reserved = env.reserveRecursiveNames(definitions.map(_.header.name))
       val peers = definitions.map(_.header.name).zip(names)
       val members = definitions.zip(names).map { case (definition, name) =>

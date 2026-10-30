@@ -16,14 +16,21 @@ import com.raccoonlang.{ElabAst => EA}
  */
 object StructEta {
 
+  /**
+   * The name of the record a projector or a generated selector projects: no source identifier starts with `_`, so a
+   * one-branch match on a local of this name is a projection, which `PrettyPrinter` prints as `base.field`.
+   */
+  val SelfName = "__self"
+
   /** The projector's locals: the projected value, the field's type, then the constructor's fields. */
-  private val SelfRef = CoreAst.LocalRef(0, "self")
+  private val SelfRef = CoreAst.LocalRef(0, SelfName)
   private val MotiveRef = CoreAst.LocalRef(1, "motive")
   private val NoSpan = Span(0, 0)
 
-  /** The canonical projector of each field of a constructor with `fieldCount` stored fields. */
-  def projectors(ctorName: String, fieldCount: Int): Vector[EA.Term.Match] = {
-    val fieldRefs = Vector.tabulate(fieldCount)(i => CoreAst.LocalRef(2 + i, s"x$i"))
+  /** The canonical projector of each stored field of a constructor, whose fields are named `fieldNames`. */
+  def projectors(ctorName: String, fieldNames: Vector[String]): Vector[EA.Term.Match] = {
+    val fieldCount = fieldNames.length
+    val fieldRefs = Vector.tabulate(fieldCount)(i => CoreAst.LocalRef(2 + i, fieldNames(i)))
     Vector.tabulate(fieldCount) { idx =>
       EA.Term.Match(
         EA.Term.LocalRef(SelfRef, NoSpan),

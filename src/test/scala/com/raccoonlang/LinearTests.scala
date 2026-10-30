@@ -71,7 +71,7 @@ class LinearTests extends munit.FunSuite {
   test("Lin(u) prints, quotes and is inferred as a match motive") {
     val env = declsEnv(families)
     val lin1 = VLin(Level.one)
-    assertEquals(PrettyPrinter.print(lin1), "Lin(Level(Map(), 1))")
+    assertEquals(PrettyPrinter.print(lin1), "Lin(Level.one)")
     assertEquals(lin1.tpe, VSort(Level.const(2)))
     val quoted = ValueQuote.quoteTerm(lin1, ValueQuote.quoteContext(env), Span(0, 0))
     assertEquals(PrettyPrinter.printElabTerm(quoted), "Lin(Level.one)")
@@ -91,7 +91,7 @@ class LinearTests extends munit.FunSuite {
           |""".stripMargin
     )
     assertEquals(PrettyPrinter.print(res), "LNats")
-    assertEquals(PrettyPrinter.print(res.tpe), "Lin(Level(Map(), 0))")
+    assertEquals(PrettyPrinter.print(res.tpe), "Lin(Level.zero)")
   }
 
   test("a linear list value is a packed word with the list storage invariants") {
@@ -280,7 +280,7 @@ class LinearTests extends munit.FunSuite {
     assertErrorAt[MissingCase](
       families +
         "def notApart (k: Kind)(h: Eq(Sort(Level.one), Type, Univ(k, Level.zero))) : False := {\n  match h returning False with\n}\n",
-      "match h returning False with\n"
+      "match h returning False with"
     )
     assert(!ValueEquivalence.defEq(VSort(Level.zero), VLin(Level.zero)))
     assertNotEquals(VSort(Level.zero).key, VLin(Level.zero).key)
@@ -609,9 +609,11 @@ class LinearTests extends munit.FunSuite {
   // Without cumulativity no refinement gives a tracked local an unrestricted type: an equation between a linear
   // universe's type and a copyable type cannot be stated.
   test("no equation relates a linear type variable to a copyable type") {
+    // Located at the pattern argument that does not fit its parameter.
     assertErrorAt[TypeMismatch](
       library + "def asNat (x: $A in Lin($u))(e: Eq(Lin(u), A, Nat)) : Nat := 0\n",
-      " (x: $A in Lin($u))(e: Eq(Lin(u), A, Nat)) : Nat"
+      "Nat",
+      "Nat)) : Nat := 0"
     )
   }
 
@@ -629,7 +631,7 @@ class LinearTests extends munit.FunSuite {
           |  0
           |}
           |""".stripMargin,
-      "match b with\n  | Bool.true => Tag.mk(count(xs))\n  | Bool.false => Tag.mk(count(xs))\n  "
+      "match b with\n  | Bool.true => Tag.mk(count(xs))\n  | Bool.false => Tag.mk(count(xs))"
     )
   }
 

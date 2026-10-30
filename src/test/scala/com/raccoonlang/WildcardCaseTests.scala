@@ -61,13 +61,13 @@ class WildcardCaseTests extends munit.FunSuite {
           |  | _ => 3
           |}
           |""".stripMargin,
-      "| _ => 3\n"
+      "| _ => 3"
     )
     // A known constructor stands alone: a wildcard after its case stands for nothing, as a case for another
     // constructor would be unreachable.
     assertErrorAt[RedundantCase](
       color + "\ndef known : Nat := {\n  match Color.red returning Nat with\n  | Color.red => 0\n  | _ => 1\n}\n",
-      "| _ => 1\n"
+      "| _ => 1"
     )
     assertEquals(result(color + "\n{\n  match Color.red returning Nat with\n  | _ => 1\n}\n"), "1")
   }
@@ -109,7 +109,7 @@ class WildcardCaseTests extends munit.FunSuite {
           |  | _ => 2
           |}
           |""".stripMargin,
-      "| _ => 2\n"
+      "| _ => 2"
     )
   }
 

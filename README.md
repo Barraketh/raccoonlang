@@ -173,6 +173,38 @@ def lex (a: Nat)(b: Nat): Nat decreases lexicographic(a, b) := {
 }
 ```
 
+The `decreases` clause continues the definition's header, so it may start the line after the result type, and its
+specification the line after `decreases`.
+
+### Syntax and layout
+
+Line breaks separate imports, declarations, the members of a `mutual` block, a block's statements, a match's cases and
+an inductive's constructors. Any number of blank and comment-only lines may stand in place of one, including right after
+a block's `{`. A case or a
+constructor ends its line, so a match's cases never share a line with its header or with each other, and a match's
+`returning` clause may start the line after its scrutinee.
+
+`A -> B` is the non-dependent function type wherever a type or a term may stand: as a binder type, a codomain or an
+argument, as in `List.nil(Nat -> Nat)`. A binder type may be any type, such as an application followed by an arrow,
+`(f: List(Nat) -> Nat)`, an application of an application, `(h: R(x)(y, z))`, or an application headed by a
+projection, `(h: P.Step(A, B))`; a pattern with captures, such as `List($A)`, applies a name once. A lambda binds at
+least one parameter. `use` is an identifier except at the start of a block's statement, where it begins a `use`
+statement.
+
+```raccoon
+def apply (f: List(Nat) -> Nat)(xs: List(Nat)) : Nat := f(xs)
+
+def count (n: Nat): Nat
+    decreases structural(n) := {
+  // a comment right after the brace
+
+  match n returning Nat with
+  | Nat.zero => 0
+  // a comment between cases
+  | Nat.succ k => Nat.succ(count(k))
+}
+```
+
 ### Type patterns
 
 An alternative to implicit parameters. A binder can contain captures in the type, and later parameters can reference
@@ -303,7 +335,13 @@ def example : Data.Tree :=
 
 Dotted names resolve local-first: if the first segment is a local, the rest of the path is projection. Use `_root_` to
 bypass locals, the current namespace, and opens. Opens support wildcard, selected, excluded, renamed, and root-qualified
-forms such as `open Nat`, `open Nat.{zero, succ}`, `open Nat.{*, -succ, succ as nsucc}`, and `open _root_.Nat`.
+forms such as `open Nat`, `open Nat.{zero, succ}`, `open Nat.{*, -succ, succ as nsucc}`, and `open _root_.Nat`. A name
+an `open` selects explicitly, such as `zero` in `open Nat.{zero}`, wins over a member of the enclosing namespace with
+that name; a wildcard open's names do not.
+
+A declaration's name may be dotted: `def Data.Tree.size (t: Data.Tree) : Nat := ...` declares `size` in the namespace
+`Data.Tree`, exactly as a `namespace Data.Tree { ... }` block around it would. A `mutual` block's members share one
+scope, so their names are not dotted: a block that declares into a namespace stands in a namespace block.
 
 Match case heads use normal global resolution. Prefix a case head with `.` to match by the constructor short name from
 the scrutinee type: `| .zero => ...`.

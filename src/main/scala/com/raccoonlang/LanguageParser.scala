@@ -9,18 +9,53 @@ import com.raccoonlang.SurfaceAst._
 object LanguageParser {
   // Whitespace handling
   private val skipWS = CharsWhile(c => c == ' ' || c == '\t').named("SkipWS")
-  private val wsSep = P(c => c == ' ' || c == '\t').rep(1).named("WsSep")
+  private val wsSep = P("whitespace", c => c == ' ' || c == '\t').rep(1).named("whitespace")
   private val comment = P("//") ~ CharsWhile(c => c != '\n')
 
-  private val emptyLine = (skipWS ~ comment.? ~ Exact("\n")).named("EmptyLine")
-  private val lineSep = (emptyLine ~ skipWS).named("LineSep")
+  private val emptyLine = (skipWS ~ comment.? ~ Exact("\n")).named("a line break")
   private val skipAllWs = (emptyLine.rep(0) ~ skipWS).named("AllWS")
-  private val skipOneLine = emptyLine.? ~ skipWS
 
+  /**
+   * The line break between two items of a list: imports, commands, a block's statements, a match's cases, an
+   * inductive's constructors. Any number of blank and comment-only lines may stand in its place. An item never consumes
+   * the break after it, so a list ends at the first line that does not start another of its items.
+   */
+  private val lineSep = (emptyLine.rep(1) ~ skipWS).named("a line break")
+
+  /**
+   * Where an import, a case or a constructor ends, or the header a list of cases or constructors follows: the rest of
+   * the line is blank or a comment. It consumes nothing, leaving the line break to the list, so an item written on the
+   * same line is reported where it is.
+   */
+  private val lineEnd: Parser[NoValue.type] = new Parser[NoValue.type] {
+    private val rest = skipWS ~ comment.?
+
+    override def parse(input: String, startIdx: Int): ParseResult[NoValue.type] =
+      rest.parse(input, startIdx) match {
+        case Success(_, _, endIdx) if endIdx == input.length || input.charAt(endIdx) == '\n' =>
+          Success(NoValue, startIdx, startIdx)
+        case _ => fail(startIdx, startIdx)
+      }
+
+    override def toString: String = "the end of the line"
+  }
+
+  /** Succeeds, consuming nothing, where `p` does not match. */
+  private def notFollowedBy(p: Parser[Any], name: String): Parser[NoValue.type] = new Parser[NoValue.type] {
+    override def parse(input: String, startIdx: Int): ParseResult[NoValue.type] =
+      p.parse(input, startIdx) match {
+        case _: Success[_] => fail(startIdx, startIdx)
+        case _: Failure    => Success(NoValue, startIdx, startIdx)
+      }
+
+    override def toString: String = name
+  }
+
+  // `use` is no keyword: a body statement that starts with it and a space is a `use` statement, and elsewhere it is an
+  // identifier.
   private val keywords = List(
     "fun",
     "let",
-    "use",
     "match",
     "as",
     "returning",
@@ -46,7 +81,8 @@ object LanguageParser {
   )
 
   private val identAtom =
-    (P(c => c.isLetter) ~ P(c => c.isLetterOrDigit || c == '_').rep(0)).!.filter(s => !keywords.contains(s))
+    (P("a letter", c => c.isLetter) ~ P("a letter or digit", c => c.isLetterOrDigit || c == '_')
+      .rep(0)).!.filter("an identifier", s => !keywords.contains(s))
 
   private val rootName = "_root_"
   private val rootIdent: Parser[String] = P(rootName).!
@@ -54,18 +90,19 @@ object LanguageParser {
 
   private val argName: Parser[String] = ident | P("_").!
 
-  private def sym(c: Char) = (skipWS ~ P(c) ~/ skipWS).named(s"Sym($c)")
-  private def sym(s: String) = (skipWS ~ P(s) ~/ skipWS).named(s"Sym($s)")
+  // Each token is named by its text, which a parse error reports as what was expected.
+  private def sym(c: Char) = (skipWS ~ P(c) ~/ skipWS).named(s"'$c'")
+  private def sym(s: String) = (skipWS ~ P(s) ~/ skipWS).named(s"'$s'")
 
   // Variant that does not consume trailing whitespace; useful before ws-separated reps
-  private def symTight(c: Char) = (skipWS ~ P(c)).named(s"SymTight($c)")
-  private def symTight(s: String) = (skipWS ~ P(s)).named(s"SymTight($s)")
-  private def layoutSym(c: Char) = (skipAllWs ~ P(c) ~/ skipAllWs).named(s"LayoutSym($c)")
-  private def layoutSymTight(c: Char) = (skipAllWs ~ P(c)).named(s"LayoutSymTight($c)")
-  private def layoutSymTight(s: String) = (skipAllWs ~ P(s)).named(s"LayoutSymTight($s)")
+  private def symTight(c: Char) = (skipWS ~ P(c)).named(s"'$c'")
+  private def symTight(s: String) = (skipWS ~ P(s)).named(s"'$s'")
+  private def layoutSym(c: Char) = (skipAllWs ~ P(c) ~/ skipAllWs).named(s"'$c'")
+  private def layoutSymTight(c: Char) = (skipAllWs ~ P(c)).named(s"'$c'")
+  private def layoutSymTight(s: String) = (skipAllWs ~ P(s)).named(s"'$s'")
 
-  private def kw(s: String) = (skipWS ~ P(s) ~ wsSep).named(s"Kw($s)")
-  private def kwTight(s: String) = (skipWS ~ P(s)).named(s"KwTight($s)")
+  private def kw(s: String) = (skipWS ~ P(s) ~ wsSep).named(s"'$s'")
+  private def kwTight(s: String) = (skipWS ~ P(s)).named(s"'$s'")
 
   private def identTerm(implicit sourceId: Option[SourceId]): Parser[Term] =
     ident.flatSpanned(sourceId).map(Ident.tupled)
@@ -84,14 +121,15 @@ object LanguageParser {
           case invalid: UnicodeScalarString.Invalid => throw ParseError(startIdx, invalid.offset, invalid.message)
         }
 
-    override def toString: String = "StringLiteral"
+    override def toString: String = "a string"
   }
 
   private def strLitTerm(implicit sourceId: Option[SourceId]): Parser[StrLit] =
     strLitAtom.flatSpanned(sourceId).map(StrLit.tupled)
 
   /** A Nat literal: ASCII decimal digits. */
-  private val natLitAtom: Parser[BigInt] = P(c => c >= '0' && c <= '9').rep(1).!.map(BigInt(_)).named("NatLiteral")
+  private val natLitAtom: Parser[BigInt] =
+    P("a digit", c => c >= '0' && c <= '9').rep(1).!.map(BigInt(_)).named("a number")
 
   private def natLitTerm(implicit sourceId: Option[SourceId]): Parser[NatLit] =
     natLitAtom.flatSpanned(sourceId).map(NatLit.tupled)
@@ -158,13 +196,27 @@ object LanguageParser {
     }
 
   private def typeTerm(implicit sourceId: Option[SourceId]): Parser[TypeTerm] =
-    (typeExpr ~ (skipAllWs ~ sym("->") ~/ skipAllWs ~ typeExpr).rep(0)).flatSpanned(sourceId).map {
-      case (first, others, sp) =>
+    (typeExpr ~ (skipAllWs ~ sym("->") ~/ skipAllWs ~ typeExpr).rep(0))
+      .flatSpanned(sourceId)
+      .map { case (first, others, sp) =>
         val pieces = first +: others
-        pieces.init.foldRight(pieces.last: TypeTerm) { case (lhs, rhs) =>
-          Pi(Binder("_", BinderType.TypePattern(TypePattern.Type(lhs), lhs.span), lhs.span), rhs, sp)
-        }
-    }
+        pieces.init.foldRight(pieces.last: TypeTerm) { case (lhs, rhs) => arrow(lhs, rhs, sp) }
+      }
+      .named("a type")
+
+  /** The non-dependent function type `domain -> codomain`, whose binder is anonymous. */
+  private def arrow(domain: TypeTerm, codomain: TypeTerm, span: Span): Pi =
+    Pi(Binder("_", BinderType.TypePattern(TypePattern.Type(domain), domain.span), domain.span), codomain, span)
+
+  /**
+   * What may continue a type after a pattern application: an argument list, a projection or an arrow. A pattern
+   * application is a whole binder type only when none follows, as in `List($A)`; otherwise the binder type is a type,
+   * such as `R(x)(y, z)` or `List(Nat) -> Nat`, which holds no capture.
+   */
+  private val typeContinues: Parser[NoValue.type] =
+    (skipWS ~ P('(')) | P('.') | (skipAllWs ~ P("->"))
+
+  private val wholePattern = notFollowedBy(typeContinues, "the end of a type pattern")
 
   private def typePatternCapture(implicit sourceId: Option[SourceId]): Parser[TypePattern.Capture] =
     (symTight("$") ~/ ident ~ (kw("in") ~/ topLevelTypePattern).?).flatSpanned(sourceId).map {
@@ -176,8 +228,9 @@ object LanguageParser {
       fields.foldLeft(base) { case (cur, (field, span)) => TSelect(cur, field, span) }
     }
 
+  /** A pattern application, `F(p, ...)`, where nothing continues it as a type (`typeContinues`). */
   private def typePatternApp(implicit sourceId: Option[SourceId]): Parser[TypePattern.App] =
-    (typePatternHead ~ nonEmptyParenArgs(typePattern)).flatSpanned(sourceId).map(TypePattern.App.tupled)
+    (typePatternHead ~ nonEmptyParenArgs(typePattern) ~ wholePattern).flatSpanned(sourceId).map(TypePattern.App.tupled)
 
   private def topLevelTypePattern(implicit sourceId: Option[SourceId]): Parser[TopLevelTP] =
     typePatternApp | typeTerm.map(TypePattern.Type.apply)
@@ -245,25 +298,31 @@ object LanguageParser {
   private def bodyStmt(implicit sourceId: Option[SourceId]): Parser[BodyStmt] =
     useStmt.map(UseStmt.apply) | openP.map(OpenStmt.apply) | let.map(LetStmt.apply)
 
+  /** A block: statements, one per line, and its result, among which blank and comment-only lines may stand. */
   private def body(implicit sourceId: Option[SourceId]): Parser[Body] = {
-    val content = (bodyStmt.rep(0, lineSep) ~ skipOneLine ~ term)
+    val content = (bodyStmt.rep(0, lineSep) ~ skipAllWs ~ term)
       .map { case (statements, res) =>
         (statements, res)
       }
       .spanned(sourceId)
-    (sym("{") ~/ skipOneLine ~ content ~ skipOneLine ~ sym("}"))
+    (sym("{") ~/ skipAllWs ~ content ~ skipAllWs ~ sym("}"))
       .map { s =>
         Body(s.value._1, s.value._2, s.span)
       }
-      .named("Body")
   }
 
   // no longer support `using normalizer` in parser; replaced by `use` statements
 
-  private def lambda(implicit sourceId: Option[SourceId]): Parser[Lam] =
-    (kw("fun") ~/ funcHeader ~ sym("=>") ~/ skipAllWs ~ term)
+  /** `fun (x: A)...: B => body`. A lambda binds at least one parameter. */
+  private def lambda(implicit sourceId: Option[SourceId]): Parser[Lam] = {
+    val header =
+      (layoutParam.rep(1).named("a lambda's parameter") ~ skipAllWs ~ sym(':') ~/ skipAllWs ~ typeTerm)
+        .flatSpanned(sourceId)
+        .map(FuncHeader.tupled)
+    (kw("fun") ~/ header ~ sym("=>") ~/ skipAllWs ~ term)
       .flatSpanned(sourceId)
       .map { case (header, body, span) => Lam(header, body, span) }
+  }
 
   private def caseHead: Parser[(Vector[String], Boolean)] = {
     val shortName = (symTight(".") ~/ ident).map(name => (Vector(name), true))
@@ -272,19 +331,18 @@ object LanguageParser {
   }
 
   private def matchCase(implicit sourceId: Option[SourceId]): Parser[Case] =
-    (sym("|") ~/ caseHead ~ (wsSep ~ argName).rep(0) ~ sym("=>") ~/ skipAllWs ~ term ~ lineSep)
+    (sym("|") ~/ caseHead ~ (wsSep ~ argName).rep(0) ~ sym("=>") ~/ skipAllWs ~ term ~ lineEnd)
       .flatSpanned(sourceId)
       .map { case (ctorPath, useShortName, argNames, body, span) =>
         Case(ctorPath, useShortName, argNames, body, span)
       }
-      .named("Case")
 
   /**
    * `| _ => e`, a wildcard case: it binds no fields. It is tried before `matchCase`, which commits to a constructor
    * once it has read `|`.
    */
   private def wildcardCase(implicit sourceId: Option[SourceId]): Parser[Wildcard] =
-    (sym("|") ~ P("_") ~ (wsSep ~ argName.spanned(sourceId)).rep(0) ~ sym("=>") ~/ skipAllWs ~ term ~ lineSep)
+    (sym("|") ~ P("_") ~ (wsSep ~ argName.spanned(sourceId)).rep(0) ~ sym("=>") ~/ skipAllWs ~ term ~ lineEnd)
       .flatSpanned(sourceId)
       .map { case (fields, body, span) =>
         fields.headOption.foreach { field =>
@@ -292,17 +350,19 @@ object LanguageParser {
         }
         Wildcard(body, span)
       }
-      .named("WildcardCase")
 
   /** `h :` in `match h : e`, the equation the match names. */
   private def matchEquation(implicit sourceId: Option[SourceId]): Parser[MatchEquation] =
     (ident.flatSpanned(sourceId) ~ sym(':')).map { case (name, span) => MatchEquation(name, span) }
 
-  /** A wildcard case is the last case of its match, so a match has at most one. */
+  /**
+   * `match h : e returning M with`, then its cases, each on lines of its own. `returning` continues the header, so it
+   * may start the next line. A wildcard case is the last case of its match, so a match has at most one.
+   */
   private def matchP(implicit sourceId: Option[SourceId]): Parser[Match] = {
     val anyCase = wildcardCase.map[Either[Wildcard, Case]](Left(_)) | matchCase.map(Right(_))
-    (kw("match") ~/ matchEquation.? ~ term ~ (kw("returning") ~/ typeTerm).? ~ (kwTight("with") ~/ lineSep) ~
-      anyCase.rep(0))
+    (kw("match") ~/ matchEquation.? ~ term ~ (skipAllWs ~ kw("returning") ~/ typeTerm).? ~
+      kwTight("with") ~/ lineEnd ~ (lineSep ~ anyCase).rep(0))
       .flatSpanned(sourceId)
       .map { case (equation, scrut, motive, written, sp) =>
         written.dropRight(1).collectFirst { case Left(wildcard) => wildcard }.foreach { wildcard =>
@@ -325,7 +385,17 @@ object LanguageParser {
     ((P(".") ~/ identAtom).flatSpanned(sourceId).map(TermDot.tupled) |
       parenArgs(term).flatSpanned(sourceId).map(TermApp.tupled)).rep(0)
 
+  /** A term, which an arrow may follow: `A -> B` is a term, the non-dependent function type, as it is a type. */
   private def term(implicit sourceId: Option[SourceId]): Parser[Term] =
+    (termExpr.spanned(sourceId) ~ (skipAllWs ~ sym("->") ~/ skipAllWs ~ typeTerm).?)
+      .map {
+        case (lhs, None) => lhs.value
+        case (lhs, Some(codomain)) =>
+          arrow(asType(lhs.value, lhs.span), codomain, Span(lhs.span.start, codomain.span.end, lhs.span.source))
+      }
+      .named("a term")
+
+  private def termExpr(implicit sourceId: Option[SourceId]): Parser[Term] =
     ((lambda | matchP | body | simplePi | termAtom) ~ termTrailers).map { case (base, trailers) =>
       trailers.foldLeft(base) {
         case (cur, TermDot(name, sp)) => Select(cur, name, sp)
@@ -333,27 +403,57 @@ object LanguageParser {
       }
     }
 
+  /**
+   * A term written as an arrow's domain, as the type it is: every form but a block or a match is one. `span` is the
+   * term's whole span, where a block or a match is refused.
+   */
+  private def asType(term: Term, span: Span): TypeTerm =
+    term match {
+      case t: Ident                => t
+      case t: NatLit               => t
+      case t: StrLit               => t
+      case t: Pi                   => t
+      case t: Derive               => t
+      case t: Lam                  => t
+      case Select(base, field, sp) => TSelect(asType(base, span), field, sp)
+      case App(fn, args, sp) =>
+        if (args.isEmpty) throw ParseError(span.start, span.start, "A function type's domain applies to no arguments")
+        TApp(asType(fn, span), args.map(asType(_, span)), sp)
+      case _: Match | _: Body => throw ParseError(span.start, span.start, "A function type's domain must be a type")
+    }
+
   private def funcHeader(implicit sourceId: Option[SourceId]): Parser[FuncHeader] =
     (layoutParam.rep(0) ~ skipAllWs ~ sym(':') ~/ skipAllWs ~ typeTerm).flatSpanned(sourceId).map(FuncHeader.tupled)
 
-  private def declHeader(implicit sourceId: Option[SourceId]): Parser[DeclHeader] =
-    (ident ~ funcHeader).flatSpanned(sourceId).map(DeclHeader.tupled)
+  /** A declaration and the namespace its dotted name puts it in: `def A.b` declares `b` in `A`. */
+  private final case class InNamespace[+A](prefix: Vector[String], value: A)
+
+  /** A declaration's name, which may be dotted: its last segment is the name, and the others its namespace's path. */
+  private def declName(implicit sourceId: Option[SourceId]): Parser[InNamespace[Spanned[String]]] =
+    ident.spanned(sourceId).rep(min = 1, sep = P('.')).map(names => InNamespace(names.init.map(_.value), names.last))
+
+  private def declHeader(implicit sourceId: Option[SourceId]): Parser[InNamespace[DeclHeader]] =
+    (declName ~ funcHeader).flatSpanned(sourceId).map { case (name, header, span) =>
+      InNamespace(name.prefix, DeclHeader(name.value.value, header, span, name.value.span))
+    }
 
   // New inductive-specific parsers
-  private def inductiveHeader(implicit sourceId: Option[SourceId]): Parser[InductiveHeader] = {
+  private def inductiveHeader(implicit sourceId: Option[SourceId]): Parser[InNamespace[InductiveHeader]] = {
     val paramsP = layoutParam.rep(0)
     val indicesP = (kw("indices") ~/ layoutParam.rep(0)).?.map(_.getOrElse(Vector.empty))
-    (ident ~ paramsP ~ indicesP ~ skipAllWs ~ sym(':') ~/ skipAllWs ~ typeTerm)
+    (declName ~ paramsP ~ indicesP ~ skipAllWs ~ sym(':') ~/ skipAllWs ~ typeTerm)
       .flatSpanned(sourceId)
-      .map { case (name, params, indices, ty, sp) => InductiveHeader(name, params, indices, ty, sp) }
+      .map { case (name, params, indices, ty, sp) =>
+        InNamespace(name.prefix, InductiveHeader(name.value.value, params, indices, ty, sp, name.value.span))
+      }
   }
 
   private def ctorDecl(implicit sourceId: Option[SourceId]): Parser[ConstructorDecl] = {
-    (sym("|") ~/ ident ~ layoutErasedParam.rep(0) ~ layoutParam.rep(0) ~ skipAllWs ~ sym(':') ~/ skipAllWs ~
-      typeTerm ~ lineSep)
+    (sym("|") ~/ ident.spanned(sourceId) ~ layoutErasedParam.rep(0) ~ layoutParam.rep(0) ~ skipAllWs ~ sym(':') ~/
+      skipAllWs ~ typeTerm ~ lineEnd)
       .flatSpanned(sourceId)
       .map { case (name, erasedBinders, fields, resTy, sp) =>
-        ConstructorDecl(name, erasedBinders, fields, resTy, sp)
+        ConstructorDecl(name.value, erasedBinders, fields, resTy, sp, name.span)
       }
   }
 
@@ -377,49 +477,67 @@ object LanguageParser {
         .flatSpanned(sourceId)
         .map { case (measureTerm, span) => DecreaseSpec.Measure(measureTerm, span) }
 
-    kw("decreases") ~/ (structural | lexicographic | measure)
+    // The specification follows the keyword on its line or starts a later one.
+    val keyword = (skipWS ~ P("decreases") ~ (lineSep | wsSep)).named("'decreases'")
+    keyword ~/ (structural | lexicographic | measure).named("structural(x), lexicographic(x, ...) or measure(e)")
   }
 
-  // (opaque | stable)? def instance? foo (a: A)[b: B](c : C): D := body
-  private def constP(implicit sourceId: Option[SourceId]): Parser[ConstDecl] =
-    (kw("def") ~/ kw("instance").!.? ~ declHeader ~ decreasesP.? ~
+  /**
+   * `def instance? foo (a: A)[b: B](c : C): D := body`. A `decreases` clause continues the header, so it may start a
+   * later line.
+   */
+  private def constP(implicit sourceId: Option[SourceId]): Parser[InNamespace[ConstDecl]] =
+    (kw("def") ~/ kw("instance").!.? ~ declHeader ~ (skipAllWs ~ decreasesP).? ~
       (sym(":=") ~/ skipAllWs ~ constBody))
       .flatSpanned(sourceId)
       .map { case (instanceOpt, header, decreases, body, span) =>
-        ConstDecl(
-          header,
-          decreases,
-          body,
-          span,
-          isInstance = instanceOpt.isDefined
-        )
+        header.copy(value = ConstDecl(header.value, decreases, body, span, isInstance = instanceOpt.isDefined))
       }
 
-  private def axiomP(implicit sourceId: Option[SourceId]): Parser[AxiomDecl] =
+  private def axiomP(implicit sourceId: Option[SourceId]): Parser[InNamespace[AxiomDecl]] =
     (kw("axiom") ~/ kw("instance").!.? ~ declHeader)
       .flatSpanned(sourceId)
       .map { case (instanceOpt, header, span) =>
-        AxiomDecl(header, span, isInstance = instanceOpt.isDefined)
+        header.copy(value = AxiomDecl(header.value, span, isInstance = instanceOpt.isDefined))
       }
 
-  private def inductiveP(implicit sourceId: Option[SourceId]): Parser[InductiveDecl] =
-    (kw("inductive") ~/ inductiveHeader ~ lineSep ~ ctorDecl.rep(0))
+  private def inductiveP(implicit sourceId: Option[SourceId]): Parser[InNamespace[InductiveDecl]] =
+    (kw("inductive") ~/ inductiveHeader ~ lineEnd ~ (lineSep ~ ctorDecl).rep(0))
       .flatSpanned(sourceId)
-      .map { case (h, cs, sp) => InductiveDecl(h, cs, sp) }
+      .map { case (h, cs, sp) => h.copy(value = InductiveDecl(h.value, cs, sp)) }
 
   private def commandP(implicit sourceId: Option[SourceId]): Parser[Command] =
     declP | namespaceP | openP | mutualP | blockP
 
-  /** `mutual { declarations }`: only declarations, which the elaborator requires to be all families or all defs. */
-  private def mutualP(implicit sourceId: Option[SourceId]): Parser[Mutual] =
-    (kw("mutual") ~/ sym('{') ~/ skipAllWs ~ declP.rep(0, lineSep.rep(1)) ~ skipAllWs ~ symTight('}'))
+  /**
+   * `mutual { declarations }`: only declarations, which the elaborator requires to be all families or all defs. They
+   * are separated as commands are, by line breaks among which blank and comment lines may stand. A member's name is not
+   * dotted: the block's members share one scope, so a block that declares into a namespace stands in its block.
+   */
+  private def mutualP(implicit sourceId: Option[SourceId]): Parser[Mutual] = {
+    val member = (constP | axiomP | inductiveP).map { declared =>
+      if (declared.prefix.nonEmpty)
+        throw ParseError(
+          declared.value.span.start,
+          declared.value.span.start,
+          "A mutual block's member has no dotted name; put the block in a namespace block"
+        )
+      declared.value
+    }
+    (kw("mutual") ~/ sym('{') ~/ skipAllWs ~ member.rep(0, lineSep) ~ skipAllWs ~ symTight('}'))
       .flatSpanned(sourceId)
       .map(Mutual.tupled)
+  }
 
   private def commandsP(implicit sourceId: Option[SourceId]): Parser[Vector[Command]] =
-    skipAllWs ~ commandP.rep(0, lineSep.rep(1)) ~ skipAllWs
+    skipAllWs ~ commandP.rep(0, lineSep) ~ skipAllWs
 
-  private def declP(implicit sourceId: Option[SourceId]): Parser[Decl] = constP | axiomP | inductiveP
+  /** A declaration, which a dotted name puts in a namespace block of its own. */
+  private def declP(implicit sourceId: Option[SourceId]): Parser[Command] =
+    (constP | axiomP | inductiveP).map { declared =>
+      if (declared.prefix.isEmpty) declared.value
+      else Namespace(declared.prefix, Vector(declared.value), declared.value.span)
+    }
 
   private def namespaceP(implicit sourceId: Option[SourceId]): Parser[Namespace] =
     (kw("namespace") ~/ pathP ~ sym('{') ~/ commandsP ~ symTight('}')).flatSpanned(sourceId).map {
@@ -445,10 +563,10 @@ object LanguageParser {
     (sym("{") ~ commandsP ~ symTight("}")).flatSpanned(sourceId).map(Block.tupled)
 
   private def importP(implicit sourceId: Option[SourceId]): Parser[Import] =
-    (kw("import") ~/ pathP ~/ emptyLine).flatSpanned(sourceId).map(Import.tupled)
+    (kw("import") ~/ pathP ~/ lineEnd).flatSpanned(sourceId).map(Import.tupled)
 
   private def programP(implicit sourceId: Option[SourceId]): Parser[Program] = {
-    (skipAllWs ~ importP.rep(0) ~ commandsP ~ term.? ~ skipAllWs ~ End).map(Program.tupled)
+    (skipAllWs ~ importP.rep(0, lineSep) ~ commandsP ~ term.? ~ skipAllWs ~/ End).map(Program.tupled)
   }
 
   private def tryParse[A](input: String, parser: Parser[A]): ParseResult[A] = try {

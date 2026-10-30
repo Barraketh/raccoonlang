@@ -124,36 +124,39 @@ object TypePatternOps {
           val inputs = Vector.newBuilder[Ledger.Input]
           inputs += Ledger.Input(checkedFn.lin, fn.span)
 
+          // An argument that does not fit its parameter is reported where it is written.
           binders.zip(args).foreach { case (paramBinder, arg) =>
-            val (argPattern, argValue, argInfo) =
-              arg match {
-                // A constrained capture has its constraint as its type, which the parameter's type must then fit, such
-                // as `$A in Sort($u)` at a `Univ($k, $u)` parameter, which fixes the kind.
-                case CPattern.Capture(ref, captureSpan, constraint) =>
-                  val (checkedConstraint, captureType) = constraint match {
-                    case Some(c) =>
-                      val (checkedC, constraintEnv) = checkTopLevel(c, patternEnv)
-                      patternEnv = constraintEnv
-                      val constraintValue = Interpreter.evalTypeTerm(compileType(checkedC), constraintEnv)
-                      TypeChecker.assertType(constraintValue)
-                      (Some(checkedC), constraintValue)
-                    case None => (None, openBinderType(telescopeEnv, paramBinder.ty)._1)
-                  }
-                  if (Linearity.isLinear(captureType)) throw LinearInType(Some(captureSpan))
-                  val value = FreshVar.freshVar(ref.name, captureType)
-                  patternEnv = patternEnv.putLocal(ref, value)
-                  (EPattern.Capture(ref, captureSpan, checkedConstraint), value, LinearInfo.empty)
+            TypeChecker.at(arg.span) {
+              val (argPattern, argValue, argInfo) =
+                arg match {
+                  // A constrained capture has its constraint as its type, which the parameter's type must then fit, such
+                  // as `$A in Sort($u)` at a `Univ($k, $u)` parameter, which fixes the kind.
+                  case CPattern.Capture(ref, captureSpan, constraint) =>
+                    val (checkedConstraint, captureType) = constraint match {
+                      case Some(c) =>
+                        val (checkedC, constraintEnv) = checkTopLevel(c, patternEnv)
+                        patternEnv = constraintEnv
+                        val constraintValue = Interpreter.evalTypeTerm(compileType(checkedC), constraintEnv)
+                        TypeChecker.assertType(constraintValue)
+                        (Some(checkedC), constraintValue)
+                      case None => (None, openBinderType(telescopeEnv, paramBinder.ty)._1)
+                    }
+                    if (Linearity.isLinear(captureType)) throw LinearInType(Some(captureSpan))
+                    val value = FreshVar.freshVar(ref.name, captureType)
+                    patternEnv = patternEnv.putLocal(ref, value)
+                    (EPattern.Capture(ref, captureSpan, checkedConstraint), value, LinearInfo.empty)
 
-                case other =>
-                  val (checkedPattern, checkedEnv, value, info) = checkPattern(other, patternEnv)
-                  patternEnv = checkedEnv
-                  (checkedPattern, value, info)
-              }
+                  case other =>
+                    val (checkedPattern, checkedEnv, value, info) = checkPattern(other, patternEnv)
+                    patternEnv = checkedEnv
+                    (checkedPattern, value, info)
+                }
 
-            telescopeEnv = bindValueAndCheck(telescopeEnv, paramBinder, argValue)
-            argPatterns += argPattern
-            argValues += argValue
-            inputs += Ledger.Input(argInfo, arg.span)
+              telescopeEnv = bindValueAndCheck(telescopeEnv, paramBinder, argValue)
+              argPatterns += argPattern
+              argValues += argValue
+              inputs += Ledger.Input(argInfo, arg.span)
+            }
           }
 
           val value = Interpreter.evalApply(checkedFn.value, argValues.result())
@@ -187,7 +190,9 @@ object TypePatternOps {
           (EBinderType.ConstrainedCapture(ref, checkedConstraint, span), checkedEnv)
       }
 
-    val (binderType, checkedEnv) = checkBinderType(binder.ty, env)
+    // A binder type's error is located in it, wherever the binder stands: a declaration, a lambda, a function type or
+    // a constructor field.
+    val (binderType, checkedEnv) = TypeChecker.at(binder.ty.span)(checkBinderType(binder.ty, env))
     val captures = collectBinderCaptures(binderType)
     // The declaration binds every capture of the pattern, but a binding opens only the collected ones; another, such as
     // `$u` in `Sort(Level.max($u, $v))`, would be unbound at every call.
@@ -197,7 +202,7 @@ object TypePatternOps {
     }
     val resType = compileBinderType(binderType)
     val resTypeValue = Interpreter.evalTypeTerm(resType, checkedEnv)
-    TypeChecker.assertType(resTypeValue)
+    TypeChecker.at(binder.ty.span)(TypeChecker.assertType(resTypeValue))
     // L7: instance search would copy a linear instance.
     if (binder.isInstance && Linearity.isLinear(resTypeValue)) throw LinearInstance(binder.name, Some(binder.span))
     val checkedBinder = ElabAst.Binder(binder.localRef, binderType, binder.span, binder.isInstance)
@@ -214,15 +219,19 @@ object TypePatternOps {
   /** A capture path step that takes the type of the value reached so far, for the captures of a constraint. */
   private val TypeOfStep = -1
 
-  private def project(value: Value, path: List[Int]): Value = {
+  /**
+   * The value at `path` in `value`, read by position for `capture`. A position that `value` does not have is
+   * `FailedToOpenCapture`: the argument's type does not have the pattern's shape there.
+   */
+  private def project(value: Value, path: List[Int], capture: CoreAst.LocalRef): Value = {
     def projectStep(value: Value, idx: Int): Value =
       value match {
         case _ if idx == TypeOfStep   => value.tpe
         case VSort(level) if idx == 0 => level
         case ConstructorValue(_, fields) =>
-          fields.lift(idx).getOrElse(throw FailedToOpenCapture(value, idx))
-        case VApp(_, args, _, _) => args.lift(idx).getOrElse(throw FailedToOpenCapture(value, idx))
-        case _                   => throw FailedToOpenCapture(value, idx)
+          fields.lift(idx).getOrElse(throw FailedToOpenCapture(capture.name, value, idx))
+        case VApp(_, args, _, _) => args.lift(idx).getOrElse(throw FailedToOpenCapture(capture.name, value, idx))
+        case _                   => throw FailedToOpenCapture(capture.name, value, idx)
       }
 
     path.foldLeft(value) { case (cur, nextIdx) => projectStep(cur, nextIdx) }
@@ -235,18 +244,18 @@ object TypePatternOps {
         case ActualTypeClassifier => actualTy.tpe
       }
       val captureValue = capture.captureType match {
-        case StructuralCapture => project(root, capture.path)
+        case StructuralCapture => project(root, capture.path, capture.localRef)
         case KindCapture =>
-          project(root, capture.path.init) match {
+          project(root, capture.path.init, capture.localRef) match {
             case VUniv(kind, _) => kind
             case PropTpe        => throw PropositionAsTypeCarrier()
-            case other          => throw FailedToOpenCapture(other, capture.path.last)
+            case other          => throw FailedToOpenCapture(capture.localRef.name, other, capture.path.last)
           }
         case LevelCapture(subtract) =>
-          val projected = project(root, capture.path.init) match {
+          val projected = project(root, capture.path.init, capture.localRef) match {
             case VUniv(_, level) => level
             case PropTpe         => throw PropositionAsTypeCarrier()
-            case other           => throw FailedToOpenCapture(other, capture.path.last)
+            case other           => throw FailedToOpenCapture(capture.localRef.name, other, capture.path.last)
           }
           if (!Level.geq(projected, subtract)) throw InvalidLevelSubtraction(projected, subtract)
           Level.addOffset(projected, -subtract)

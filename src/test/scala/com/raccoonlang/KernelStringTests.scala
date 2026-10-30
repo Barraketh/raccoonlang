@@ -249,11 +249,12 @@ class KernelStringTests extends munit.FunSuite {
     assertEquals(PrettyPrinter.print(surrogate), "String.mk([Char.mk(97), Char.mk(55296)])")
     val tooLarge = string(append(dataOf(literal("b")), consChar(char(0x110000), Kernel.charListNil)))
     assertEquals(PrettyPrinter.print(tooLarge), "String.mk([Char.mk(98), Char.mk(1114112)])")
-    // An open string: its list ends in a stuck value, here a selector application.
+    // An open string: its list ends in a stuck value, here a selector's projection, which prints as one.
     val err = typeError[TypeMismatch](
       "def bad (s: String): Eq(String, String.append(\"x\", s), \"y\") := Eq.refl(\"y\")\n"
     )
-    assert(err.getMessage.contains("String.mk([Char.mk(120)] ++ match#"), err.getMessage)
+    assert(err.getMessage.contains("String.mk([Char.mk(120)] ++ s#"), err.getMessage)
+    assert(err.getMessage.contains(".data)"), err.getMessage)
     assert(err.getMessage.contains("\"y\""), err.getMessage)
     // A bare List(Char) is a list, not a string.
     assertEquals(PrettyPrinter.print(dataOf(literal("ab"))), "[Char.mk(97), Char.mk(98)]")

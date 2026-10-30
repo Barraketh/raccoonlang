@@ -95,8 +95,8 @@ These are already settled and not reassessed:
 | 6 | Memoized materialization (`32b2112c`) | performance | a shared 24-level tree takes 5.7 s, against a 0.6 s control | port | 60–100 |
 | 7 | Singleton view of an opaque proof (`6692800b`) | completeness | `castNat(h, x) ≡ x` is rejected for a variable `h` | adapt, only after #1 | 200–300 |
 | 8 | Refinement certificates (`2a4f05ad`, `ee2f57e0`) | defence in depth | no wrong `Contradiction` found | defer | ≥1,000 |
-| 9 | Function types printed in diagnostics | quality of life | "expected VPi, actual VPi" | port. Part of the follow-ups' diagnostics | ~40 |
-| 10 | Parser layout: comments and blank lines in blocks, `decreases` on the next line | quality of life | parse errors print parser objects | adapt. Part of the follow-ups' parser items | 150–400 |
+| 9 | Function types printed in diagnostics | quality of life | "expected VPi, actual VPi" | port. Part of the follow-ups' diagnostics (ported 2026-10-30) | ~40 |
+| 10 | Parser layout: comments and blank lines in blocks, `decreases` on the next line | quality of life | parse errors print parser objects | adapt. Part of the follow-ups' parser items (ported 2026-10-30) | 150–400 |
 | 11 | Key-coherence assertion (`51e5a497`, `60487552`) | defence in depth | no incoherence found | optional | ~150 |
 | 12–14 | Value metadata, result-type caching, interning, bytecode, evidence arguments | performance, features | tied to `main-new`'s representation | skip; re-measure after #1, #5 and #6 | large |
 

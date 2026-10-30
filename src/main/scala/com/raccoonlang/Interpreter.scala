@@ -227,18 +227,15 @@ object Interpreter {
       case v       => throw NotAKind(v)
     }
 
-  def evalTerm(term: ElabAst.Term, env: Env): Value = {
-    try {
+  def evalTerm(term: ElabAst.Term, env: Env): Value =
+    TypeChecker.at(term.span) {
       term match {
         case ETerm.App(fn, args, _) => evalApplyTerm(fn, args, env)
         case tt: ElabAst.TypeTerm   => evalTypeTerm(tt, env)
         case m: ETerm.Match         => evalMatch(m, env)
         case b: ETerm.Body          => evalBody(b, env)
       }
-    } catch {
-      case e: TypeError if e.span.isEmpty => throw TypeError.withSpan(e, term.span)
     }
-  }
 
   /**
    * A word, rebuilt from the back in one loop: the last splice is the end, each layer is consed onto the rest, whose
@@ -332,7 +329,11 @@ object Interpreter {
   private def rejectLinearGlobal(subject: LinearGlobal.Subject, tpe: Value, span: Span): Unit =
     if (Linearity.isLinear(tpe)) throw LinearGlobal(subject, Some(span))
 
-  def evalDecl(decl: Decl, env: Env): Env = {
+  /**
+   * The environment with `decl` checked and added. An error the declaration's checks raise without a location, such as
+   * a redeclared global, is located at the declaration.
+   */
+  def evalDecl(decl: Decl, env: Env): Env = TypeChecker.at(decl.span) {
     decl match {
       case Decl.ConstDecl(name, ty, body, span, isInstance, lazyGlobal) =>
         body match {
@@ -352,14 +353,12 @@ object Interpreter {
             if (lazyGlobal && isInstance) throw WTF("Lazy global instances are not supported", Some(span))
 
             lazy val checkedTy =
-              try {
+              TypeChecker.at(ty.span) {
                 val checked = TypeChecker.checkTypeTerm(ty, env)
                 TypeChecker.assertType(checked.value)
                 // Decided from the declared type, before the body is checked.
                 rejectLinearGlobal(LinearGlobal.Definition(name), checked.value, TypeChecker.sourceSpan(ty))
                 checked
-              } catch {
-                case e: TypeError if e.span.isEmpty => throw TypeError.withSpan(e, ty.span)
               }
             lazy val checked = TypeChecker.checkTermAgainst(term, env, checkedTy)
 

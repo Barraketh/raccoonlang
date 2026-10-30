@@ -77,7 +77,7 @@ class KindTests extends munit.FunSuite {
     )
     assertErrorAt[MissingCase](
       base + "def notApart (k: Kind)(h: Eq(Sort(Level.one), Univ(k, Level.zero), Type)) : False := {\n  match h returning False with\n}\n",
-      "match h returning False with\n"
+      "match h returning False with"
     )
     // Matching an equation of kinds refines the kind variable, and the universe that mentions it follows.
     run(
@@ -165,11 +165,36 @@ class KindTests extends munit.FunSuite {
     run(refined("{\n    let y := x\n    Prod.mk(A, A, y, y)\n  }"))
   }
 
+  // KERNEL_FOLLOWUPS 1.4: a constructor capture whose universe does not fit its parameter's used to be unlocated.
+  test("a constructor capture that does not fit its parameter's universe is a located TypeMismatch") {
+    assertErrorAt[TypeMismatch](
+      base + "inductive Box (A: Sort($u)) : Sort(u)\n | mk (a: $A in Lin($u)) : Box(A)\n",
+      "(A)",
+      "Box(A)\n"
+    )
+    assertErrorAt[TypeMismatch](
+      base + "def S (u: Level) : Sort(Level.succ(u)) := Sort(u)\ninductive Box (A: Lin($u)) : Lin(u)\n | mk (a: $A in S($u)) : Box(A)\n",
+      "(A)",
+      "Box(A)\n"
+    )
+    // Through a user alias for Lin, the capture reads a universe's level by position, which only Sort has.
+    val alias =
+      base + "def L (u: Level) : Sort(Level.succ(u)) := Lin(u)\ninductive Box (A: Univ($k, $u)) : Univ(k, u)\n" +
+        " | mk (a: $A in L($u)) : Box(A)\n\ninductive LB : Lin(Level.zero)\n | mk (n: Nat) : LB\n\n"
+    val error = assertErrorAt[FailedToOpenCapture](alias + "def f (b: LB) : Box(LB) := Box.mk(b)\n", "(b)")
+    assertEquals(
+      error.getMessage,
+      "The type-pattern capture $u cannot be read off Lin(Level.zero), which has no argument 0"
+    )
+  }
+
   test("an instance binder or an Eq carrier of variable kind is refused") {
     assertErrorAt[LinearInstance](base + "def bad [x: $A in Univ($k, $u)] : Nat := 0\n", "[x: $A in Univ($k, $u)]")
+    // Located at the pattern argument that does not fit its parameter.
     assertErrorAt[TypeMismatch](
       base + "def bad (A: Univ($k, $u))(x: A)(e: Eq(A, x, x)) : Nat := 0\n",
-      " (A: Univ($k, $u))(x: A)(e: Eq(A, x, x)) : Nat"
+      "A",
+      "A, x, x)"
     )
   }
 

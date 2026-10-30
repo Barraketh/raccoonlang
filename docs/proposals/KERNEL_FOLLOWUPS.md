@@ -21,7 +21,7 @@ model, and a gap it finds is the model's to close.
 | 1.1 | `Tensor` refinement at copyable arguments (gone with cumulativity) | bug | new | 19 |
 | 1.2 | Results take their body's type, not the declared codomain (gone with cumulativity) | bug | new | 17 |
 | 1.3 | Applying a stuck application, or a projection of a call (fixed) | bug | new | — |
-| 1.4 | Smaller defects: an unlocated internal error, `AlreadyDefined` without a span, open shadowing | bug | new | — |
+| 1.4 | Smaller defects: an unlocated internal error, `AlreadyDefined` without a span, open shadowing (fixed) | bug | new | — |
 | 1.5 | Branch fields typed at fresh parameters when an index equation is stuck (fixed) | bug | port | — |
 | 1.6 | Positive arguments of a family read its own occurrences as positive (fixed) | bug | new | — |
 | 2.1 | Structure eta (implemented) | expressiveness | port | — |
@@ -104,7 +104,7 @@ symptoms.
 
 ### 1.4 Smaller defects
 
-**Decided 2026-10-30:** for the open-name precedence, a selective open (`open X.{a}`) beats a name in the enclosing namespace, and a wildcard open keeps today's rule. The other defects are plain fixes.
+**Decided 2026-10-30:** for the open-name precedence, a selective open (`open X.{a}`) beats a name in the enclosing namespace, and a wildcard open keeps today's rule. The other defects are plain fixes. **Implemented:** names resolve to locals, then selective open aliases, then the enclosing namespaces, then wildcard aliases (`docs/namespaces.md`; `NamespaceTests`). `AlreadyDefined` is located at the redeclared name or binder. The capture mismatch is still reachable, as a `TypeMismatch` in a constructor's result or a pattern argument, and through a user alias for `Lin` as `FailedToOpenCapture`; both are located now, at the argument that does not fit, and the latter names the capture.
 
 - **Unlocated internal error.** A constructor capture that does not match its
   parameter's universe throws "Cannot return idx 0 of Lin(…)" with no location.
@@ -439,20 +439,37 @@ catch it.
   - `False.elim` into a proposition (Track A);
   - `max` and the order lemmas for `≤` and `<` (`lib/Protocol/Nats` has some);
   - list `Mem`, `Perm` lemmas and `flatMap` (`lib/Protocol/Lists`).
-- **Parser:**
-  - `A -> B` as a binder type;
+- **Parser** (**fixed 2026-10-30**, `ParserTests`; README, "Syntax and layout";
+  EVALUATION_AND_PORTS #10, from `main-new`'s `ef5a2d31`, `c352d5bd` and
+  `d50f04ee`):
+  - `A -> B` as a binder type, and as a term, such as an argument;
   - `f(x)(y, z)`;
   - a binder type that is an application followed by `->`, or headed by a
     projection, needs parentheses;
-  - dotted `def` names;
-  - a comment right after `{`;
-  - `use` as a keyword;
-  - `decreases` must be on the result type's line.
-- **Diagnostics:**
-  - stuck selectors print as `match#LocalId(…)`;
-  - mismatches print as "expected VPi, actual VPi";
+  - dotted `def` names (now a namespace block around the declaration, for
+    `def`, `axiom` and `inductive`);
+  - a comment right after `{`, and blank and comment lines between a block's
+    statements, a match's cases and an inductive's constructors;
+  - `use` as a keyword (now an identifier except at a statement's start);
+  - `decreases` must be on the result type's line;
+  - parse errors print parser objects (now they name what was expected).
+
+  A definition without parameters whose type is a function type, such as
+  `def f : Nat -> Nat := Nat.succ`, was elaborated as a function of that type's
+  binders, and is a constant of its type now.
+- **Diagnostics** (**fixed 2026-10-30**, `ValuePrintingTests`; EVALUATION_AND_PORTS #9,
+  after `main-new`'s `d50f04ee` and `6a0c6192`):
+  - stuck selectors print as `match#LocalId(…)` (now a record's projection
+    prints as `P.Atom`, and any other stuck match as its syntax under its
+    environment);
+  - mismatches print as "expected VPi, actual VPi" (now a function type prints
+    as `(x: A) -> B`, its binder types as written and its codomain opened on
+    its binders, a local lambda as its binders and opened body, and a level as
+    `Level.succ(…)` source syntax);
   - `Protocol.Tok.mk` as a term reports `NotAType` rather than "no such
-    constructor".
+    constructor" (now `NotFound`: "Protocol.Tok has no constructor mk").
+
+  Error messages are computed when read, so a caught error prints nothing.
 - **Checking speed:** `GpuClientFootprint` takes about 13 s to check. The
   cause was measured on 2026-10-30, and `step` firing is not it: checking
   evaluates proof-valued calls that nothing reads, about 19M of them. See

@@ -186,11 +186,8 @@ class ProtocolPrimitivesTests extends munit.FunSuite {
 
   test("a global function of entry type named as the body is an entry; a body of another type runs as before") {
     assertEquals(result(shares + "def main (sup: Protocol.Supply) : Nat := 3\n\nmain\n"), "3")
-    // Two binders are not an entry's type, so the body is a function value, printed as such.
-    assertEquals(
-      result(shares + "def two (sup: Protocol.Supply)(n: Nat) : Nat := n\n\ntwo\n"),
-      "func#two"
-    )
+    // Two binders are not an entry's type, so the body is a function value, a global printed by its name.
+    assertEquals(result(shares + "def two (sup: Protocol.Supply)(n: Nat) : Nat := n\n\ntwo\n"), "two")
   }
 
   test("two instances from one supply are distinct identities, stored in a list and returned") {

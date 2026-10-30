@@ -35,13 +35,55 @@ class MutualTests extends munit.FunSuite {
       |}
       |""".stripMargin
 
+  // README, "Syntax and layout": a block's members are separated as commands are, so no blank line is needed.
+  test("a mutual block's members need no blank line between them, and may have comment lines between them") {
+    assertEquals(
+      result(
+        """
+          |mutual {
+          |  // a comment right after the brace
+          |  inductive Even : Type
+          |   | zero : Even
+          |   | succ (odd: Odd) : Even
+          |  inductive Odd : Type
+          |   | succ (even: Even) : Odd
+          |}
+          |mutual {
+          |  def evenToNat (e: Even) : Nat decreases structural(e) := {
+          |    match e returning Nat with
+          |    | Even.zero => 0
+          |    | Even.succ o => Nat.succ(oddToNat(o))
+          |  }
+          |  // a comment between members
+          |  def oddToNat (o: Odd) : Nat
+          |      decreases structural(o) := {
+          |    match o returning Nat with
+          |    | Odd.succ e => Nat.succ(evenToNat(e))
+          |  }
+          |}
+          |evenToNat(Even.succ(Odd.succ(Even.zero)))
+          |""".stripMargin
+      ),
+      "2"
+    )
+  }
+
+  test("a mutual block's member has no dotted name") {
+    val parsed = LanguageParser.parseProgram("mutual {\n  inductive A.T : Type\n   | leaf : T\n}\n")
+    parsed match {
+      case Failure(_, _, message) =>
+        assertEquals(message, "A mutual block's member has no dotted name; put the block in a namespace block")
+      case Success(_, _, _) => fail("the program parses")
+    }
+  }
+
   test("a mutual pair of copyable families, with mutually recursive functions over them") {
     assertEquals(result(evenOdd + "\nevenToNat(Even.succ(Odd.succ(Even.succ(Odd.succ(Even.zero)))))\n"), "4")
     run(evenOdd + "\ndef two : Eq(Nat, oddToNat(Odd.succ(Even.succ(Odd.succ(Even.zero)))), 3) := Eq.refl(3)\n")
     // A family's constructors are its own: a sibling's constructor is no case of its match.
     assertErrorAt[UnknownConstructor](
       evenOdd + "\ndef bad (e: Even) : Nat := {\n  match e returning Nat with\n  | Odd.succ x => 0\n}\n",
-      "| Odd.succ x => 0\n"
+      "| Odd.succ x => 0"
     )
   }
 

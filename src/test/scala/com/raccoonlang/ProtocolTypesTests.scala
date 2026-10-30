@@ -324,24 +324,25 @@ class ProtocolTypesTests extends munit.FunSuite {
   }
 
   test("a token cannot be forged: Tok has no constructor and cannot be matched, nor can a Supply") {
-    // A missing name below a global is a selection from that global's value, which is not a struct.
-    assertErrorAt[NotAType](swap + "def bad : Nat := Protocol.Tok.mk\n", "Protocol.Tok.mk")
+    // A missing name below a global is a selection from that global's value, a type with no constructor of that name.
+    val noCtor = assertErrorAt[NotFound](swap + "def bad : Nat := Protocol.Tok.mk\n", "Protocol.Tok.mk")
+    assertEquals(noCtor.getMessage, "Protocol.Tok.mk not found: Protocol.Tok has no constructor mk")
     assertErrorAt[NotFound](
       swap + "def bad (b: Bool) : Nat := {\n  match b with\n  | Protocol.Tok.mk => 0\n}\n",
-      "| Protocol.Tok.mk => 0\n"
+      "| Protocol.Tok.mk => 0"
     )
     // An empty match would turn a token into a supply, or a supply into a token.
     assertErrorAt[NonInductiveMatch](
       swap +
         "def bad (init: List(Nat))(s: Protocol.Inst(Protocol.Proto.mk(Nat, Swap), init))(a: Nat)(t: Protocol.Tok(Protocol.Proto.mk(Nat, Swap), init, s, a))" +
         " : Protocol.Supply := {\n  match t returning Protocol.Supply with\n}\n",
-      "match t returning Protocol.Supply with\n"
+      "match t returning Protocol.Supply with"
     )
     assertErrorAt[NonInductiveMatch](
       swap +
         "def bad (sup: Protocol.Supply)(init: List(Nat))(s: Protocol.Inst(Protocol.Proto.mk(Nat, Swap), init))(a: Nat)" +
         " : Protocol.Tok(Protocol.Proto.mk(Nat, Swap), init, s, a) := {\n  match sup returning Protocol.Tok(Protocol.Proto.mk(Nat, Swap), init, s, a) with\n}\n",
-      "match sup returning Protocol.Tok(Protocol.Proto.mk(Nat, Swap), init, s, a) with\n"
+      "match sup returning Protocol.Tok(Protocol.Proto.mk(Nat, Swap), init, s, a) with"
     )
   }
 
@@ -409,8 +410,12 @@ class ProtocolTypesTests extends munit.FunSuite {
       "Protocol.Toks" -> "namespace Protocol {\n  def Toks : Nat := 0\n}\n",
       "Lin" -> "def Lin (l: Level): Type := builtin\n"
     )
+    // Each is located at the redeclared name (KERNEL_FOLLOWUPS 1.4).
     redeclarations.foreach { case (name, src) =>
-      assertEquals(intercept[AlreadyDefined](parse(src)).name, name)
+      val inProgram = intercept[AlreadyDefined](parse(src))
+      assertEquals(inProgram.name, name)
+      val span = inProgram.span.getOrElse(fail(s"$name has no span"))
+      assertEquals(src.substring(span.start, span.end), name.split('.').last)
       assertEquals(intercept[AlreadyDefined](Prelude.fromSource("redeclaring prelude", src)).name, name)
     }
   }
