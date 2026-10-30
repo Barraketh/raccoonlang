@@ -124,13 +124,15 @@ object InstanceSearch {
     SearchResult.Failed(hasCycle, hitDepthLimit)
   }
 
+  /** A candidate that is a proof call is applied, or unified by its type, as its forced value was before suspension. */
   private def tryCandidate(
-      candidate: Value,
+      candidate0: Value,
       goal: Value,
       searchEnv: Env,
       state: SearchState,
       cache: mutable.HashMap[ValueKey.Key, Value]
   ): SearchResult = {
+    val candidate = Interpreter.force(candidate0)
     candidate.tpe match {
       case pi: VPi =>
         val freshEnv = BinderOps.freshen(pi)
@@ -153,9 +155,15 @@ object InstanceSearch {
           val freshArg = freshArgs(idx)
           val inferred = ValueOps.materialize(freshArg, candidateEq)
 
+          // An unsolved variable of the candidate is confirmed through forced proof calls, whose own dependencies
+          // over-approximate (`Value.forcedDeps`); where only their arguments mention one, the argument holds them
+          // forced, as eager evaluation's did.
+          val unsolved = inferred.synDeps & candidateDeps
           val arg =
-            if (!inferred.synDeps.intersects(candidateDeps)) {
+            if (unsolved.isEmpty) {
               inferred
+            } else if (Value.forcedDeps(inferred, unsolved).isEmpty) {
+              ValueOps.forceProofCalls(inferred, candidateEq, unsolved)
             } else if (binder.isInstance) {
               val instanceGoal = ValueOps.materialize(freshArg.tpe, candidateEq)
               solveInternal(instanceGoal, searchEnv, state, cache) match {

@@ -643,7 +643,8 @@ a proposition convertible with every other, so a converted comparison would
 accept any call, including a call on the matched proof itself. A proof
 component instead decreases when the call passes, by structural key, a proof
 field of the current root or a proof field of one of those, transitively. It
-is unchanged when its key equals the root's. Any other proof is neither, and
+is unchanged when its key equals the root's. A proof call keys as its forced
+value ([proof calls](#proof-calls)). Any other proof is neither, and
 the call is `NonDecreasingRecursiveCall`; this covers a rebuilt proof of a
 field's proposition. As in conversion, equal keys are trusted to mean equal
 values. The search follows proof fields only; it does not enter data fields,
@@ -755,6 +756,93 @@ A call to a member is an application, so the ledger and the read rules are
 those of any lambda: it uses its linear arguments once, or only reads them in
 a read extent, where its linear inputs keep separation. Mutual families and
 definitions follow L1 to L9 as single ones do.
+
+## Evaluation
+
+Checking is evaluation: the checker computes each checked term's value with the
+evaluator, and that value's type is the term's type. Evaluation is strict: an
+application evaluates its head and then its arguments to values, a block its
+lets and then its result, and a match its scrutinee before choosing a branch.
+The same evaluator runs a program's body once it has checked.
+
+### Proof calls
+
+A call to a checked lambda whose function type is a proposition (F2) is a
+*proof call*. Applying the lambda does not run it, except inside a demanded
+proof: the call's value is a suspension of the lambda and its argument values.
+The suspension runs the lambda the first time something reads the proof's form,
+and keeps the result, its *forced value*. Conversion never reads a proof's form,
+since proof irrelevance decides first, so only these force one:
+
+- a match on it or a projection of its field, which is a match, during checking
+  and at run time, and the checker's view of a match's scrutinee as a known
+  constructor, under which the other cases are `UnreachableCase`;
+- applying it, as a proof of a function proposition;
+- its key, which the termination checker compares (see [recursion on
+  proofs](#recursion-on-proofs)), and conversion when two proofs' propositions
+  do not convert;
+- quotation, for an inferred motive or a `derive` result, and printing, of the
+  program's result or a diagnostic;
+- the walks that read a value's form: positivity, the axiom lint S3, and
+  reading a type-pattern capture by position.
+
+A demanded proof runs as every call ran before: a proof call inside it runs at
+once, so demanding a proof costs what evaluating it eagerly cost. A proof
+nothing demands never runs, so an exponential proof that nothing inspects costs
+nothing. Materialization keeps a suspension suspended, over the materialized
+lambda and arguments; a forced one keeps its forced value, materialized.
+
+A suspension's proposition is the lambda's codomain at its arguments, computed
+when first read, without running the body. Evaluation used to take the forced
+value's own type instead. The two convert, since the body checked against the
+codomain, and as normal forms they are the same outside the proofs and
+functions inside them. Every reader of a proof's type reads it by conversion or
+by its universe, or forces the proof first; a proof whose codomain does not fit
+an expected type is tried at its forced value's type, so a mismatch reports
+that type, as before.
+
+A suspension's dependencies are the lambda's and the arguments', computed
+without running it. Evaluation introduces no free variable, so they include its
+forced value's, but may include more: a variable that only the arguments
+mention. Such a variable occurs in no rigid position of the forced value or its
+type, so unification never reaches it, and a refinable set that includes it
+refines nothing more. The decisions that a dependency makes conservative
+confirm it through forced values instead: the occurs check, positivity, a
+record's eta eligibility, and instance search's test of a solved argument. A
+link whose value mentions its variable only in a proof call's arguments holds
+that value with those calls forced, as it did before.
+
+**Why the results do not change.** A forced value is the value eager
+evaluation computed: evaluation is deterministic, the arguments are values, and
+the lambda reads only its closure and its arguments; a global it names was
+checked where the name was checked, never where it runs. Every reader of a
+proof's form forces it, and the other readers read a proof by its proposition,
+which converts with the one before. In particular:
+
+- **The ledger and the read rules** (S1) decide from the checker's view, not
+  from evaluation: a checked node's summary of uses is built from its syntax as
+  it is checked, and its role, a type or proof, a linear value or an ordinary
+  one, from its value's universe, which is `Prop` for a proof call as for its
+  forced value.
+- **Protocol primitives and ghosts.** The primitives are natives, which never
+  suspend, and their reductions are functions of their arguments, R1 of the
+  supply's index, so a proof that applies one gives the same ghosts whenever it
+  runs; checking never allocates either way. Quotation forces a proof before it
+  refuses a ghost in it.
+- **`--no-user-axioms`** rejects a program's axioms from its declarations,
+  before anything is evaluated.
+- **Running a program** forces its result, and printing forces the proof calls
+  inside it, so a program prints what it printed before; a running program
+  reads a proof only where the list above forces it.
+- **A recursive call's check** inside a local lambda in a recursive body ran
+  again whenever eager evaluation applied the lambda during checking; it ran
+  first when the lambda's body was checked, on its parameters, and the subterm
+  order holds after substitution.
+
+Skipping an undemanded proof also skips what it would have exhausted: time,
+host stack, and `NatValueTooLarge` for a closed power too large for the JVM. A
+program that only such a proof made fail may now check. Evaluating a checked
+term raises no other error.
 
 ## Axioms
 

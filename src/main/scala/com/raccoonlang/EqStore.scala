@@ -24,7 +24,36 @@ final case class EqStore(subst: Map[VarId, Value], refinable: DepSet) {
     copy(subst = subst + (id -> v))
   }
 
-  def occurs(id: VarId, in: Value): Boolean = transitiveDeps(in).contains(id)
+  /**
+   * Whether `id` occurs in `in` through the solved variables. A proof call's dependencies over-approximate its forced
+   * value's, so an occurrence is confirmed through forced values (`Value.forcedDeps`), as eager evaluation found it.
+   */
+  def occurs(id: VarId, in: Value): Boolean = transitiveDeps(in).contains(id) && occursForced(id, in)
+
+  /**
+   * What a link of `id` to `value` holds, or `None` when `id` occurs in it (`occurs`). Where `id` occurs only in the
+   * arguments of proof calls, their forced values do not mention it, and the link holds `value` with those calls forced
+   * (`ValueOps.forceProofCalls`), as eager evaluation's did: otherwise materializing it would meet `id` again.
+   */
+  def linkable(id: VarId, value: Value): Option[Value] =
+    if (!transitiveDeps(value).contains(id)) Some(value)
+    else if (occursForced(id, value)) None
+    else Some(ValueOps.forceProofCalls(value, this, DepSet.single(id)))
+
+  private def occursForced(id: VarId, in: Value): Boolean = {
+    val wanted = solvedIds + id
+    val seen = DepSet.newBuilder
+    var frontier = Value.forcedDeps(in, wanted)
+    while (frontier.nonEmpty) {
+      if (frontier.contains(id)) return true
+      seen.unionInPlace(frontier)
+      val next = DepSet.newBuilder
+      frontier.foreach(solved => next.unionInPlace(Value.forcedDeps(subst(solved), wanted)))
+      next.diffInPlace(seen)
+      frontier = next.result()
+    }
+    false
+  }
 
   lazy val solvedIds: DepSet = DepSet.from(subst.keySet)
 

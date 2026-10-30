@@ -84,6 +84,49 @@ object Interpreter {
   private def getEnvWithArgs(fnTpe: VPi, baseEnv: Env, args: Vector[Value]): Env =
     BinderOps.instantiateFull(fnTpe.binders, baseEnv, args)
 
+  /** The codomain of `pi` at `args`, which fit its binders: the type of an application of a value of type `pi`. */
+  private[raccoonlang] def applicationType(pi: VPi, args: Vector[Value]): Value =
+    pi.codomain(getEnvWithArgs(pi, pi.env, args))
+
+  /**
+   * How many demanded proof calls are running (docs/kernel.md, "Proof calls"). Inside one, a proof call runs at once,
+   * as every call did before suspension, so a demanded proof costs what eager evaluation cost and builds no
+   * suspensions. The evaluator is single-threaded, as `FreshVar` and packed storage are; `forceCall` restores the count
+   * however a run ends.
+   */
+  private var forcing = 0
+
+  /** The weak head normal form of `value` when it is a proof call (`VProofCall`), computed once; any other value. */
+  def force(value: Value): Value =
+    value match {
+      case call: VProofCall => forceCall(call)
+      case other            => other
+    }
+
+  /**
+   * A proof call's forced value: its lambda run on its arguments. The body may return another proof call, one of its
+   * arguments or one its closure holds, which was made outside this run; forcing follows that chain in a loop, and
+   * every call on it memoizes the chain's end. A run that fails memoizes nothing, so a later demand fails alike.
+   */
+  private def forceCall(call: VProofCall): Value = {
+    if (call.forced ne null) return call.forced
+    var chain = List(call)
+    var result: Value = null
+    while (result eq null) {
+      forcing += 1
+      val next =
+        try runLam(chain.head.fn, chain.head.args)
+        finally forcing -= 1
+      next match {
+        case pending: VProofCall if pending.forced eq null => chain = pending :: chain
+        case done: VProofCall                              => result = done.forced
+        case value                                         => result = value
+      }
+    }
+    chain.foreach(_.forced = result)
+    result
+  }
+
   private def captureValues(env: Env, capturedIndexes: RoaringBitmap): Vector[Value] = {
     val values = Vector.newBuilder[Value]
     val it = capturedIndexes.getIntIterator
@@ -140,27 +183,38 @@ object Interpreter {
     }
   }
 
+  /**
+   * `fn` applied to `vArgs`, which fit its binders. Applying a proof demands it. A checked lambda whose function type
+   * is a proposition is not run, outside a demanded proof: the application is a proof call (`VProofCall`), whose
+   * arguments are checked against the binders' count here, where running it would have checked them.
+   */
   def evalApply(fn: Value, vArgs: Vector[Value]): Value = {
     require(vArgs.nonEmpty, "evalApply requires at least one argument")
 
-    fn.tpe match {
-      case pi: VPi =>
-        val envWithArgs = getEnvWithArgs(pi, pi.env, vArgs)
-        fn match {
-          case lam @ VLam(_, _, _) => runLam(lam, vArgs)
-          case h: VConst           => VApp(h, vArgs, pi.codomain(envWithArgs))
-          case h: ConstructorHead =>
-            val resultTy = pi.codomain(envWithArgs)
-            val fields = vArgs.drop(h.numErased)
-            ConstructorValue(h, fields, resultTy)
-          case blocker @ ReductionBlockers(blockerIds) =>
-            VBlockedApp(blocker, vArgs, pi.codomain(envWithArgs), blockerIds)
-          // A neutral function with nothing to wait on, such as a field projection of an axiom or a stuck application
-          // of one, applies to a neutral application (KERNEL_FOLLOWUPS 1.3).
-          case neutral @ (_: NeutralThunk | _: VApp) => VApp(neutral, vArgs, pi.codomain(envWithArgs))
-          case _                                     => throw CannotApplyNonFunction(fn)
+    force(fn) match {
+      case lam @ VLam(pi, _, _: LamBody.Core) if pi.tpe == PropTpe && forcing == 0 =>
+        if (pi.binders.length != vArgs.length) throw ArityMismatch(pi.binders.length, vArgs.length)
+        new VProofCall(lam, vArgs)
+      case head =>
+        head.tpe match {
+          case pi: VPi =>
+            val envWithArgs = getEnvWithArgs(pi, pi.env, vArgs)
+            head match {
+              case lam @ VLam(_, _, _) => runLam(lam, vArgs)
+              case h: VConst           => VApp(h, vArgs, pi.codomain(envWithArgs))
+              case h: ConstructorHead =>
+                val resultTy = pi.codomain(envWithArgs)
+                val fields = vArgs.drop(h.numErased)
+                ConstructorValue(h, fields, resultTy)
+              case blocker @ ReductionBlockers(blockerIds) =>
+                VBlockedApp(blocker, vArgs, pi.codomain(envWithArgs), blockerIds)
+              // A neutral function with nothing to wait on, such as a field projection of an axiom or a stuck
+              // application of one, applies to a neutral application (KERNEL_FOLLOWUPS 1.3).
+              case neutral @ (_: NeutralThunk | _: VApp) => VApp(neutral, vArgs, pi.codomain(envWithArgs))
+              case _                                     => throw CannotApplyNonFunction(head)
+            }
+          case _ => throw CannotApplyNonFunction(head.tpe)
         }
-      case _ => throw CannotApplyNonFunction(fn.tpe)
     }
   }
 
@@ -284,9 +338,9 @@ object Interpreter {
   }
 
   /**
-   * `m` stuck on `scrut` in `env`, a value of `outType`. Its identity is its code and its free locals' values
-   * (`MatchIdentity`), and its closed environment keeps exactly those locals, so resuming it reads nothing its identity
-   * leaves out.
+   * `m` stuck on `scrut` in `env`, a value of `outType`; `scrut` is no proof call, since every caller forces it first.
+   * Its identity is its code and its free locals' values (`MatchIdentity`), and its closed environment keeps exactly
+   * those locals, so resuming it reads nothing its identity leaves out.
    */
   private[raccoonlang] def stuckMatch(
       m: ETerm.Match,
@@ -305,11 +359,12 @@ object Interpreter {
   }
 
   /**
-   * The match `m` on the value `scrut`, its scrutinee in `env`. A constructor selects its branch. A value at a
-   * structure eta type takes the one branch with its eta view, its field projections (`StructEta`). Any other value is
-   * stuck, a value of `outType`.
+   * The match `m` on the value `scrut0`, its scrutinee in `env`, which a match demands. A constructor selects its
+   * branch. A value at a structure eta type takes the one branch with its eta view, its field projections
+   * (`StructEta`). Any other value is stuck, a value of `outType`.
    */
-  private[raccoonlang] def evalMatchOn(m: ETerm.Match, scrut: Value, env: Env, outType: => Value): Value = {
+  private[raccoonlang] def evalMatchOn(m: ETerm.Match, scrut0: Value, env: Env, outType: => Value): Value = {
+    val scrut = force(scrut0)
     val (ctorName, args) = scrut match {
       case ConstructorValue(head, fields) => (head.name, fields)
       case _ =>
@@ -411,7 +466,8 @@ object Interpreter {
    * A body of type `(sup: Protocol.Supply) -> R` is an entry: once it has checked, and `R` is unrestricted (S2), its
    * value is applied to the root supply, once, and the result is the program's. Only the entry module has a body and no
    * global is linear, so a run has exactly one root supply, and checking, which precedes it, never allocates. A body of
-   * any other type is the program's result, which must be unrestricted.
+   * any other type is the program's result, which must be unrestricted. The result is shown, so a proof call is forced
+   * (docs/kernel.md, "Proof calls"); `PrettyPrinter` forces the ones inside it.
    */
   def run(p: Program, prelude: Prelude.Config = Prelude.default, allowUserAxioms: Boolean = true): Option[Value] = {
     p.decls.foreach {
@@ -428,10 +484,10 @@ object Interpreter {
       entryResult(value.tpe) match {
         case Some(result) =>
           rejectLinearGlobal(LinearGlobal.EntryResult, result, span)
-          evalApply(value, Vector(ProtocolPrimitives.rootSupply))
+          force(evalApply(value, Vector(ProtocolPrimitives.rootSupply)))
         case None =>
           rejectLinearGlobal(LinearGlobal.ProgramResult, value.tpe, span)
-          value
+          force(value)
       }
     }
   }

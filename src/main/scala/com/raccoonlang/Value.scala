@@ -28,8 +28,8 @@ object Value {
 
   private[raccoonlang] def needsStructuralDefEq(value: Value): Boolean = {
     // If this is a proof then we fall back to structural; a value at a structure eta type may convert with one of a
-    // different key (`StructEta`).
-    (value.tpe.tpe == PropTpe) || StructEta.eligible(value.tpe).isDefined ||
+    // different key (`StructEta`). A proof call is a proof, decided without computing its proposition.
+    value.isInstanceOf[VProofCall] || (value.tpe.tpe == PropTpe) || StructEta.eligible(value.tpe).isDefined ||
     (value match {
       case _: VPi | _: VLam | _: NeutralThunk => true
       case app: VApp =>
@@ -64,6 +64,62 @@ object Value {
    * evaluate the same code on convertible values, so their matches convert.
    */
   final case class MatchId(code: MatchCode, captures: Vector[Value])
+
+  /**
+   * The ids among `among` that `value` depends on as eager evaluation built it: its dependencies, read from the sources
+   * each form's `synDeps` reads, with every proof call's (`VProofCall`) replaced by its forced value's. A proof call's
+   * own dependencies over-approximate its forced value's, so a decision that a dependency makes more conservative, an
+   * occurs check, a positivity or eta check, or instance search's test of a solved argument, confirms the dependency
+   * here before it acts on it (docs/kernel.md, "Proof calls"). This forces the proof calls whose dependencies meet
+   * `among`, and visits a shared part once; a part whose `synDeps` misses `among` is skipped, since those include the
+   * forced values'.
+   */
+  private[raccoonlang] def forcedDeps(value: Value, among: DepSet): DepSet = {
+    val found = DepSet.newBuilder
+    val visited = new java.util.IdentityHashMap[AnyRef, java.lang.Boolean]()
+    def first(part: AnyRef): Boolean = visited.put(part, java.lang.Boolean.TRUE) == null
+    def ids(deps: DepSet): Unit = found.unionInPlace(deps & among)
+    def env(e: Env): Unit = if (first(e)) e.locals.foreach(_.valueOption.foreach(walk))
+    def captures(id: ValueId): Unit =
+      id match {
+        case ValueId.LocalId(_, values) => values.foreach(walk)
+        case ValueId.Const(_)           =>
+      }
+    def walk(v: Value): Unit =
+      if (v.synDeps.intersects(among) && first(v))
+        v match {
+          case call: VProofCall    => walk(Interpreter.force(call))
+          case variable: Var       => ids(variable.reductionBlockers); walk(variable.tpe)
+          case _: Level | _: Kind  => ids(v.synDeps)
+          case VUniv(kind, level)  => walk(kind); walk(level)
+          case VConst(_, _, tpe)   => walk(tpe)
+          case app: VApp           => walk(app.head); app.args.foreach(walk); walk(app.tpe)
+          case thunk: NeutralThunk => env(thunk.env); walk(thunk.tpe); thunk.id.captures.foreach(walk)
+          case lam: VLam           => walk(lam.tpe); lamEnv(lam.body); captures(lam.id)
+          case pi: VPi             => captures(pi.id)
+          case poly: VNatPoly      => poly.form.operands.foreach(walk)
+          case word: VWord =>
+            packed.Words.foreach(word)(
+              layer = token => {
+                (0 until token.payloadWidth).foreach(index => walk(token.payload(index)))
+                walk(token.tpe)
+                true
+              },
+              end = token => {
+                walk(token.value)
+                true
+              }
+            )
+          case _: TopLevelValue => // no dependencies
+        }
+    def lamEnv(body: LamBody): Unit =
+      body match {
+        case LamBody.Core(_, e)      => env(e)
+        case LamBody.Native(_, e, _) => env(e)
+      }
+    walk(value)
+    found.result()
+  }
 
   private[raccoonlang] def envDeps(env: Env): DepSet = {
     val res = DepSet.newBuilder
@@ -344,6 +400,45 @@ object Value {
 
     override def synDeps: DepSet = repr.synDeps
   }
+
+  /**
+   * A suspended proof call (docs/kernel.md, "Proof calls"): the checked lambda `fn`, whose function type is a
+   * proposition, applied to `args`, not yet run. Only `Interpreter.evalApply` builds one, where eager evaluation would
+   * run `fn`, and materialization rebuilds one; `args` fit `fn` 's binders, as a checked application's do. It stands
+   * for the value that running `fn` on `args` gives, its forced value, which `Interpreter.force` computes once, on
+   * demand, and memoizes in `forced`. Every reader of a proof's form forces it first, as docs/kernel.md lists: a match,
+   * an application, the checker's known-constructor view, the key, quotation, printing and the walks over a value's
+   * form.
+   *
+   *   - Its type is `fn` 's codomain at `args`, computed when first read, without running `fn`. Eager evaluation took
+   *     the forced value's own type instead. The two are convertible, since `fn` 's body checked against its codomain,
+   *     and are the same normal form outside proofs and functions inside them; every reader of a proof's type reads it
+   *     by conversion or by its universe, or forces the proof first.
+   *   - Its dependencies are `fn` 's and `args` ', computed without forcing. Evaluation introduces no free variable, so
+   *     they include those of its type and of its forced value: an over-approximation of the forced value's, which may
+   *     add only variables in no rigid position of either. A decision that a dependency makes more conservative
+   *     confirms it through forced values (`forcedDeps`), and a link holds the calls that mention its variable forced
+   *     (`EqStore.linkable`).
+   *   - Its key is its forced value's (`ValueKey`), so equal keys still mean convertible values, and termination
+   *     checking compares proofs as it compared the forced values.
+   */
+  final class VProofCall private[raccoonlang] (val fn: VLam, val args: Vector[Value]) extends Value {
+    override lazy val tpe: Value = Interpreter.applicationType(fn.tpe, args)
+
+    override lazy val synDeps: DepSet = {
+      val res = DepSet.newBuilder
+      res.unionInPlace(fn.synDeps)
+      args.foreach(v => res.unionInPlace(v.synDeps))
+      res.result()
+    }
+
+    /**
+     * The forced value once `Interpreter.force` has computed it, or materialization has carried it over from the call
+     * it rebuilt; never itself a proof call, and `null` before.
+     */
+    private[raccoonlang] var forced: Value = null
+  }
+
 
   /**
    * A stuck match: `term` closed over `env`, a value of `tpe`, its motive, waiting on `blockerIds`. `env` keeps exactly

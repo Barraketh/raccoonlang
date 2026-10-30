@@ -375,6 +375,7 @@ object PrettyPrinter {
     /** A value that prints as loose syntax, so it is parenthesized where an atom is expected. */
     private def isLoose(value: Value): Boolean =
       value match {
+        case call: Value.VProofCall                     => isLoose(Interpreter.force(call))
         case _: Value.VPi                               => true
         case Value.VLam(_, _: Value.ValueId.LocalId, _) => true
         case thunk: Value.NeutralThunk                  => projection(thunk).isEmpty
@@ -517,6 +518,8 @@ object PrettyPrinter {
       projection(thunk).getOrElse(underEnv(thunk.env).printElabMatch(thunk.term))
 
     def print(value: Value): String = value match {
+      // Printed as its forced value, which eager evaluation printed (docs/kernel.md, "Proof calls").
+      case call: Value.VProofCall                      => print(Interpreter.force(call))
       case packed.Strings.Literal(text)                => UnicodeScalarString.renderQuoted(text)
       case nil if Kernel.isListNil(nil)                => "[]"
       case word: Value.VWord                           => printWord(word)

@@ -103,8 +103,10 @@ object StructEta {
     solved.exists { store =>
       template.fieldVars.indices.forall { idx =>
         val earlier = DepSet.from(template.fieldVars.take(idx).collect { case Var(_, id, _) => id })
-        val deps = template.fieldType(idx, store).synDeps
-        ((deps & template.templateIds) -- earlier).isEmpty
+        val fieldType = template.fieldType(idx, store)
+        val hidden = (fieldType.synDeps & template.templateIds) -- earlier
+        // Confirmed through forced proof calls, whose own dependencies over-approximate (`Value.forcedDeps`).
+        hidden.isEmpty || Value.forcedDeps(fieldType, hidden).isEmpty
       }
     }
   }
@@ -144,16 +146,17 @@ object StructEta {
 
   /**
    * Field `idx` of `base`, a value of a record: its stored field when it is constructor-headed, and otherwise its
-   * canonical projection, read off its type, the record's instance. A checked projection evaluates so.
+   * canonical projection, read off its type, the record's instance. A checked projection evaluates so. A projection is
+   * a match, so it demands its base: a proof call's forced value (docs/kernel.md, "Proof calls").
    */
   def project(base: Value, idx: Int): Value =
-    base match {
+    Interpreter.force(base) match {
       case ConstructorValue(_, stored) => stored(idx)
-      case _ =>
-        base.tpe match {
+      case forced =>
+        forced.tpe match {
           case InductiveFamilyValue(instance) if instance.meta.record.isDefined =>
-            projections(base, instance, instance.meta.record.get, idx + 1)(idx)
-          case other => throw WTF(s"Projected $base of type $other, which is no record")
+            projections(forced, instance, instance.meta.record.get, idx + 1)(idx)
+          case other => throw WTF(s"Projected $forced of type $other, which is no record")
         }
     }
 

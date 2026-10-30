@@ -106,6 +106,10 @@ These are already settled and not reassessed:
   follow-ups list.
 - **On a separate performance branch, after your decision:**
   1. #1, as a proper value form, with the prototype as reference;
+     *Status: done on `perf-evaluation`, as `Value.VProofCall` (kernel.md,
+     "Proof calls"). The prototype's over-approximated dependencies changed
+     an occurs check, so the decisions they make conservative confirm them
+     through forced values. `GpuClientFootprint` 16.1 s → 1.5 s.*
   2. #2 of §2, the environment instantiation;
   3. #4, #5 and #6;
   4. then re-measure, and decide on #7 and on §2's policy question 4.

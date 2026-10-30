@@ -83,6 +83,8 @@ object Linearity {
           // A native's type is walked above; its body is a builtin computation, which is not opened.
           case _: LamBody.Native => false
         })
+      // The walk reads a value's form, so a proof call's forced value (docs/kernel.md, "Proof calls").
+      case call: VProofCall => axiomMentionsLinear(Interpreter.force(call))
       // A stuck match is not opened, and a variable is linear only by its own type, tested above.
       case _: NeutralThunk | _: Var | _: VConst | _: ConstructorHead | _: VNatPoly | _: Level | LevelTpe | _: Kind |
           KindTpe | _: VUniv | PropTpe | KernelObject =>

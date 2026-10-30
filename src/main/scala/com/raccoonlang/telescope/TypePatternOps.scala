@@ -244,7 +244,8 @@ object TypePatternOps {
         case _                   => throw FailedToOpenCapture(capture.name, value, idx)
       }
 
-    path.foldLeft(value) { case (cur, nextIdx) => projectStep(cur, nextIdx) }
+    // Reading by position reads a value's form, so a proof call's forced value (docs/kernel.md, "Proof calls").
+    path.foldLeft(value) { case (cur, nextIdx) => projectStep(Interpreter.force(cur), nextIdx) }
   }
 
   private def openCaptures(env: Env, captures: Vector[VCapture], actualTy: Value): Env = {

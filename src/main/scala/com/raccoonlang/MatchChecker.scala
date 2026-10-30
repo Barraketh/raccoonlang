@@ -261,7 +261,10 @@ object MatchChecker {
   def checkMatch(t: CA.Term.MatchTerm, env: Env, contextualExpected: Option[CheckedTypeTerm] = None): CheckedTerm = {
     val span = t.span
     val scrutChecked = checkTerm(t.scrut, env)
-    val scrut = scrutChecked.value
+    // The known-constructor view, refinement and the match's own value read the scrutinee's form, so a proof call is
+    // forced, and the match sees its forced value and that value's type, as before suspension (docs/kernel.md, "Proof
+    // calls").
+    val scrut = Interpreter.force(scrutChecked.value)
     val scrutTpe = scrut.tpe
 
     val inductiveFamily = inductiveFamilyOf(scrutTpe).getOrElse(throw NonInductiveMatch(scrut.tpe))
@@ -414,7 +417,8 @@ object MatchChecker {
       val first = checkedBranches.headOption.getOrElse {
         throw MissingReturningClause("no reachable branches have a result type to infer", Some(span))
       }
-      val candidate = ValueOps.materialize(first.checkedBody.value.tpe, first.store)
+      // Quotation reads the type's form, so a branch value that is a proof call gives its forced value's type.
+      val candidate = ValueOps.materialize(Interpreter.force(first.checkedBody.value).tpe, first.store)
       val changedLocalIds = env.locals.zipWithIndex.collect {
         case (binding, index) if binding.valueOption.exists { original =>
               !ValueEquivalence.defEq(original.tpe, ValueOps.materialize(original, first.store).tpe)

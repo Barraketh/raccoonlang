@@ -63,7 +63,9 @@ object InductiveChecks {
           case _                  => false
         }
 
-      override def mayOccurIn(value: Value): Boolean = value.synDeps.contains(id)
+      // Confirmed through forced proof calls, whose own dependencies over-approximate (`Value.forcedDeps`).
+      override def mayOccurIn(value: Value): Boolean =
+        value.synDeps.contains(id) && Value.forcedDeps(value, DepSet.single(id)).nonEmpty
     }
   }
 
@@ -153,6 +155,9 @@ object InductiveChecks {
     if (target.isDirectOccurrence(value)) false
     else
       value match {
+        // These walks read a value's form, so they read a proof call's forced value (docs/kernel.md, "Proof calls").
+        case call: VProofCall => doesNotOccur(target, Interpreter.force(call))
+
         case thunk: NeutralThunk => thunkDoesNotContain(target, thunk)
 
         case InductiveFamilyValue(instance) =>
@@ -199,6 +204,8 @@ object InductiveChecks {
     if (target.isDirectOccurrence(value)) true
     else
       value match {
+        case call: VProofCall => occursPositively(target, Interpreter.force(call), assumed)
+
         // A stuck computation that mentions the target cannot certify that it occurs positively.
         case thunk: NeutralThunk => thunkDoesNotContain(target, thunk)
 
@@ -243,6 +250,8 @@ object InductiveChecks {
    */
   private def sameFamilyArgsDoNotContain(target: PositivityTarget, value: Value): Boolean =
     value match {
+      case call: VProofCall => sameFamilyArgsDoNotContain(target, Interpreter.force(call))
+
       // A stuck computation that does not mention the family holds no application of it.
       case thunk: NeutralThunk => thunkDoesNotContain(target, thunk)
 

@@ -157,10 +157,12 @@ object ValueQuote {
     }
 
   /**
-   * A residual for `value` in `context`. A linear value has none, even when a local holds it: a quoted residual is not
-   * a checked term, so it would escape the read rules (S1) and the ledger.
+   * A residual for `value0` in `context`. A linear value has none, even when a local holds it: a quoted residual is not
+   * a checked term, so it would escape the read rules (S1) and the ledger. A proof call is quoted as its forced value,
+   * as eager evaluation quoted it (docs/kernel.md, "Proof calls").
    */
-  def quoteTerm(value: Value, context: QuoteContext, span: Span): ElabAst.Term = {
+  def quoteTerm(value0: Value, context: QuoteContext, span: Span): ElabAst.Term = {
+    val value = Interpreter.force(value0)
     if (Linearity.isLinear(value.tpe)) throw CannotQuoteValue(value, "linear value", Some(span))
     quotedTermFor(context.quote, value, span).foreach(return _)
 

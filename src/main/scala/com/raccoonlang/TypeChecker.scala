@@ -72,8 +72,18 @@ object TypeChecker {
     if (!ValueEquivalence.defEq(actual, expected)) throw TypeMismatch(expected, actual)
   }
 
+  /**
+   * `value` has type `tyVal`. A proof call's type is its lambda's codomain, convertible with its forced value's (docs/
+   * kernel.md, "Proof calls"); when that does not fit, the forced value's type decides, so a mismatch reports the type
+   * eager evaluation reported.
+   */
   def checkType(value: Value, tyVal: Value): Unit =
-    checkFits(value.tpe, tyVal)
+    value match {
+      case call: VProofCall =>
+        try checkFits(call.tpe, tyVal)
+        catch { case _: TypeMismatch => checkFits(Interpreter.force(call).tpe, tyVal) }
+      case _ => checkFits(value.tpe, tyVal)
+    }
 
   def getUniverse(value: Value): Universe = {
     value.tpe match {
@@ -82,13 +92,18 @@ object TypeChecker {
     }
   }
 
-  private def checkApplyValue(fn: Value, args: Vector[Value]): Value =
-    fn.tpe match {
+  /**
+   * `fn` applied to `args`, checked against its binders. Applying a proof demands it, so they are its forced value's.
+   */
+  private def checkApplyValue(fn: Value, args: Vector[Value]): Value = {
+    val head = Interpreter.force(fn)
+    head.tpe match {
       case pi: VPi =>
         BinderOps.checkAndInstantiate(pi.binders, pi.env, args)
-        Interpreter.evalApply(fn, args)
-      case _ => throw CannotApplyNonFunction(fn)
+        Interpreter.evalApply(head, args)
+      case _ => throw CannotApplyNonFunction(head)
     }
+  }
 
   private def elabRef(ref: CA.Term.Ref): EA.Term.Ref =
     ref match {
@@ -354,7 +369,8 @@ object TypeChecker {
       info <- family.meta.record
       index <- info.fieldIndex(select.field)
     } yield checkProjection(checked, family, info, index, select.span, env)
-    projected.getOrElse(throw noField(select, checked.value))
+    // A diagnostic shows the base as eager evaluation did, so a proof call's forced value.
+    projected.getOrElse(throw noField(select, Interpreter.force(checked.value)))
   }
 
   /**

@@ -236,6 +236,9 @@ object ValueKey {
     case poly: Value.VNatPoly =>
       mixBigInt(mixKey(tag(Tag.NatPoly), poly.form.termsKey), poly.form.constant)
     case word: Value.VWord => word.repr.key
+    // A proof call keys as its forced value, whose key eager evaluation computed (docs/kernel.md, "Proof calls"):
+    // equal keys then still mean convertible values, and termination checking still compares proofs by these keys.
+    case call: Value.VProofCall => Interpreter.force(call).key
   }
 
   /** Nat terms in order; each term contributes its coefficient and its monomial's cached key. */
