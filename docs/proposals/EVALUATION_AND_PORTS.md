@@ -40,8 +40,8 @@ It was measured at `78a5f3a6`, using JFR, call counters and a width sweep.
 
 ## 2 Fixes for checking cost
 
-1. **Suspend proof-valued calls.** Prototyped on branch
-   `prototype/proof-suspension`, commit `d736c840`, not for merge.
+1. **Suspend proof-valued calls.** First prototyped on a branch since
+   deleted, as a `VApp` with a null type; implemented as `VProofCall`.
    - **The rule.** A call to a checked lambda whose function type is a
      proposition becomes a memoized suspension. It runs only when one of the
      consumers above demands it.
