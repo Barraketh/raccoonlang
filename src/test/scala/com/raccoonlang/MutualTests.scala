@@ -209,6 +209,36 @@ class MutualTests extends munit.FunSuite {
     )
   }
 
+  test("a recursive definition whose header has no parameters takes its type's, its body applied to them") {
+    run(
+      """
+        |mutual {
+        |  def f : (n: Nat) -> Nat decreases measure(1) := fun (n: Nat): Nat => g(0)
+        |
+        |  def g (n: Nat) : Nat decreases structural(n) := {
+        |    match n returning Nat with
+        |    | Nat.zero => 7
+        |    | Nat.succ k => g(k)
+        |  }
+        |}
+        |
+        |def seven : Eq(Nat, f(5), 7) := Eq.refl(7)
+        |
+        |def length : (xs: List($A in Sort($u))) -> Nat decreases measure(0) :=
+        |  fun (xs: List($A in Sort($u))): Nat => List.length(xs)
+        |
+        |def one : Eq(Nat, length(List.cons(4, List.nil(Nat))), 1) := Eq.refl(1)
+        |""".stripMargin
+    )
+    // The type's parameters are unnamed: the body was written without them, and the metric cannot name them.
+    intercept[NotFound](runChecked("def f : (n: Nat) -> Nat decreases structural(n) := fun (n: Nat): Nat => 0\n"))
+    assertErrorAt[NonDecreasingRecursiveCall](
+      "def f : (n: Nat) -> Nat decreases measure(0) := fun (n: Nat): Nat => f(n)\n",
+      "(n)",
+      "f(n)"
+    )
+  }
+
   test("a member is no value inside the block, and the block holds only definitions or only families") {
     intercept[CannotQuoteValue](
       runChecked(

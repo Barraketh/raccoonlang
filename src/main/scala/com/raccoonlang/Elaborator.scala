@@ -946,6 +946,18 @@ object Elaborator {
   def getType(header: SA.FuncHeader): CA.TypeTerm =
     elabHeader(header, ResolveEnv.kernel).ty
 
+  /**
+   * `env` past the slots of the binders of `pi` and their captures, which the checker opens for a lambda of type `pi`;
+   * the last binder has the last of them, since a binder's captures are allocated before it. Nothing is named there.
+   */
+  private def pastParameters(pi: CA.Term.Pi, env: ResolveEnv): ResolveEnv =
+    env.copy(nextLocal = pi.binders.last.localRef.id + 1)
+
+  /**
+   * A lambda of type `pi` whose body is `body`, resolved in `bodyEnv`. With `applied`, the lambda's parameters are the
+   * binders of `pi`, which the source did not name, so `body` is resolved without them and applied to them: the form of
+   * a recursive definition whose header has no parameters (`recursiveParameters`).
+   */
   private def elabLam(
       pi: CA.Term.Pi,
       bodyEnv: ResolveEnv,
@@ -953,7 +965,8 @@ object Elaborator {
       name: Option[String],
       recursion: Option[CA.Recursion],
       span: Span,
-      outerEnv: ResolveEnv
+      outerEnv: ResolveEnv,
+      applied: Boolean = false
   ): CA.Term.Lam = {
     val (uses, newBody) = body match {
       case b: SA.Term.Body =>
@@ -976,8 +989,26 @@ object Elaborator {
       case _ => (Vector.empty[SA.Use], body)
     }
     val checkedUses = uses.map(use => CA.Use(elabTerm(use.normalizer, outerEnv), use.span))
-    CA.Term.Lam(pi, checkedUses, elabTerm(newBody, bodyEnv), span, name, recursion, NodeId.fresh())
+    val written = elabTerm(newBody, bodyEnv)
+    val lamBody =
+      if (!applied) written
+      else CA.Term.App(written, pi.binders.map(binder => CA.Term.LocalRef(binder.localRef, body.span)), body.span)
+    CA.Term.Lam(pi, checkedUses, lamBody, span, name, recursion, NodeId.fresh())
   }
+
+  /**
+   * The environment a recursive definition's decrease and recursive slots are bound in: its header's parameters, or,
+   * for a header without any whose type is the function type `pi`, the binders of `pi`, unnamed. A recursive definition
+   * is a function, since its calls are where its decrease is checked and, in a mutual block, its peers are bound; so
+   * `def f : (n: Nat) -> Nat decreases measure(m) := t` is the function of the parameters of its type whose body is `t`
+   * applied to them. Returns that environment and whether the body is to be applied (`elabLam`).
+   */
+  private def recursiveParameters(
+      header: SA.FuncHeader,
+      pi: CA.Term.Pi,
+      headerEnv: ResolveEnv
+  ): (ResolveEnv, Boolean) =
+    if (header.params.nonEmpty) (headerEnv, false) else (pastParameters(pi, headerEnv), true)
 
   private def elabDecreaseRef(name: String, span: Span, env: ResolveEnv): CA.LocalRef =
     elabTerm(SA.Term.Ident(name, span), env) match {
@@ -1230,16 +1261,18 @@ object Elaborator {
                 Some(c.decreases.get.span)
               )
             CA.ConstBody.Builtin(sp)
-          // Only a header with parameters makes a function definition, whose body is the function's. A header without
-          // any, such as `def f : Nat -> Nat := Nat.succ`, declares a constant of its type, which may be a function.
+          // Only a header with parameters, or a recursive definition, makes a function definition, whose body is the
+          // function's. A header without parameters, such as `def f : Nat -> Nat := Nat.succ`, otherwise declares a
+          // constant of its type, which may be a function; a recursive one takes its type's parameters, unnamed.
           case SA.ConstBody.TermBody(term) =>
             header.ty match {
-              case pi: CA.Term.Pi if c.header.funcHeader.params.nonEmpty =>
+              case pi: CA.Term.Pi if c.header.funcHeader.params.nonEmpty || c.decreases.nonEmpty =>
+                val (paramsEnv, applied) = recursiveParameters(c.header.funcHeader, pi, header.bodyEnv)
                 val (recursion, bodyHeaderEnv) = c.decreases match {
                   case Some(decreases) =>
-                    val (selfRef, nextEnv) = header.bodyEnv.bindRecursiveSelf(c.header.name, name)
-                    (Some(CA.Recursion(selfRef, elabDecreaseSpec(decreases, header.bodyEnv))), nextEnv)
-                  case None => (None, header.bodyEnv.copy(root = envWithSelf.root))
+                    val (selfRef, nextEnv) = paramsEnv.bindRecursiveSelf(c.header.name, name)
+                    (Some(CA.Recursion(selfRef, elabDecreaseSpec(decreases, paramsEnv))), nextEnv)
+                  case None => (None, paramsEnv.copy(root = envWithSelf.root))
                 }
                 CA.ConstBody.TermBody(
                   elabLam(
@@ -1249,7 +1282,8 @@ object Elaborator {
                     Some(nameText),
                     recursion,
                     c.span,
-                    envWithSelf
+                    envWithSelf,
+                    applied
                   )
                 )
               case _ =>
@@ -1363,9 +1397,11 @@ object Elaborator {
         val header = elabHeader(definition.header.funcHeader, reserved)
         header.ty match {
           case pi: CA.Term.Pi =>
-            val (peerRefs, bodyEnv) = header.bodyEnv.bindRecursivePeers(peers)
-            val lam = elabLam(pi, bodyEnv, term, Some(globalName(name)), None, definition.span, withNames)
-            CA.MutualDef(globalName(name), lam, elabDecreaseSpec(decreases, header.bodyEnv), peerRefs, definition.span)
+            // The peers' slots follow the parameters', those of the type when the header has none.
+            val (paramsEnv, applied) = recursiveParameters(definition.header.funcHeader, pi, header.bodyEnv)
+            val (peerRefs, bodyEnv) = paramsEnv.bindRecursivePeers(peers)
+            val lam = elabLam(pi, bodyEnv, term, Some(globalName(name)), None, definition.span, withNames, applied)
+            CA.MutualDef(globalName(name), lam, elabDecreaseSpec(decreases, paramsEnv), peerRefs, definition.span)
           case _ => throw InvalidDecreaseSpec("decreases requires a function definition", Some(decreases.span))
         }
       }

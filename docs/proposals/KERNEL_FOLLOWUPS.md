@@ -24,6 +24,7 @@ model, and a gap it finds is the model's to close.
 | 1.4 | Smaller defects: an unlocated internal error, `AlreadyDefined` without a span, open shadowing (fixed) | bug | new | — |
 | 1.5 | Branch fields typed at fresh parameters when an index equation is stuck (fixed) | bug | port | — |
 | 1.6 | Positive arguments of a family read its own occurrences as positive (fixed) | bug | new | — |
+| 1.7 | A family in its own constructors' result indices (decided: refused, implemented) | bug | new | — |
 | 2.1 | Structure eta (implemented) | expressiveness | port | — |
 | 2.2 | Positivity of stuck computations (implemented) | expressiveness | port | 18 |
 | 2.3 | Bundled protocol families (implemented) | expressiveness | follows | — |
@@ -33,6 +34,7 @@ model, and a gap it finds is the model's to close.
 | 2.7 | Match equations (implemented) | expressiveness | port | — |
 | 2.8 | Partial application and lambdas in types (decided: lambdas in types, implemented) | expressiveness | new | 3 |
 | 2.9 | Implicit arguments on definitions and inferred erased binders | expressiveness | partly port | — |
+| 2.10 | Over-rejections found by the matching review (for decision) | expressiveness | new | — |
 | 3.1 | Kind polymorphism (decided and implemented) | design | new | 10 |
 | 3.2 | Linear closures | design | new | 11 |
 | 3.3 | Supply splitting | design | new | 6 |
@@ -156,6 +158,36 @@ point.
 
 **Fix.** The positive arguments are the greatest fixed point over the block, a single family being a block of one,
 starting from what the headers allow.
+
+### 1.7 A family in its own constructors' result indices (fam-10)
+
+**Decided 2026-10-30: refused, as in Coq and Lean.** Found by the matching review (`MatchingAttackTests`, fam-10).
+With propositional extensionality, which Lean assumes, `Bad` proves `False`: a match on `Bad(True)` yields the index
+equation, so `Not(Bad(True))` holds with no axiom, and `propext` makes `Not(Bad(True))` equal to `True`, along which
+`Bad.mk` proves `Bad(True)`. **Implemented:** `checkFamily` refuses an occurrence of the block's families in a
+constructor's result index with `FamilyInResultIndex`, at the constructor's result; a field the index reads is a
+variable, so no occurrence (`docs/kernel.md`, strict positivity; `MatchingAttackTests` fam-10, fam-10b, fam-10c).
+
+**Problem.** A family, or a sibling in its mutual block, may occur in its own constructors' result indices, even
+negatively:
+
+```text
+inductive A indices (T: Type) : Type
+ | mk : A(A(Nat))
+
+inductive Bad indices (P: Prop) : Prop
+ | mk : Bad((h: Bad(True)) -> False)
+```
+
+Strict positivity reads only the fields' types (`InductiveChecks.checkFamily`, step 3), and a constructor's result
+arguments are checked only for its head, its arity and the uniformity of its parameters. Coq and Lean refuse both
+declarations: a family being declared may not occur in its constructors' result indices.
+
+**Analysis.** An index is no field, so a match never hands a branch the value an index names, and the review found no
+contradiction in the kernel alone. But a match does yield the index equation, and an equation that names the family
+being defined need not have a solution: in any model with propositional extensionality, including Lean's, `Bad(True)`
+would be equivalent to its own negation. The behaviour predated the matching cluster for a single family; a mutual
+block extended it to siblings. No known program needs the form.
 
 ## 2 Expressiveness gaps that force encodings
 
@@ -346,6 +378,44 @@ come from a type, where a linear value is only read (S1), so binding it would
 copy the value. Implicit binders are therefore unrestricted (as L2 already
 makes erased constructor binders).
 
+### 2.10 Over-rejections found by the matching review
+
+**For decision, 2026-10-30.** The matching review (`MatchingAttackTests`) found three sound programs the kernel
+refuses. Each is for the user to judge against the principle that a sound program is rejected only when accepting it
+would cost significant implementation or performance.
+
+- **par-5: tracking is decided at the binder.** In
+  `def dup (A: Univ($k, $u))(o: CopyOpt(A))(b: Univ(k, $v))(y: b)(z: b)`, `y` is tracked, since its kind is the
+  variable `k`. In the case `CopyOpt.some x`, refinement solves `k := Kind.copy`, so `y` is copyable there, but
+  `Prod.mk(b, b, y, y)` is `LinearReused`: the ledger decides tracking once, from the type at the binder, and
+  refinement never changes it (`docs/kernel.md`, "The ledger"). The workaround is the rule's own, `let y2 := y` in the
+  branch, which uses `y` once and binds an untracked `y2`. Accepting it would make a branch drop from its use summary
+  every tracked local whose refined type is copyable, before the binder rule reads the summary, and give such a local
+  no provenance there: a filter in `MatchChecker.checkBranch`, small, but a change to an invariant the ledger and S1 now
+  rely on, that a local's tracking never changes.
+- **mut-14: a proof-decreasing member cannot call a data-decreasing one.** Members compare metrics component by
+  component, each by the order of the caller's current value, so a data candidate against a proof root is neither
+  smaller nor equal. A disjoint sum of the two orders, one ranked below the other, would accept calls in one direction
+  only, so the review's cycle, `f` decreasing a proof calling `g` decreasing data, which passes the proof back, would
+  still be refused, and so it would be with both members decreasing the proof, since `g`'s call passes it back
+  unchanged; accepting it needs a different principle, such as size-change termination, which sees that the proof
+  shrinks over the two calls. The workaround is to inline the member that passes the proof back, so that every call
+  decreases. Significant cost; keeping the restriction is recommended.
+- **mut-14: measures are ordered structurally, not by `<`.** In a block with
+  `f (a: Nat)(b: Nat) decreases measure(Nat.add(a, b))` calling `g(k, b)` from `a = Nat.succ(k)`, the candidate `b`
+  is below `k + b + 1` numerically but is no structural subterm of it, since summands are not structural subterms
+  (`docs/kernel.md`, "Natural number normal forms"). Ordering a `Nat` component by `<`, decided by the normal forms'
+  signed difference as `Nat.ble` is, would accept it. That order contains the structural one on `Nat`, and no value
+  of another type is a structural subterm of a `Nat`, so every component, structural or measure, could compare `Nat`
+  values by it and stay well-founded; the comparison is stable under substitution. A
+  moderate change to `TerminationChecker` with a real gain in expressiveness, comparable to well-founded recursion on
+  `<`; it also applies to single definitions.
+
+Two more follow the spec and need no change. **root-5:** since 2.4 links the root at a variable index, a nested match
+on the same root sees its constructor and its other cases are `UnreachableCase`, as they always were for a family
+without indices. **wild-6:** each case a wildcard stands for knows the scrutinee's constructor, so its body cannot
+match the scrutinee again on the other constructors, exactly as the cases written out could not.
+
 ## 3 Language design questions
 
 ### 3.1 Kind polymorphism (open question 10)
@@ -461,7 +531,12 @@ catch it.
 
   A definition without parameters whose type is a function type, such as
   `def f : Nat -> Nat := Nat.succ`, was elaborated as a function of that type's
-  binders, and is a constant of its type now.
+  binders, and is a constant of its type now. A recursive one, a mutual member
+  or a single definition with `decreases`, crashed (mut-13, "Local ref f#0 is
+  already bound"): its peer or self slot took the type's first binder's. It is
+  now the function of its type's parameters, unnamed, whose body is the written
+  one applied to them, with its recursive slots after them (`docs/kernel.md`,
+  "Mutual blocks").
 - **Diagnostics** (**fixed 2026-10-30**, `ValuePrintingTests`; EVALUATION_AND_PORTS #9,
   after `main-new`'s `d50f04ee` and `6a0c6192`):
   - stuck selectors print as `match#LocalId(…)` (now a record's projection

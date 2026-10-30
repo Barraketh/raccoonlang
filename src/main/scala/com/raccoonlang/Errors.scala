@@ -42,6 +42,7 @@ object TypeError {
     case e: InductiveUniverseTooSmall       => e.copy(span = Some(sp))
     case e: FamilyArgumentTooLarge          => e.copy(span = Some(sp))
     case e: NonStrictlyPositive             => e.copy(span = Some(sp))
+    case e: FamilyInResultIndex             => e.copy(span = Some(sp))
     case e: InductiveTypeNotASort           => e.copy(span = Some(sp))
     case e: PatternCaptureNeedsExpectedType => e.copy(span = Some(sp))
     case e: CaptureWithoutOpening           => e.copy(span = Some(sp))
@@ -337,6 +338,17 @@ final case class NonStrictlyPositive(
 ) extends TypeError {
   override def msg: String =
     s"Constructor $ctor of $inductive is not strictly positive in field $field : $fieldTy"
+}
+
+final case class FamilyInResultIndex(
+    inductive: String,
+    ctor: String,
+    index: String,
+    indexValue: Value,
+    span: Option[Span] = None
+) extends TypeError {
+  override def msg: String =
+    s"Constructor $ctor of $inductive names a family of its block in result index $index := $indexValue"
 }
 
 final case class PropEliminationRestricted(

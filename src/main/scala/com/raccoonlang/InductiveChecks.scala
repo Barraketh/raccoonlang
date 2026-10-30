@@ -543,6 +543,14 @@ object InductiveChecks {
           throw error
       }
 
+      // No family of the block occurs in a result index (fam-10), as in Coq and Lean. An index constrains the family by
+      // an equation, which no fixed point need satisfy: with propositional extensionality, `Bad((h: Bad(True)) -> False)`
+      // proves False. A field variable is no occurrence, whatever its type.
+      header.indices.zip(outputArgs.drop(header.params.length)).foreach { case (index, outputArg) =>
+        if (!doesNotOccur(recursiveTarget, outputArg))
+          throw FamilyInResultIndex(name, ctor.canonicalName, index.name, outputArg, Some(ctor.resultTy.span))
+      }
+
       val constructorUniverse = TypeChecker.getUniverse(outputTpe)
 
       // Whether each stored field's type mentions a family of the block, so recurses.

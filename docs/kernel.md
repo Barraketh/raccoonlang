@@ -279,6 +279,15 @@ type and its body opened on fresh arguments. This also applies when computing
 which family arguments are positive and when excluding recursion inside a
 family's own arguments.
 
+No family of the block occurs in a constructor's result indices
+(`FamilyInResultIndex`), as in Coq and Lean. An index constrains the family by
+an equation rather than storing a field, and an equation that names the family
+need not have a solution: with propositional extensionality,
+`inductive Bad indices (P: Prop) : Prop` with `mk : Bad((h: Bad(True)) -> False)`
+proves `False`, since a match on `Bad(True)` yields the index equation. An index
+may read a field whose type names the family, such as `T(p.fst)` for a field
+`p: Prod(Nat, T(0))`: a field is a variable, not an occurrence.
+
 The family being declared is fresh: no value made before its declaration can
 name it, so a reference to it starts only at its own head and reaches a value
 only through what that value is built from. So a stuck computation, such as a
@@ -503,8 +512,13 @@ occurrences as positive in every argument would accept `F (A)(B)` with fields
 position of `A`, and so a negative `H` through `F(Nat, H)`.
 
 **Definitions.** Each member is a function definition with a `decreases`
-clause and a term body; none is an instance or a builtin. Its type is checked
-first, where no member exists yet, so it names none. Then each body is checked
+clause and a term body; none is an instance or a builtin. A recursive
+definition, a member or a single one with `decreases`, is a function, since its
+calls are where its decrease is checked and its peers bound: one whose header
+has no parameters, such as `def f : (n: Nat) -> Nat decreases measure(1) := t`,
+takes those of its declared function type, unnamed, and its body is `t` applied
+to them. Its type is checked first, where no member exists yet, so it names
+none. Then each body is checked
 with every member bound, after its parameters, to the raw call from it to that
 member, which only an application head may name. A call decreases when the
 callee's metric at its arguments is lexicographically smaller than the
