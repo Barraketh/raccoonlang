@@ -1,0 +1,51 @@
+import Protocol.Logic
+
+// Order laws of the native `Nat.le`/`Nat.lt` (`Nat.ble(a, b) = true`), which the prelude lacks. The native comparison
+// cancels common terms, so closed instances are usually definitional; the general laws are short recursions.
+namespace Nat {
+  def lt_irrefl (n: Nat)(h: Nat.lt(n, n)): False := Logic.falseNeTrue(h, False)
+
+  def lt_ne (a: Nat)(b: Nat)(h: Nat.lt(a, b)): Not(Eq(Nat, a, b)) :=
+    fun (e: Eq(Nat, a, b)): False => Nat.lt_irrefl(b, Eq.substProp(e, fun (x: Nat): Prop => Nat.lt(x, b), h))
+
+  def lt_zero (g: Nat)(h: Nat.lt(g, 0))(C: Prop): C := Logic.falseNeTrue(h, C)
+
+  def le_succ (a: Nat)(b: Nat)(h: Nat.le(a, b)): Nat.le(a, Nat.succ(b)) decreases structural(a) := {
+    match a returning Nat.le(a, Nat.succ(b)) with
+    | Nat.zero => Eq.refl(Bool.true)
+    | Nat.succ a0 => {
+      match b returning Nat.le(Nat.succ(a0), Nat.succ(b)) with
+      | Nat.zero => Logic.falseNeTrue(h, Nat.le(Nat.succ(a0), 1))
+      | Nat.succ b0 => Nat.le_succ(a0, b0, h)
+    }
+  }
+
+  def le_trans (a: Nat)(b: Nat)(c: Nat)(h1: Nat.le(a, b))(h2: Nat.le(b, c)): Nat.le(a, c) decreases structural(a) := {
+    match a returning Nat.le(a, c) with
+    | Nat.zero => Eq.refl(Bool.true)
+    | Nat.succ a0 => {
+      match b returning Nat.le(Nat.succ(a0), c) with
+      | Nat.zero => Logic.falseNeTrue(h1, Nat.le(Nat.succ(a0), c))
+      | Nat.succ b0 => {
+        match c returning Nat.le(Nat.succ(a0), c) with
+        | Nat.zero => Logic.falseNeTrue(h2, Nat.le(Nat.succ(a0), 0))
+        | Nat.succ c0 => Nat.le_trans(a0, b0, c0, h1, h2)
+      }
+    }
+  }
+
+  def lt_le (g: Nat)(n: Nat)(w: Nat)(lt: Nat.lt(g, n))(le: Nat.le(n, w)): Nat.lt(g, w) := Nat.le_trans(Nat.succ(g), n, w, lt, le)
+
+  // Totality: `not (a <= b)` gives `b <= a`.
+  def ble_flip (a: Nat)(b: Nat)(h: Eq(Bool, Nat.ble(a, b), Bool.false)): Nat.le(b, a) decreases structural(a) := {
+    match a returning Nat.le(b, a) with
+    | Nat.zero => {
+      match h returning Nat.le(b, 0) with
+    }
+    | Nat.succ a0 => {
+      match b returning Nat.le(b, Nat.succ(a0)) with
+      | Nat.zero => Eq.refl(Bool.true)
+      | Nat.succ b0 => Nat.ble_flip(a0, b0, h)
+    }
+  }
+}

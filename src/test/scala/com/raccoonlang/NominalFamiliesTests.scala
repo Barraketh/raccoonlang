@@ -150,9 +150,7 @@ class NominalFamiliesTests extends munit.FunSuite {
         ("False", "True", "Prop"),
         ("False", "B -> True", "Prop"),
         ("At(N)", "At(B)", "Prop"),
-        ("Unknown", "N", "Type"),
-        ("Prop", "Type", "Sort(Level.one)"),
-        ("Type", "Sort(Level.one)", "Sort(Level.succ(Level.one))")
+        ("Unknown", "N", "Type")
       )
     ) intercept[MissingCase] {
       typecheck(
@@ -161,6 +159,16 @@ class NominalFamiliesTests extends munit.FunSuite {
           s"def bad (h: Eq($classifier, $left, $right)): False := { match h returning False with\n}"
       )
     }
+    // Universes of different levels have different types, so no equation between them can be stated.
+    for (
+      (left, right, classifier) <- Vector(
+        ("Prop", "Type", "Sort(Level.one)"),
+        ("Type", "Sort(Level.one)", "Sort(Level.succ(Level.one))")
+      )
+    )
+      intercept[TypeMismatch] {
+        typecheck(data + s"def bad (h: Eq($classifier, $left, $right)): False := { match h returning False with\n}")
+      }
   }
 
   test("Russell's contradiction through equality propositions is rejected") {

@@ -252,6 +252,9 @@ object Elaborator {
         Vector("Level"),
         Vector("Level", "zero"),
         Vector("Level", "one"),
+        Vector("Kind"),
+        Vector("Kind", "copy"),
+        Vector("Kind", "lin"),
         Vector("Prop")
       )
 
@@ -374,13 +377,43 @@ object Elaborator {
 
   private def typePatternCaptureNames(pattern: SA.TypePattern): Vector[String] =
     pattern match {
-      case SA.TypePattern.Type(_)          => Vector.empty
-      case SA.TypePattern.Capture(name, _) => Vector(name)
-      case SA.TypePattern.App(_, args, _)  => args.flatMap(typePatternCaptureNames)
+      case SA.TypePattern.Type(_) => Vector.empty
+      case SA.TypePattern.Capture(name, _, constraint) =>
+        constraint.toVector.flatMap(typePatternCaptureNames) :+ name
+      case SA.TypePattern.App(_, args, _) => args.flatMap(typePatternCaptureNames)
     }
 
-  private def structSelectorNamespace(decl: SA.Command.Decl.InductiveDecl): Option[SA.Command.Namespace] = {
-    if (!decl.isStruct || decl.ctors.isEmpty) return None
+  /**
+   * Field selectors for a family with one constructor, one for each named field (docs/kernel.md, "Structure eta and
+   * projections"). Each is a lazy definition whose body is the one-branch match that returns its field, so it is
+   * checked where it is first used. A family gets none when a selector's type cannot be written: when a field's type
+   * names a capture that is no family parameter, a hidden dependency, or a type capture shadows an earlier field.
+   */
+  private def structSelectorNamespace(decl: SA.Command.Decl.InductiveDecl): Option[SA.Command.Namespace] =
+    if (decl.ctors.length != 1 || hasHiddenDependency(decl)) None
+    else
+      try selectorNamespace(decl)
+      catch { case _: InvalidStruct => None }
+
+  /** Whether a field's type, as a selector would state it, names a capture that is no family parameter. */
+  private def hasHiddenDependency(decl: SA.Command.Decl.InductiveDecl): Boolean = {
+    val params = decl.header.binders.map(_.name).toSet
+    def named(pattern: SA.TypePattern): Vector[String] =
+      pattern match {
+        case SA.TypePattern.Type(_)             => Vector.empty
+        case SA.TypePattern.App(_, args, _)     => args.flatMap(named)
+        case SA.TypePattern.Capture(name, _, _) => Vector(name)
+      }
+    decl.ctors.head.fields.exists { field =>
+      val names = field.ty match {
+        case SA.BinderType.TypePattern(tp, _)             => named(tp)
+        case SA.BinderType.ConstrainedCapture(name, _, _) => Vector(name)
+      }
+      names.exists(name => !params.contains(name))
+    }
+  }
+
+  private def selectorNamespace(decl: SA.Command.Decl.InductiveDecl): Option[SA.Command.Namespace] = {
 
     val header = decl.header
     val ctor = decl.ctors.head
@@ -533,7 +566,7 @@ object Elaborator {
   ): SA.TopLevelTP =
     rewriteTypePattern(structName, selfName, pattern, previousFields) match {
       case topLevel: SA.TopLevelTP => topLevel
-      case SA.TypePattern.Capture(name, span) =>
+      case SA.TypePattern.Capture(name, span, _) =>
         throw InvalidStruct(structName, s"type capture $name needs an expected type", Some(span))
     }
 
@@ -554,10 +587,14 @@ object Elaborator {
           span
         )
 
-      case SA.TypePattern.Capture(name, span) =>
+      case SA.TypePattern.Capture(name, span, constraint) =>
         if (previousFields.contains(name))
           throw InvalidStruct(structName, s"type capture $name shadows an earlier field", Some(span))
-        pattern
+        SA.TypePattern.Capture(
+          name,
+          span,
+          constraint.map(rewriteTopLevelPattern(structName, selfName, _, previousFields))
+        )
     }
 
   private def typePatternAsType(
@@ -578,7 +615,7 @@ object Elaborator {
           appSpan
         )
 
-      case SA.TypePattern.Capture(name, captureSpan) =>
+      case SA.TypePattern.Capture(name, captureSpan, _) =>
         if (previousFields.contains(name))
           throw InvalidStruct(structName, s"type capture $name shadows an earlier field", Some(captureSpan))
         SA.Term.Ident(name, captureSpan)
@@ -686,16 +723,23 @@ object Elaborator {
         }
         (CA.TypePattern.App(elabTypePatternHead(fn, env), nextArgs, sp), nextEnv)
 
-      case SA.TypePattern.Capture(name, sp) =>
-        val (ref, nextEnv) = env.bindRequired(name, sp)
-        (CA.TypePattern.Capture(ref, sp), nextEnv)
+      // A constraint's captures are bound before the capture itself, as at a binder.
+      case SA.TypePattern.Capture(name, sp, constraint) =>
+        val (elabConstraint, constraintEnv) = constraint match {
+          case Some(tp) =>
+            val (elab, next) = elabTopLevelPattern(tp, env)
+            (Some(elab), next)
+          case None => (None, env)
+        }
+        val (ref, nextEnv) = constraintEnv.bindRequired(name, sp)
+        (CA.TypePattern.Capture(ref, sp, elabConstraint), nextEnv)
     }
 
   private def elabTopLevelPattern(pattern: SA.TopLevelTP, env: ResolveEnv): (CA.TopLevelTP, ResolveEnv) = {
     val (elab, nextEnv) = elabPattern(pattern, env)
     elab match {
       case topLevel: CA.TopLevelTP => (topLevel, nextEnv)
-      case CA.TypePattern.Capture(ref, span) =>
+      case CA.TypePattern.Capture(ref, span, _) =>
         throw PatternCaptureNeedsExpectedType(ref.name, Some(span))
     }
   }
@@ -1084,7 +1128,7 @@ object Elaborator {
         val nextEnv = ctorNames.foldLeft(env.addGlobal(name)) { case (cur, ctorName) =>
           cur.addGlobal(ctorName)
         }
-        (CA.Decl.InductiveDecl(header, ctors, c.isStruct, c.span), nextEnv)
+        (CA.Decl.InductiveDecl(header, ctors, c.span), nextEnv)
     }
 
   private def elabCommands(commands: Vector[SA.Command], env: ResolveEnv): (Vector[CA.Decl], ResolveEnv) = {
@@ -1113,12 +1157,16 @@ object Elaborator {
     (decls.result(), curEnv)
   }
 
-  private lazy val (elaboratedKernel, kernelRoot) = {
+  private lazy val (elaboratedKernel, elaboratedProtocol, kernelRoot) = {
     val (decls, env) = elabCommands(expandStructSelectors(Kernel.surface.decls), ResolveEnv.primitive)
-    (decls, env.root)
+    val (protocolDecls, protocolEnv) = elabCommands(expandStructSelectors(Kernel.protocolSurface.decls), env)
+    (decls, protocolDecls, protocolEnv.root)
   }
 
   private[raccoonlang] def kernelDecls: Vector[CA.Decl] = elaboratedKernel
+
+  /** The kernel's protocol declarations, which `Kernel.env` evaluates over the core declarations. */
+  private[raccoonlang] def kernelProtocolDecls: Vector[CA.Decl] = elaboratedProtocol
 
   private def preludeEnv(prelude: Prelude.Config): ResolveEnv = {
     val (_, env) = elabCommands(expandStructSelectors(prelude.surface.decls), ResolveEnv.kernel)

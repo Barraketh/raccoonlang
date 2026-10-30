@@ -68,14 +68,12 @@ class FunctionEqualityTests extends munit.FunSuite {
     }
   }
 
-  test("ordinary argument checking retains universe cumulativity") {
-    val result = check(
-      """
-        |def accept (A: Sort(Level.succ(Level.one))): Sort(Level.succ(Level.one)) := A
-        |
-        |accept(Type)
-        |""".stripMargin
-    ).getOrElse(fail("Program has no body"))
+  test("ordinary argument checking has no universe cumulativity; a universe-polymorphic signature takes any level") {
+    intercept[TypeMismatch] {
+      check("def accept (A: Sort(Level.succ(Level.one))): Sort(Level.succ(Level.one)) := A\n\naccept(Type)\n")
+    }
+    val result =
+      check("def accept (A: Sort($u)): Sort(u) := A\n\naccept(Type)\n").getOrElse(fail("Program has no body"))
     assertEquals(result, Value.TypeTpe)
   }
 }

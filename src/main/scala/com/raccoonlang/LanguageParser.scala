@@ -31,7 +31,6 @@ object LanguageParser {
     "instance",
     "derive",
     "inductive",
-    "struct",
     "stable",
     "namespace",
     "open",
@@ -165,7 +164,9 @@ object LanguageParser {
     }
 
   private def typePatternCapture(implicit sourceId: Option[SourceId]): Parser[TypePattern.Capture] =
-    (symTight("$") ~/ ident).flatSpanned(sourceId).map(TypePattern.Capture.tupled)
+    (symTight("$") ~/ ident ~ (kw("in") ~/ topLevelTypePattern).?).flatSpanned(sourceId).map {
+      case (name, constraint, span) => TypePattern.Capture(name, span, constraint)
+    }
 
   private def typePatternHead(implicit sourceId: Option[SourceId]): Parser[TypeTerm] =
     ((rootTypeTerm | identTypeTerm) ~ (P(".") ~/ identAtom).flatSpanned(sourceId).rep(0)).map { case (base, fields) =>
@@ -370,19 +371,14 @@ object LanguageParser {
   private def inductiveP(implicit sourceId: Option[SourceId]): Parser[InductiveDecl] =
     (kw("inductive") ~/ inductiveHeader ~ lineSep ~ ctorDecl.rep(0))
       .flatSpanned(sourceId)
-      .map { case (h, cs, sp) => InductiveDecl(h, cs, isStruct = false, sp) }
-
-  private def structP(implicit sourceId: Option[SourceId]): Parser[InductiveDecl] =
-    (kw("struct") ~/ inductiveHeader ~ lineSep ~ ctorDecl)
-      .flatSpanned(sourceId)
-      .map { case (h, cs, sp) => InductiveDecl(h, Vector(cs), isStruct = true, sp) }
+      .map { case (h, cs, sp) => InductiveDecl(h, cs, sp) }
 
   private def commandP(implicit sourceId: Option[SourceId]): Parser[Command] = declP | namespaceP | openP | blockP
 
   private def commandsP(implicit sourceId: Option[SourceId]): Parser[Vector[Command]] =
     skipAllWs ~ commandP.rep(0, lineSep.rep(1)) ~ skipAllWs
 
-  private def declP(implicit sourceId: Option[SourceId]): Parser[Decl] = constP | axiomP | inductiveP | structP
+  private def declP(implicit sourceId: Option[SourceId]): Parser[Decl] = constP | axiomP | inductiveP
 
   private def namespaceP(implicit sourceId: Option[SourceId]): Parser[Namespace] =
     (kw("namespace") ~/ pathP ~ sym('{') ~/ commandsP ~ symTight('}')).flatSpanned(sourceId).map {

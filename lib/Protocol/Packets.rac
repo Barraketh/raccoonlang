@@ -1,0 +1,72 @@
+import Protocol.Laws
+
+// Packet operations over the kernel's `Protocol.Toks`: concatenation, splitting, reordering, a framed step, and
+// token-first wrappers that return a packet together with a fact about it.
+//
+// Every function recurses structurally on its unrestricted index list and matches the packet in each branch: matching
+// a packet refines its index but does not link the packet to the constructor, so structural recursion on the packet
+// itself is rejected (docs/implemented/LINEAR_PROTOCOLS.md, open question 16). A `List.Perm` proof cannot be
+// eliminated into a linear result, so packets reorder by these functions; each reordering's permutation lemma carries
+// validity along.
+namespace Protocol {
+  namespace Toks {
+    def append (P: Proto)(init: List(P.Atom))(s: Inst(P, init))(A: List(P.Atom))(B: List(P.Atom))
+        (left: Toks(P, init, s, A))(right: Toks(P, init, s, B)): Toks(P, init, s, List.append(A, B)) decreases structural(A) := {
+      match A with
+      | List.nil => {
+        match left with
+        | Toks.nil => right
+      }
+      | List.cons a rest => {
+        match left with
+        | Toks.cons b t C more => Toks.cons(P, init, s, a, t, List.append(rest, B), Toks.append(P, init, s, rest, B, more, right))
+      }
+    }
+
+    def split (P: Proto)(init: List(P.Atom))(s: Inst(P, init))(A: List(P.Atom))(B: List(P.Atom))
+        (toks: Toks(P, init, s, List.append(A, B))): Prod(Toks(P, init, s, A), Toks(P, init, s, B)) decreases structural(A) := {
+      match A with
+      | List.nil => Prod.mk(Toks(P, init, s, List.nil(P.Atom)), Toks(P, init, s, B), Toks.nil(P, init, s), toks)
+      | List.cons a rest => {
+        match toks with
+        | Toks.cons b t C more => {
+          let (left, right) := Toks.split(P, init, s, rest, B, more)
+          Prod.mk(Toks(P, init, s, List.cons(a, rest)), Toks(P, init, s, B), Toks.cons(P, init, s, a, t, rest, left), right)
+        }
+      }
+    }
+
+    // Move the packet `B` in front of `A`.
+    def exchange (P: Proto)(init: List(P.Atom))(s: Inst(P, init))(A: List(P.Atom))(B: List(P.Atom))(C: List(P.Atom))
+        (toks: Toks(P, init, s, List.append(A, List.append(B, C)))): Toks(P, init, s, List.append(B, List.append(A, C))) := {
+      let (front, back) := Toks.split(P, init, s, A, List.append(B, C), toks)
+      let (middle, tail) := Toks.split(P, init, s, B, C, back)
+      Toks.append(P, init, s, B, List.append(A, C), middle, Toks.append(P, init, s, A, C, front, tail))
+    }
+
+    def exchange_perm (Atom: Type)(A: List(Atom))(B: List(Atom))(C: List(Atom)):
+        List.Perm(Atom, List.append(A, List.append(B, C)), List.append(B, List.append(A, C))) :=
+      List.Perm.swap_front(B, A, C)
+
+    def swap (P: Proto)(init: List(P.Atom))(s: Inst(P, init))(A: List(P.Atom))(B: List(P.Atom))
+        (toks: Toks(P, init, s, List.append(A, B))): Toks(P, init, s, List.append(B, A)) :=
+      Toks.exchange(P, init, s, A, B, List.nil(P.Atom), toks)
+
+    def swap_perm (Atom: Type)(A: List(Atom))(B: List(Atom)): List.Perm(Atom, List.append(A, B), List.append(B, A)) :=
+      List.Perm.append_comm(A, B)
+
+    // A step on the front of a packet, with the rest as its frame.
+    def stepFramed (P: Proto)(init: List(P.Atom))(s: Inst(P, init))(A: List(P.Atom))(B: List(P.Atom))(F: List(P.Atom))
+        (h: (P.Step(A, B)))(toks: Toks(P, init, s, List.append(A, F))): Toks(P, init, s, List.append(B, F)) := {
+      let (part, frame) := Toks.split(P, init, s, A, F, toks)
+      Toks.append(P, init, s, B, F, Protocol.step(P, init, s, A, B, h, part), frame)
+    }
+
+    // Token-first: observe a packet, keep it, and return a fact its validity gives.
+    def inspect (P: Proto)(init: List(P.Atom))(s: Inst(P, init))(C: List(P.Atom))(Q: Prop)
+        (fact: (v: Valid(P, init, C)) -> Q)(toks: Toks(P, init, s, C)): Prod(Toks(P, init, s, C), Fact(Q)) := {
+      let (seen, valid) := Protocol.observe(P, init, s, C, toks)
+      Prod.mk(Toks(P, init, s, C), Fact(Q), seen, Fact.mk(fact(valid)))
+    }
+  }
+}

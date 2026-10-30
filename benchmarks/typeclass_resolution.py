@@ -101,7 +101,7 @@ def raccoon_struct(name: str, params: Iterable[str] = ()) -> str:
     ctor_param_str = "".join(f" {{{param}: Sort($u{idx})}}" for idx, param in enumerate(param_list))
     args = ", ".join(param_list)
     result = f"{name}({args})" if args else name
-    return f"""struct {name}{param_str} : {raccoon_struct_sort(param_list)}
+    return f"""inductive {name}{param_str} : {raccoon_struct_sort(param_list)}
  | mk{ctor_param_str} (val: BenchUnit) : {result}
 
 """
@@ -787,7 +787,7 @@ def raccoon_instance_body(size: int, _calls: int, _branch_depth: int) -> str:
  | leaf : Payload
  | node (left: Payload)(right: Payload) : Payload
 
-struct Need (A: Sort($u0)) : Sort(Level.max(Level.one, u0))
+inductive Need (A: Sort($u0)) : Sort(Level.max(Level.one, u0))
  | mk {A: Sort($u0)} (payload: Payload) : Need(A)
 
 """

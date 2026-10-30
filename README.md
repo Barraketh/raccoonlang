@@ -53,10 +53,19 @@ Note that at this point I have done 0 optimization - these performance wins are 
 - Dependent pattern matching
     - Branch refinement for indexed families / dependent pattern matching. Supports equality proofs.
     - Validates exhaustiveness checking: missing, duplicate, and unreachable branches
-- Cumulative universes, first-class `Level`, `Sort(u)`, universe validation, and sort unification
+- Non-cumulative universes, first-class `Level`, `Sort(u)`, universe validation, and sort unification: a type is used
+  at exactly its universe, and universe-polymorphic signatures (`Sort($u)`) take every level
     - `Type` is `Sort(Level.zero)`; `Prop : Type` is separate from the `Sort(u)` hierarchy
     - Impredicative Prop with proof irrelevance and controlled large elimination
     - Universe polymorphism ranges over Type levels only; propositions cannot be carriers for `Eq`, `DecidableEq`, or `Subsingleton`
+- [Linear types](docs/kernel.md#linear-types): kinds, with universes `Univ(k, u)` of copyable, linear and
+  kind-polymorphic types (`Sort(u)` and `Lin(u)` name the constant kinds), and families whose values are used at most
+  once on every path when their kind is not copy
+    - Copyable functions over linear values, with no linear captures; types and proofs may read linear values without
+      consuming them, keeping each call's linear inputs separate; no linear globals or axioms
+- [Resource protocols](docs/kernel.md#resource-protocols): first-class protocols, linear tokens changed only by
+  `Protocol.step`, and `Protocol.observe`, which proves that tokens held together are part of one reachable
+  configuration; an untrusted protocol library in [`lib/Protocol`](#the-protocol-library)
 - Extensible definitional equality through type-driven expression normalization
 - Canonical sums of products for builtin Nat addition, multiplication, and powers, deciding associativity,
   commutativity, units, numeral arithmetic, and the exponent product law `x^a * x^b = x^(a + b)` by conversion, plus
@@ -167,7 +176,8 @@ def lex (a: Nat)(b: Nat): Nat decreases lexicographic(a, b) := {
 An alternative to implicit parameters. A binder can contain captures in the type, and later parameters can reference
 these captures. See example below. You declare a capture with a '$'[name] . When applying a function,
 these patterns bind the incoming type like regular pattern matches in a language like Lean. A failure to match will
-result in a typecheck failure. This feature allows us to greatly reduce the number of function params - zip would
+result in a typecheck failure. A pattern's head may be a function, such as an alias of a family; its captures read the
+incoming type by position and are then checked as the head's arguments. This feature allows us to greatly reduce the number of function params - zip would
 otherwise have 7 params.
 
 ```raccoon
@@ -193,19 +203,14 @@ def zip(va: Vec($A, $n))(vb: Vec($B, n)): Vec(Pair(A, B), n) decreases measure(n
 }
 ```
 
-### Structs and Projections
+### Records and Projections
 
-A struct is a special case of an inductive family with exactly one constructor and named fields. Structs are intended
-for record-like data where fields are directly projectable by name.
-Formation rules:
-
-- Exactly one constructor.
-- Params before `indices` must be returned uniformly by every constructor.
-- Indices may be fixed by the constructor result or recovered from stored fields and type-pattern captures.
-- May live in `Type`/`Sort(u)` or `Prop`; projections from `Prop` structs obey Prop elimination restrictions.
-- All fields must be named (no anonymous `_` fields).
-
-Projection syntax: `p.field` selects the named field from a value `p` of a struct family.
+A record is an inductive family with exactly one constructor. Each of its named fields has a selector, and
+`p.field` selects that field from a value `p` of the family. Projections from `Prop` records obey Prop elimination
+restrictions, and a record whose field type names a capture that is no family parameter has no selectors. A record
+without indices or recursive fields, outside `Prop`, also has structure eta: a value converts with its constructor
+applied to its projections, and a match on a neutral value computes (see
+[structure eta](docs/kernel.md#structure-eta-and-projections)).
 
 Example: simple non-dependent projections
 
@@ -214,7 +219,7 @@ inductive Nat : Type
  | zero : Nat
  | succ (_: Nat) : Nat
 
-struct Pair (A: Type)(B: Type) : Type
+inductive Pair (A: Type)(B: Type) : Type
  | mk {A: Type}{B: Type} (fst: A)(snd: B) : Pair(A, B)
 
 def first (p: Pair($A, $B)): A := p.fst
@@ -259,7 +264,7 @@ override a global one without creating ambiguity, and overlapping instances are 
 ambiguity detection.
 
 ```raccoon
-struct DecEq (A: Type) : Type
+inductive DecEq (A: Type) : Type
  | mk {A: Type} (result: Bool) : DecEq(A)
 
 def instance natEq : DecEq(Nat) := DecEq.mk(Nat, Bool.true)
@@ -302,6 +307,53 @@ Match case heads use normal global resolution. Prefix a case head with `.` to ma
 the scrutinee type: `| .zero => ...`.
 
 See [docs/namespaces.md](docs/namespaces.md) for the exact resolution and open rules.
+
+### Linear types
+
+A universe `Univ(k, u)` has a kind `k`: `Kind.copy`, `Kind.lin`, a kind variable, or a `Kind.join` of them, and `Sort(u)`
+and `Lin(u)` name the constant kinds. A type of linear or variable kind is linear: each of its values is used at most
+once on every path through the scope that binds it, so a match consumes its scrutinee, and a value or field may be
+dropped. Families may be kind-polymorphic, as the kernel's `List (A: Univ($k, $u)) : Univ(k, u)` and the prelude's
+`Prod`, `Option` and `Sum` are, so `List(Nat)` is copyable and a list of tokens is linear. Kind-polymorphic code treats
+its values as linear, and a capture such as `List($A in Sort($u))` asks for copyable elements. Functions are always
+copyable and cannot capture linear locals. Types and proofs may read linear values without consuming them, as long as no
+one call inside them receives the same value twice. See [linear types](docs/kernel.md#linear-types). The prelude's
+`Fact(p)` carries a proof beside tokens in a `Prod`, and `Eq.subst` transports a value of any kind along an equation.
+
+```raccoon
+def map (xs: List($A))(B: Univ($k, $v))(f: A -> B) : List(B) decreases structural(xs) := {
+  match xs with
+  | List.nil => List.nil(B)
+  | List.cons h t => List.cons(f(h), map(t, B, f))
+}
+
+def count (xs: List($A)) : Nat decreases structural(xs) := {
+  match xs with
+  | List.nil => 0
+  | List.cons h t => Nat.succ(count(t))
+}
+```
+
+At a linear `xs`, `count(xs)` after `count(xs)` is `LinearReused`, while a branch may drop `xs`. A type may read `xs`:
+`Eq(Nat, count(xs), count(xs))` reads it twice, in two separate calls, and consumes nothing, but
+`count(append(xs, xs))` in a type is `LinearReusedInType`.
+
+### The protocol library
+
+`lib/Protocol` is untrusted library code over the kernel's protocol declarations, loaded with `--root lib`
+(`import Protocol.Laws`):
+
+- `Laws`: derivations (`Protocol.Derives`) and their laws, `Reach.iff_derives`, `Reach.frame` and the `Valid` laws,
+  all over a protocol `P: Protocol.Proto`, as the kernel families take one;
+- `Morphism`: protocol morphisms with `transport`, `pullback` and `comp`;
+- `Packets`: `append`, `split`, `exchange`, `swap`, a framed step, and token-first `inspect`, which observes a packet
+  and returns it with a fact;
+- the building blocks `Exclusive` and `Shares`;
+- support: `Lists` (membership, `Every`, `Pairwise`, `Nodup`, `flatMap`, permutation lemmas), `Nats` (order laws) and
+  `Logic`.
+
+Protocol theorems hold only without user axioms, so run them with `--no-user-axioms`. See
+[resource protocols](docs/kernel.md#the-protocol-library).
 
 ### Equality by computation with a normalizer
 
@@ -374,9 +426,15 @@ as a no-op for compatibility with source files that name their prelude dependenc
 
 Prelude declarations can use `:= builtin` when their canonical name has a native implementation in the runtime builtin
 registry. A builtin's declared type is trusted, not checked, so a program, or a module it imports, cannot declare one
-(`ProgramBuiltin`). `Sort`, `Bool`, `Nat`, `List`, `Char`, `String`, their constructors and selectors, the native Nat arithmetic,
+(`ProgramBuiltin`). `Kind`, `Univ`, `Sort`, `Lin`, `Bool`, `Nat`, the kind-polymorphic `List`, `Char`, `String`, their constructors and selectors, the native Nat arithmetic,
 subtraction, and comparisons, and the native `List.append` and `List.length` are built into the kernel: every
-environment has them, including with `--no-prelude`, and they cannot be redeclared.
+environment has them, including with `--no-prelude`, and they cannot be redeclared. So are the resource-protocol
+families `List.Perm`, `Protocol.Proto`, `Protocol.Reach` and `Protocol.Valid`, the opaque `Protocol.Supply`,
+`Protocol.Inst` and `Protocol.Tok`, which have no constructors, the linear `Protocol.Toks`, `Protocol.Observed` and
+`Protocol.Fresh`, and the primitives `Protocol.new`, `Protocol.step` and `Protocol.observe` (see
+[resource protocols](docs/kernel.md#resource-protocols)). A program body of type `(sup: Protocol.Supply) -> R`, for an
+unrestricted `R`, is an entry: once it has checked, `Interpreter.run` applies it to the root supply, and the CLI prints
+the result.
 
 ```bash
 sbt 'run --root examples examples/nats.rac'

@@ -1,0 +1,74 @@
+import Protocol.Laws
+
+// resource_core.md §5: shares of a permission. A permission of size `n` splits
+// into positive shares and joins back. One invariant, proved by ordinary
+// induction on reachability, gives both client facts.
+namespace Shares {
+  open Protocol.{Proto}
+  open Protocol.{Reach, Valid}
+
+  inductive Step indices (A: List(Nat))(B: List(Nat)) : Prop
+   | split (q: Nat)(r: Nat)(hq: Nat.lt(0, q))(hr: Nat.lt(0, r)) : Step(List.cons(Nat.add(q, r), List.nil(Nat)), List.cons(q, List.cons(r, List.nil(Nat))))
+   | join (q: Nat)(r: Nat) : Step(List.cons(q, List.cons(r, List.nil(Nat))), List.cons(Nat.add(q, r), List.nil(Nat)))
+
+  def proto : Proto := Proto.mk(Nat, Shares.Step)
+
+  def total (xs: List(Nat)): Nat decreases structural(xs) := {
+    match xs returning Nat with
+    | List.nil => 0
+    | List.cons a rest => Nat.add(a, total(rest))
+  }
+
+  def total_perm (xs: List(Nat))(ys: List(Nat))(p: List.Perm(Nat, xs, ys)): Eq(Nat, total(xs), total(ys)) decreases structural(p) := {
+    match p returning Eq(Nat, total(xs), total(ys)) with
+    | .nil => Eq.refl(0)
+    | .cons x l1 l2 q => congrArg(total_perm(l1, l2, q), Nat, fun (t: Nat): Nat => Nat.add(x, t))
+    | .swap x y l => Eq.refl(Nat.add(x, Nat.add(y, total(l))))
+    | .trans l1 l2 l3 q1 q2 => Eq.trans(total_perm(l1, l2, q1), total_perm(l2, l3, q2))
+  }
+
+  // The user's invariant: every step preserves the total. In each rule case the
+  // consumed and produced lists are concrete, so `total` unfolds over them and
+  // the Nat normal forms identify the two sides.
+  def reach_total (init: List(Nat))(C: List(Nat))(h: Reach(proto, init, C)): Eq(Nat, total(C), total(init)) decreases structural(h) := {
+    match h returning Eq(Nat, total(C), total(init)) with
+    | .initial => Eq.refl(total(init))
+    | .step A B frame s prev => {
+      let ih := reach_total(init, List.append(A, frame), prev)
+      match s returning Eq(Nat, total(List.append(B, frame)), total(init)) with
+      | .split q r hq hr => ih
+      | .join q r => ih
+    }
+    | .perm X Y prev p => Eq.trans(Eq.symm(total_perm(X, Y, p)), reach_total(init, X, prev))
+  }
+
+  // Jointness: two shares held together add up to at most `n`.
+  def pair_bound (n: Nat)(q: Nat)(r: Nat)(v: Valid(proto, List.cons(n, List.nil(Nat)), List.cons(q, List.cons(r, List.nil(Nat))))): Nat.le(Nat.add(q, r), n) := {
+    match v returning Nat.le(Nat.add(q, r), n) with
+    | .mk C rest h => Eq.substProp(reach_total(List.cons(n, List.nil(Nat)), List.cons(q, List.cons(r, rest)), h),
+        fun (m: Nat): Prop => Nat.le(Nat.add(q, r), m), Eq.refl(Bool.true))
+  }
+
+  // Completeness by holding everything: next to the whole permission `[n]`, no
+  // other share is positive. From n + (q + total(rest)) = n, cancelling n and
+  // then total(rest) gives q = 0.
+  def whole_excl (n: Nat)(q: Nat)(v: Valid(proto, List.cons(n, List.nil(Nat)), List.cons(n, List.cons(q, List.nil(Nat))))): Eq(Nat, q, 0) := {
+    match v returning Eq(Nat, q, 0) with
+    | .mk C rest h => {
+      let sum := reach_total(List.cons(n, List.nil(Nat)), List.cons(n, List.cons(q, rest)), h)
+      let others := congrArg(sum, Nat, fun (m: Nat): Nat => Nat.sub(m, n))
+      congrArg(others, Nat, fun (m: Nat): Nat => Nat.sub(m, total(rest)))
+    }
+  }
+
+  // The protocol is not vacuous: a split and a join are steps of it.
+  def split_one : Shares.Step(List.cons(2, List.nil(Nat)), List.cons(1, List.cons(1, List.nil(Nat)))) :=
+    Step.split(1, 1, Eq.refl(Bool.true), Eq.refl(Bool.true))
+
+  def two_ones : Valid(proto, List.cons(2, List.nil(Nat)), List.cons(1, List.cons(1, List.nil(Nat)))) :=
+    Protocol.Valid.of_reach(proto, List.cons(2, List.nil(Nat)), List.cons(1, List.cons(1, List.nil(Nat))),
+      Reach.step(proto, List.cons(2, List.nil(Nat)), List.cons(2, List.nil(Nat)), List.cons(1, List.cons(1, List.nil(Nat))), List.nil(Nat),
+        split_one, Reach.initial(proto, List.cons(2, List.nil(Nat)))))
+
+  def two_ones_bound : Nat.le(2, 2) := pair_bound(2, 1, 1, two_ones)
+}

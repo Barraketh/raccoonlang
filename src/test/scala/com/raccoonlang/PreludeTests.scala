@@ -107,7 +107,7 @@ class PreludeTests extends munit.FunSuite {
           |
           |def symmProof : Eq(Nat, Nat.zero, Nat.zero) := Eq.symm(Eq.refl(Nat.zero))
           |def transProof : Eq(Nat, Nat.zero, Nat.zero) := Eq.trans(Eq.refl(Nat.zero), Eq.refl(Nat.zero))
-          |def substValue : Nat := Eq.subst(Eq.refl(Nat.zero), Level.zero, natFamily, Nat.zero)
+          |def substValue : Nat := Eq.subst(Eq.refl(Nat.zero), Kind.copy, Level.zero, natFamily, Nat.zero)
           |def congrArgProof : Eq(Nat, Nat.succ(Nat.zero), Nat.succ(Nat.zero)) := congrArg(Eq.refl(Nat.zero), Nat, succNat)
           |
           |{

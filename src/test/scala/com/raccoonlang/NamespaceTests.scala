@@ -318,7 +318,7 @@ class NamespaceTests extends munit.FunSuite {
   test("local dotted names project, root-qualified names bypass local shadowing") {
     val p =
       """
-        |struct NatOps : Type
+        |inductive NatOps : Type
         | | mk (zero: Nat) : NatOps
         |
         |def local (Nat: NatOps): _root_.Nat := Nat.zero

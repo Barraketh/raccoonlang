@@ -22,7 +22,8 @@ namespace Eq {
     | Eq.refl w => q
   }
 
-  def subst (p: Eq($A, $x, $y))(v: Level)(motive: A -> Sort(v))(h: motive(x)): motive(y) := {
+  // Transport along an equation, into a motive of any kind, such as a packet along an equation of its atom lists.
+  def subst (p: Eq($A, $x, $y))(k: Kind)(v: Level)(motive: A -> Univ(k, v))(h: motive(x)): motive(y) := {
     match p returning motive(y) with
     | Eq.refl z => h
   }
@@ -92,7 +93,7 @@ def notFalse : Not(False) := fun (h: False): False => h
 
 def absurd (h: $a in Prop)(hn: Not(a))(C: Sort($u)): C := False.elim(hn(h), C)
 
-struct And (a: Prop)(b: Prop) : Prop
+inductive And (a: Prop)(b: Prop) : Prop
  | intro {a: Prop}{b: Prop} (left: a)(right: b) : And(a, b)
 
 inductive Or (a: Prop)(b: Prop) : Prop
@@ -107,7 +108,7 @@ namespace Or {
   }
 }
 
-struct Iff (a: Prop)(b: Prop) : Prop
+inductive Iff (a: Prop)(b: Prop) : Prop
  | intro {a: Prop}{b: Prop} (mp: a -> b)(mpr: b -> a) : Iff(a, b)
 
 inductive Empty : Type
@@ -205,9 +206,9 @@ namespace Nat {
   def lt (a: Nat)(b: Nat): Prop := Nat.le(Nat.succ(a), b)
 }
 
-inductive Option (A: Sort($u)) : Sort(u)
- | none {A: Sort($u)} : Option(A)
- | some (val: $A in Sort($u)) : Option(A)
+inductive Option (A: Univ($k, $u)) : Univ(k, u)
+ | none {A: Univ($k, $u)} : Option(A)
+ | some (val: $A in Univ($k, $u)) : Option(A)
 
 namespace Option {
   def elim (x: Option($A))(B: Sort($v))(none: B)(some: A -> B): B := {
@@ -243,9 +244,9 @@ namespace Option {
   def isNone (x: Option($A)): Bool := Bool.not(Option.isSome(x))
 }
 
-inductive Sum (A: Sort($u))(B: Sort($v)) : Sort(Level.max(u, v))
- | inl {B: Sort($v)} (val: $A in Sort($u)) : Sum(A, B)
- | inr {A: Sort($u)} (val: $B in Sort($v)) : Sum(A, B)
+inductive Sum (A: Univ($k1, $u))(B: Univ($k2, $v)) : Univ(Kind.join(k1, k2), Level.max(u, v))
+ | inl {B: Univ($k2, $v)} (val: $A in Univ($k1, $u)) : Sum(A, B)
+ | inr {A: Univ($k1, $u)} (val: $B in Univ($k2, $v)) : Sum(A, B)
 
 namespace Sum {
   def elim (x: Sum($A, $B))(C: Sort($w))(left: A -> C)(right: B -> C): C := {
@@ -258,7 +259,7 @@ namespace Sum {
 namespace List {
   // The native append computes `[] ++ ys = ys`, `cons(a, xs) ++ ys = cons(a, xs ++ ys)` and `xs ++ [] = xs`, but leaves
   // `x ++ ys` stuck for a stuck `x`, so associativity is not definitional; it is a theorem by induction on the first list.
-  def append_assoc (a: List($A))(b: List(A))(c: List(A)): Eq(List(A), List.append(List.append(a, b), c), List.append(a, List.append(b, c))) decreases structural(a) := {
+  def append_assoc (a: List($A in Sort($u)))(b: List(A))(c: List(A)): Eq(List(A), List.append(List.append(a, b), c), List.append(a, List.append(b, c))) decreases structural(a) := {
     match a returning Eq(List(A), List.append(List.append(a, b), c), List.append(a, List.append(b, c))) with
     | List.nil => Eq.refl(List.append(b, c))
     | List.cons head tail => congrArg(List.append_assoc(tail, b, c), List(A), fun (l: List(A)): List(A) => List.cons(head, l))
@@ -300,7 +301,8 @@ namespace List {
     | List.cons head tail => Bool.and(p(head), List.all(tail, p))
   }
 
-  def filter (xs: List($A))(p: A -> Bool): List(A) decreases structural(xs) := {
+  // `filter` copies each kept element into the result after testing it, so its elements are copyable.
+  def filter (xs: List($A in Sort($u)))(p: A -> Bool): List(A) decreases structural(xs) := {
     match xs returning List(A) with
     | List.nil => List.nil(A)
     | List.cons head tail => {
@@ -317,14 +319,21 @@ namespace String {
   def length (s: String): Nat := List.length(s.data)
 }
 
-struct Prod (A: Sort($u))(B: Sort($v)) : Sort(Level.max(u, v))
- | mk {A: Sort($u)}{B: Sort($v)} (fst: A)(snd: B) : Prod(A, B)
+// A pair of any kinds: linear when either component is (docs/kernel.md, "Kinds"). Its selectors consume a linear pair
+// and drop the other component.
+inductive Prod (A: Univ($k1, $u))(B: Univ($k2, $v)) : Univ(Kind.join(k1, k2), Level.max(u, v))
+ | mk {A: Univ($k1, $u)}{B: Univ($k2, $v)} (fst: A)(snd: B) : Prod(A, B)
 
-struct Sigma (A: Sort($u))(v: Level)(B: A -> Sort(v)) : Sort(Level.max(u, v))
- | mk {A: Sort($u)}{v: Level}{B: A -> Sort(v)} (fst: A)(snd: B(fst)) : Sigma(A, v, B)
+// A proof as data, so a fact can travel in a `Prod` with the tokens it is about.
+inductive Fact (p: Prop) : Type
+ | mk (proof: $p in Prop) : Fact(p)
 
-struct Subtype (A: Sort($u))(p: A -> Prop) : Sort(u)
- | mk {A: Sort($u)}{p: A -> Prop} (val: A)(property: p(val)) : Subtype(A, p)
+// The first component may be of any kind; the second is copyable, since its family `B` is into `Sort(v)`.
+inductive Sigma (A: Univ($k, $u))(v: Level)(B: A -> Sort(v)) : Univ(k, Level.max(u, v))
+ | mk {A: Univ($k, $u)}{v: Level}{B: A -> Sort(v)} (fst: A)(snd: B(fst)) : Sigma(A, v, B)
+
+inductive Subtype (A: Univ($k, $u))(p: A -> Prop) : Univ(k, u)
+ | mk {A: Univ($k, $u)}{p: A -> Prop} (val: A)(property: p(val)) : Subtype(A, p)
 
 inductive Exists (A: Sort($u))(p: A -> Prop) : Prop
  | intro {A: Sort($u)}{p: A -> Prop} (witness: A)(proof: p(witness)) : Exists(A, p)
@@ -332,7 +341,7 @@ inductive Exists (A: Sort($u))(p: A -> Prop) : Prop
 inductive Nonempty (A: Sort($u)) : Prop
  | intro (val: $A in Sort($u)) : Nonempty(A)
 
-struct Inhabited (A: Sort($u)) : Sort(u)
+inductive Inhabited (A: Sort($u)) : Sort(u)
  | mk {A: Sort($u)} (default: A) : Inhabited(A)
 
 def instance unitInhabited : Inhabited(Unit) := Inhabited.mk(Unit, Unit.unit)
@@ -341,7 +350,7 @@ def instance boolInhabited : Inhabited(Bool) := Inhabited.mk(Bool, Bool.false)
 
 def instance natInhabited : Inhabited(Nat) := Inhabited.mk(Nat, 0)
 
-struct BEq (A: Sort($u)) : Sort(Level.max(Level.one, u))
+inductive BEq (A: Sort($u)) : Sort(Level.max(Level.one, u))
  | mk {A: Sort($u)} (beq: A -> A -> Bool) : BEq(A)
 
 def beq [self: BEq($A)](a: A)(b: A): Bool := BEq.beq(self)(a, b)
@@ -409,7 +418,7 @@ def instance prodBEq [beqA: BEq($A)][beqB: BEq($B)]: BEq(Prod(A, B)) :=
       Prod.beq(beqA, beqB, x, y)
   )
 
-struct DecidableEq (A: Sort($u)) : Sort(Level.max(Level.one, u))
+inductive DecidableEq (A: Sort($u)) : Sort(Level.max(Level.one, u))
  | mk {A: Sort($u)} (decEq: (a: A) -> (b: A) -> Decidable(Eq(A, a, b))) : DecidableEq(A)
 
 namespace DecidableEq {
@@ -491,12 +500,12 @@ namespace Nat {
 
 def instance natDecidableEq : DecidableEq(Nat) := DecidableEq.mk(Nat, Nat.decEq)
 
-struct LE (A: Sort($u)) : Sort(Level.max(Level.one, u))
+inductive LE (A: Sort($u)) : Sort(Level.max(Level.one, u))
  | mk {A: Sort($u)} (le: A -> A -> Prop) : LE(A)
 
 def le [self: LE($A)](a: A)(b: A): Prop := LE.le(self)(a, b)
 
-struct LT (A: Sort($u)) : Sort(Level.max(Level.one, u))
+inductive LT (A: Sort($u)) : Sort(Level.max(Level.one, u))
  | mk {A: Sort($u)} (lt: A -> A -> Prop) : LT(A)
 
 def lt [self: LT($A)](a: A)(b: A): Prop := LT.lt(self)(a, b)
@@ -505,5 +514,5 @@ def instance natLE : LE(Nat) := LE.mk(Nat, Nat.le)
 
 def instance natLT : LT(Nat) := LT.mk(Nat, Nat.lt)
 
-struct Subsingleton (A: Sort($u)) : Prop
+inductive Subsingleton (A: Sort($u)) : Prop
  | intro {A: Sort($u)} (elim: (a: A) -> (b: A) -> Eq(A, a, b)) : Subsingleton(A)

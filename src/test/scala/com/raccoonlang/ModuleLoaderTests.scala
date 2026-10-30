@@ -361,7 +361,7 @@ class ModuleLoaderTests extends munit.FunSuite {
         |   | zero : Nat
         |   | succ (_: Nat) : Nat
         |
-        |  struct FunBox : Type
+        |  inductive FunBox : Type
         |   | mk (f: (x: Nat) -> Nat) : FunBox
         |}
         |""".stripMargin

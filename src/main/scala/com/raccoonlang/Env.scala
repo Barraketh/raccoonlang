@@ -2,6 +2,8 @@ package com.raccoonlang
 
 import org.roaringbitmap.RoaringBitmap
 
+import scala.collection.immutable.BitSet
+
 trait Env {
   def locals: Vector[Binding]
 
@@ -19,12 +21,28 @@ trait Env {
 
   def putLazyGlobal(name: String, force: () => Value): Env
 
+  /**
+   * Bind the next local slot. `linear` records that the checker tracks the local (`Binding.linear`); only the checker's
+   * binder sites set it, so evaluation never decides linearity. A tracked local's provenance is `alias`, for a `let` or
+   * a match field, or, when there is none, the local itself as a root, for a parameter.
+   */
   def putLocal(
       ref: CoreAst.LocalRef,
       value: Value,
       instanceKey: Option[String] = None,
-      residualPolicy: LocalResidualPolicy = LocalResidualPolicy.Residualizable
+      residualPolicy: LocalResidualPolicy = LocalResidualPolicy.Residualizable,
+      linear: Boolean = false,
+      alias: Option[Ledger.Provenance] = None
   ): Env
+
+  /**
+   * The tracked locals consumed on the checker's path to this point, which a tracked binding put here records as its
+   * `deadBefore`. The checker adds a term's uses after checking it, before the next lets, arguments or branches.
+   */
+  def deadLocals: BitSet
+
+  /** This environment with `ids` consumed as well. */
+  def withDeadLocals(ids: BitSet): Env
 
   def localInstanceRefs(key: String): Vector[CoreAst.LocalRef]
 
@@ -79,8 +97,12 @@ final case class TypecheckEnv(
     globals: Map[String, GlobalBinding],
     locals: Vector[Binding],
     globalInstances: InstanceRegistry,
-    localInstances: Map[String, Vector[CoreAst.LocalRef]]
+    localInstances: Map[String, Vector[CoreAst.LocalRef]],
+    deadLocals: BitSet = BitSet.empty
 ) extends Env {
+  override def withDeadLocals(ids: BitSet): Env =
+    if (ids.subsetOf(deadLocals)) this else copy(deadLocals = deadLocals | ids)
+
   override def apply(name: String): Value =
     globals.get(name).map(_.value(this)).getOrElse(throw NotFound(name))
 
@@ -111,10 +133,18 @@ final case class TypecheckEnv(
       ref: CoreAst.LocalRef,
       value: Value,
       instanceKey: Option[String],
-      residualPolicy: LocalResidualPolicy
+      residualPolicy: LocalResidualPolicy,
+      linear: Boolean,
+      alias: Option[Ledger.Provenance]
   ): Env = {
     if (ref.id == locals.length) {
-      val binding = Binding.live(ref, value, residualPolicy)
+      // Only a root records what was dead when it was bound: joint liveness is decided on roots.
+      val binding = (linear, alias) match {
+        case (false, _) => Binding.live(ref, value, residualPolicy, linear, BitSet.empty, Ledger.Provenance.empty)
+        case (true, Some(provenance)) => Binding.live(ref, value, residualPolicy, linear, BitSet.empty, provenance)
+        case (true, None) =>
+          Binding.live(ref, value, residualPolicy, linear, deadLocals, Ledger.Provenance.root(ref.id))
+      }
       val nextLocalInstances = instanceKey match {
         case Some(key) =>
           localInstances + (key -> (ref +: localInstances.getOrElse(key, Vector.empty)))
@@ -160,9 +190,15 @@ trait DelegatingEnv extends Env {
       ref: CoreAst.LocalRef,
       value: Value,
       instanceKey: Option[String],
-      residualPolicy: LocalResidualPolicy
+      residualPolicy: LocalResidualPolicy,
+      linear: Boolean,
+      alias: Option[Ledger.Provenance]
   ): Env =
-    updateBase(base.putLocal(ref, value, instanceKey, residualPolicy))
+    updateBase(base.putLocal(ref, value, instanceKey, residualPolicy, linear, alias))
+
+  // A wrapper maps or prunes values but keeps every binding's `linear` flag and `deadBefore`.
+  override def deadLocals: BitSet = base.deadLocals
+  override def withDeadLocals(ids: BitSet): Env = updateBase(base.withDeadLocals(ids))
 
   override lazy val locals: Vector[Binding] = base.locals.map(b => localBinding(b.ref))
 }
@@ -204,7 +240,26 @@ object LocalResidualPolicy {
   final case class AppHeadOnly(name: String) extends LocalResidualPolicy
 }
 
-final case class Binding(ref: CoreAst.LocalRef, state: Binding.State, residualPolicy: LocalResidualPolicy) {
+/**
+ * One local slot. `linear` is whether the checker tracks the local: a binder of linear type (docs/kernel.md, "Linear
+ * types") sets it once, from the type at the binder, and mapping or pruning the value keeps it, so refinement never
+ * changes it. In a checking environment every local of linear type is tracked: the checker's binders of parameters,
+ * lets and fields set it, every other local it binds is a type-pattern capture, which L7 keeps unrestricted, or a
+ * recursive self, and refinement never gives an unrestricted type a linear one.
+ *
+ * `deadBefore`, for a root, is the roots already consumed on the path when it was bound; joint liveness of reads tests
+ * it (`Ledger.jointlyLive`). `provenance`, for a tracked local, is the regions its value is built from
+ * (`Ledger.Provenance`): the local itself for a root, its value's for a `let`, and a region of its scrutinee for a
+ * match field.
+ */
+final case class Binding(
+    ref: CoreAst.LocalRef,
+    state: Binding.State,
+    residualPolicy: LocalResidualPolicy,
+    linear: Boolean,
+    deadBefore: BitSet,
+    provenance: Ledger.Provenance
+) {
   def id: Int = ref.id
   def name: String = ref.name
 
@@ -222,7 +277,7 @@ final case class Binding(ref: CoreAst.LocalRef, state: Binding.State, residualPo
 
   def mapValue(f: Value => Value): Binding =
     state match {
-      case Binding.Live(value) => Binding.live(ref, f(value), residualPolicy)
+      case Binding.Live(value) => copy(state = Binding.Live(f(value)))
       case Binding.Pruned      => this
     }
 
@@ -231,7 +286,7 @@ final case class Binding(ref: CoreAst.LocalRef, state: Binding.State, residualPo
     case _                   =>
   }
 
-  def prune: Binding = Binding.pruned(ref, residualPolicy)
+  def prune: Binding = copy(state = Binding.Pruned)
 }
 
 object Binding {
@@ -242,15 +297,12 @@ object Binding {
   def live(
       ref: CoreAst.LocalRef,
       value: Value,
-      residualPolicy: LocalResidualPolicy = LocalResidualPolicy.Residualizable
+      residualPolicy: LocalResidualPolicy,
+      linear: Boolean,
+      deadBefore: BitSet,
+      provenance: Ledger.Provenance
   ): Binding =
-    Binding(ref, Live(value), residualPolicy)
-
-  def pruned(
-      ref: CoreAst.LocalRef,
-      residualPolicy: LocalResidualPolicy = LocalResidualPolicy.Residualizable
-  ): Binding =
-    Binding(ref, Pruned, residualPolicy)
+    Binding(ref, Live(value), residualPolicy, linear, deadBefore, provenance)
 }
 
 final case class InstanceSearchTiers(locals: Vector[Value], globals: Vector[Value])

@@ -7,24 +7,23 @@ import com.raccoonlang.telescope.BinderOps
 object InductiveChecks {
 
   // A family label stores an argument value. A universe argument costs its own
-  // level, while a Pi domain costs its full classifier (the function's graph).
+  // level, while a Pi domain costs its full classifier (the function's graph). A
+  // record with structure eta costs the most of its fields, so a `Proto` costs
+  // level 0, as its components do: every value of it is its constructor applied
+  // to its fields (raccoon-formalization DESIGN.md §10, the elementwise rank
+  // lemma).
   private def familyArgumentLevel(tpe: Value): Level = tpe match {
-    case LevelTpe | PropTpe => Level.zero
-    case VSort(level)       => level
+    case LevelTpe | KindTpe | PropTpe => Level.zero
+    case VUniv(_, level)              => level
+    case InductiveFamilyValue(_) if StructEta.eligible(tpe).isDefined =>
+      val fields = StructEta.fields(FreshVar.freshVar("record", tpe)).getOrElse(Vector.empty)
+      Level.max(Level.zero +: fields.map(field => familyArgumentLevel(field.tpe)))
     case pi: VPi if pi.tpe != PropTpe =>
       val fresh = BinderOps.freshen(pi)
-      val domainLevels = pi.binders.map { binder =>
-        TypeChecker.getUniverse(fresh(binder.localRef).tpe) match {
-          case PropTpe      => Level.zero
-          case VSort(level) => level
-        }
-      }
+      val domainLevels =
+        pi.binders.map(binder => TypeChecker.classifierLevel(TypeChecker.getUniverse(fresh(binder.localRef).tpe)))
       Level.max(domainLevels :+ familyArgumentLevel(pi.codomain(fresh)))
-    case other =>
-      TypeChecker.getUniverse(other) match {
-        case PropTpe      => Level.zero
-        case VSort(level) => level
-      }
+    case other => TypeChecker.classifierLevel(TypeChecker.getUniverse(other))
   }
 
   // ------------ Occurrence and Positivity ------------
@@ -33,14 +32,19 @@ object InductiveChecks {
   // The traversal only needs two queries:
   //
   // - isDirectOccurrence identifies a value that is exactly the target.
-  // - mayOccurIn is the conservative fallback for values we do not inspect
-  //   structurally, such as neutral computations and opaque leaves.
+  // - mayOccurIn is the conservative fallback for opaque leaves, which the
+  //   traversal does not inspect structurally.
   private sealed trait PositivityTarget {
     def isDirectOccurrence(value: Value): Boolean
     def mayOccurIn(value: Value): Boolean
   }
 
   private object PositivityTarget {
+
+    /**
+     * The family being declared. It is fresh: no value made before its declaration can name it, so a reference to it
+     * starts only at its own head, and reaches a value only through what that value is built from.
+     */
     final case class InductiveHead(name: String) extends PositivityTarget {
       override def isDirectOccurrence(value: Value): Boolean =
         value match {
@@ -48,11 +52,7 @@ object InductiveChecks {
           case _                                  => false
         }
 
-      override def mayOccurIn(value: Value): Boolean =
-        value match {
-          case _: NeutralThunk => true
-          case _               => false
-        }
+      override def mayOccurIn(value: Value): Boolean = false
     }
 
     final case class LocalVar(id: VarId) extends PositivityTarget {
@@ -102,11 +102,57 @@ object InductiveChecks {
     )
   }
 
+  /**
+   * A stuck computation (KERNEL_FOLLOWUPS 2.2; main-new's declaration-time rule): the family is absent from it when its
+   * type, its captures, the local values of its environment and its match term do not mention it. By freshness, the
+   * code of a computation made before the declaration cannot name the family, so only a term written in the declaration
+   * itself, such as a match in a field type, needs its names read.
+   */
+  private def thunkDoesNotContain(target: PositivityTarget, thunk: NeutralThunk): Boolean =
+    target match {
+      case PositivityTarget.InductiveHead(name) =>
+        doesNotOccur(target, thunk.tpe) &&
+        thunk.id.captures.forall(doesNotOccur(target, _)) &&
+        thunk.env.locals.forall(_.valueOption.forall(doesNotOccur(target, _))) &&
+        !mentionsGlobal(thunk.term, name)
+      case local: PositivityTarget.LocalVar => !local.mayOccurIn(thunk)
+    }
+
+  /** Whether `term` names the global `name`, anywhere in it. */
+  private def mentionsGlobal(term: ElabAst.Term, name: String): Boolean = {
+    def terms(ts: Iterable[ElabAst.Term]): Boolean = ts.exists(mentionsGlobal(_, name))
+    def pattern(tp: ElabAst.TypePattern): Boolean =
+      tp match {
+        case ElabAst.TypePattern.Type(t)                   => mentionsGlobal(t, name)
+        case ElabAst.TypePattern.App(fn, args, _)          => mentionsGlobal(fn, name) || args.exists(pattern)
+        case ElabAst.TypePattern.Capture(_, _, constraint) => constraint.exists(pattern)
+      }
+    def binderType(bt: ElabAst.BinderType): Boolean =
+      bt match {
+        case ElabAst.BinderType.TypePattern(tp, _)                   => pattern(tp)
+        case ElabAst.BinderType.ConstrainedCapture(_, constraint, _) => pattern(constraint)
+      }
+    term match {
+      case ElabAst.Term.GlobalRef(global, _)                                          => global == name
+      case _: ElabAst.Term.LocalRef | _: ElabAst.Term.NatLit | _: ElabAst.Term.StrLit => false
+      case ElabAst.Term.Word(_, pieces, _) =>
+        terms(pieces.flatMap {
+          case ElabAst.Term.WordPiece.Layer(before, after) => before ++ after
+          case ElabAst.Term.WordPiece.Splice(list)         => Vector(list)
+        })
+      case ElabAst.Term.App(fn, args, _)   => terms(fn +: args)
+      case ElabAst.Term.Body(lets, res, _) => terms(lets.flatMap(let => let.ty.toVector :+ let.value) :+ res)
+      case ElabAst.Term.Match(scrut, motive, cases, _, _) => terms((scrut +: motive.toVector) ++ cases.map(_.body))
+      case ElabAst.Term.Pi(binders, out, _, _, _) => binders.exists(b => binderType(b.ty)) || mentionsGlobal(out, name)
+      case ElabAst.Term.Lam(ty, body, _, _, _, _) => mentionsGlobal(ty, name) || mentionsGlobal(body, name)
+    }
+  }
+
   private def doesNotOccur(target: PositivityTarget, value: Value): Boolean =
     if (target.isDirectOccurrence(value)) false
     else
       value match {
-        case _: NeutralThunk => !target.mayOccurIn(value)
+        case thunk: NeutralThunk => thunkDoesNotContain(target, thunk)
 
         case InductiveFamilyValue(instance) =>
           if (target.isDirectOccurrence(instance.head)) false
@@ -135,7 +181,7 @@ object InductiveChecks {
 
         case lam: VLam => lambdaDoesNotContain(target, lam)
 
-        case _: Level | LevelTpe | _: VSort | _: Var | _: VConst | PropTpe | KernelObject =>
+        case _: Level | LevelTpe | _: Kind | KindTpe | _: VUniv | _: Var | _: VConst | PropTpe | KernelObject =>
           !target.mayOccurIn(value)
       }
 
@@ -147,7 +193,8 @@ object InductiveChecks {
     if (target.isDirectOccurrence(value)) true
     else
       value match {
-        case _: NeutralThunk => !target.mayOccurIn(value)
+        // A stuck computation that mentions the target cannot certify that it occurs positively.
+        case thunk: NeutralThunk => thunkDoesNotContain(target, thunk)
 
         case InductiveFamilyValue(instance) =>
           if (target.isDirectOccurrence(instance.head)) true
@@ -178,7 +225,7 @@ object InductiveChecks {
 
         case lam: VLam => lambdaDoesNotContain(target, lam)
 
-        case _: Level | LevelTpe | _: VSort | _: Var | _: VConst | PropTpe | KernelObject =>
+        case _: Level | LevelTpe | _: Kind | KindTpe | _: VUniv | _: Var | _: VConst | PropTpe | KernelObject =>
           true
       }
 
@@ -187,7 +234,8 @@ object InductiveChecks {
    */
   private def sameFamilyArgsDoNotContain(inductiveName: String, target: PositivityTarget, value: Value): Boolean =
     value match {
-      case _: NeutralThunk => false
+      // A stuck computation that does not mention the family holds no application of it.
+      case thunk: NeutralThunk => thunkDoesNotContain(target, thunk)
 
       case InductiveFamilyValue(instance) =>
         if (instance.head.name == inductiveName)
@@ -215,7 +263,8 @@ object InductiveChecks {
 
       case lam: VLam => lambdaDoesNotContain(target, lam)
 
-      case _: ConstructorHead | _: Level | LevelTpe | _: VSort | _: Var | _: VConst | PropTpe | KernelObject =>
+      case _: ConstructorHead | _: Level | LevelTpe | _: Kind | KindTpe | _: VUniv | _: Var | _: VConst | PropTpe |
+          KernelObject =>
         true
     }
 
@@ -299,6 +348,12 @@ object InductiveChecks {
     }
   }
 
+  private def familyArgsOf(result: Value): Vector[Value] =
+    result match {
+      case ConstSpine(_, args) => args
+      case _                   => Vector.empty
+    }
+
   def evalInductiveDecl(decl: Decl.InductiveDecl, env: Env): Env = {
     // All direct Value matches in this function and its private helpers
     // rely on EqStore.empty: no Vars are solved in this pass.
@@ -317,7 +372,7 @@ object InductiveChecks {
       InductiveMeta(
         decl.ctors.map(ctor => ConstructorMeta(ctor.shortName, ctor.canonicalName)),
         decl.header.binders.length,
-        decl.isStruct,
+        decl.ctors.length == 1,
         initialPositiveArgs
       )
 
@@ -338,29 +393,26 @@ object InductiveChecks {
       case other       => throw InductiveTypeNotASort(other, Some(header.resultTy.span))
     }
 
-    // Determine whether this inductive is a valid struct (after computing universe)
-    if (decl.isStruct) {
-      if (decl.ctors.length != 1)
-        throw InvalidStruct(name, s"has ${decl.ctors.length} constructors (expected exactly 1)", Some(header.span))
-      if (decl.ctors.head.fields.exists(_.name == "_"))
-        throw InvalidStruct(name, "constructor has anonymous '_' fields", Some(header.span))
-
-    }
-
     val recursiveTarget = PositivityTarget.InductiveHead(name)
     val familyArgs =
       inductiveTypeCheck match {
         case pi: VPi => pi.binders.map(binder => envWithFamilyBinders(binder.localRef))
         case _       => Vector.empty[Value]
       }
-    familyUniverse match {
-      case PropTpe => // Impredicative Prop families have no nominal principles.
-      case VSort(level) =>
-        header.binders.zip(familyArgs).foreach { case (binder, argument) =>
-          val required = familyArgumentLevel(argument.tpe)
-          if (!Level.leq(required, level))
-            throw FamilyArgumentTooLarge(name, binder.name, required, Some(binder.span))
-        }
+    val argumentSizeBound = familyUniverse match {
+      case PropTpe => None // Impredicative Prop families have no nominal principles.
+      // Families of every kind are nominal, so all obey the size check; kinds cost nothing.
+      case VUniv(_, level) => Some(level)
+    }
+    header.binders.zip(familyArgs).foreach { case (binder, argument) =>
+      // L2: parameters and indices are unrestricted, as types hold no linear value. So are erased constructor binders
+      // and capture witnesses, which name parameters.
+      if (Linearity.isLinear(argument.tpe)) throw LinearFamilyArgument(name, binder.name, Some(binder.span))
+      argumentSizeBound.foreach { level =>
+        val required = familyArgumentLevel(argument.tpe)
+        if (!Level.leq(required, level))
+          throw FamilyArgumentTooLarge(name, binder.name, required, Some(binder.span))
+      }
     }
     var positiveArgs = positiveArgIndexes(familyArgs, familyArgs.map(_.tpe))
 
@@ -405,25 +457,28 @@ object InductiveChecks {
 
       val constructorUniverse = TypeChecker.getUniverse(outputTpe)
 
-      ctor.fields.zip(fieldVars).foreach { case (binder, field) =>
-        // 2) Universe bound: skip for Prop families; enforce for Sort families
-        constructorUniverse match {
-          case PropTpe => // no universe restriction
-          case VSort(inductiveLevel) =>
-            TypeChecker.getUniverse(field.tpe) match {
-              case Value.PropTpe =>
-
-              case VSort(tpeLevel) =>
-                if (!Level.leq(tpeLevel, inductiveLevel))
-                  throw InductiveUniverseTooSmall(
-                    name,
-                    s"${ctor.canonicalName}.${binder.name}",
-                    field.tpe,
-                    tpeLevel,
-                    inductiveLevel,
-                    Some(binder.span)
-                  )
-            }
+      // Whether each stored field's type mentions the family being declared.
+      val recursiveFieldFlags = ctor.fields.zip(fieldVars).map { case (binder, field) =>
+        def requireBelow(tpeLevel: Level, inductiveLevel: Level): Unit =
+          if (!Level.leq(tpeLevel, inductiveLevel))
+            throw InductiveUniverseTooSmall(
+              name,
+              s"${ctor.canonicalName}.${binder.name}",
+              field.tpe,
+              tpeLevel,
+              inductiveLevel,
+              Some(binder.span)
+            )
+        def linearField = LinearFieldInUnrestrictedFamily(name, binder.name, Some(binder.span))
+        // 2) Universe bound (L1): a field's kind is at most the family's, in the kind lattice, and its level at most the
+        // family's, which Prop families skip. A Prop family's fields are of kind copy, or proofs.
+        (constructorUniverse, TypeChecker.getUniverse(field.tpe)) match {
+          case (_, PropTpe) =>
+          case (PropTpe, VUniv(kind, _)) =>
+            if (!kind.isCopy) throw linearField
+          case (VUniv(inductiveKind, inductiveLevel), VUniv(kind, level)) =>
+            if (!Kind.leq(kind, inductiveKind)) throw linearField
+            requireBelow(level, inductiveLevel)
         }
 
         // 3) Every stored constructor field type must be strictly positive in the inductive
@@ -437,12 +492,14 @@ object InductiveChecks {
             fieldTy = field.tpe,
             span = Some(binder.span)
           )
+
+        !doesNotOccur(recursiveTarget, field.tpe)
       }
 
       positiveArgs = positiveArgs & positiveArgIndexes(outputArgs, fieldTypes)
 
       // The result's arguments are the family's own parameters by the uniformity check above.
-      val recursiveFields = fieldTypes.indices.filter(idx => !doesNotOccur(recursiveTarget, fieldTypes(idx))).toVector
+      val recursiveFields = recursiveFieldFlags.indices.filter(recursiveFieldFlags).toVector
       val soleFieldIsOwnInstance = recursiveFields match {
         case Vector(idx) =>
           fieldTypes(idx) match {
@@ -456,7 +513,55 @@ object InductiveChecks {
       ConstructorRecursion(ctor, recursiveFields, soleFieldIsOwnInstance)
     }
 
-    val meta = initialMeta.copy(positiveArgs = positiveArgs)
+    // Structure eta: one constructor, no indices, no recursive field, not in Prop.
+    val eta = (decl.ctors, recursion) match {
+      case (Vector(ctor), Vector(only))
+          if header.indices.isEmpty && familyUniverse != PropTpe && only.recursiveFields.isEmpty =>
+        val allBinders = ctor.erasedBinders ++ ctor.fields
+        val (resultArgs, fieldVars, templateIds) =
+          if (allBinders.isEmpty)
+            (familyArgsOf(TypeChecker.getType(ctor.resultTy, checkEnvWithInductive)), Vector.empty, DepSet.empty)
+          else
+            TypeChecker.getType(
+              Term.Pi(allBinders, ctor.resultTy, ctor.span, NodeId.fresh()),
+              checkEnvWithInductive
+            ) match {
+              case pi: VPi =>
+                val fresh = BinderOps.freshen(pi)
+                val opened = pi.binders.map(binder => fresh(binder.localRef))
+                val captured = pi.binders.flatMap(_.captures).map(capture => fresh(capture.localRef))
+                val ids = DepSet.from((opened ++ captured).collect { case Var(_, id, _) => id })
+                (familyArgsOf(pi.codomain(fresh)), opened.drop(ctor.erasedBinders.length), ids)
+              case other => throw WTF(s"Constructor ${ctor.canonicalName} has binders but type $other")
+            }
+        Some(
+          EtaInfo(
+            ctor.canonicalName,
+            resultArgs,
+            fieldVars,
+            templateIds,
+            StructEta.projectors(ctor.canonicalName, ctor.fields.length)
+          )
+        )
+      case _ => None
+    }
+    // A field whose type depends on a capture that no family argument determines is a hidden dependency: its
+    // projection would have no type, so the family has no eta.
+    val determinedEta = eta.filter { info =>
+      val store =
+        info.resultArgs.zip(familyArgs).foldLeft[Option[EqStore]](Some(EqStore.empty.allow(info.templateIds))) {
+          case (store, (template, arg)) => store.flatMap(s => ValueEquivalence.tryUnify(template, arg, s).toOption)
+        }
+      store.exists { solved =>
+        val known = familyArgs.foldLeft(DepSet.empty)(_ ++ _.synDeps)
+        info.fieldVars.indices.forall { idx =>
+          val earlier = DepSet.from(info.fieldVars.take(idx).collect { case Var(_, id, _) => id })
+          val deps = ValueOps.materialize(info.fieldVars(idx).tpe, solved).synDeps
+          !((deps & info.templateIds) -- earlier -- known).nonEmpty
+        }
+      }
+    }
+    val meta = initialMeta.copy(positiveArgs = positiveArgs, eta = determinedEta)
 
     val inductiveHeadCheck = VConst(name, Inductive(meta), inductiveTypeCheck)
 

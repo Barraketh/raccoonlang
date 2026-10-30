@@ -34,11 +34,13 @@ object TypeError {
     case e: InvalidErasedConstructorBinder  => e.copy(span = Some(sp))
     case e: NonUniformInductiveParam        => e.copy(span = Some(sp))
     case e: NotALevel                       => e.copy(span = Some(sp))
+    case e: NotAKind                        => e.copy(span = Some(sp))
     case e: InductiveUniverseTooSmall       => e.copy(span = Some(sp))
     case e: FamilyArgumentTooLarge          => e.copy(span = Some(sp))
     case e: NonStrictlyPositive             => e.copy(span = Some(sp))
     case e: InductiveTypeNotASort           => e.copy(span = Some(sp))
     case e: PatternCaptureNeedsExpectedType => e.copy(span = Some(sp))
+    case e: CaptureWithoutOpening           => e.copy(span = Some(sp))
     case e: FailedToOpenCapture             => e.copy(span = Some(sp))
     case e: PropEliminationRestricted       => e.copy(span = Some(sp))
     case e: InvalidLevelSubtraction         => e.copy(span = Some(sp))
@@ -65,6 +67,16 @@ object TypeError {
     case e: NatValueTooLarge                => e.copy(span = Some(sp))
     case e: UserAxiom                       => e.copy(span = Some(sp))
     case e: ProgramBuiltin                  => e.copy(span = Some(sp))
+    case e: LinearReused                    => e.copy(span = Some(sp))
+    case e: LinearCapture                   => e.copy(span = Some(sp))
+    case e: LinearInType                    => e.copy(span = Some(sp))
+    case e: LinearFieldInUnrestrictedFamily => e.copy(span = Some(sp))
+    case e: LinearFamilyArgument            => e.copy(span = Some(sp))
+    case e: LinearReusedInType              => e.copy(span = Some(sp))
+    case e: LinearNotJointlyLive            => e.copy(span = Some(sp))
+    case e: LinearInstance                  => e.copy(span = Some(sp))
+    case e: LinearGlobal                    => e.copy(span = Some(sp))
+    case e: LinearAxiom                     => e.copy(span = Some(sp))
   }
 }
 
@@ -194,8 +206,22 @@ final case class NotALevel(v1: Value, span: Option[Span] = None) extends TypeErr
   override def msg: String = s"$v1 is not a Level"
 }
 
+final case class NotAKind(v1: Value, span: Option[Span] = None) extends TypeError {
+  override def msg: String = s"$v1 is not a Kind"
+}
+
 final case class PatternCaptureNeedsExpectedType(name: String, span: Option[Span] = None) extends TypeError {
   override def msg: String = s"Pattern capture $$$name needs an expected type"
+}
+
+/**
+ * A capture that no binding can read off the argument's type, such as `$u` in `Sort(Level.max($u, $v))`: in a universe,
+ * a level capture must be the level or a `Level.succ` of it, and a kind capture the kind itself.
+ */
+final case class CaptureWithoutOpening(name: String, span: Option[Span] = None) extends TypeError {
+  override def msg: String =
+    s"Capture $$$name cannot be read off the argument's type: in a universe, a level capture must be the level or " +
+      "a Level.succ of it, and a kind capture the kind itself"
 }
 
 final case class FailedToOpenCapture(v: Value, idx: Int, span: Option[Span] = None) extends TypeError {
@@ -289,7 +315,7 @@ final case class InvalidStruct(inductive: String, reason: String, span: Option[S
 }
 
 final case class NotAStruct(inductive: String, span: Option[Span] = None) extends TypeError {
-  override def msg: String = s"Cannot select field from non-struct $inductive"
+  override def msg: String = s"Cannot select a field from $inductive, which has more than one constructor"
 }
 
 final case class NoInstanceFound(goal: Value, span: Option[Span] = None) extends TypeError {
@@ -342,4 +368,78 @@ final case class InvalidRecursiveOccurrence(function: String, reason: String, sp
 /** A closed Nat power whose result a JVM integer cannot represent; a representation limit, not a budget. */
 final case class NatValueTooLarge(exponent: BigInt, span: Option[Span] = None) extends TypeError {
   override def msg: String = s"Nat power with exponent $exponent is too large to represent"
+}
+
+// Linear types (docs/kernel.md, "Linear types").
+
+/** A second use of a linear local on some path through its binder's extent, located at that use. */
+final case class LinearReused(name: String, span: Option[Span] = None) extends TypeError {
+  override def msg: String = s"Linear local $name is used more than once on some path"
+}
+
+/** A lambda body that references a linear local bound outside the lambda. */
+final case class LinearCapture(name: String, span: Option[Span] = None) extends TypeError {
+  override def msg: String = s"A lambda cannot capture the linear local $name; pass it as an argument"
+}
+
+/** A type-pattern capture of linear type, which would bind an untracked linear local (L7). */
+final case class LinearInType(span: Option[Span] = None) extends TypeError {
+  override def msg: String = "A type-pattern capture cannot bind a linear value"
+}
+
+/** One call inside a type or proof that receives the same tracked local in two of its linear inputs. */
+final case class LinearReusedInType(name: String, span: Option[Span] = None) extends TypeError {
+  override def msg: String =
+    s"A call inside a type or proof receives linear local $name in two of its inputs, which must be separate"
+}
+
+/** One call inside a type or proof whose linear inputs were never live together. */
+final case class LinearNotJointlyLive(consumed: String, later: String, span: Option[Span] = None) extends TypeError {
+  override def msg: String =
+    s"A call inside a type or proof combines $consumed with $later, which was bound after $consumed was consumed"
+}
+
+final case class LinearFieldInUnrestrictedFamily(inductive: String, field: String, span: Option[Span] = None)
+  extends TypeError {
+  override def msg: String = s"Field $field of $inductive is linear, but $inductive is not declared in Lin"
+}
+
+final case class LinearFamilyArgument(inductive: String, argument: String, span: Option[Span] = None)
+  extends TypeError {
+  override def msg: String = s"Family $inductive argument $argument has a linear type"
+}
+
+final case class LinearInstance(name: String, span: Option[Span] = None) extends TypeError {
+  override def msg: String = s"Instance $name has a linear type"
+}
+
+/** A definition or the program result of linear type: every reference would copy it, and nothing consumes it. */
+final case class LinearGlobal(subject: LinearGlobal.Subject, span: Option[Span] = None) extends TypeError {
+  override def msg: String = s"${subject.description} cannot have a linear type"
+}
+
+object LinearGlobal {
+
+  /**
+   * What has the linear type: a definition, or the program's result, that of its body or, for an entry, of the call.
+   */
+  sealed trait Subject {
+    def description: String
+  }
+
+  final case class Definition(name: String) extends Subject {
+    def description: String = s"Definition $name"
+  }
+
+  case object ProgramResult extends Subject {
+    def description: String = "The program result"
+  }
+
+  case object EntryResult extends Subject {
+    def description: String = "The entry's result"
+  }
+}
+
+final case class LinearAxiom(name: String, span: Option[Span] = None) extends TypeError {
+  override def msg: String = s"Axiom $name produces or consumes a linear value"
 }

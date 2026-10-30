@@ -171,6 +171,9 @@ object InstanceSearch {
         }
 
         val args = values.result()
+        // Unification solved the arguments from the result type alone; they are checked as an application's would be,
+        // which re-checks the captures of each binder pattern (`TypePatternOps.bindValueAndCheck`).
+        if (BinderOps.tryCheckAndInstantiate(binders, pi.env, args).isEmpty) return SearchResult.failed
         SearchResult.Found(Interpreter.evalApply(candidate, args))
 
       case resultTy =>

@@ -421,10 +421,10 @@ O(1), since every segment records its chain's layer count and terminator.
 `Kernel.Source` also declares:
 
 ```text
-struct Char : Type
+inductive Char : Type
  | mk (val: Nat) : Char
 
-struct String : Type
+inductive String : Type
  | mk (data: List(Char)) : String
 ```
 
@@ -433,7 +433,7 @@ with the selectors `Char.val` and `String.data`. None can be redeclared.
 `Char.mk` is unconstrained: a character is text only when its code is a closed
 Unicode scalar value, a numeral at most U+10FFFF outside the surrogates. Why:
 a validity proof would need a kernel-owned proposition, since `Eq` is a prelude
-family, and literals already produce only scalars. `String` is a struct rather
+family, and literals already produce only scalars. `String` is a record rather
 than `List(Char)` itself so that strings and lists stay distinct for instances
 and printing.
 

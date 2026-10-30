@@ -125,7 +125,7 @@ class KernelStringTests extends munit.FunSuite {
 
   test("Char and String are kernel declarations: present without a prelude and not redeclarable") {
     intercept[AlreadyDefined] {
-      Elaborator.elab(parse("struct String : Type\n | mk (n: Nat) : String\n"), Prelude.none)
+      Elaborator.elab(parse("inductive String : Type\n | mk (n: Nat) : String\n"), Prelude.none)
     }
     intercept[AlreadyDefined] {
       Elaborator.elab(parse("inductive Char : Type\n | a : Char\n"), Prelude.none)

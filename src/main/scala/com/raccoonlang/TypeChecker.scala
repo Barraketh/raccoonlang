@@ -4,28 +4,64 @@ import com.raccoonlang.Interpreter._
 import com.raccoonlang.Value._
 import com.raccoonlang.ValueQuote.{quoteContext, quoteTerm, quoteType}
 import com.raccoonlang.telescope.BinderOps
+import com.raccoonlang.Ledger.{Input, LinearInfo}
 import com.raccoonlang.{CoreAst => CA, ElabAst => EA}
+
+import scala.collection.immutable.BitSet
 
 object TypeChecker {
   private final case class CheckedPi(vpi: VPi, bodyEnv: Env, outTy: Value, residual: EA.Term.Pi)
-  final case class CheckedTerm(value: Value, residual: EA.Term)
-  private[raccoonlang] final case class CheckedTypeTerm(value: Value, residual: EA.TypeTerm)
 
-  def sortLeq(a: Value, b: Value): Boolean = {
-    (a, b) match {
-      case (Value.VSort(u), Value.VSort(v)) => Level.leq(u, v)
-      case (l1: Level, l2: Level)           => Level.leq(l1, l2)
-      case (l1: Level, v: Var)              => Level.leq(l1, Level.mk(v.id))
-      case (v: Var, l2: Level)              => Level.leq(Level.mk(v.id), l2)
-      case _                                => false
+  /**
+   * A checked term: its value, its residual, and what it does with tracked locals (`Ledger.LinearInfo`), which the
+   * ledger and the read rules combine bottom-up. A type or a proof is a read extent: its info keeps nothing.
+   */
+  final case class CheckedTerm(value: Value, residual: EA.Term, lin: LinearInfo)
+
+  /** A checked type term, with `lin` as for `CheckedTerm`. */
+  private[raccoonlang] final case class CheckedTypeTerm(value: Value, residual: EA.TypeTerm, lin: LinearInfo)
+
+  /**
+   * The level a type in universe `u` contributes to a function type's classifier (F1) or to a family argument's size:
+   * `v` for `Univ(k, v)` of any kind, and nothing, so zero, for a proposition. Kinds cost nothing.
+   */
+  def classifierLevel(u: Universe): Level =
+    u match {
+      case PropTpe         => Level.zero
+      case VUniv(_, level) => level
     }
-  }
+
+  /**
+   * A term checked as a read extent of its own, though its value need not be a type or a proof, such as a `measure`:
+   * its violations of the read rules are reported here.
+   */
+  private[raccoonlang] def readBoundary(lin: LinearInfo): Unit = lin.pending.foreach(error => throw error)
+
+  /**
+   * A term's whole source span. An application's or a projection's own span covers only its trailer, the argument list
+   * or `.field`, so errors that name a whole term, such as a linear subterm, extend it back over the head.
+   */
+  def sourceSpan(term: CA.Term): Span =
+    term match {
+      case CA.Term.App(fn, _, span)      => Span(sourceSpan(fn).start, span.end, span.source)
+      case CA.Term.Select(base, _, span) => Span(sourceSpan(base).start, span.end, span.source)
+      case other                         => other.span
+    }
+
+  /**
+   * An environment that has consumed what `lin` uses, for the terms checked after it on the same path: the roots of the
+   * tracked locals it uses.
+   */
+  private[raccoonlang] def after(env: Env, lin: LinearInfo): Env =
+    if (lin.uses.locals.isEmpty) env
+    else {
+      val roots = lin.uses.consumed.iterator.flatMap(id => env.localBinding(CA.LocalRef(id, "")).provenance.roots)
+      env.withDeadLocals(BitSet.fromSpecific(roots))
+    }
 
   def checkFits(actual: Value, expected: Value): Unit = {
-    if (actual == PropTpe && expected.isInstanceOf[VSort])
-      throw PropositionAsTypeCarrier()
-    if (!ValueEquivalence.defEq(actual, expected) && !sortLeq(actual, expected))
-      throw TypeMismatch(expected, actual)
+    if (actual == PropTpe && expected.isInstanceOf[VUniv]) throw PropositionAsTypeCarrier()
+    if (!ValueEquivalence.defEq(actual, expected)) throw TypeMismatch(expected, actual)
   }
 
   def checkType(value: Value, tyVal: Value): Unit =
@@ -103,27 +139,36 @@ object TypeChecker {
         case EA.TypePattern.App(fn, args, _) =>
           loop(fn, appHead = true)
           args.foreach(loopTypePattern)
-        case EA.TypePattern.Capture(_, _) =>
+        case EA.TypePattern.Capture(_, _, constraint) => constraint.foreach(loopTypePattern)
       }
 
     loop(term, appHead = false)
   }
 
+  /**
+   * A function type's classifier: `Prop` when its codomain is a proposition, whatever its domains (F2), and otherwise
+   * `Sort` of the maximum of its domains' and codomain's levels, `Lin` ones included (F1). Every function value is
+   * unrestricted. The codomain and later binder types are read extents, so they may read linear binders (F3).
+   *
+   * When the codomain's level depends on a `Level` or `Kind` binder, as in `(u: Level) -> Sort(u)`, the classifier
+   * level mentions that binder's fresh variable, which is out of scope above the `VPi`. Such a classifier is sound but
+   * inert: the dangling variable converts with no concrete level, so the type is never a value of a universe (passing
+   * it where a `Sort(l)` is expected is `TypeMismatch`), only the declared type of a global, which needs no universe
+   * membership. It therefore cannot be fixed to a level and smuggled into `Type`, so it gives no Girard paradox; see
+   * KindsAttackTests "lvl-*".
+   */
   private def checkPi(pi: CA.Term.Pi, env: Env): CheckedPi = {
     val (vBinders, checkedBinders) = BinderOps.toVBinders(pi.binders, env)
     val binderEnv = BinderOps.freshen(vBinders, env)
     val checkedOut = checkTypeTerm(pi.out, binderEnv)
     val outV = checkedOut.value
-    val freshArgs = vBinders.map(binder => binderEnv(binder.localRef))
+    val domainUniverses = vBinders.map(binder => getUniverse(binderEnv(binder.localRef).tpe))
     val classifier =
       getUniverse(outV) match {
         case PropTpe => PropTpe
-        case VSort(outLevel) =>
-          val domLevels: Vector[Level] = freshArgs
-            .map(v => getUniverse(v.tpe))
-            .collect { case VSort(level) => level }
-
-          VSort(Level.max(domLevels :+ outLevel))
+        // F1: a function type is copyable, whatever the kinds of its domains and codomain.
+        case out: VUniv =>
+          VSort(Level.max(domainUniverses.map(classifierLevel) :+ classifierLevel(out)))
       }
 
     val checkedPi =
@@ -134,42 +179,72 @@ object TypeChecker {
   private[raccoonlang] def checkTypeTerm(term: CA.TypeTerm, env: Env): CheckedTypeTerm =
     term match {
       case app: CA.Term.App =>
+        // Each argument sees what the head and the earlier arguments consumed, for the bindings it makes; a read
+        // among them still reads the locals live at the start of the application, by joint liveness.
         val fn = checkTerm(app.fn, env)
-        val args = app.args.map(arg => checkTerm(arg, env))
+        var argEnv = after(env, fn.lin)
+        val args = app.args.map { arg =>
+          val checked = checkTerm(arg, argEnv)
+          argEnv = after(argEnv, checked.lin)
+          checked
+        }
         val value = checkApplyValue(fn.value, args.map(_.value))
         val residual = EA.Term.App(fn.residual, args.map(_.residual), app.span)
-        CheckedTypeTerm(value, residual)
+        val inputs = Input(fn.lin, sourceSpan(app.fn)) +: app.args.zip(args).map { case (arg, checked) =>
+          Input(checked.lin, sourceSpan(arg))
+        }
+        CheckedTypeTerm(value, residual, Ledger.call(value, inputs, sourceSpan(app), env))
       case CA.Term.Select(base, field, span) =>
         val checkedBase = checkTerm(base, env)
         val (selectorName, value) = checkSelect(checkedBase.value, field, span, env)
-        CheckedTypeTerm(value, EA.Term.App(EA.Term.GlobalRef(selectorName, span), Vector(checkedBase.residual), span))
+        CheckedTypeTerm(
+          value,
+          EA.Term.App(EA.Term.GlobalRef(selectorName, span), Vector(checkedBase.residual), span),
+          Ledger.call(value, Vector(Input(checkedBase.lin, sourceSpan(base))), sourceSpan(term), env)
+        )
       case derive: CA.Term.Derive =>
         val goal = getType(derive.goal, env)
         val value = InstanceSearch.solve(goal, env)
-        CheckedTypeTerm(value, quoteType(value, quoteContext(env), derive.span))
+        // Quotation refuses a linear value and names no tracked local, so the result reads and uses nothing.
+        CheckedTypeTerm(value, quoteType(value, quoteContext(env), derive.span), LinearInfo.empty)
       case pi: CA.Term.Pi =>
         val checked = checkPi(pi, env)
-        CheckedTypeTerm(checked.vpi, checked.residual)
+        CheckedTypeTerm(checked.vpi, checked.residual, LinearInfo.empty)
       case ref: CA.Term.Ref =>
         val residual = elabRef(ref)
-        CheckedTypeTerm(Interpreter.evalTypeTerm(residual, env), residual)
+        val value = Interpreter.evalTypeTerm(residual, env)
+        // A tracked local is a use with its binding's provenance; a global holds no tracked local.
+        val lin = residual match {
+          case EA.Term.LocalRef(local, _) =>
+            val binding = env.localBinding(local)
+            if (binding.linear) LinearInfo.tracked(local.id, ref.span, binding.provenance).at(value)
+            else LinearInfo.empty
+          case _: EA.Term.GlobalRef => LinearInfo.empty
+        }
+        CheckedTypeTerm(value, residual, lin)
       case CA.Term.NatLit(number, span) =>
         // A literal's type is kernel Nat whatever is expected.
         val residual = EA.Term.NatLit(number, span)
-        CheckedTypeTerm(residual.value, residual)
+        CheckedTypeTerm(residual.value, residual, LinearInfo.empty)
       case CA.Term.StrLit(text, span) =>
         // A literal's type is kernel String whatever is expected.
         val residual = EA.Term.StrLit(text, span)
-        CheckedTypeTerm(residual.value, residual)
+        CheckedTypeTerm(residual.value, residual, LinearInfo.empty)
     }
 
-  // Returning the residual term lets callers preserve checked let/lambda structure instead of re-checking.
+  /**
+   * Returning the residual term lets callers preserve checked let/lambda structure instead of re-checking. A let of
+   * linear type is tracked: it is used at most once in the later lets and the result (the ledger), or only read when
+   * the block is a read extent, and is no instance (L7). A let aliases its value's provenance, so a block's provenance
+   * is its result's.
+   */
   private def checkBody(
       body: CA.Term.Body,
       env: Env,
       expected: Option[CheckedTypeTerm] = None
   ): CheckedTerm = {
     val checkedLets = Vector.newBuilder[EA.Let]
+    val letInfos = Vector.newBuilder[LinearInfo]
     var curEnv = env
 
     body.lets.foreach { l =>
@@ -183,17 +258,34 @@ object TypeChecker {
 
       val resTyTerm = checkedAnnotation.map(_.residual)
       val withType = checkedValue.value
+      val linear = Linearity.isLinear(withType.tpe)
+      if (linear && l.isInstance) throw LinearInstance(l.name, Some(l.span))
 
       checkedLets += EA.Let(l.localRef, resTyTerm, checkedValue.residual, l.span, l.isInstance)
+      letInfos += checkedValue.lin
       val instanceKey = if (l.isInstance) Some(InstanceSearch.instanceKey(l.name, withType)) else None
-      curEnv = curEnv.putLocal(l.localRef, withType, instanceKey)
+      curEnv = after(curEnv, checkedValue.lin)
+        .putLocal(l.localRef, withType, instanceKey, linear = linear, alias = Some(checkedValue.lin.provenance))
     }
 
     val checkedRes = expected match {
       case Some(motive) => checkTermAgainst(body.res, curEnv, motive)
       case None         => checkTerm(body.res, curEnv)
     }
-    CheckedTerm(checkedRes.value, EA.Term.Body(checkedLets.result(), checkedRes.residual, body.span))
+    val lets = checkedLets.result()
+    val infos = letInfos.result()
+    val value = checkedRes.value
+    val read = Linearity.role(value) == Linearity.Role.TypeOrProof
+    val parts = infos :+ checkedRes.lin
+    val sequenced = parts.foldLeft(Ledger.Summary.empty)((sum, part) => sum.andThen(part.uses))
+    // Only tracked lets have uses, so binding the others changes nothing.
+    val uses = lets.foldLeft(sequenced)((sum, let) => Ledger.bind(let.localRef, sum, read))
+    val pending = parts.iterator.flatMap(_.pending).nextOption()
+    CheckedTerm(
+      value,
+      EA.Term.Body(lets, checkedRes.residual, body.span),
+      LinearInfo(uses, checkedRes.lin.provenance, pending).at(value)
+    )
   }
 
   def inductiveFamilyOf(value: Value): Option[InductiveFamilyInstance] =
@@ -208,7 +300,7 @@ object TypeChecker {
     val indName = family.head.name
     val meta = family.meta
 
-    if (!meta.isStruct) throw NotAStruct(indName)
+    if (!meta.selectable) throw NotAStruct(indName)
 
     val selectorName = s"$indName.$field"
     val selector = env(selectorName)
@@ -237,9 +329,14 @@ object TypeChecker {
     val checkedBody = checkTermAgainst(
       l.body,
       recurEnv,
-      CheckedTypeTerm(checkedVpi.outTy, checkedVpi.residual.out)
+      CheckedTypeTerm(checkedVpi.outTy, checkedVpi.residual.out, LinearInfo.empty)
     )
     rejectStoredAppHeadOnlyRefs(checkedBody.residual, recurEnv)
+    // F4: a parameter of linear type, tracked from its binder's type, is used at most once in the body, or only read
+    // when the body is a read extent, as for a function returning a proposition (F2). Its later binder types and the
+    // codomain may read it (F3); the ledger does not count reads.
+    val bodyIsRead = Linearity.role(checkedBody.value) == Linearity.Role.TypeOrProof
+    checkedVpi.residual.binders.foreach(binder => Ledger.bind(binder.localRef, checkedBody.lin.uses, bodyIsRead))
     val checkedLam =
       EA.Term.Lam(
         checkedVpi.residual,
@@ -249,7 +346,30 @@ object TypeChecker {
         l.recursion.map(_.selfRef),
         l.nodeId
       )
-    CheckedTerm(Interpreter.evalLam(checkedLam, vpi, env), checkedLam)
+    val capturedIndexes = CapturedIndexes.getCapturedIndexes(checkedLam, env)
+    rejectLinearCaptures(checkedLam, capturedIndexes, env)
+    val value = Interpreter.evalLam(checkedLam, vpi, env, capturedIndexes)
+    // A function value uses nothing of its context (F5), and its body is its own extent, whose violations the ledger
+    // has reported.
+    CheckedTerm(value, checkedLam, LinearInfo.empty)
+  }
+
+  /**
+   * F5: a lambda, every function value being unrestricted, captures no linear local of `env`, its outer environment, in
+   * its body or its type, read or not. A read in either would run when the function is applied, where nothing ties the
+   * captured local's liveness to the arguments'. It reads only the captured bindings, which `evalLam` reads too.
+   */
+  private def rejectLinearCaptures(
+      lam: EA.Term.Lam,
+      capturedIndexes: org.roaringbitmap.RoaringBitmap,
+      env: Env
+  ): Unit = {
+    val it = capturedIndexes.getIntIterator
+    while (it.hasNext) {
+      val binding = env.localBinding(CA.LocalRef(it.next(), ""))
+      if (binding.linear)
+        throw LinearCapture(binding.name, Some(Ledger.firstReference(binding.id, lam).getOrElse(lam.span)))
+    }
   }
 
   def getType(term: CA.TypeTerm, env: Env): Value = {
@@ -263,7 +383,7 @@ object TypeChecker {
       case PropTpe =>
       case _ =>
         value.tpe match {
-          case _: VSort | PropTpe =>
+          case _: VUniv | PropTpe =>
           case _                  => throw NotAType(value)
         }
     }
@@ -276,12 +396,13 @@ object TypeChecker {
         case derive: CA.Term.Derive =>
           val goal = getType(derive.goal, env)
           val value = InstanceSearch.solve(goal, env)
-          CheckedTerm(value, quoteTerm(value, quoteContext(env), derive.span))
+          // Quotation refuses a linear value and names no tracked local, so the result reads and uses nothing.
+          CheckedTerm(value, quoteTerm(value, quoteContext(env), derive.span), LinearInfo.empty)
         case m: CA.Term.MatchTerm => MatchChecker.checkMatch(m, env)
         case b: CA.Term.Body      => checkBody(b, env)
         case term: CA.TypeTerm =>
           val checked = checkTypeTerm(term, env)
-          CheckedTerm(checked.value, checked.residual)
+          CheckedTerm(checked.value, checked.residual, checked.lin)
       }
     } catch {
       case e: TypeError if e.span.isEmpty => throw TypeError.withSpan(e, term.span)

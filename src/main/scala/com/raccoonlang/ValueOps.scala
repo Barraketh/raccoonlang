@@ -32,12 +32,13 @@ object ValueOps {
       if (!mayNeedMaterialization(resolved)) return resolved
 
       resolved match {
-        case LevelTpe | KernelObject | PropTpe => resolved
-        case level: Level                      => materializeLevel(level)
-        case VSort(level)                      => VSort(materializeLevel(level))
-        case Var(name, id, tpe)                => Var(name, id, materialize(tpe))
-        case VConst(name, constType, tpe)      => VConst(name, constType, materialize(tpe))
-        case poly: VNatPoly                    => NatNormalForm.substituteAtoms(poly, materialize(_))
+        case LevelTpe | KindTpe | KernelObject | PropTpe => resolved
+        case level: Level                                => materializeLevel(level)
+        case kind: Kind                                  => materializeKind(kind)
+        case VUniv(kind, level)                          => VUniv(materializeKind(kind), materializeLevel(level))
+        case Var(name, id, tpe)                          => Var(name, id, materialize(tpe))
+        case VConst(name, constType, tpe)                => VConst(name, constType, materialize(tpe))
+        case poly: VNatPoly                              => NatNormalForm.substituteAtoms(poly, materialize(_))
         // In one loop, splicing in a solved terminator; every part of the result is materialized, so it is too.
         case word: VWord => Words.map(word, _.intersects(eqStore.solvedIds), materialize(_))
         case VApp(head, args, tpe, blockerIds) =>
@@ -75,9 +76,15 @@ object ValueOps {
         case other    => throw NotALevel(other)
       }
 
+    private def materializeKind(kind: Kind)(implicit eqStore: EqStore): Kind =
+      Interpreter.resolveInEqStore(kind, eqStore) match {
+        case k: Kind => k
+        case other   => throw NotAKind(other)
+      }
+
     private def materializeUniverse(value: Universe)(implicit eqStore: EqStore): Universe =
       materialize(value) match {
-        case u: VSort => u
+        case u: VUniv => u
         case PropTpe  => PropTpe
         case other    => throw NotAType(other)
       }

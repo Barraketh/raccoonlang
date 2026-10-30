@@ -27,8 +27,9 @@ sealed trait TopLevelValue extends Value {
 object Value {
 
   private[raccoonlang] def needsStructuralDefEq(value: Value): Boolean = {
-    // If this is a proof then we fall back to structural
-    (value.tpe.tpe == PropTpe) ||
+    // If this is a proof then we fall back to structural; a value at a structure eta type may convert with one of a
+    // different key (`StructEta`).
+    (value.tpe.tpe == PropTpe) || StructEta.eligible(value.tpe).isDefined ||
     (value match {
       case _: VPi | _: VLam | _: NeutralThunk => true
       case app: VApp =>
@@ -71,6 +72,11 @@ object Value {
   }
 
   case object LevelTpe extends TopLevelValue {
+    override def tpe: Value = TypeTpe
+  }
+
+  /** The type of kinds (docs/kernel.md, "Kinds"), a kernel sort like `Level`. */
+  case object KindTpe extends TopLevelValue {
     override def tpe: Value = TypeTpe
   }
 
@@ -149,15 +155,80 @@ object Value {
 
   }
 
-  sealed trait Universe extends Value
+  /**
+   * A kind (docs/kernel.md, "Kinds"): `Kind.lin`, or a finite set of kind variables, where the empty set is
+   * `Kind.copy`. This is the normal form of `Kind.join`: joins with `copy` vanish, and a join with `lin` is `lin`, so
+   * `copy < lin` with the variables between them, ordered by inclusion.
+   */
+  final class Kind private (val vars: Set[VarId], val lin: Boolean) extends Value {
+    override val tpe: Value = KindTpe
 
-  case class VSort(level: Level) extends Universe {
-    override def tpe: Value = VSort(Level.succ(level))
+    override lazy val synDeps: DepSet = DepSet.from(vars)
 
-    override lazy val synDeps: DepSet = level.synDeps
+    /** Provably `copy`: no variable can make it linear. */
+    def isCopy: Boolean = !lin && vars.isEmpty
+
+    override def equals(obj: Any): Boolean =
+      obj match {
+        case other: Kind => lin == other.lin && vars == other.vars
+        case _           => false
+      }
+
+    override def hashCode(): Int = 31 * vars.hashCode() + lin.hashCode()
   }
 
-  final val TypeTpe: VSort = VSort(Level.zero)
+  object Kind {
+    val copy: Kind = new Kind(Set.empty, lin = false)
+    val lin: Kind = new Kind(Set.empty, lin = true)
+
+    def mk(varId: VarId): Kind = new Kind(Set(varId), lin = false)
+
+    def join(a: Kind, b: Kind): Kind =
+      if (a.lin || b.lin) lin
+      else if (a.vars.isEmpty) b
+      else if (b.vars.isEmpty) a
+      else new Kind(a.vars ++ b.vars, lin = false)
+
+    /** `a ≤ b` in the kind lattice: `b` is `lin`, or `a` is not and its variables are among `b`'s. */
+    def leq(a: Kind, b: Kind): Boolean = b.lin || (!a.lin && a.vars.subsetOf(b.vars))
+  }
+
+  sealed trait Universe extends Value
+
+  /**
+   * The universe `Univ(kind, level)` (docs/kernel.md, "Kinds"): its types are of kind `kind`, and they are linear when
+   * the kind is not provably `copy`. `Sort(l)` and `Lin(l)` name `Univ(Kind.copy, l)` and `Univ(Kind.lin, l)`.
+   * Universes are not cumulative: a type is used at exactly its universe.
+   */
+  final case class VUniv(kind: Kind, level: Level) extends Universe {
+    override def tpe: Value = VUniv(Kind.copy, Level.succ(level))
+
+    override lazy val synDeps: DepSet = kind.synDeps ++ level.synDeps
+  }
+
+  /** `Sort(level)`, the universe of copyable types: `Univ(Kind.copy, level)`. */
+  object VSort {
+    def apply(level: Level): VUniv = VUniv(Kind.copy, level)
+
+    def unapply(value: Value): Option[Level] =
+      value match {
+        case VUniv(kind, level) if kind.isCopy => Some(level)
+        case _                                 => None
+      }
+  }
+
+  final val TypeTpe: VUniv = VSort(Level.zero)
+
+  /** `Lin(level)`, the universe of linear types: `Univ(Kind.lin, level)`. */
+  object VLin {
+    def apply(level: Level): VUniv = VUniv(Kind.lin, level)
+
+    def unapply(value: Value): Option[Level] =
+      value match {
+        case VUniv(kind, level) if kind.lin => Some(level)
+        case _                              => None
+      }
+  }
 
   case object PropTpe extends Universe with TopLevelValue {
     override def tpe: Value = TypeTpe
@@ -165,7 +236,15 @@ object Value {
 
   sealed trait CaptureType
   case object StructuralCapture extends CaptureType
+
+  /**
+   * The level of a universe, less `subtract`. It opens on a universe of any kind; the binder's type, checked by
+   * conversion after the captures open, then fixes the kind.
+   */
   case class LevelCapture(subtract: Int) extends CaptureType
+
+  /** The kind of a universe, `$k` in `Univ($k, $u)`. */
+  case object KindCapture extends CaptureType
 
   sealed trait CaptureRoot
   case object ActualType extends CaptureRoot
@@ -181,7 +260,6 @@ object Value {
   case class VBinder(
       localRef: CoreAst.LocalRef,
       ty: ElabAst.BinderType,
-      expectedTy: ElabAst.TypeTerm,
       captures: Vector[Value.VCapture],
       isInstance: Boolean = false
   ) {
@@ -325,11 +403,32 @@ object Value {
 
   final case class ConstructorMeta(shortName: String, canonicalName: String)
 
+  /**
+   * Structure eta for an eligible family (`StructEta`): its one constructor's name; a template of its telescope, opened
+   * once on fresh variables (`templateIds`), as the family arguments of its result (`resultArgs`) and its stored fields
+   * (`fieldVars`), whose types state each field's type in terms of the arguments and the earlier fields; and one
+   * canonical projector per field.
+   */
+  final case class EtaInfo(
+      ctorName: String,
+      resultArgs: Vector[Value],
+      fieldVars: Vector[Value],
+      templateIds: DepSet,
+      projectors: Vector[ElabAst.Term.Match]
+  ) {
+    def fieldCount: Int = fieldVars.length
+  }
+
+  /**
+   * `selectable` holds for a family with one constructor, which has a selector for each named field; `eta` for one that
+   * also has no indices and no recursive field, and is not in `Prop`.
+   */
   final case class InductiveMeta(
       constructors: Vector[ConstructorMeta],
       familyArity: Int,
-      isStruct: Boolean,
-      positiveArgs: DepSet
+      selectable: Boolean,
+      positiveArgs: DepSet,
+      eta: Option[EtaInfo] = None
   ) {
     require(
       positiveArgs.isEmpty || positiveArgs.max < familyArity,
@@ -342,6 +441,15 @@ object Value {
   sealed trait ConstType
   case class Inductive(meta: InductiveMeta) extends ConstType
   case object Symbol extends ConstType
+
+  /**
+   * The head of a protocol primitive's canonical value (`ProtocolPrimitives`): `supply#`, `inst#`, `tok#` or `valid#`.
+   * Only `ProtocolPrimitives` builds ghosts: the primitives' natives, and the root supply that `Interpreter.run` gives
+   * an entry. They are always applied, each application carrying its precise type and, in its arguments, everything
+   * that type depends on, since keys ignore types. No environment binds a ghost and its name is no identifier, so no
+   * source term names one; quotation refuses them (`ValueQuote`). They convert by congruence only.
+   */
+  case object Ghost extends ConstType
 
   /**
    * Views over values.

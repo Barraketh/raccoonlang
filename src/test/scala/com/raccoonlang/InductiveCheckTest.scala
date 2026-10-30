@@ -123,7 +123,7 @@ class InductiveCheckTest extends munit.FunSuite {
   test("Constructor params must come from erased binders or type-pattern captures") {
     val p =
       """
-        |struct Bad (A: Type) : Sort(Level.succ(Level.one))
+        |inductive Bad (A: Type) : Sort(Level.succ(Level.one))
         | | mk (A: Type): Bad(A)
         |
         |""".stripMargin
@@ -223,14 +223,15 @@ class InductiveCheckTest extends munit.FunSuite {
     intercept[NonStrictlyPositive] { elabAndTypecheck(p) }
   }
 
+  // A record argument is charged by its fields, so the index must hold a large field to be oversized.
   test("Oversized constructor-valued index is rejected before checking nested recursion") {
     val p =
       """
         |inductive BoxType : Sort(Level.succ(Level.one))
-        | | tag (A: Type) : BoxType
+        | | tag (F: (A: Type) -> Type) : BoxType
         |
         |inductive Bad indices (t: BoxType) : Type
-        | | con (anchor: Bad($t)) (x: Bad(BoxType.tag(Bad(t)))) : Bad(t)
+        | | con (anchor: Bad($t)) : Bad(t)
         |
         |""".stripMargin
 
@@ -255,7 +256,7 @@ class InductiveCheckTest extends munit.FunSuite {
   test("Nested non-positive: opaque dependent family argument type is conservative") {
     val p =
       """
-        |struct TypeBox (A: Type) : Sort(Level.succ(Level.one))
+        |inductive TypeBox (A: Type) : Sort(Level.succ(Level.one))
         | | mk {A: Type} (T: Type) : TypeBox(A)
         |
         |axiom typeBox (A: Type): TypeBox(A)
@@ -269,6 +270,49 @@ class InductiveCheckTest extends munit.FunSuite {
         |""".stripMargin
 
     intercept[NonStrictlyPositive] { elabAndTypecheck(p) }
+  }
+
+  // KERNEL_FOLLOWUPS 2.2, main-new's declaration-time rule: a stuck computation certifies that the family is absent
+  // when its type, its captures, its environment's values and its term do not mention it.
+  test("Stuck computations that do not mention the family are positive: a parameter's projection, a stuck global") {
+    elabAndTypecheck(
+      """
+        |inductive Rec (A: Type) : Sort(Level.one)
+        | | mk {A: Type} (T: Type)(x: A) : Rec(A)
+        |
+        |inductive Uses (A: Type)(r: Rec(A)) : Sort(Level.one)
+        | | mk {A: Type}{r: Rec(A)} (f: (a: A) -> r.T)(g: r.T) : Uses(A, r)
+        |
+        |def Pick (b: Bool) : Type := {
+        |  match b returning Type with
+        |  | Bool.true => Nat
+        |  | Bool.false => Bool
+        |}
+        |
+        |inductive Tree (b: Bool) : Type
+        | | leaf {b: Bool} (x: Pick(b)) : Tree(b)
+        | | node {b: Bool} (l: Tree(b))(r: Tree(b))(y: Pick(b)) : Tree(b)
+        |
+        |""".stripMargin
+    )
+  }
+
+  test("A stuck computation that mentions the family in its arguments is not positive") {
+    intercept[NonStrictlyPositive] {
+      elabAndTypecheck(
+        """
+          |def Pick (T: Type)(b: Bool) : Type := {
+          |  match b returning Type with
+          |  | Bool.true => T
+          |  | Bool.false => (x: T) -> Nat
+          |}
+          |
+          |inductive Bad (b: Bool) : Type
+          | | mk {b: Bool} (x: Pick(Bad(b), b)) : Bad(b)
+          |
+          |""".stripMargin
+      )
+    }
   }
 
   private val lambdaContainerDecls =

@@ -5,6 +5,7 @@ import com.raccoonlang.Value._
 import com.raccoonlang.telescope.BinderOps
 import com.raccoonlang.{CoreAst => CA, ElabAst => EA}
 import com.raccoonlang.ValueQuote.{quoteContext, quoteType}
+import com.raccoonlang.Ledger.LinearInfo
 
 object MatchChecker {
 
@@ -168,21 +169,36 @@ object MatchChecker {
       residual: EA.Case,
       checkedBody: CheckedTerm,
       store: EqStore
-  )
+  ) {
 
+    /**
+     * The branch's uses without its fields: a field of linear type, read after the branch's refinement, is tracked
+     * (L4), so its extent, the branch body, uses it at most once, or only reads it when the match is a read extent.
+     * Only tracked locals have uses, so the other fields are no-ops here.
+     */
+    def usesWithoutFields(read: Boolean): Ledger.Summary =
+      residual.argRefs.flatten.foldLeft(checkedBody.lin.uses)((uses, ref) => Ledger.bind(ref, uses, read))
+  }
+
+  /**
+   * A linear field is a region of the scrutinee, of provenance `scrutinee`: stored field `i` is `scrutinee.field(i)`.
+   */
   private def checkBranch(
       planned: PlannedBranch,
-      expected: Option[CheckedTypeTerm]
+      expected: Option[CheckedTypeTerm],
+      scrutinee: Ledger.Provenance
   ): CheckedBranch = {
     val br = planned.br
     val args = planned.args
     if (args.length != br.argRefs.length)
       throw ArityMismatch(args.length, br.argRefs.length, Some(br.span))
-    val branchEnv = br.argRefs.zip(args).foldLeft(planned.branchEnv) { case (curEnv, (argRef, argVal)) =>
-      argRef match {
-        case Some(ref) => curEnv.putLocal(ref, argVal)
-        case None      => curEnv
-      }
+    val linearFields = args.map(arg => Linearity.isLinear(arg.tpe))
+    val branchEnv = br.argRefs.zip(args).zip(linearFields).zipWithIndex.foldLeft(planned.branchEnv) {
+      case (curEnv, (((argRef, argVal), linear), index)) =>
+        argRef match {
+          case Some(ref) => curEnv.putLocal(ref, argVal, linear = linear, alias = Some(scrutinee.field(index)))
+          case None      => curEnv
+        }
     }
     val branchRes = expected match {
       case Some(motive) =>
@@ -260,6 +276,8 @@ object MatchChecker {
     expectedMotive.foreach(motive => assertType(motive.value))
     expectedMotive.foreach(motive => checkPropElimination(inductiveName, scrutTpe, motive.value, reachableByType, span))
 
+    // The branches follow the scrutinee on every path, so their bindings see what it consumed.
+    val branchBaseEnv = after(env, scrutChecked.lin)
     val constructor = ConstructorValue.unapply(scrut)
     val plannedBranches: Vector[PlannedBranch] = constructor match {
       case Some((head, fields)) =>
@@ -267,7 +285,7 @@ object MatchChecker {
           throw UnreachableCase(c.ctorName, Some(c.span))
         }
         val br = resolvedCases.find(_.ctorName == head.name).getOrElse(throw MissingCase(head.name))
-        Vector(PlannedBranch(br, fields, env, EqStore.empty))
+        Vector(PlannedBranch(br, fields, branchBaseEnv, EqStore.empty))
 
       case None =>
         val reachableMap = reachableByType.map(info => info.head.name -> info).toMap
@@ -284,7 +302,7 @@ object MatchChecker {
                 PlannedBranch(
                   br,
                   info.fieldArgs.map(arg => ValueOps.materialize(arg, info.branchEqStore)),
-                  ValueOps.materializeEnv(env, info.branchEqStore),
+                  ValueOps.materializeEnv(branchBaseEnv, info.branchEqStore),
                   info.branchEqStore
                 )
               )
@@ -292,7 +310,8 @@ object MatchChecker {
         }
     }
 
-    val checkedBranches = plannedBranches.map(branch => checkBranch(branch, expectedMotive))
+    val checkedBranches =
+      plannedBranches.map(branch => checkBranch(branch, expectedMotive, scrutChecked.lin.provenance))
     val chosenMotive = expectedMotive.getOrElse {
       val first = checkedBranches.headOption.getOrElse {
         throw MissingReturningClause("no reachable branches have a result type to infer", Some(span))
@@ -328,7 +347,7 @@ object MatchChecker {
         val branchExpected = ValueOps.materialize(value, branch.store)
         checkType(branchValue, branchExpected)
       }
-      CheckedTypeTerm(value, residual)
+      CheckedTypeTerm(value, residual, LinearInfo.empty)
     }
     val checkedMatch = EA.Term.Match(
       scrutChecked.residual,
@@ -342,9 +361,37 @@ object MatchChecker {
         checkedBranches.headOption.map(_.checkedBody.value).getOrElse {
           throw WTF("Known constructor match had no checked branch", Some(span))
         }
-      case None => Interpreter.stuckMatch(checkedMatch, scrut, env, chosenMotive.value)
+      // Structure eta: a value at an eligible type takes the one branch with its field projections.
+      case None =>
+        if (StructEta.fields(scrut).isDefined) Interpreter.evalMatchOn(checkedMatch, scrut, env)
+        else Interpreter.stuckMatch(checkedMatch, scrut, env, chosenMotive.value)
     }
-    CheckedTerm(value, checkedMatch)
+    CheckedTerm(value, checkedMatch, linearInfo(value, scrutChecked.lin, checkedBranches))
   }
 
+  /**
+   * A match's uses are its scrutinee's, then one branch's on each path. The motive is a read extent, which may read the
+   * scrutinee (L4), and a match that is itself a read extent only reads its fields. Inside a read extent a match only
+   * inspects its scrutinee, as in the model, so it is no call of the read rules: its fields are regions of the
+   * scrutinee, and a call that combines one with an overlapping region is refused there. A linear result is one of its
+   * branches' results.
+   */
+  private def linearInfo(
+      value: Value,
+      scrut: LinearInfo,
+      branches: Vector[CheckedBranch]
+  ): LinearInfo = {
+    val plain = (scrut eq LinearInfo.empty) && branches.forall(_.checkedBody.lin eq LinearInfo.empty)
+    if (plain) LinearInfo.empty.at(value)
+    else {
+      val read = Linearity.role(value) == Linearity.Role.TypeOrProof
+      val branchUses = branches.map(_.usesWithoutFields(read)).foldLeft(Ledger.Summary.empty)(_ or _)
+      val pending = (scrut +: branches.map(_.checkedBody.lin)).iterator.flatMap(_.pending).nextOption()
+      val provenance = branches match {
+        case Vector(only) => only.checkedBody.lin.provenance
+        case _            => Ledger.Provenance.union(branches.iterator.map(_.checkedBody.lin.provenance))
+      }
+      LinearInfo(scrut.uses.andThen(branchUses), provenance, pending).at(value)
+    }
+  }
 }

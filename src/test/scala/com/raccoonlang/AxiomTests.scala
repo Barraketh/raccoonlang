@@ -53,7 +53,7 @@ class AxiomTests extends munit.FunSuite {
   test("axiom instance participates in derive") {
     val res = runProgram(
       """
-        |struct DecEq (A: Type) : Type
+        |inductive DecEq (A: Type) : Type
         | | mk {A: Type} (ok: Nat) : DecEq(A)
         |
         |axiom instance natEq : DecEq(Nat)

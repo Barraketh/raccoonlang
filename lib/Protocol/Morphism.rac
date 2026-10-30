@@ -1,0 +1,105 @@
+import Protocol.Laws
+
+// Protocol morphisms (resource_core.md §7). A morphism maps each atom to a list of atoms and each step to a derivation;
+// reachability, validity and derivations transport along it, so every invariant of the target pulls back to the source.
+// `Morphism` is a `Subtype` of the atom map by the simulation property.
+namespace Protocol {
+
+  def Sim (P: Proto)(Q: Proto)(map: (a: P.Atom) -> List(Q.Atom)): Prop :=
+    (A: List(P.Atom)) -> (B: List(P.Atom)) -> P.Step(A, B) -> Derives(Q, List.flatMap(A, Q.Atom, map), List.flatMap(B, Q.Atom, map))
+
+  def Morphism (P: Proto)(Q: Proto): Type :=
+    Subtype((a: P.Atom) -> List(Q.Atom), fun (map: (a: P.Atom) -> List(Q.Atom)): Prop => Sim(P, Q, map))
+
+  namespace Morphism {
+    def mk (P: Proto)(Q: Proto)(map: (a: P.Atom) -> List(Q.Atom))(sim: Sim(P, Q, map)): Morphism(P, Q) :=
+      Subtype.mk((a: P.Atom) -> List(Q.Atom), fun (f: (a: P.Atom) -> List(Q.Atom)): Prop => Sim(P, Q, f), map, sim)
+
+    def map (P: Proto)(Q: Proto)(m: Morphism(P, Q)): (a: P.Atom) -> List(Q.Atom) := m.val
+
+    def sim (P: Proto)(Q: Proto)(m: Morphism(P, Q)): Sim(P, Q, Morphism.map(P, Q, m)) := m.property
+
+    // `map*`: map a list atom by atom and concatenate.
+    def image (P: Proto)(Q: Proto)(m: Morphism(P, Q))(C: List(P.Atom)): List(Q.Atom) := List.flatMap(C, Q.Atom, Morphism.map(P, Q, m))
+
+    def transport (P: Proto)(Q: Proto)(m: Morphism(P, Q))(init: List(P.Atom))(C: List(P.Atom))(r: Reach(P, init, C)):
+        Reach(Q, Morphism.image(P, Q, m, init), Morphism.image(P, Q, m, C)) decreases structural(r) := {
+      let f := Morphism.map(P, Q, m)
+      let I := List.flatMap(init, Q.Atom, f)
+      match r returning Reach(Q, I, List.flatMap(C, Q.Atom, f)) with
+      | .initial => Reach.initial(Q, I)
+      | .step A B fr s prev => {
+        let split := Eq.substProp(List.flatMap.append(P.Atom, Q.Atom, f, A, fr), fun (L: List(Q.Atom)): Prop => Reach(Q, I, L),
+          Morphism.transport(P, Q, m, init, List.append(A, fr), prev))
+        let moved := Reach.derives(Q, I, List.append(List.flatMap(A, Q.Atom, f), List.flatMap(fr, Q.Atom, f)),
+          List.append(List.flatMap(B, Q.Atom, f), List.flatMap(fr, Q.Atom, f)), split,
+          Derives.frame(Q, List.flatMap(A, Q.Atom, f), List.flatMap(B, Q.Atom, f), List.flatMap(fr, Q.Atom, f), Morphism.sim(P, Q, m)(A, B, s)))
+        Eq.substProp(Eq.symm(List.flatMap.append(P.Atom, Q.Atom, f, B, fr)), fun (L: List(Q.Atom)): Prop => Reach(Q, I, L), moved)
+      }
+      | .perm X Y prev p => Reach.perm(Q, I, List.flatMap(X, Q.Atom, f), List.flatMap(Y, Q.Atom, f),
+          Morphism.transport(P, Q, m, init, X, prev), List.flatMap.perm(P.Atom, Q.Atom, f, X, Y, p))
+    }
+
+    def transport_valid (P: Proto)(Q: Proto)(m: Morphism(P, Q))(init: List(P.Atom))(C: List(P.Atom))(v: Valid(P, init, C)):
+        Valid(Q, Morphism.image(P, Q, m, init), Morphism.image(P, Q, m, C)) := {
+      let f := Morphism.map(P, Q, m)
+      match v returning Valid(Q, List.flatMap(init, Q.Atom, f), List.flatMap(C, Q.Atom, f)) with
+      | .mk C0 rest r => Valid.mk(Q, List.flatMap(init, Q.Atom, f), List.flatMap(C0, Q.Atom, f), List.flatMap(rest, Q.Atom, f),
+          Eq.substProp(List.flatMap.append(P.Atom, Q.Atom, f, C0, rest), fun (L: List(Q.Atom)): Prop => Reach(Q, List.flatMap(init, Q.Atom, f), L),
+            Morphism.transport(P, Q, m, init, List.append(C0, rest), r)))
+    }
+
+    def derives (P: Proto)(Q: Proto)(m: Morphism(P, Q))(A: List(P.Atom))(B: List(P.Atom))(h: Derives(P, A, B)):
+        Derives(Q, Morphism.image(P, Q, m, A), Morphism.image(P, Q, m, B)) decreases structural(h) := {
+      let f := Morphism.map(P, Q, m)
+      match h returning Derives(Q, List.flatMap(A, Q.Atom, f), List.flatMap(B, Q.Atom, f)) with
+      | .refl X => Derives.refl(Q, List.flatMap(X, Q.Atom, f))
+      | .step X Y fr Z s d => {
+        let split := Eq.substProp(List.flatMap.append(P.Atom, Q.Atom, f, Y, fr), fun (L: List(Q.Atom)): Prop => Derives(Q, L, List.flatMap(Z, Q.Atom, f)),
+          Morphism.derives(P, Q, m, List.append(Y, fr), Z, d))
+        let joined := Derives.trans(Q, List.append(List.flatMap(X, Q.Atom, f), List.flatMap(fr, Q.Atom, f)),
+          List.append(List.flatMap(Y, Q.Atom, f), List.flatMap(fr, Q.Atom, f)), List.flatMap(Z, Q.Atom, f),
+          Derives.frame(Q, List.flatMap(X, Q.Atom, f), List.flatMap(Y, Q.Atom, f), List.flatMap(fr, Q.Atom, f), Morphism.sim(P, Q, m)(X, Y, s)), split)
+        Eq.substProp(Eq.symm(List.flatMap.append(P.Atom, Q.Atom, f, X, fr)), fun (L: List(Q.Atom)): Prop => Derives(Q, L, List.flatMap(Z, Q.Atom, f)), joined)
+      }
+      | .perm X Y Z p d => Derives.perm(Q, List.flatMap(X, Q.Atom, f), List.flatMap(Y, Q.Atom, f), List.flatMap(Z, Q.Atom, f),
+          List.flatMap.perm(P.Atom, Q.Atom, f, X, Y, p), Morphism.derives(P, Q, m, Y, Z, d))
+    }
+
+    // Every invariant of `Q`'s reachable states pulls back to `P`.
+    def pullback (P: Proto)(Q: Proto)(m: Morphism(P, Q))(init: List(P.Atom))(I: (C: List(Q.Atom)) -> Prop)
+        (inv: (C: List(Q.Atom)) -> Reach(Q, Morphism.image(P, Q, m, init), C) -> I(C))
+        (C: List(P.Atom))(r: Reach(P, init, C)): I(Morphism.image(P, Q, m, C)) :=
+      inv(Morphism.image(P, Q, m, C), Morphism.transport(P, Q, m, init, C, r))
+
+    // The same for facts about held packets.
+    def pullback_valid (P: Proto)(Q: Proto)(m: Morphism(P, Q))(init: List(P.Atom))(I: (C: List(Q.Atom)) -> Prop)
+        (inv: (C: List(Q.Atom)) -> Valid(Q, Morphism.image(P, Q, m, init), C) -> I(C))
+        (C: List(P.Atom))(v: Valid(P, init, C)): I(Morphism.image(P, Q, m, C)) :=
+      inv(Morphism.image(P, Q, m, C), Morphism.transport_valid(P, Q, m, init, C, v))
+
+    def id (P: Proto): Morphism(P, P) :=
+      Morphism.mk(P, P, List.single(P.Atom), fun (A: List(P.Atom))(B: List(P.Atom))(s: (P.Step(A, B))):
+          Derives(P, List.flatMap(A, P.Atom, List.single(P.Atom)), List.flatMap(B, P.Atom, List.single(P.Atom))) =>
+        Eq.substProp(Eq.symm(List.flatMap.singleton(B)), fun (L: List(P.Atom)): Prop => Derives(P, List.flatMap(A, P.Atom, List.single(P.Atom)), L),
+          Eq.substProp(Eq.symm(List.flatMap.singleton(A)), fun (L: List(P.Atom)): Prop => Derives(P, L, B), Derives.single(P, A, B, s))))
+
+    // Morphisms compose.
+    def comp (P: Proto)(Q: Proto)(R: Proto)(m: Morphism(P, Q))(n: Morphism(Q, R)): Morphism(P, R) := {
+      let f := Morphism.map(P, Q, m)
+      let g := Morphism.map(Q, R, n)
+      let h := List.compose(P.Atom, Q.Atom, R.Atom, f, g)
+      Morphism.mk(P, R, h, fun (A: List(P.Atom))(B: List(P.Atom))(s: (P.Step(A, B))): Derives(R, List.flatMap(A, R.Atom, h), List.flatMap(B, R.Atom, h)) => {
+        let both := Morphism.derives(Q, R, n, List.flatMap(A, Q.Atom, f), List.flatMap(B, Q.Atom, f), Morphism.sim(P, Q, m)(A, B, s))
+        let left := Eq.substProp(List.flatMap.assoc(P.Atom, Q.Atom, R.Atom, f, g, A),
+          fun (L: List(R.Atom)): Prop => Derives(R, L, List.flatMap(List.flatMap(B, Q.Atom, f), R.Atom, g)), both)
+        Eq.substProp(List.flatMap.assoc(P.Atom, Q.Atom, R.Atom, f, g, B), fun (L: List(R.Atom)): Prop => Derives(R, List.flatMap(A, R.Atom, h), L), left)
+      })
+    }
+
+    // Composition acts on atoms by composing the maps.
+    def comp_map (P: Proto)(Q: Proto)(R: Proto)(m: Morphism(P, Q))(n: Morphism(Q, R))(a: P.Atom):
+        Eq(List(R.Atom), Morphism.map(P, R, Morphism.comp(P, Q, R, m, n))(a), Morphism.image(Q, R, n, Morphism.map(P, Q, m)(a))) :=
+      Eq.refl(Morphism.image(Q, R, n, Morphism.map(P, Q, m)(a)))
+  }
+}

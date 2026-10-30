@@ -51,7 +51,8 @@ object CoreAst {
       require(args.nonEmpty, "Type pattern application requires at least one argument")
     }
 
-    final case class Capture(localRef: CoreAst.LocalRef, span: Span) extends TypePattern
+    final case class Capture(localRef: CoreAst.LocalRef, span: Span, constraint: Option[TopLevelTP] = None)
+      extends TypePattern
   }
 
   sealed trait BinderType extends Ast
@@ -210,7 +211,6 @@ object CoreAst {
     final case class InductiveDecl(
         header: InductiveHeader,
         ctors: Vector[ConstructorDecl],
-        isStruct: Boolean,
         span: Span
     ) extends Decl
   }

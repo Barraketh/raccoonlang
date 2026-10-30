@@ -1,0 +1,163 @@
+import Protocol.Lists
+
+// Derivations and the laws of reachability and validity over the kernel's `Protocol.Reach` and `Protocol.Valid`
+// (docs/kernel.md, "The protocol library").
+//
+// Everything takes a protocol as a `Proto`, as the kernel families do. A concrete protocol is `Proto.mk(Atom, Step)`, and
+// by structure eta a variable `P` and `Proto.mk(P.Atom, P.Step)` are the same protocol.
+namespace Protocol {
+  // A step relation: from consumed to produced atoms.
+  def Rel (Atom: Type): Type := (consumed: List(Atom)) -> (produced: List(Atom)) -> Prop
+
+  // The reflexive-transitive closure of framed steps and permutation (Lean `Raccoon.Derives`).
+  inductive Derives (P: Proto) indices (A: List(P.Atom))(B: List(P.Atom)) : Prop
+   | refl {P: Proto} (A: List(P.Atom)) : Derives(P, A, A)
+   | step {P: Proto} (A: List(P.Atom))(B: List(P.Atom))(frame: List(P.Atom))(C: List(P.Atom))
+       (h: (P.Step(A, B)))(d: Derives(P, List.append(B, frame), C)) : Derives(P, List.append(A, frame), C)
+   | perm {P: Proto} (A: List(P.Atom))(B: List(P.Atom))(C: List(P.Atom))
+       (p: List.Perm(P.Atom, A, B))(d: Derives(P, B, C)) : Derives(P, A, C)
+
+  // ---------------------------------------------------------------- Derives laws
+
+  namespace Derives {
+    def trans (P: Proto)(A: List(P.Atom))(B: List(P.Atom))(C: List(P.Atom))(h1: Derives(P, A, B))(h2: Derives(P, B, C)):
+        Derives(P, A, C) decreases structural(h1) := {
+      match h1 returning Derives(P, A, C) with
+      | .refl X => h2
+      | .step X Y frame Z s d => Derives.step(P, X, Y, frame, C, s, Derives.trans(P, List.append(Y, frame), Z, C, d, h2))
+      | .perm X Y Z p d => Derives.perm(P, X, Y, C, p, Derives.trans(P, Y, Z, C, d, h2))
+    }
+
+    def single (P: Proto)(A: List(P.Atom))(B: List(P.Atom))(s: (P.Step(A, B))): Derives(P, A, B) :=
+      Derives.step(P, A, B, List.nil(P.Atom), B, s, Derives.refl(P, B))
+
+    def of_perm (P: Proto)(A: List(P.Atom))(B: List(P.Atom))(p: List.Perm(P.Atom, A, B)): Derives(P, A, B) :=
+      Derives.perm(P, A, B, B, p, Derives.refl(P, B))
+
+    // A derivation runs under any frame on the right.
+    def frame (P: Proto)(A: List(P.Atom))(B: List(P.Atom))(F: List(P.Atom))(h: Derives(P, A, B)):
+        Derives(P, List.append(A, F), List.append(B, F)) decreases structural(h) := {
+      match h returning Derives(P, List.append(A, F), List.append(B, F)) with
+      | .refl X => Derives.refl(P, List.append(X, F))
+      | .step X Y fr Z s d => {
+        let shifted := Eq.substProp(List.append_assoc(Y, fr, F), fun (L: List(P.Atom)): Prop => Derives(P, L, List.append(Z, F)),
+          Derives.frame(P, List.append(Y, fr), Z, F, d))
+        Eq.substProp(Eq.symm(List.append_assoc(X, fr, F)), fun (L: List(P.Atom)): Prop => Derives(P, L, List.append(Z, F)),
+          Derives.step(P, X, Y, List.append(fr, F), List.append(Z, F), s, shifted))
+      }
+      | .perm X Y Z p d => Derives.perm(P, List.append(X, F), List.append(Y, F), List.append(Z, F),
+          List.Perm.append_right(X, Y, F, p), Derives.frame(P, Y, Z, F, d))
+    }
+
+    // A derivation runs under any frame on the left.
+    def frame_left (P: Proto)(A: List(P.Atom))(B: List(P.Atom))(F: List(P.Atom))(h: Derives(P, A, B)):
+        Derives(P, List.append(F, A), List.append(F, B)) :=
+      Derives.perm(P, List.append(F, A), List.append(A, F), List.append(F, B), List.Perm.append_comm(F, A),
+        Derives.trans(P, List.append(A, F), List.append(B, F), List.append(F, B), Derives.frame(P, A, B, F, h),
+          Derives.of_perm(P, List.append(B, F), List.append(F, B), List.Perm.append_comm(B, F))))
+  }
+
+  // ---------------------------------------------------------------- Reach laws
+
+  namespace Reach {
+    def derives (P: Proto)(init: List(P.Atom))(A: List(P.Atom))(B: List(P.Atom))(r: Reach(P, init, A))
+        (h: Derives(P, A, B)): Reach(P, init, B) decreases structural(h) := {
+      match h returning Reach(P, init, B) with
+      | .refl X => r
+      | .step X Y fr Z s d => Reach.derives(P, init, List.append(Y, fr), Z, Reach.step(P, init, X, Y, fr, s, r), d)
+      | .perm X Y Z p d => Reach.derives(P, init, Y, Z, Reach.perm(P, init, X, Y, r, p), d)
+    }
+
+    def to_derives (P: Proto)(init: List(P.Atom))(C: List(P.Atom))(r: Reach(P, init, C)):
+        Derives(P, init, C) decreases structural(r) := {
+      match r returning Derives(P, init, C) with
+      | .initial => Derives.refl(P, init)
+      | .step A B fr s prev => Derives.trans(P, init, List.append(A, fr), List.append(B, fr), Reach.to_derives(P, init, List.append(A, fr), prev),
+          Derives.frame(P, A, B, fr, Derives.single(P, A, B, s)))
+      | .perm X Y prev p => Derives.trans(P, init, X, Y, Reach.to_derives(P, init, X, prev), Derives.of_perm(P, X, Y, p))
+    }
+
+    // Reachability is exactly derivability from the initial inventory.
+    def iff_derives (P: Proto)(init: List(P.Atom))(C: List(P.Atom)): Iff(Reach(P, init, C), Derives(P, init, C)) :=
+      Iff.intro(Reach(P, init, C), Derives(P, init, C),
+        fun (r: Reach(P, init, C)): Derives(P, init, C) => Reach.to_derives(P, init, C, r),
+        fun (d: Derives(P, init, C)): Reach(P, init, C) => Reach.derives(P, init, init, C, Reach.initial(P, init), d))
+
+    // Framing: `Reach(Protocol.Proto.mk(A, B)) -> Reach(Protocol.Proto.mk(A ++ F, B ++ F))` (resource_core.md §9 item 4).
+    def frame (P: Proto)(A: List(P.Atom))(B: List(P.Atom))(F: List(P.Atom))(r: Reach(P, A, B)):
+        Reach(P, List.append(A, F), List.append(B, F)) decreases structural(r) := {
+      match r returning Reach(P, List.append(A, F), List.append(B, F)) with
+      | .initial => Reach.initial(P, List.append(A, F))
+      | .step X Y fr s prev => {
+        let shifted := Eq.substProp(List.append_assoc(X, fr, F), fun (L: List(P.Atom)): Prop => Reach(P, List.append(A, F), L),
+          Reach.frame(P, A, List.append(X, fr), F, prev))
+        Eq.substProp(Eq.symm(List.append_assoc(Y, fr, F)), fun (L: List(P.Atom)): Prop => Reach(P, List.append(A, F), L),
+          Reach.step(P, List.append(A, F), X, Y, List.append(fr, F), s, shifted))
+      }
+      | .perm X Y prev p => Reach.perm(P, List.append(A, F), List.append(X, F), List.append(Y, F),
+          Reach.frame(P, A, X, F, prev), List.Perm.append_right(X, Y, F, p))
+    }
+
+    // What is reachable from nothing is reachable from any inventory, alongside it.
+    def of_empty (P: Proto)(init: List(P.Atom))(C: List(P.Atom))(r: Reach(P, List.nil(P.Atom), C)):
+        Reach(P, init, List.append(init, C)) :=
+      Reach.perm(P, init, List.append(C, init), List.append(init, C), Reach.frame(P, List.nil(P.Atom), C, init, r),
+        List.Perm.append_comm(C, init))
+  }
+
+  // ---------------------------------------------------------------- Valid laws
+
+  namespace Valid {
+    def of_reach (P: Proto)(init: List(P.Atom))(C: List(P.Atom))(r: Reach(P, init, C)): Valid(P, init, C) :=
+      Valid.mk(P, init, C, List.nil(P.Atom), r)
+
+    // The empty packet is valid: it is part of the initial inventory.
+    def nil (P: Proto)(init: List(P.Atom)): Valid(P, init, List.nil(P.Atom)) :=
+      Valid.mk(P, init, List.nil(P.Atom), init, Reach.initial(P, init))
+
+    def perm (P: Proto)(init: List(P.Atom))(C: List(P.Atom))(D: List(P.Atom))(v: Valid(P, init, C))
+        (p: List.Perm(P.Atom, C, D)): Valid(P, init, D) := {
+      match v returning Valid(P, init, D) with
+      | .mk C0 rest r => Valid.mk(P, init, D, rest,
+          Reach.perm(P, init, List.append(C0, rest), List.append(D, rest), r, List.Perm.append_right(C0, D, rest, p)))
+    }
+
+    // Validity is downward closed.
+    def left (P: Proto)(init: List(P.Atom))(C: List(P.Atom))(D: List(P.Atom))(v: Valid(P, init, List.append(C, D))):
+        Valid(P, init, C) := {
+      match v returning Valid(P, init, C) with
+      | .mk CD rest r => Valid.mk(P, init, C, List.append(D, rest),
+          Eq.substProp(List.append_assoc(C, D, rest), fun (L: List(P.Atom)): Prop => Reach(P, init, L), r))
+    }
+
+    def right (P: Proto)(init: List(P.Atom))(C: List(P.Atom))(D: List(P.Atom))(v: Valid(P, init, List.append(C, D))):
+        Valid(P, init, D) :=
+      Valid.left(P, init, D, C, Valid.perm(P, init, List.append(C, D), List.append(D, C), v, List.Perm.append_comm(C, D)))
+
+    // Restrict a fact to the occurrences in `D`, where `C` is a permutation of `D ++ E`.
+    def restrict (P: Proto)(init: List(P.Atom))(C: List(P.Atom))(D: List(P.Atom))(E: List(P.Atom))(v: Valid(P, init, C))
+        (p: List.Perm(P.Atom, C, List.append(D, E))): Valid(P, init, D) :=
+      Valid.left(P, init, D, E, Valid.perm(P, init, C, List.append(D, E), v, p))
+
+    // A step on part of a valid configuration gives a valid configuration.
+    def step (P: Proto)(init: List(P.Atom))(A: List(P.Atom))(B: List(P.Atom))(D: List(P.Atom))(s: (P.Step(A, B)))
+        (v: Valid(P, init, List.append(A, D))): Valid(P, init, List.append(B, D)) := {
+      match v returning Valid(P, init, List.append(B, D)) with
+      | .mk AD rest r => {
+        let shifted := Eq.substProp(List.append_assoc(A, D, rest), fun (L: List(P.Atom)): Prop => Reach(P, init, L), r)
+        Valid.mk(P, init, List.append(B, D), rest,
+          Eq.substProp(Eq.symm(List.append_assoc(B, D, rest)), fun (L: List(P.Atom)): Prop => Reach(P, init, L),
+            Reach.step(P, init, A, B, List.append(D, rest), s, shifted)))
+      }
+    }
+
+    // A packet valid from the empty inventory is valid alongside any initial inventory.
+    def of_empty (P: Proto)(init: List(P.Atom))(C: List(P.Atom))(v: Valid(P, List.nil(P.Atom), C)):
+        Valid(P, init, List.append(init, C)) := {
+      match v returning Valid(P, init, List.append(init, C)) with
+      | .mk C0 rest r => Valid.mk(P, init, List.append(init, C0), rest,
+          Eq.substProp(Eq.symm(List.append_assoc(init, C0, rest)), fun (L: List(P.Atom)): Prop => Reach(P, init, L),
+            Reach.of_empty(P, init, List.append(C0, rest), r)))
+    }
+  }
+}

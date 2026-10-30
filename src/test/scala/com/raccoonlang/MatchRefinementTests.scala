@@ -49,15 +49,15 @@ class MatchRefinementTests extends munit.FunSuite {
     intercept[TypeMismatch] { typecheckDecls(p) }
   }
 
-  test("match refinement: cumulative family parameter on neutral Vec scrut succeeds") {
+  test("match refinement: a level-polymorphic family parameter at its exact level on neutral Vec scrut succeeds") {
     val p =
       """
         |inductive Vec (u: Level)(A: Sort(u)) indices (n: Nat) : Sort(Level.max(Level.one, u))
         | | nil {u: Level}{A: Sort(u)} : Vec(u, A, Nat.zero)
         | | cons {u: Level}{A: Sort(u)} (n: Nat) (xs: Vec(u, A, n)) (x: A) : Vec(u, A, Nat.succ(n))
         |
-        |def keepVec (n: Nat)(v: Vec(Level.one, Nat, n)): Vec(Level.one, Nat, n) := {
-        |  match v returning Vec(Level.one, Nat, n) with
+        |def keepVec (n: Nat)(v: Vec(Level.zero, Nat, n)): Vec(Level.zero, Nat, n) := {
+        |  match v returning Vec(Level.zero, Nat, n) with
         |  | Vec.nil => v
         |  | Vec.cons k xs x => v
         |}

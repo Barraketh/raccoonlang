@@ -50,7 +50,11 @@ object SurfaceAst {
       require(args.nonEmpty, "Type pattern application requires at least one argument")
     }
 
-    final case class Capture(name: String, span: Span) extends TypePattern
+    /**
+     * `$name`, or `$name in constraint`: a capture whose own type is the constraint, such as `$A in Sort($u)` inside
+     * `List(...)`, which fixes the element type's kind (docs/kernel.md, "Kinds").
+     */
+    final case class Capture(name: String, span: Span, constraint: Option[TopLevelTP] = None) extends TypePattern
   }
 
   sealed trait BinderType {
@@ -196,7 +200,6 @@ object SurfaceAst {
       final case class InductiveDecl(
           header: InductiveHeader,
           ctors: Vector[ConstructorDecl],
-          isStruct: Boolean,
           span: Span
       ) extends Decl
     }

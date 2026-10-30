@@ -91,8 +91,9 @@ object ValueQuote {
 
     private def inlineTypePattern(tp: ElabAst.TypePattern): ElabAst.TypePattern =
       tp match {
-        case top: ElabAst.TopLevelTP                       => inlineTopLevelTP(top)
-        case ElabAst.TypePattern.Capture(ref, captureSpan) => ElabAst.TypePattern.Capture(reindex(ref), captureSpan)
+        case top: ElabAst.TopLevelTP => inlineTopLevelTP(top)
+        case ElabAst.TypePattern.Capture(ref, captureSpan, constraint) =>
+          ElabAst.TypePattern.Capture(reindex(ref), captureSpan, constraint.map(inlineTopLevelTP))
       }
 
     private def inlineTopLevelTP(tp: ElabAst.TopLevelTP): ElabAst.TopLevelTP =
@@ -119,9 +120,13 @@ object ValueQuote {
       ElabAst.Case(c.ctorName, c.argRefs.map(_.map(reindex)), inlineTerm(c.body), c.span)
   }
 
+  /**
+   * The locals a residual may name. A tracked local is left out, even where refinement has given it an unrestricted
+   * type: S1 treats it as linear-typed, so no residual the checker builds names it.
+   */
   def quoteContext(env: Env): QuoteContext = {
     val quote = env.locals.zipWithIndex.foldLeft(Map.empty[ValueKey.Key, QuoteEntry]) { case (quote, (binding, idx)) =>
-      withLocalQuote(quote, binding, idx)
+      if (binding.linear) quote else withLocalQuote(quote, binding, idx)
     }
     QuoteContext(quote, env.locals.length)
   }
@@ -132,7 +137,12 @@ object ValueQuote {
       case other                 => throw CannotQuoteValue(value, s"$other is not a type term", Some(span))
     }
 
+  /**
+   * A residual for `value` in `context`. A linear value has none, even when a local holds it: a quoted residual is not
+   * a checked term, so it would escape the read rules (S1) and the ledger.
+   */
   def quoteTerm(value: Value, context: QuoteContext, span: Span): ElabAst.Term = {
+    if (Linearity.isLinear(value.tpe)) throw CannotQuoteValue(value, "linear value", Some(span))
     quotedTermFor(context.quote, value, span).foreach(return _)
 
     value match {
@@ -149,10 +159,26 @@ object ValueQuote {
         if (level == Level.zero) ElabAst.Term.GlobalRef("Type", span)
         else ElabAst.Term.App(ElabAst.Term.GlobalRef("Sort", span), Vector(quoteLevel(level, context, span)), span)
 
+      case VLin(level) =>
+        ElabAst.Term.App(ElabAst.Term.GlobalRef("Lin", span), Vector(quoteLevel(level, context, span)), span)
+
+      case VUniv(kind, level) =>
+        ElabAst.Term.App(
+          ElabAst.Term.GlobalRef("Univ", span),
+          Vector(quoteKind(kind, context, span), quoteLevel(level, context, span)),
+          span
+        )
+
       case LevelTpe => ElabAst.Term.GlobalRef("Level", span)
 
+      case KindTpe => ElabAst.Term.GlobalRef("Kind", span)
+
+      case kind: Kind => quoteKind(kind, context, span)
+
       case const @ VConst(name, _, _) =>
-        if (
+        // A ghost has no name a term could resolve; it reaches here as a constant or as an application's head.
+        if (const.constType == Ghost) throw CannotQuoteValue(const, "protocol ghost", Some(span))
+        else if (
           const.constType == Symbol &&
           const.tpe == KernelObject &&
           const.name.startsWith("match#")
@@ -462,6 +488,20 @@ object ValueQuote {
     }
   }
 
+  /** `Kind.lin`, `Kind.copy`, or the join of its variables, each quoted as the local that binds it. */
+  private def quoteKind(kind: Kind, context: QuoteContext, span: Span): ElabAst.Term =
+    if (kind.lin) ElabAst.Term.GlobalRef("Kind.lin", span)
+    else if (kind.vars.isEmpty) ElabAst.Term.GlobalRef("Kind.copy", span)
+    else
+      kind.vars.toVector.sorted
+        .map { id =>
+          quotedTermFor(context.quote, Kind.mk(id), span)
+            .getOrElse(throw CannotQuoteValue(Kind.mk(id), "escaping kind variable", Some(span)))
+        }
+        .reduceLeft((left, right) =>
+          ElabAst.Term.App(ElabAst.Term.GlobalRef("Kind.join", span), Vector(left, right), span)
+        )
+
   private def quotedTermFor(
       quote: QuoteMap,
       value: Value,
@@ -488,6 +528,7 @@ object ValueQuote {
     val withValue = quote + (value.key -> entry)
     value match {
       case Value.Var(_, id, Value.LevelTpe) => withValue + (Value.Level.mk(id).key -> entry)
+      case Value.Var(_, id, Value.KindTpe)  => withValue + (Value.Kind.mk(id).key -> entry)
       case _                                => withValue
     }
   }

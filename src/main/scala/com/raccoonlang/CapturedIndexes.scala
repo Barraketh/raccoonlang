@@ -21,8 +21,9 @@ object CapturedIndexes {
 
   private def goPattern(pattern: ElabAst.TypePattern, cutoff: Int, refs: RoaringBitmap): Unit =
     pattern match {
-      case ElabAst.TypePattern.Capture(ref, _) =>
+      case ElabAst.TypePattern.Capture(ref, _, constraint) =>
         addRef(ref, cutoff, refs)
+        constraint.foreach(goPattern(_, cutoff, refs))
 
       case ElabAst.TypePattern.App(fn, args, _) =>
         goTerm(fn, cutoff, refs)

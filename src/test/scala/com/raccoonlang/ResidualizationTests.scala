@@ -63,7 +63,7 @@ class ResidualizationTests extends munit.FunSuite {
       case EA.TypePattern.Type(term) => containsGlobal(term, name)
       case EA.TypePattern.App(fn, args, _) =>
         containsGlobal(fn, name) || args.exists(arg => containsGlobalTypePattern(arg, name))
-      case EA.TypePattern.Capture(_, _) => false
+      case EA.TypePattern.Capture(_, _, _) => false
     }
 
   test("checked residual preserves transparent applications literally") {
@@ -112,7 +112,7 @@ class ResidualizationTests extends munit.FunSuite {
   test("checked residual elaborates projection syntax to selector application") {
     val p =
       """
-        |struct Pair (A: Type)(B: Type) : Type
+        |inductive Pair (A: Type)(B: Type) : Type
         | | mk {A: Type}{B: Type} (fst: A)(snd: B) : Pair(A, B)
         |
         |{
@@ -225,7 +225,7 @@ class ResidualizationTests extends munit.FunSuite {
       case pi: EA.Term.Pi =>
         pi.binders.head.ty match {
           case EA.BinderType.TypePattern(
-                EA.TypePattern.App(EA.Term.GlobalRef("IdT", _), Vector(EA.TypePattern.Capture(aRef, _)), _),
+                EA.TypePattern.App(EA.Term.GlobalRef("IdT", _), Vector(EA.TypePattern.Capture(aRef, _, _)), _),
                 _
               ) =>
             pi.out match {
@@ -257,7 +257,7 @@ class ResidualizationTests extends munit.FunSuite {
           case EA.BinderType.TypePattern(
                 EA.TypePattern.App(
                   EA.Term.GlobalRef("Vec", _),
-                  Vector(EA.TypePattern.Type(EA.Term.GlobalRef("Nat", _)), EA.TypePattern.Capture(nRef, _)),
+                  Vector(EA.TypePattern.Type(EA.Term.GlobalRef("Nat", _)), EA.TypePattern.Capture(nRef, _, _)),
                   _
                 ),
                 _
@@ -318,7 +318,11 @@ class ResidualizationTests extends munit.FunSuite {
                 EA.TypePattern.App(
                   EA.Term.GlobalRef("Sort", _),
                   Vector(
-                    EA.TypePattern.App(EA.Term.GlobalRef("Level.succ", _), Vector(EA.TypePattern.Capture(uRef, _)), _)
+                    EA.TypePattern.App(
+                      EA.Term.GlobalRef("Level.succ", _),
+                      Vector(EA.TypePattern.Capture(uRef, _, _)),
+                      _
+                    )
                   ),
                   _
                 ),

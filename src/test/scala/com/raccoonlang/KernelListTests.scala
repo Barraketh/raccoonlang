@@ -506,9 +506,9 @@ class KernelListTests extends munit.FunSuite {
   test("units, the cons step and the length laws hold definitionally; associativity is the prelude theorem") {
     elabAndRun(
       """
-        |def leftUnit (a: List($A)): Eq(List(A), List.append(List.nil(A), a), a) := Eq.refl(a)
-        |def rightUnit (a: List($A)): Eq(List(A), List.append(a, List.nil(A)), a) := Eq.refl(a)
-        |def consStep (t: List($A))(h: A)(r: List(A)): Eq(List(A), List.append(List.cons(h, t), r), List.cons(h, List.append(t, r))) :=
+        |def leftUnit (a: List($A in Sort($u))): Eq(List(A), List.append(List.nil(A), a), a) := Eq.refl(a)
+        |def rightUnit (a: List($A in Sort($u))): Eq(List(A), List.append(a, List.nil(A)), a) := Eq.refl(a)
+        |def consStep (t: List($A in Sort($u)))(h: A)(r: List(A)): Eq(List(A), List.append(List.cons(h, t), r), List.cons(h, List.append(t, r))) :=
         |  Eq.refl(List.cons(h, List.append(t, r)))
         |def lengthAppend (l: List($A))(r: List(A)): Eq(Nat, List.length(List.append(l, r)), Nat.add(List.length(l), List.length(r))) :=
         |  Eq.refl(List.length(List.append(l, r)))
@@ -518,7 +518,7 @@ class KernelListTests extends munit.FunSuite {
         |  Eq.refl(List.length(List.append(a, List.cons(Nat.zero, b))))
         |def lengthNested (a: List(Nat))(b: List(Nat))(c: List(Nat)): Eq(Nat, List.length(List.append(List.append(a, b), c)), Nat.add(List.length(a), Nat.add(List.length(b), List.length(c)))) :=
         |  Eq.refl(List.length(List.append(a, List.append(b, c))))
-        |def assoc (a: List($A))(b: List(A))(c: List(A)): Eq(List(A), List.append(List.append(a, b), c), List.append(a, List.append(b, c))) :=
+        |def assoc (a: List($A in Sort($u)))(b: List(A))(c: List(A)): Eq(List(A), List.append(List.append(a, b), c), List.append(a, List.append(b, c))) :=
         |  List.append_assoc(a, b, c)
         |def assocClosedPrefix (b: List(Nat))(c: List(Nat)): Eq(List(Nat), List.append(List.append(List.cons(Nat.zero, List.nil(Nat)), b), c), List.cons(Nat.zero, List.append(b, c))) :=
         |  Eq.refl(List.cons(Nat.zero, List.append(b, c)))

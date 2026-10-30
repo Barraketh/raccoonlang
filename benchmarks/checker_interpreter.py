@@ -104,7 +104,7 @@ def raccoon_wrap() -> str:
 
 
 def raccoon_box() -> str:
-    return """struct Box (A: Type) : Type
+    return """inductive Box (A: Type) : Type
  | mk (value: $A in Type) : Box(A)
 
 """
@@ -392,7 +392,7 @@ def raccoon_pattern_capture(size: int) -> str:
         capture = f"def capture (p: Pack({capture_args})): BenchUnit := BenchUnit.unit\n\n"
     return (
         raccoon_header()
-        + f"struct Pack{param_binders} : {sort}\n | mk{ctor_binders} (val: BenchUnit) : {pack_ty}\n\n"
+        + f"inductive Pack{param_binders} : {sort}\n | mk{ctor_binders} (val: BenchUnit) : {pack_ty}\n\n"
         + type_decls
         + f"def value : {target_ty} := Pack.mk({', '.join(mk_args)})\n"
         + capture
@@ -503,7 +503,7 @@ def raccoon_universe_max(size: int) -> str:
     mk_args = [*targets, "BenchUnit.unit"]
     return (
         raccoon_header()
-        + f"struct U{param_binders} : {sort}\n | mk{ctor_binders} (val: BenchUnit) : {u_ty}\n\n"
+        + f"inductive U{param_binders} : {sort}\n | mk{ctor_binders} (val: BenchUnit) : {u_ty}\n\n"
         + type_decls
         + f"def consume (u: {target_ty}): BenchUnit := BenchUnit.unit\n"
         + f"def bench : BenchUnit := consume(U.mk({', '.join(mk_args)}))\n\n"

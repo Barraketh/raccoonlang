@@ -57,12 +57,13 @@ object ValueEquivalence {
 
       val nextEnv1 = BinderOps.freshen(pi1)
       val sharedVars = pi1.binders.map(binder => nextEnv1(binder.localRef))
-      val nextEnv2 =
-        try BinderOps.instantiateForDefEq(pi2.binders, pi2.env, sharedVars)
-        catch {
-          case _: TypeMismatch | _: PropositionAsTypeCarrier | _: FailedToOpenCapture | _: InvalidLevelSubtraction =>
-            return None
-        }
+      val nextEnv2 = BinderOps.tryCheckAndInstantiate(pi2.binders, pi2.env, sharedVars).getOrElse(return None)
+      // Agreeing capture operations make the inclusion an equality only at family heads, where a capture's position
+      // holds the head's argument. At a head that computes, `(xs: SList($A))` opens like `(xs: List($A))` but admits
+      // only copyable A, so the generic arguments of the second telescope must fit the first as well.
+      val reverseEnv = BinderOps.freshen(pi2)
+      val reverseVars = pi2.binders.map(binder => reverseEnv(binder.localRef))
+      if (BinderOps.tryCheckAndInstantiate(pi1.binders, pi1.env, reverseVars).isEmpty) return None
 
       val out1 = pi1.codomain(nextEnv1)
       val out2 = pi2.codomain(nextEnv2)
@@ -93,11 +94,14 @@ object ValueEquivalence {
 
     private def defEqStructural(a: Value, b: Value): Boolean =
       (a, b) match {
-        case (PropTpe, PropTpe)                               => true
-        case (LevelTpe, LevelTpe)                             => true
-        case (l1: Level, l2: Level)                           => l1 == l2 || Level.leq(l1, l2) && Level.leq(l2, l1)
-        case (s1: VSort, s2: VSort)                           => defEq(s1.level, s2.level)
-        case (VConst(n1, _, _), VConst(n2, _, _)) if n1 == n2 => true
+        case (PropTpe, PropTpe)     => true
+        case (LevelTpe, LevelTpe)   => true
+        case (KindTpe, KindTpe)     => true
+        case (l1: Level, l2: Level) => l1 == l2 || Level.leq(l1, l2) && Level.leq(l2, l1)
+        // Kinds are in normal form, so equal kinds are equal values.
+        case (k1: Kind, k2: Kind)                                         => k1 == k2
+        case (VUniv(k1, l1), VUniv(k2, l2))                               => defEq(k1, k2) && defEq(l1, l2)
+        case (VConst(n1, _, _), VConst(n2, _, _)) if n1 == n2             => true
         case (p1: VPi, p2: VPi) if p1.binders.length == p2.binders.length => defEqPi(p1, p2).isDefined
         case (l1: VLam, l2: VLam) if l1.tpe.binders.length == l2.tpe.binders.length =>
           if (l1.eq(l2) || defEqLamId(l1.id, l2.id)) true
@@ -164,8 +168,17 @@ object ValueEquivalence {
 
     def defEq(v1: Value, v2: Value): Boolean = {
       sameValueObject(v1, v2) || proofIrrelevant(v1, v2) ||
-      v1.key == v2.key || (shouldTryStructuralDefEq(v1, v2) && defEqStructural(v1, v2))
+      v1.key == v2.key || (shouldTryStructuralDefEq(v1, v2) && defEqStructural(v1, v2)) || defEqEta(v1, v2)
     }
+
+    /**
+     * Structure eta: a constructor-headed value and one that is not, at one eligible type, convert when the stored
+     * fields convert with the other's projections (`StructEta`).
+     */
+    private def defEqEta(v1: Value, v2: Value): Boolean =
+      StructEta.fieldPairs(v1, v2).exists { pairs =>
+        defEq(v1.tpe, v2.tpe) && pairs.forall { case (a, b) => defEq(a, b) }
+      }
   }
 
   private object Unify {
@@ -186,13 +199,25 @@ object ValueEquivalence {
       } else None
     }
 
+    // A kind that is one refinable variable may be solved as any kind it does not occur in.
+    private def unifyKinds(k1: Kind, k2: Kind, meta: EqStore): Option[EqStore] =
+      if (!k1.lin && k1.vars.size == 1) {
+        val varId = k1.vars.head
+        if (meta.isRefinable(varId) && !k2.vars.contains(varId)) Some(meta.addLink(varId, k2)) else None
+      } else None
+
+    /** Different constant kinds are apart; a kind that is one refinable variable may be solved. */
+    private def unifyKindValues(k1: Kind, k2: Kind, meta: EqStore): Result =
+      if (k1 == k2) Right(meta)
+      else if (k1.vars.isEmpty && k2.vars.isEmpty) Left(Contradiction(k1, k2))
+      else unifyKinds(k1, k2, meta).orElse(unifyKinds(k2, k1, meta)).toRight(Stuck(k1, k2))
+
     private def tryLinkVar(v: Var, other: Value, meta: EqStore): Result = {
-      // Infer classifier levels before cumulativity: Sort(0) fits even an otherwise unsolved level.
+      // A variable is linked only to a value of its own type, which may solve the type's levels.
       val m1 =
         tryUnify(v.tpe, other.tpe, meta) match {
-          case Right(next)                                      => next
-          case Left(_) if TypeChecker.sortLeq(other.tpe, v.tpe) => meta
-          case Left(failed)                                     => return Left(failed)
+          case Right(next)  => next
+          case Left(failed) => return Left(failed)
         }
       if (m1.occurs(v.id, other)) Left(Stuck(v, other))
       else Right(m1.addLink(v.id, other))
@@ -244,13 +269,14 @@ object ValueEquivalence {
     private def rigidForm(value: Value): Option[RigidForm] = value match {
       case VCtor(_, _, _) if !isProof(value) => Some(DataConstructor)
       // A list-shaped family is never a proposition family, so a word is never a proof.
-      case _: VWord                                                 => Some(DataConstructor)
-      case InductiveFamilyValue(_) if value.tpe.isInstanceOf[VSort] => Some(TypeFamily)
+      case _: VWord => Some(DataConstructor)
+      // Families of every kind are nominal.
+      case InductiveFamilyValue(_) if value.tpe.isInstanceOf[VUniv] => Some(TypeFamily)
       case pi: VPi  => if (pi.tpe == PropTpe) None else Some(FunctionType)
-      case _: VSort => Some(TypeUniverse)
+      case _: VUniv => Some(TypeUniverse)
       case _: Var | _: NeutralThunk | _: VLam | _: VConst | _: VApp | _: ConstructorHead | _: VNatPoly => None
-      // Level arithmetic and these primitive forms have no nominal apartness rule.
-      case _: Level | LevelTpe | PropTpe | KernelObject => None
+      // Level and kind arithmetic and these primitive forms have no nominal apartness rule.
+      case _: Level | LevelTpe | _: Kind | KindTpe | PropTpe | KernelObject => None
     }
 
     private def isConstructorData(value: Value): Boolean =
@@ -326,6 +352,10 @@ object ValueEquivalence {
       Right(store)
     }
 
+    private object EtaPairs {
+      def unapply(pair: (Value, Value)): Option[Vector[(Value, Value)]] = StructEta.fieldPairs(pair._1, pair._2)
+    }
+
     def tryUnify(v1: Value, v2: Value, meta: EqStore): Result = {
       val a = ValueOps.materialize(v1, meta)
       val b = ValueOps.materialize(v2, meta)
@@ -344,10 +374,18 @@ object ValueEquivalence {
           else if (f1.head.name != f2.head.name || f1.args.length != f2.args.length) Left(Contradiction(a, b))
           else tryUnifyPairs(f1.args.zip(f2.args) :+ (a.tpe -> b.tpe), meta)
 
-        case (VSort(l1), VSort(l2)) =>
-          unifyLevels(l1, l2, meta)
-            .orElse(unifyLevels(l2, l1, meta))
-            .toRight(Stuck(l1, l2))
+        case (k1: Kind, k2: Kind) => unifyKindValues(k1, k2, meta)
+
+        // Universes whose kinds are different constants are apart; a kind variable may be solved, and then the levels
+        // unify as before kinds.
+        case (VUniv(k1, l1), VUniv(k2, l2)) =>
+          unifyKindValues(k1, k2, meta).flatMap { next =>
+            if (defEq(l1, l2)) Right(next)
+            else
+              unifyLevels(l1, l2, next)
+                .orElse(unifyLevels(l2, l1, next))
+                .toRight(Stuck(l1, l2))
+          }
 
         case (v1: Var, v2: Var) if meta.isRefinable(v1.id) && meta.isRefinable(v2.id) =>
           tryLinkVarToPreferredRepresentative(v1, v2, meta)
@@ -359,6 +397,12 @@ object ValueEquivalence {
         case (other, v: Var) if meta.isRefinable(v.id) => tryLinkVar(v, other, meta)
 
         case (_: VNatPoly, _) | (_, _: VNatPoly) => NatNormalForm.unifySuccessorPrefixes(a, b, meta)
+
+        // Structure eta: a constructor and a value that is not unify field by field with its projections. The types
+        // come first: a matched constructor's type solves its witnesses of the family parameters, which its fields'
+        // types mention, so a field of an opaque type such as `Protocol.Inst(P, init)` then meets its projection at
+        // one type instead of being stuck.
+        case EtaPairs(pairs) => tryUnifyPairs((a.tpe -> b.tpe) +: pairs, meta)
 
         case _ =>
           (rigidForm(a), rigidForm(b)) match {

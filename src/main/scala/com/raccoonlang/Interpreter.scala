@@ -28,6 +28,21 @@ object Interpreter {
     Level.max(pieces)
   }
 
+  /** A kind with each solved variable replaced by its solution's normal form, so joins collapse as they normalize. */
+  private def normalizeKind(k: Kind, eqStore: EqStore): Kind =
+    k.vars.foldLeft(if (k.lin) Kind.lin else Kind.copy) { (joined, atom) =>
+      val solved = eqStore.subst.get(atom) match {
+        case Some(sol) =>
+          eqStore.force(sol) match {
+            case next: Kind    => normalizeKind(next, eqStore)
+            case Var(_, id, _) => Kind.mk(id)
+            case other         => throw NotAKind(other)
+          }
+        case None => Kind.mk(atom)
+      }
+      Kind.join(joined, solved)
+    }
+
   /**
    * Force links and resume blocked computations when a scheduling dependency has been solved. Materialization handles
    * transitive substitution of heads and arguments. Stop retrying when reduction returns the same blockers, even if a
@@ -60,6 +75,7 @@ object Interpreter {
         }
 
       case l: Level if l.atoms.keySet.intersect(eqStore.subst.keySet).nonEmpty => normalizeLevel(l, eqStore)
+      case k: Kind if k.vars.exists(eqStore.subst.contains)                    => normalizeKind(k, eqStore)
 
       case _ => v0
     }
@@ -137,7 +153,10 @@ object Interpreter {
             ConstructorValue(h, fields, resultTy)
           case blocker @ ReductionBlockers(blockerIds) =>
             VBlockedApp(blocker, vArgs, pi.codomain(envWithArgs), blockerIds)
-          case _ => throw CannotApplyNonFunction(fn)
+          // A neutral function with nothing to wait on, such as a field projection of an axiom or a stuck application
+          // of one, applies to a neutral application (KERNEL_FOLLOWUPS 1.3).
+          case neutral @ (_: NeutralThunk | _: VApp) => VApp(neutral, vArgs, pi.codomain(envWithArgs))
+          case _                                     => throw CannotApplyNonFunction(fn)
         }
       case _ => throw CannotApplyNonFunction(fn.tpe)
     }
@@ -150,8 +169,11 @@ object Interpreter {
     evalApply(vf, vArgs)
   }
 
-  def evalLam(l: ETerm.Lam, vpi: VPi, env: Env): VLam = {
-    val capturedIndexes = CapturedIndexes.getCapturedIndexes(l, env)
+  def evalLam(l: ETerm.Lam, vpi: VPi, env: Env): VLam =
+    evalLam(l, vpi, env, CapturedIndexes.getCapturedIndexes(l, env))
+
+  /** `capturedIndexes` are `CapturedIndexes.getCapturedIndexes(l, env)`, which the checker also reads. */
+  def evalLam(l: ETerm.Lam, vpi: VPi, env: Env, capturedIndexes: RoaringBitmap): VLam = {
     val id = l.name match {
       case Some(funcName) => ValueId.Const(funcName)
       case None =>
@@ -192,6 +214,13 @@ object Interpreter {
       case v        => throw NotALevel(v)
     }
   }
+
+  def getKind(v: Value): Kind =
+    v match {
+      case k: Kind => k
+      case v: Var  => Kind.mk(v.id)
+      case v       => throw NotAKind(v)
+    }
 
   def evalTerm(term: ElabAst.Term, env: Env): Value = {
     try {
@@ -245,20 +274,29 @@ object Interpreter {
     NeutralThunk(m, closedEnv, lamId, outType, blockers)
   }
 
-  private def evalMatch(m: ETerm.Match, env: Env): Value = {
-    val scrut = evalTerm(m.scrut, env)
-    val (head, args) = scrut match {
-      case ConstructorValue(head, fields) => (head, fields)
-      case _                              =>
-        // We are either blocked or stuck
-        val outType: Value = m.motive match {
-          case Some(motive) => evalTypeTerm(motive, env)
-          case None         => scrut.tpe
+  private def evalMatch(m: ETerm.Match, env: Env): Value = evalMatchOn(m, evalTerm(m.scrut, env), env)
+
+  /**
+   * The match `m` on the value `scrut`, its scrutinee in `env`. A constructor selects its branch. A value at a
+   * structure eta type takes the one branch with its eta view, its field projections (`StructEta`). Any other value is
+   * stuck.
+   */
+  private[raccoonlang] def evalMatchOn(m: ETerm.Match, scrut: Value, env: Env): Value = {
+    val (ctorName, args) = scrut match {
+      case ConstructorValue(head, fields) => (head.name, fields)
+      case _ =>
+        StructEta.fields(scrut).filter(_ => m.cases.length == 1) match {
+          case Some(fields) => (m.cases.head.ctorName, fields)
+          case None         =>
+            // We are either blocked or stuck
+            val outType: Value = m.motive match {
+              case Some(motive) => evalTypeTerm(motive, env)
+              case None         => scrut.tpe
+            }
+            return stuckMatch(m, scrut, env, outType)
         }
-        return stuckMatch(m, scrut, env, outType)
     }
 
-    val ctorName = head.name
     val branch =
       m.cases.find(c => c.ctorName == ctorName).getOrElse(throw UnknownConstructor(ctorName, "", Some(m.span)))
     if (args.length != branch.argRefs.length)
@@ -284,11 +322,17 @@ object Interpreter {
   private def putGlobal(env: Env, name: String, value: Value, isInstance: Boolean): Env =
     env.putGlobal(name, value, if (isInstance) Some(InstanceSearch.instanceKey(name, value)) else None)
 
+  /** S2: a global of linear type would be copied by every reference, and nothing would consume it. */
+  private def rejectLinearGlobal(subject: LinearGlobal.Subject, tpe: Value, span: Span): Unit =
+    if (Linearity.isLinear(tpe)) throw LinearGlobal(subject, Some(span))
+
   def evalDecl(decl: Decl, env: Env): Env = {
     decl match {
       case Decl.ConstDecl(name, ty, body, span, isInstance, lazyGlobal) =>
         body match {
-          // Only kernel and prelude sources declare builtins (`run`), and their declared types are trusted.
+          // Only kernel and prelude sources declare builtins (`run`), and their declared types are trusted. None is a
+          // global of linear type (S2): the kernel's are not, and every entry the kernel leaves to a prelude is a
+          // `Native`, which only a function type instantiates.
           case CoreAst.ConstBody.Builtin(_) =>
             if (isInstance) throw WTF("Builtin declarations cannot be instances", Some(span))
             def value(env: Env): Value = Builtins.instantiate(name, TypeChecker.getType(ty, env), span)
@@ -305,6 +349,8 @@ object Interpreter {
               try {
                 val checked = TypeChecker.checkTypeTerm(ty, env)
                 TypeChecker.assertType(checked.value)
+                // Decided from the declared type, before the body is checked.
+                rejectLinearGlobal(LinearGlobal.Definition(name), checked.value, TypeChecker.sourceSpan(ty))
                 checked
               } catch {
                 case e: TypeError if e.span.isEmpty => throw TypeError.withSpan(e, ty.span)
@@ -317,6 +363,8 @@ object Interpreter {
 
       case Decl.AxiomDecl(name, ty, _, isInstance) =>
         val tyV = TypeChecker.getType(ty, env)
+        // S3, which also covers S2 for axioms.
+        if (Linearity.axiomMentionsLinear(tyV)) throw LinearAxiom(name, Some(TypeChecker.sourceSpan(ty)))
         val checkValue = VConst(name, Symbol, tyV)
         putGlobal(env, name, checkValue, isInstance)
 
@@ -331,6 +379,11 @@ object Interpreter {
    * is `ProgramBuiltin` at its `builtin`: `Builtins.instantiate` trusts a builtin's declared type, so only the kernel
    * and the prelude declare builtins. With `allowUserAxioms` false, an axiom declared by the program itself is then
    * `UserAxiom` at its span; the prelude's axioms are the trusted bootstrap and are unaffected.
+   *
+   * A body of type `(sup: Protocol.Supply) -> R` is an entry: once it has checked, and `R` is unrestricted (S2), its
+   * value is applied to the root supply, once, and the result is the program's. Only the entry module has a body and no
+   * global is linear, so a run has exactly one root supply, and checking, which precedes it, never allocates. A body of
+   * any other type is the program's result, which must be unrestricted.
    */
   def run(p: Program, prelude: Prelude.Config = Prelude.default, allowUserAxioms: Boolean = true): Option[Value] = {
     p.decls.foreach {
@@ -342,9 +395,31 @@ object Interpreter {
     val env =
       p.decls.foldLeft(initialEnv(prelude)) { case (curWorlds, decl) => evalDecl(decl, curWorlds) }
     p.body.map { b =>
-      TypeChecker.checkTerm(b, env).value
+      val value = TypeChecker.checkTerm(b, env).value
+      val span = TypeChecker.sourceSpan(b)
+      entryResult(value.tpe) match {
+        case Some(result) =>
+          rejectLinearGlobal(LinearGlobal.EntryResult, result, span)
+          evalApply(value, Vector(ProtocolPrimitives.rootSupply))
+        case None =>
+          rejectLinearGlobal(LinearGlobal.ProgramResult, value.tpe, span)
+          value
+      }
     }
   }
+
+  /**
+   * The result type `R` when `tpe` is an entry's, `(sup: Protocol.Supply) -> R`. `R` mentions no linear binder (S1), so
+   * it is read under a fresh one. The binder is plain: an instance binder of linear type failed to check (L7), and a
+   * binder with captures freshens to a type that is a variable, never `Supply`.
+   */
+  private def entryResult(tpe: Value): Option[Value] =
+    tpe match {
+      case pi: VPi if pi.binders.length == 1 =>
+        val fresh = BinderOps.freshen(pi)
+        Option.when(ValueEquivalence.defEq(fresh(pi.binders.head.localRef).tpe, Kernel.supplyType))(pi.codomain(fresh))
+      case _ => None
+    }
 
   /**
    * The axioms `p` declares, in declaration order. For a program, these are its user axioms, the unchecked assumptions
@@ -362,6 +437,9 @@ object Interpreter {
       .putGlobal("Level", LevelTpe)
       .putGlobal("Level.zero", Level.zero)
       .putGlobal("Level.one", Level.one)
+      .putGlobal("Kind", KindTpe)
+      .putGlobal("Kind.copy", Kind.copy)
+      .putGlobal("Kind.lin", Kind.lin)
       .putGlobal("Prop", PropTpe)
 
   private[raccoonlang] def initialEnv(prelude: Prelude.Config = Prelude.default): Env =

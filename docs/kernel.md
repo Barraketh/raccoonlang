@@ -72,31 +72,80 @@ is the prelude theorem `List.append_assoc`. A string literal always has type
 `String`. [Packed lists and kernel strings](packed_lists.md) specifies the
 rules and justifies the design.
 
+## Type patterns
+
+A binder's type pattern, such as `List($A)`, is opened on the type of the
+argument: a capture reads the value at its position in that type, or the level
+or kind of a universe. Reading by position inverts the application only at a
+family or opaque head. At a head that computes, such as
+`def SList (A: Sort($u)) : Sort(u) := List(A)`, the position need not hold the
+head's argument, which then need not fit the head's parameter: `SList($A)`
+opened on `List(Protocol.Supply)` reads `A := Protocol.Supply`, which is no
+`Sort(u)`. So every binding re-checks, on the values it opened, each
+application in the pattern that has a capture below it, as the declaration
+checked it on fresh ones: the values must instantiate the head's parameter
+telescope, a constrained capture's value must have its constraint as its type,
+and the type rebuilt from them must convert with the argument's type. The body
+may then assume that every capture has its declared type. Argument checking,
+the arguments that instance search infers by unification, and the fresh
+arguments that compare function types are all bound this way. A declaration
+refuses a capture that no binding can read, such as `$u` in
+`Sort(Level.max($u, $v))` or `$k1` in `Univ(Kind.join($k1, $k2), $u)`
+(`CaptureWithoutOpening`): in a universe, a level capture must be the level
+or a `Level.succ` of it, and a kind capture the kind itself.
+
+The reading by position is incomplete: a capture under a head that computes
+matches only where the head keeps its argument at the position the capture
+reads, the same position in the head's result as in the head's application.
+A head that reorders its arguments matches only where they agree: with
+`def Swap (A: Sort($u))(B: Sort($v)) : Sort(Level.max(u, v)) := Prod(B, A)`,
+`Swap($A, $B)` opened on `Prod(Nat, Bool)` reads `A := Nat` and `B := Bool`,
+rebuilds `Prod(Bool, Nat)`, and refuses the argument. A head that nests its
+argument deeper matches no argument at all: with
+`def S2 (A: Sort($u)) : Sort(u) := List(List(A))`, `S2($A)` opened on
+`List(List(Nat))` reads `A := List(Nat)`, rebuilds `List(List(List(Nat)))`,
+and refuses it. Both refusals are sound.
+
 ## Function-type equality
 
 Function types compare binder domains and constrained-capture classifiers by
-exact definitional equality. Universe cumulativity is available when checking
-ordinary arguments, but does not identify function domains such as `Type` and
-`Sort(Level.one)`.
+exact definitional equality. Universes are not cumulative: an argument, too, is
+checked by conversion of its type with the binder's, so `Type` is no
+`Sort(Level.one)`, and a universe-polymorphic binder `Sort($u)` takes types of
+every level.
 
 Corresponding binders must have the same instance markers and capture
-operations: capture roots, projection paths, and level subtraction offsets.
+operations: capture roots, projection paths, level subtraction offsets, and
+kind captures. A level capture opens on a universe of any kind; the binder's
+type, which the comparison instantiates, tells `Sort($u)` from `Lin($u)` and
+from `Univ($k, $u)`, and a constrained capture's constraint is checked as at a
+binder.
 Names may differ. After opening one telescope on fresh arguments, the checker
-instantiates the other with those same arguments using exact checking, then
-compares their codomains. Requiring matching capture operations is conservative;
+instantiates the other with those same arguments using exact checking, and the
+reverse: each telescope must admit the other's generic arguments. It then
+compares the codomains. Requiring matching capture operations is conservative;
 in particular, `Sort($u)` and `Sort(Level.succ($v))` admit different domains and
 cannot be equated by successfully matching an argument in just one direction.
+Matching operations do not make the domains equal at a head that computes:
+`(xs: SList($A)) -> List(A)` is not `(xs: List($A)) -> List(A)`, whose binder
+takes linear elements too, though the eta-expansion
+`fun (xs: SList($A)): List(A) => f(xs)` of an `f` of the second type has the
+first.
 
 ## Nominal Type families
 
-Fully applied, Type-valued inductive families obey these nominal principles:
+Fully applied, Type-valued inductive families obey these nominal principles,
+and so do families of every kind, those declared in `Lin(u)` or `Univ(k, u)`
+(see [linear types](#linear-types)); "Type" below covers them all:
 
 - **N1 — injectivity:** equality of instances of the same declaration forces
   equality of their complete dependent argument tuples.
 - **N2 — distinct declarations:** instances of different family declarations
   are distinct types, even when their constructors have the same shape.
 - **N3 — distinct forms:** family instances, Type-valued function types, and
-  Type universes are pairwise distinct forms.
+  Type universes are pairwise distinct forms. Universes whose kinds are
+  different constants are apart, so `Sort(u)` and `Lin(v)` are; a universe
+  whose kind holds a variable is not apart from either.
 
 These rules apply inside nested Type-family arguments. Proof arguments compare
 modulo proof irrelevance. Axioms and blocked computations provide no nominal
@@ -134,18 +183,22 @@ Unrefinable variables, opaque symbols and applications, blocked matches,
 function values, and partially applied family or constructor heads provide no
 rigid-form contradiction. Neither do propositions, unresolved level equations,
 or primitive forms without a nominal apartness rule. These cases remain
-`Stuck`. Adding a value form requires an explicit classification.
+`Stuck`. Adding a value form requires an explicit classification. The constant
+kinds `Kind.copy` and `Kind.lin` contradict, as values of `Kind` and as the
+kinds of two universes; a kind that is one refinable variable is solved, and a
+join of variables is `Stuck`.
 
 ### Family argument size
 
-A Type family declared in `Sort(n)` must have sufficiently small parameters and
-indices for its nominal argument labels. The checker computes a conservative
+A Type family declared in `Sort(n)` or `Lin(n)` must have sufficiently small
+parameters and indices for its nominal argument labels. The checker computes a conservative
 minimum level for each argument's type:
 
 | Argument type | Required level |
 |---|---|
-| `Sort(m)` | `m` |
-| `Level`, `Prop`, or a proposition | zero |
+| `Sort(m)` or `Lin(m)` | `m` |
+| `Level`, `Kind`, `Prop`, or a proposition | zero |
+| A record with structure eta | The maximum of its fields' required levels, at the instance |
 | A Type-valued function type ending in `B` | Maximum of its domains' classifier levels and the recursive bound for `B` |
 | Any other type | Its classifier level |
 
@@ -156,7 +209,12 @@ The resulting bound must be at most the family's declared level for every
 valuation of symbolic level variables.
 
 Thus `List(A: Type): Type` and a family with arguments `A: Type` and
-`B: A -> Type` can remain in `Type`. A family taking `F: Type -> Type` or
+`B: A -> Type` can remain in `Type`. A record is charged by its fields, since
+each of its values is its constructor applied to its fields: so a `Proto`, an
+atom type and a relation into `Prop`, costs level 0, as its two components
+would, while a record holding a `Type -> Type` costs level 1, and a family with
+two constructors still costs its own universe's level
+(raccoon-formalization `DESIGN.md` §10, the elementwise rank lemma). A family taking `F: Type -> Type` or
 `F: Type -> Prop` requires `Sort(Level.one)` or above. This check also applies
 to families without constructors. `FamilyArgumentTooLarge` identifies the
 argument and required minimum level.
@@ -167,10 +225,19 @@ subject to strict positivity checks.
 
 Function-valued family arguments must be free of the positivity target, even in
 an otherwise positive argument position. The checker inspects both a lambda's
-type and its body opened on fresh arguments. A blocked computation that might
-contain the target cannot establish absence. This also applies when computing
+type and its body opened on fresh arguments. This also applies when computing
 which family arguments are positive and when excluding recursion inside a
 family's own arguments.
+
+The family being declared is fresh: no value made before its declaration can
+name it, so a reference to it starts only at its own head and reaches a value
+only through what that value is built from. So a stuck computation, such as a
+selector of a parameter, `List(P.Atom)`, or a stuck call of an earlier global,
+certifies that the family is absent when its type, its captures, the values of
+its environment and its match term do not mention it (main-new's
+declaration-time rule). A stuck computation that does mention it cannot certify
+a positive occurrence, nor uniformity, and a stuck application whose arguments
+mention it is not positive, as before.
 
 ### Current limits
 
@@ -211,9 +278,51 @@ It cannot quote an outer local through a refinement that changes that local's
 type. A result requiring branch-local information needs an appropriate
 annotation, or must remain inside the branch.
 
-The feature introduces no runtime value form or equality rule. Equality,
-structural keys, substitution, quotation, and termination checking use their
-existing representations and algorithms.
+The feature introduces no runtime value form. Its equality rule is structure
+eta, below.
+
+## Structure eta and projections
+
+A family with exactly one constructor is a **record**. Every record has a field
+selector for each named field: a lazy definition whose body is the one-branch
+match returning that field, with the selector's declared result type as
+motive, checked where it is first used. A record whose field type names a
+capture that is no family parameter, a hidden dependency such as `$n` in
+`(v: Vec(A, $n))`, has no selectors. There is no `struct` keyword: records are
+ordinary `inductive` declarations.
+
+A record is **eta-eligible** when it also has no indices and no recursive
+field, and is not in `Prop`; its kind and level do not matter, so linear and
+kind-polymorphic records are eligible, and so are the kernel's `Proto`,
+`Observed` and `Fresh`. A record whose field type depends on a capture that the
+family's arguments do not determine is not. Proofs of a `Prop` record are
+irrelevant instead.
+
+Eta is a rule, not a representation. At an eligible type, a value is
+definitionally its constructor applied to its fields. Its *eta view* is its
+stored fields when it is constructor-headed, and its field projections
+otherwise. A projection is the stuck evaluation of a canonical one-branch
+match, one match node per field, whose motive is the field's type at the
+projected value, so projections of one field of convertible values convert. The
+view is read by:
+
+- **conversion**: a constructor-headed value converts with a value that is not
+  when its stored fields convert with the other's projections, and its type
+  with the other's; two neutral values compare as before;
+- **unification**, which unifies the types, then such fields pairwise, so a
+  matched constructor's witnesses of the family parameters are solved before
+  the fields whose types mention them;
+- **match evaluation**, during checking and at run time: a match on a neutral
+  value at an eligible type takes its one branch with the projections, so a
+  destructuring computes, and a selector of a neutral value is its projection;
+- **structural descent**: a projection of a neutral value is one of its fields.
+
+So `P` converts with `Protocol.Proto.mk(P.Atom, P.Step)`, and a pair `p` with
+`Prod.mk(A, B, p.fst, p.snd)`. Applying a neutral function value, such as the
+projection of a function field, gives a neutral application. Eta adds no use of
+a linear value: it acts in conversion and evaluation, which the ledger does not
+see, while a match still consumes its scrutinee (L4) and a selector application
+is a use or a read as L5 says.
 
 ## Recursion on proofs
 
@@ -233,7 +342,7 @@ is unchanged when its key equals the root's. Any other proof is neither, and
 the call is `NonDecreasingRecursiveCall`; this covers a rebuilt proof of a
 field's proposition. As in conversion, equal keys are trusted to mean equal
 values. The search follows proof fields only; it does not enter data fields,
-even one that stores a proof. Data components keep the converted order,
+such as the field of `Fact.mk(h)`. Data components keep the converted order,
 and data subterm search still skips proof fields.
 
 The root is read through the branch's refinement. Unification compares proofs
@@ -271,3 +380,438 @@ The CLI reports user axioms on standard error. With `--no-user-axioms`,
 before evaluating any declaration. A theorem checked under that flag depends on
 the kernel, the prelude, and nothing the program assumed. The default stays
 permissive.
+
+## Resource protocols
+
+The kernel declares the mathematics of resource protocols, beneath every
+prelude: `List.Perm`, the permutation relation; `Protocol.Proto`, a record of an
+atom type `Atom` and a step relation `Step` from consumed to produced atoms;
+`Protocol.Reach`, the configurations reachable from an initial inventory by
+framed steps and permutation; and `Protocol.Valid`, the configurations that are
+part of a reachable one. They are ordinary checked inductives. The kernel owns
+them because the protocol primitives' types name them, so a prelude must not be
+able to redefine them. The design and its rationale are recorded in
+[linear protocols](implemented/LINEAR_PROTOCOLS.md).
+
+It declares the types of protocol instances and their tokens in the same way.
+Each takes a protocol `P: Proto` and an initial inventory `init: List(P.Atom)`,
+as `Reach(P, init, C)` and `Valid(P, init, C)` do:
+
+- `Protocol.Supply : Lin(Level.zero)`, from which instances are allocated;
+- `Protocol.Inst(P, init) : Type`, the identities of instances;
+- `Protocol.Tok(P, init, s, a) : Lin(Level.zero)`, a token of the atom `a` held
+  by the instance `s`;
+- `Protocol.Toks(P, init, s)`, indexed by a list of atoms `C`: a packet of
+  tokens of `s`, `nil`, or `cons(a, t, C, rest)` with `t` a token of `a`;
+- `Protocol.Observed(P, init, s, C)`, whose `mk(toks, valid)` holds a packet and
+  a proof of `Valid(P, init, C)`;
+- `Protocol.Fresh(P, init)`, whose `mk(next, s, toks)` holds the next supply, an
+  identity and its packet of `init`.
+
+A concrete protocol is `Proto.mk(Atom, Step)`, and by structure eta a variable
+`P` converts with `Proto.mk(P.Atom, P.Step)`.
+
+`Supply`, `Inst` and `Tok` are opaque builtins: each is a symbol of its declared
+type, as an axiom is, with no constructors and no reduction. An application of
+one is a stuck symbol application. It converts with another only when their
+arguments convert, and unification derives nothing from it, neither
+injectivity nor apartness: an equation between `Inst(P, x)` and `Inst(P, y)`
+refines neither `x` nor `y`. So tokens of different
+identities have different types. The symbols are not inductive families, so a
+`match` on a token or a supply is `NonInductiveMatch`, even with no cases, and
+no constructor of them exists: `Protocol.Tok.mk` is a selection from a function,
+`NotAType`, and as a case it is `NotFound`. Outside an absurd branch, tokens
+come only from the primitives below, and a term holds only the tokens it is
+given or obtains from them, alone or in packets.
+
+`Toks`, `Observed` and `Fresh` are linear inductive families, checked by the
+ordinary rules (see [linear types](#linear-types)). `Observed` and `Fresh` are
+records, so they have selectors and structure eta: `o.valid` reads `o`, and
+`o.toks` consumes it. `Toks` has an index, so a packet is
+a constructor value, never a packed word. The [family argument size
+check](#family-argument-size) charges a `Proto` by its fields, an atom type and
+a relation into `Prop`, which cost nothing, so the three families are in
+`Lin(Level.zero)`, with `Tok` and `Supply`.
+Identities are ordinary data in `Type`: they can be stored in lists and in
+unrestricted families, returned, and packaged in a linear family together with
+a packet of their own, whose type mentions the earlier identity field (L3).
+
+The families and primitives once took the atom type and step relation as two
+parameters, because positivity rejected the stuck projection `List(P.Atom)` in
+a field type, structure eta was missing, and the size rule charged a `Proto`
+its whole `Sort(Level.one)`. Declaration-time positivity, structure eta and the
+refined size rule removed all three.
+
+Structural recursion on a packet whose index is a variable, such as
+`decreases structural(left)` for `left: Toks(P, init, s, A)`, is
+`NonDecreasingRecursiveCall`, as for every indexed data or linear family:
+matching the packet refines its index variable but does not link the packet to
+the constructor, which is what the termination checker reads. An indexed Prop
+family is not affected, since a proof scrutinee is linked explicitly (see
+[recursion on proofs](#recursion-on-proofs)). A packet function recurses
+structurally on its unrestricted index list instead, matching the packet in
+each branch, or decreases by `measure(List.length(A))`.
+
+The kernel evaluates in two stages. `Kernel.coreEnv` holds `Sort`, `Lin`,
+`Bool`, `Nat`, `List`, `Char` and `String` with their natives; `Kernel.env` evaluates
+the protocol declarations over it. The core natives and their accessors read
+the core stage. A protocol declaration's type calls `List.append`, whose stuck
+result names the native through those accessors, so a single stage would
+re-enter its own initialization. The primitives' natives read the protocol
+families and constructors from `Kernel.env`; no kernel declaration applies a
+primitive, so evaluating it never runs one. The elaborator resolves both stages
+as one namespace.
+
+### Primitives
+
+The kernel declares three primitives, each taking a protocol and an initial
+inventory:
+
+```text
+new (P)(init)(sup: Supply): Fresh(P, init)
+step (P)(init)(s: Inst(P, init))(A B: List(P.Atom))(h: P.Step(A, B))
+    (toks: Toks(P, init, s, A)): Toks(P, init, s, B)
+observe (P)(init)(s: Inst(P, init))(C: List(P.Atom))
+    (toks: Toks(P, init, s, C)): Observed(P, init, s, C)
+```
+
+`new` allocates an instance from a supply and returns the next supply, the new
+identity and a token of each atom of `init`. `step` consumes a packet of the
+atoms a rule consumes and returns a packet of the atoms it produces, with no
+inputs when the rule consumes none. `observe` returns a packet with a proof
+that it is part of a reachable configuration; that proof is the one fact the
+primitives reflect, and it holds jointly only for tokens observed together.
+Use is affine, so a program drops a supply or a token it no longer needs.
+
+They are natives with these reductions, where `canon(s, [])` is `Toks.nil` and
+`canon(s, a :: C)` is `Toks.cons(a, tok#(P, init, s, a), C, canon(s, C))`:
+
+```text
+R1  new(P, init, supply#(n))          ⇒  Fresh.mk(supply#(n+1), i, canon(i, init)),  i = inst#(P, init, n)
+R2  step(P, init, s, A, B, h, t)      ⇒  canon(s, B)
+R3  observe(P, init, s, C, t)         ⇒  Observed.mk(t, valid#(P, init, C))
+```
+
+R1 fires on a canonical supply and a known `init`, and R2 on a known `B`. A
+known list is `nil` or a chain of conses ending in `nil`, whatever its elements.
+Otherwise the application is stuck, blocked on the supply's and the list's
+reduction blockers, and resumes when one is solved, as a stuck `List.append`
+does. R3 always fires. R2 and R3 ignore the contents of their input
+packet: tokens carry no data.
+
+`supply#`, `inst#`, `tok#` and `valid#` are ghosts, constants of their own kind
+built only by these natives. No environment binds them, and their names are no
+identifiers, so no source term names one, and quotation refuses them, so no
+inferred motive or `derive` result holds one. Each ghost application carries
+its precise type, and in its arguments everything that type depends on, since
+keys ignore types. Ghosts convert by congruence only, so identities of one run
+are distinct, tokens of distinct identities have distinct types, and `valid#`
+converts with every proof of its proposition.
+
+A program body of type `(sup: Protocol.Supply) -> R` is an **entry**. It checks
+as any body does; `R` must be unrestricted (`LinearGlobal`, decided from the
+body's type before anything runs). `Interpreter.run` then applies its value to
+the root supply `supply#(0)` and returns the result, which the CLI prints. A
+body of any other type is the program's result, as before. Only the entry
+module has a body, no global is linear (S2), and protocol programs run with
+`--no-user-axioms`, so a run has one root supply, and a body of type
+`Supply -> Fresh(…)` cannot leak one.
+
+Checking never allocates. The root supply exists only once the entry has
+checked, and only R1 makes another, so during checking every supply is a
+variable or stuck and R1 never fires: an entry's result that depends on its
+initial packet is stuck while it checks and computed by `run`. R2 and R3 do
+fire during checking. A type or proof may contain
+a primitive application, since a read extent may compute with live linear
+values (S1), and then converts by these reductions. That is sound because a
+read consumes nothing and its value is a type or a proof, which no linear
+binder receives, and because each call in it takes linear inputs from disjoint
+regions of locals that were live together. So an `observe` in a type or proof
+reads a packet the program could observe at that point, as in the model's
+hypothetical run, and the `valid#` it returns holds; `observe(join(t, t))` is
+refused. R2 fires only on a known output list, whose index already excludes
+every branch its canonical packet excludes.
+
+### The protocol library
+
+`lib/Protocol` is untrusted library code over these declarations, loaded with `--root lib`. Its theorems
+are ordinary checked definitions; like every protocol theorem, they are trustworthy under `--no-user-axioms`.
+
+- **Prelude support.** Packets travel in the kernel's `List` and the prelude's `Prod`, which are kind-polymorphic,
+  with `Fact(p)`, a proof as copyable data, so that a fact travels in a `Prod` beside the tokens it is about, and
+  `Eq.subst` transports a linear value, such as a packet along an equation of its atom lists. A `Prod` selector
+  consumes a pair of packets and drops the other one (L5), so the library destructures them.
+- **Protocols.** The laws take a protocol `P: Proto`, as the kernel families do; `Protocol.Rel(Atom)` abbreviates a step
+  relation's type, and a concrete protocol is `Proto.mk(Atom, Step)`.
+- **Packets** recurse structurally on their unrestricted index list and match the packet in each branch (see above).
+  A `List.Perm` proof cannot be eliminated into a linear result, so packets reorder by `exchange` and `swap`, each with
+  the permutation lemma that carries validity along.
+- **Name resolution.** Members of the enclosing namespaces resolve before opened aliases (see
+  [namespaces](namespaces.md)). The building blocks `Exclusive` and `Shares` are top-level namespaces that open the
+  kernel's `Reach` and `Valid`.
+
+## Linear types
+
+`Kind`, `Univ`, `Sort` and `Lin` are kernel declarations beneath every prelude
+and program, and cannot be redeclared. A type is **linear** when its kind is not
+provably `copy`, and a value is linear when its type is. Types, universes,
+proofs and function values are never linear. A type determines its universe,
+so linearity is read off the type at hand, never off a family's fields.
+
+### Kinds and universes
+
+- **K1 Kinds.** `Kind` is a kernel sort like `Level`. Its values are
+  `Kind.copy` and `Kind.lin`, variables bound by captures, and
+  `Kind.join(a, b)`. A kind's normal form is `Kind.lin`, or a finite set of
+  variables, the empty set being `Kind.copy`: joins with `copy` vanish, a join
+  with `lin` is `lin`, and `join` is associative, commutative and idempotent.
+  So `copy < lin`, with the variables between them, ordered by inclusion. A
+  kind that is one variable converts with that variable.
+- **U1 Universes.** A universe is `Univ(k, l) : Sort(Level.succ(l))`, whose
+  types are of kind `k`. `Sort(l)` and `Lin(l)` are names for
+  `Univ(Kind.copy, l)` and `Univ(Kind.lin, l)`, and `Prop` stays outside `Univ`.
+  A type is linear when its kind is `lin`, or a normal form that holds a
+  variable.
+- **U2 No cumulativity.** Universes are not cumulative, for levels or for
+  kinds: a value is checked against an expected type by conversion, so a type
+  is used at exactly its universe. `Nat` is no `Lin(Level.zero)` and no
+  `Sort(Level.one)`, and `Nat -> Type` is not `Nat -> Lin(Level.zero)`. A
+  function that takes types of every level is universe-polymorphic,
+  `(A: Sort($u))`; one that takes copyable and linear values alike is
+  kind-polymorphic, `(A: Univ($k, $u))`. Only family formation (L1) and the
+  nominal size rule still order universes, and neither relates values.
+- **U3 Captures.** `Univ($k, $u)` binds a kind and a level variable, as
+  `Sort($u)` binds a level; `Sort($u)` and `Lin($u)` fix the kind. A level
+  capture opens on a universe of any kind, and the binder's type then fixes
+  the kind: `List(Protocol.Supply)` is a list of supplies, but
+  `Eq(Protocol.Supply, a, b)` is `TypeMismatch`. A capture nested in a
+  pattern has its parameter's type, so `$A` in `List($A)` is of any kind; a
+  constraint fixes it, as in `List($A in Sort($u))`, whose element type must
+  be copyable at every use. A capture under a head that computes is checked
+  against the head's parameter ([type patterns](#type-patterns)), so `$A` in
+  `SList($A)`, for an alias `SList (A: Sort($u)) := List(A)`, is copyable.
+- **U4 Kind-polymorphic code** treats values of a variable kind `k` as affine,
+  as Rust's generic code treats a `T` without a `Copy` bound: they are tracked
+  and used at most once. A caller instantiates `k := copy` and passes copyable
+  values freely. There is no case analysis on kinds; code that copies elements,
+  such as the prelude's `List.filter`, constrains them to `Sort`.
+
+### Linear and kind-polymorphic families
+
+A family declared in `Lin(u)`, or in a `Univ(k, u)` whose kind is an
+expression over its parameters' kind variables, is an ordinary inductive
+family: positivity, uniformity, refinement, coverage and packed list storage
+are unchanged. The kernel's `List (A: Univ($k, $u)) : Univ(k, u)` is one, and
+so are the prelude's `Prod`, `Option`, `Sum`, `Sigma` and `Subtype`: `List(Nat)`
+is copyable and `List(Protocol.Supply)` is linear.
+
+- **L1 Fields.** A field's kind is at most its family's in the kind lattice:
+  the family is `lin`, or the field kind's variables are among the family
+  kind's. A field's level is at most the family's, and a proof field is always
+  allowed. So a `Sort` or `Prop` family has no field of linear or variable kind
+  (`LinearFieldInUnrestrictedFamily`), and `Prod(A, B)` is in
+  `Univ(Kind.join(k1, k2), …)`. This is family formation, not subtyping of
+  values.
+- **L2 Parameters and indices** have unrestricted types
+  (`LinearFamilyArgument`), in every family: a parameter `A: Univ($k, $u)` is a
+  type, and an index is of kind `copy`. Erased constructor binders and capture
+  witnesses name parameters, so they are unrestricted too. The nominal size
+  rule is unchanged, and kinds cost nothing.
+- **L3 Dependency.** A field type, a later binder type and the constructor's
+  result are read extents of the constructor's telescope (S1), so they may read
+  earlier fields, linear ones included.
+- **L4 Matching** consumes the scrutinee. A pattern field whose type, read after
+  the branch's refinement, is linear is tracked, and a `_` for one drops it;
+  a match that is itself a read extent only reads its fields. The motive is a
+  read extent, so it may read the scrutinee:
+  `match xs returning Tag(count(xs))`. The root is still refined, for
+  termination checking.
+- **L5 Projections.** A record's selector is a definition whose body is a
+  match, so the ledger and the read rules decide it. A selector of a linear
+  record that returns data consumes the record and drops its other fields, so
+  two selections of one record are `LinearReused`; destructuring with
+  `let (…) := p` keeps every field. One whose field's type mentions an earlier
+  field reads the record in its codomain, and one that returns a proof or a
+  type is a read extent: applying it reads the record and does not consume it.
+- **L6 Recursion** may decrease through linear data. A `structural` or
+  `lexicographic` clause only names parameters and is not a use; a `measure`
+  term is evaluated again at every call without consuming anything, so it is a
+  read extent of its own.
+- **L7 Binders.** Instance binders and `let instance` have unrestricted types
+  (`LinearInstance`), since instance search copies instances. A type-pattern
+  capture of linear type, such as a capture of a linear parameter of a
+  pattern's head, is `LinearInType`: it would bind an untracked linear local that
+  a term could consume. So every local of linear type is tracked.
+- **L8** `Eq` has no linear carrier: its carrier is `Sort($u)`, so a carrier of
+  linear or variable kind is `TypeMismatch`. A linear value moves along an
+  equation of unrestricted data, such as its index, with the prelude's
+  `Eq.subst`, whose motive is into `Univ(k, v)` for a kind `k` it takes. An
+  equation between linear types, `Eq(Lin(u), A, B)`, is an equation of types,
+  whose `A` and `B` are linear.
+- **L9 Recursion** in a linear family follows ordinary strict positivity, as in
+  an unrestricted one: a recursive occurrence may be nested in another family's
+  arguments (`kids: List(Tree)`), sit under a binder (`f: Nat -> Tree`), or be
+  at other parameters. A linear family may store copyable functions, including
+  ones into or out of linear types.
+
+### Function types
+
+- **F1** A function type whose codomain is in a `Univ` is classified `Sort` of
+  the maximum of its levels, whatever the kinds of its domains and codomain:
+  `Univ(k, v)` domains and codomains contribute `v`, propositions nothing.
+  Every function value is unrestricted, so a function type has no closure
+  flag. When the codomain's level depends on a `Level` or `Kind` binder, as in
+  `(u: Level) -> Sort(u)`, that maximum mentions the binder's variable, out of
+  scope above the function type. The classifier is sound but inert: the
+  variable converts with no concrete level, so the type is never a value of a
+  universe, only the declared type of a global, and so cannot be fixed to a
+  level and passed where an ordinary type is expected.
+- **F2** A function type whose codomain is a proposition is `Prop`, whatever
+  its domains. Its body is a read extent over its linear parameters, which are
+  only read, and applying it is a proof, whose linear arguments are only read.
+- **F3** A codomain or later binder type is a read extent, so it may read
+  earlier linear binders: `(xs: List(A)) -> Tag(count(xs))`.
+- **F4** A parameter of linear type, tracked from its binder's type, is used
+  at most once in the lambda's body, or only read when the body is a read
+  extent.
+- **F5 No linear captures.** A lambda references no linear local bound outside
+  it, in its body or its type, read or not (`LinearCapture`, at the reference).
+  A read would run when the function is applied, where nothing ties the captured
+  local's liveness to the arguments'. A callback that should own a linear value
+  takes it as an argument.
+
+### The ledger
+
+A tracked local is one whose type at its binder is linear: a lambda or
+definition parameter, a `let`, including `let _` and the root a let pattern
+saves, or a match field, named or `_`. Tracking is decided once, when the local
+is bound, and refinement never changes it. Its extent is the lambda body, the
+later lets and the block's result, or the branch. Binding a refined local
+afresh is intended: where refinement has given `x : A` the type `Nat`,
+`let y := x` uses `x` once and binds an untracked `y`, exactly as
+`let y := id(x)` would.
+
+A tracked local is used at most once on every path through its extent, and may
+be dropped: use is affine. Soundness needs only that nothing is duplicated, and
+forgetting a token keeps the protocol invariant. A path takes one branch at each
+match. An application evaluates its head and then its arguments, a block its
+lets and then its result, and a match its scrutinee on every path through it. A
+use after an empty match counts too, although no run reaches it. Lambdas are
+never uses (F5), and neither is anything inside a read extent (S1): reading
+consumes nothing. A second use on some path is `LinearReused`, at that use. A
+binder whose extent is a read extent, such as a parameter of a function
+returning a proposition, a `let` in a proof, or a field of a match that returns
+a type, is only read, as often as its extent likes.
+
+Every checked node carries a summary of its uses, combined bottom-up as it is
+checked, which a tracked binder tests when its extent is done. A node that is a
+read extent keeps none of its parts' uses. Programs without tracked locals
+carry the empty summary, and evaluation makes none of these checks.
+
+### Separation from types and proofs
+
+- **S1 Reads.** A *read extent* is a maximal checked term whose value is a type
+  or a proof: a binder type, a codomain, a let annotation, a motive, a field or
+  constructor result type, an explicit type argument, a proof argument, a
+  proof's body, and a `measure` term. A read extent may contain linear-typed
+  subterms: tracked locals, linear computations over them, observations, and
+  closed resource computations such as `observe(Toks.nil)` or a `step` from
+  `Toks.nil`. Its uses do not count toward the enclosing extent's ledger, and
+  it may drop linear values it creates itself. In the model (formalization
+  `DESIGN.md` §6, R1–R5), a read extent formed where linear locals are live is a
+  hypothetical run from the current ledger: it changes nothing, and its
+  admissibility persists after the locals are consumed.
+
+  Inside a read extent, every linear-typed term has a *provenance*: the
+  *regions* it is built from. A region is a *root*, a tracked local with no
+  defining value of its own (a parameter, or a binder of a Π type or a
+  constructor), with a path of field indices into it. Two regions overlap when
+  one path is a prefix of the other, so a value overlaps each of its parts.
+  - A root `xs` is the region `(xs, [])`.
+  - A `let` is never a root: it aliases its value's provenance, so after
+    `let a := t; let b := t` both `a` and `b` are `(t, [])`.
+  - A match field `i` of a scrutinee that is exactly one region `(r, p)` (a
+    root, a field, or a `let` of one) is `(r, p ++ [i])`. So sibling fields
+    are separate, the same field taken by two matches of one value overlaps,
+    and a field overlaps its scrutinee. A field of any other scrutinee, such as
+    a constructor application, gets the scrutinee's whole provenance, since it
+    may be any part of it.
+  - A linear-typed result of an application or a constructor has the union of
+    its linear inputs' regions, so `lid(xs)` and `append(xs, ys)` carry their
+    sources forward; a match's linear result is its branches'.
+  - An unrestricted value or a proof has none, since plain data copies freely,
+    and so has a closed computation with no linear input, which any read may
+    recompute (R5).
+
+  A match inside a read extent only inspects its scrutinee, as in the model, so
+  it is no call. Two rules hold at every call, an application or a constructor
+  application, of its linear inputs:
+
+  - **Separation.** Their provenances are pairwise disjoint
+    (`LinearReusedInType`, at the input that repeats one). So
+    `count(append(xs, xs))`, `count(append(lid(xs), lid(xs)))`,
+    `pairCount(xs, xs)` and `observe(join(t, t))` are refused, while
+    `Eq(Nat, count(xs), count(xs))` and `Nat.add(count(xs), count(xs))` are
+    accepted: each `count` gets `xs` once, and `Nat.add` and `Eq` get
+    unrestricted values.
+  - **Joint liveness** (R7). The roots of their union were all live at one
+    point on the path (`LinearNotJointlyLive`). Every root records the roots
+    consumed on the path before it was bound, by the lets, earlier arguments
+    and scrutinees that precede it; the union is jointly live when none of its
+    roots was consumed before its latest-bound root was bound. A value built
+    from the roots since, through lets and fields, is recomputed from that
+    point, so only roots are tested. A single root is always fine, consumed or
+    not, since its admissibility persists. The arguments of one application see
+    the locals live at its start, so `g(xs, lemma(xs))` is accepted. A packet
+    combined with its successor aliases it, so it overlaps; joint liveness
+    refuses a type whose binder was bound after a root it reads was consumed.
+
+  A call outside every read extent that breaks either rule also uses a local
+  twice, which the ledger reports as `LinearReused`; so each node passes its
+  first violation up, and the nearest enclosing read extent reports it.
+
+  **Why this keeps parametricity.** A function with several linear parameters
+  is a contract that its inputs are separate: its body may join them and
+  observe the result. A caller must honour the contract whatever the body does,
+  as Rust refuses `f(&mut x, &mut x)` and separation logic's `P ∗ Q` requires
+  disjoint resources. So `pairCount(xs, xs)` is refused although
+  `Nat.add(count(xs), count(xs))`, equal to it, is accepted: the decision reads
+  the callee's type, never its body.
+
+  **Kept conservative**, each for a significant simplification:
+  - A `let` or a field inside a read extent whose own block or match returns
+    data, not a type or a proof, is used at most once, as in a term: knowing at
+    the binder that an enclosing node is a read extent would need either that
+    node's role before its arguments are checked, or deferring reuse errors to
+    every entry point where a term is known to run.
+  - A match's linear result unions the provenances of all its branches, so a
+    later call over it tests regions that no single path combines.
+  - A field of a scrutinee that is not exactly one region, and a call's result,
+    get whole provenances, not paths: so the fields of a constructed value, or
+    two selector applications to one record, overlap one another.
+  - F5 covers reads, as above.
+  - Quotation still refuses linear values and never names a tracked local, so
+    an inferred motive that would need one is `MissingReturningClause`, an
+    elaboration limit: state the motive with `returning`. A type the checker
+    computes, rather than checks, may hold a linear local inside a stuck
+    computation, such as the type `Tag(count(xs))` of a let bound to
+    `Tag.mk(count(xs))`; it is never quoted.
+- **S2 Globals.** A definition or the program result of linear type is
+  `LinearGlobal`, decided for a definition from its declared type before its
+  body is checked: every reference to a global would copy it, and nothing
+  consumes the result.
+- **S3 Axioms**, a lint. An axiom is `LinearAxiom` when a linear type occurs
+  anywhere in its evaluated type: as the type itself, as a binder type or
+  codomain of a function type at any depth, or anywhere in an argument of an
+  application, such as `Box(Nat -> Tok)`, `List(Nat -> Tok)` or a family applied
+  to a function returning a linear type, whose body is opened on fresh
+  arguments. `axiom T : Lin(Level.zero)` declares a type, not a linear value, and
+  is allowed, as are data axioms such as `axiom magicNat : Nat`. Three forms are
+  not seen: a stuck computed type, such as `axiom mint (b: Bool) : F(b)` where
+  `F(Bool.true)` computes to `Nat -> Tok`; a type variable a use instantiates,
+  such as `axiom pick (A: Type) : A` at `A := Nat -> Tok`; and the field types of
+  a family the type names without linear arguments, such as `axiom m : Mint`
+  for `inductive Mint : Type | mk (f: Nat -> Tok)`. S3 therefore does not make user
+  axioms safe: protocol soundness assumes `--no-user-axioms` (see
+  [axioms](#axioms)), which protocol theorems already require.
+

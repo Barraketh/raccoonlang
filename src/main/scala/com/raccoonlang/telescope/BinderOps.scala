@@ -50,13 +50,10 @@ object BinderOps {
     }
   }
 
-  // Function-type equality needs exact domains and capture classifiers.
-  // Ordinary argument checking above deliberately retains cumulativity.
-  def instantiateForDefEq(binders: Vector[VBinder], baseEnv: Env, args: Vector[Value]): Env = {
-    if (binders.length != args.length) throw ArityMismatch(binders.length, args.length)
-
-    binders.zip(args).foldLeft(baseEnv) { case (env, (binder, value)) =>
-      TypePatternOps.bindValueForDefEq(env, binder, value)
+  /** `checkAndInstantiate`, or `None` when an argument does not fit its binder. */
+  def tryCheckAndInstantiate(binders: Vector[VBinder], runtimeEnv: Env, args: Vector[Value]): Option[Env] =
+    try Some(checkAndInstantiate(binders, runtimeEnv, args))
+    catch {
+      case _: TypeMismatch | _: PropositionAsTypeCarrier | _: FailedToOpenCapture | _: InvalidLevelSubtraction => None
     }
-  }
 }

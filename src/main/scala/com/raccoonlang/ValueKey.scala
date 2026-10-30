@@ -55,6 +55,21 @@ object ValueKey {
     val NatSymbolicPower = 20
     val WordLayer = 21
     val WordTerminator = 22
+    val Lin = 23
+    val KindTpe = 24
+    val Kind = 25
+    val Univ = 26
+  }
+
+  private def kindKey(kind: Value.Kind): Key = {
+    var cur = mixLong(tag(Tag.Kind), if (kind.lin) 1L else 0L)
+    val sortedVars = kind.vars.toArray.sorted
+    var idx = 0
+    while (idx < sortedVars.length) {
+      cur = mixLong(cur, sortedVars(idx).toLong)
+      idx += 1
+    }
+    mixLong(cur, sortedVars.length.toLong)
   }
 
   /**
@@ -189,13 +204,20 @@ object ValueKey {
   }
 
   def orderKey(v: Value): Key = v match {
-    case Value.LevelTpe        => tag(Tag.LevelTpe)
-    case level: Value.Level    => levelKey(level.atoms, level.c)
-    case Value.PropTpe         => tag(Tag.Prop)
-    case Value.VSort(lvl)      => mixKey(tag(Tag.Sort), lvl.key)
-    case Value.KernelObject    => tag(Tag.KernelObject)
-    case Value.VConst(n, _, _) => mixString(tag(Tag.Const), n)
-    case Value.Var(_, id, _)   => mixLong(tag(Tag.Var), id.toLong)
+    case Value.LevelTpe     => tag(Tag.LevelTpe)
+    case level: Value.Level => levelKey(level.atoms, level.c)
+    case Value.PropTpe      => tag(Tag.Prop)
+    case Value.KindTpe      => tag(Tag.KindTpe)
+    // A kind that is one variable keys as the variable itself, so `Kind.join(Kind.copy, k)` converts with `k`.
+    case kind: Value.Kind if !kind.lin && kind.vars.size == 1 => mixLong(tag(Tag.Var), kind.vars.head.toLong)
+    case kind: Value.Kind                                     => kindKey(kind)
+    // `Sort` and `Lin` keep their own tags, so a universe of constant kind keys as before kinds.
+    case Value.VSort(lvl)       => mixKey(tag(Tag.Sort), lvl.key)
+    case Value.VLin(lvl)        => mixKey(tag(Tag.Lin), lvl.key)
+    case Value.VUniv(kind, lvl) => mixKey(mixKey(tag(Tag.Univ), kind.key), lvl.key)
+    case Value.KernelObject     => tag(Tag.KernelObject)
+    case Value.VConst(n, _, _)  => mixString(tag(Tag.Const), n)
+    case Value.Var(_, id, _)    => mixLong(tag(Tag.Var), id.toLong)
     case Value.VApp(h, args, tpe, _) =>
       val appKey = mixValues(mixKey(tag(Tag.App), h.key), args)
       h match {

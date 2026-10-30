@@ -79,7 +79,8 @@ object PrettyPrinter {
         val headStr = printRef(fn)
         val argsStr = args.map(ptAtom).mkString(", ")
         s"$headStr($argsStr)"
-      case CoreAst.TypePattern.Capture(ref, _) => s"$$${ref.name}"
+      case CoreAst.TypePattern.Capture(ref, _, constraint) =>
+        s"$$${ref.name}" + constraint.fold("")(c => s" in ${pt(c)}")
     }
 
     def ptAtom(t: CoreAst.TypePattern): String = t match {
@@ -106,7 +107,8 @@ object PrettyPrinter {
     }
 
   private def isAtomic(v: Value): Boolean = v match {
-    case _: Value.VSort  => true
+    case _: Value.VUniv  => true
+    case _: Value.Kind   => true
     case _: Value.VConst => true
     case _: Value.Var    => true
     case _               => false
@@ -114,7 +116,7 @@ object PrettyPrinter {
 
   private def printApp(head: Value, args: Seq[Value]): String = {
     val headStr = head match {
-      case _: Value.VApp | _: Value.VConst | _: Value.Var | _: Value.VSort => print(head)
+      case _: Value.VApp | _: Value.VConst | _: Value.Var | _: Value.VUniv => print(head)
       // A global function, such as a native stuck on its arguments, prints as its name.
       case Value.VLam(_, Value.ValueId.Const(name), _) => name
       case _                                           => s"(${print(head)})"
@@ -253,7 +255,8 @@ object PrettyPrinter {
         val headStr = printElabRef(fn)
         val argsStr = args.map(ptAtom).mkString(", ")
         s"$headStr($argsStr)"
-      case ElabAst.TypePattern.Capture(ref, _) => s"$$${ref.name}"
+      case ElabAst.TypePattern.Capture(ref, _, constraint) =>
+        s"$$${ref.name}" + constraint.fold("")(c => s" in ${pt(c)}")
     }
 
     def ptAtom(t: ElabAst.TypePattern): String = t match {
@@ -397,8 +400,11 @@ object PrettyPrinter {
     case Value.PropTpe                               => "Prop"
     case Value.VSort(lvl) if lvl == Value.Level.zero => "Type"
     case Value.VSort(lvl)                            => s"Sort($lvl)"
+    case Value.VLin(lvl)                             => s"Lin($lvl)"
+    case Value.VUniv(kind, lvl)                      => s"Univ(${print(kind)}, $lvl)"
     case Value.KernelObject                          => "KernelObject"
     case level: Value.Level                          => s"Level(${level.atoms}, ${level.c})"
+    case kind: Value.Kind                            => printKind(kind)
     case pi: Value.VPi                               => "VPi"
     case Value.VConst(name, _, _)                    => name
     case Value.ConstructorHead(name, _, _, _, _)     => name
@@ -413,6 +419,13 @@ object PrettyPrinter {
     case Value.Var(name, id, _) => s"$name#$id"
     case s: Value.NeutralThunk  => s"match#${s.id}"
     case LevelTpe               => s"Level"
+    case Value.KindTpe          => "Kind"
   }
+
+  /** `Kind.copy`, `Kind.lin`, or the join of its variables, in id order. */
+  private def printKind(kind: Value.Kind): String =
+    if (kind.lin) "Kind.lin"
+    else if (kind.vars.isEmpty) "Kind.copy"
+    else kind.vars.toVector.sorted.map(id => s"k#$id").reduceLeft((a, b) => s"Kind.join($a, $b)")
 
 }

@@ -1,0 +1,352 @@
+import Protocol.Logic
+
+// List support beyond the kernel's `List.Perm`: permutation lemmas, membership, `Every`, `Pairwise`, a unary-plus-pair
+// invariant with its framed-step lemma, duplicate-freedom and `flatMap`. Ported from Track A
+// (lemur-raccoon experiments/protocols-clean).
+//
+// As in the prelude, everything is universe-polymorphic, and an element type is captured from the first argument that
+// determines it, a list, a `Perm`, a `Mem` or an element (`List($A in Sort($u))`, `$A in Sort($u)`). Element types are
+// copyable, since permutations, membership and equations of lists are over copyable data; a plain `List($A)` would
+// capture an element type of any kind (docs/kernel.md, "Kinds"). An element type that first appears in a function
+// argument, such as a predicate `f: A -> Prop`, is an explicit `(A: Sort($u))`. As across
+// `lib/Protocol`, laws are named in snake case, like the prelude's `List.append_assoc`, and other definitions in camel
+// case, like its `Option.getD`.
+namespace List {
+  namespace Perm {
+    def refl (xs: List($A in Sort($u))): Perm(A, xs, xs) decreases structural(xs) := {
+      match xs returning Perm(A, xs, xs) with
+      | List.nil => Perm.nil(A)
+      | List.cons x rest => Perm.cons(A, x, rest, rest, Perm.refl(rest))
+    }
+
+    def of_eq (xs: List($A in Sort($u)))(ys: List(A))(e: Eq(List(A), xs, ys)): Perm(A, xs, ys) :=
+      Eq.substProp(e, fun (zs: List(A)): Prop => Perm(A, xs, zs), Perm.refl(xs))
+
+    def symm (xs: List($A in Sort($u)))(ys: List(A))(p: Perm(A, xs, ys)): Perm(A, ys, xs) decreases structural(p) := {
+      match p returning Perm(A, ys, xs) with
+      | .nil => Perm.nil(A)
+      | .cons x l1 l2 q => Perm.cons(A, x, l2, l1, Perm.symm(l1, l2, q))
+      | .swap x y l => Perm.swap(A, y, x, l)
+      | .trans l1 l2 l3 q1 q2 => Perm.trans(A, l3, l2, l1, Perm.symm(l2, l3, q2), Perm.symm(l1, l2, q1))
+    }
+
+    def append_right (xs: List($A in Sort($u)))(ys: List(A))(F: List(A))(p: Perm(A, xs, ys)):
+        Perm(A, List.append(xs, F), List.append(ys, F)) decreases structural(p) := {
+      match p returning Perm(A, List.append(xs, F), List.append(ys, F)) with
+      | .nil => Perm.refl(F)
+      | .cons x l1 l2 q => Perm.cons(A, x, List.append(l1, F), List.append(l2, F), Perm.append_right(l1, l2, F, q))
+      | .swap x y l => Perm.swap(A, x, y, List.append(l, F))
+      | .trans l1 l2 l3 q1 q2 => Perm.trans(A, List.append(l1, F), List.append(l2, F), List.append(l3, F),
+          Perm.append_right(l1, l2, F, q1), Perm.append_right(l2, l3, F, q2))
+    }
+
+    def append_left (F: List($A in Sort($u)))(xs: List(A))(ys: List(A))(p: Perm(A, xs, ys)):
+        Perm(A, List.append(F, xs), List.append(F, ys)) decreases structural(F) := {
+      match F returning Perm(A, List.append(F, xs), List.append(F, ys)) with
+      | List.nil => p
+      | List.cons f rest => Perm.cons(A, f, List.append(rest, xs), List.append(rest, ys), Perm.append_left(rest, xs, ys, p))
+    }
+
+    // `a :: (xs ++ ys) ~ xs ++ (a :: ys)`.
+    def middle (a: $A in Sort($u))(xs: List(A))(ys: List(A)):
+        Perm(A, List.cons(a, List.append(xs, ys)), List.append(xs, List.cons(a, ys))) decreases structural(xs) := {
+      match xs returning Perm(A, List.cons(a, List.append(xs, ys)), List.append(xs, List.cons(a, ys))) with
+      | List.nil => Perm.refl(List.cons(a, ys))
+      | List.cons x rest => Perm.trans(A, List.cons(a, List.cons(x, List.append(rest, ys))), List.cons(x, List.cons(a, List.append(rest, ys))),
+          List.cons(x, List.append(rest, List.cons(a, ys))),
+          Perm.swap(A, x, a, List.append(rest, ys)), Perm.cons(A, x, List.cons(a, List.append(rest, ys)), List.append(rest, List.cons(a, ys)), Perm.middle(a, rest, ys)))
+    }
+
+    def append_comm (xs: List($A in Sort($u)))(ys: List(A)): Perm(A, List.append(xs, ys), List.append(ys, xs)) decreases structural(xs) := {
+      match xs returning Perm(A, List.append(xs, ys), List.append(ys, xs)) with
+      | List.nil => Perm.refl(ys)
+      | List.cons x rest => Perm.trans(A, List.cons(x, List.append(rest, ys)), List.cons(x, List.append(ys, rest)), List.append(ys, List.cons(x, rest)),
+          Perm.cons(A, x, List.append(rest, ys), List.append(ys, rest), Perm.append_comm(rest, ys)), Perm.middle(x, ys, rest))
+    }
+
+    // `ys ++ (xs ++ F) ~ xs ++ (ys ++ F)`.
+    def swap_front (xs: List($A in Sort($u)))(ys: List(A))(F: List(A)):
+        Perm(A, List.append(ys, List.append(xs, F)), List.append(xs, List.append(ys, F))) := {
+      let left := List.append_assoc(ys, xs, F)
+      let right := List.append_assoc(xs, ys, F)
+      let mid := Perm.append_right(List.append(ys, xs), List.append(xs, ys), F, Perm.append_comm(ys, xs))
+      Eq.substProp(right, fun (zs: List(A)): Prop => Perm(A, List.append(ys, List.append(xs, F)), zs),
+        Eq.substProp(left, fun (zs: List(A)): Prop => Perm(A, zs, List.append(List.append(xs, ys), F)), mid))
+    }
+  }
+
+  // ---------------------------------------------------------------- Mem
+
+  inductive Mem (A: Sort($u)) indices (a: A)(xs: List(A)) : Prop
+   | head (a: $A in Sort($u))(xs: List(A)) : Mem(A, a, List.cons(a, xs))
+   | tail (a: $A in Sort($u))(x: A)(xs: List(A))(m: Mem(A, a, xs)) : Mem(A, a, List.cons(x, xs))
+
+  namespace Mem {
+    def nil_absurd (a: $A in Sort($u))(m: Mem(A, a, List.nil(A)))(C: Prop): C := {
+      match m returning C with
+    }
+
+    // One position of a cons cell: the head, or a member of the tail.
+    def cons_cases (a: $A in Sort($u))(x: A)(xs: List(A))(m: Mem(A, a, List.cons(x, xs))): Or(Eq(A, a, x), Mem(A, a, xs)) := {
+      match m returning Or(Eq(A, a, x), Mem(A, a, xs)) with
+      | .head y ys => Logic.inl(Eq.refl(y), Mem(A, y, ys))
+      | .tail y z zs old => Logic.inr(Eq(A, y, z), old)
+    }
+
+    def append_left (a: $A in Sort($u))(xs: List(A))(ys: List(A))(m: Mem(A, a, xs)): Mem(A, a, List.append(xs, ys)) decreases structural(m) := {
+      match m returning Mem(A, a, List.append(xs, ys)) with
+      | .head y zs => Mem.head(y, List.append(zs, ys))
+      | .tail y z zs old => Mem.tail(y, z, List.append(zs, ys), Mem.append_left(y, zs, ys, old))
+    }
+
+    def append_right (a: $A in Sort($u))(xs: List(A))(ys: List(A))(m: Mem(A, a, ys)): Mem(A, a, List.append(xs, ys)) decreases structural(xs) := {
+      match xs returning Mem(A, a, List.append(xs, ys)) with
+      | List.nil => m
+      | List.cons x rest => Mem.tail(a, x, List.append(rest, ys), Mem.append_right(a, rest, ys, m))
+    }
+
+    def perm (a: $A in Sort($u))(xs: List(A))(ys: List(A))(p: Perm(A, xs, ys))(m: Mem(A, a, xs)): Mem(A, a, ys) decreases structural(p) := {
+      match p returning Mem(A, a, ys) with
+      | .nil => m
+      | .cons x l1 l2 q => {
+        match Mem.cons_cases(a, x, l1, m) returning Mem(A, a, List.cons(x, l2)) with
+        | Or.inl e => Eq.substProp(Eq.symm(e), fun (z: A): Prop => Mem(A, z, List.cons(x, l2)), Mem.head(x, l2))
+        | Or.inr old => Mem.tail(a, x, l2, Mem.perm(a, l1, l2, q, old))
+      }
+      | .swap x y l => {
+        match Mem.cons_cases(a, y, List.cons(x, l), m) returning Mem(A, a, List.cons(x, List.cons(y, l))) with
+        | Or.inl e => Eq.substProp(Eq.symm(e), fun (z: A): Prop => Mem(A, z, List.cons(x, List.cons(y, l))), Mem.tail(y, x, List.cons(y, l), Mem.head(y, l)))
+        | Or.inr rest => {
+          match Mem.cons_cases(a, x, l, rest) returning Mem(A, a, List.cons(x, List.cons(y, l))) with
+          | Or.inl e => Eq.substProp(Eq.symm(e), fun (z: A): Prop => Mem(A, z, List.cons(x, List.cons(y, l))), Mem.head(x, List.cons(y, l)))
+          | Or.inr old => Mem.tail(a, x, List.cons(y, l), Mem.tail(a, y, l, old))
+        }
+      }
+      | .trans l1 l2 l3 q1 q2 => Mem.perm(a, l2, l3, q2, Mem.perm(a, l1, l2, q1, m))
+    }
+  }
+
+  def Subset (xs: List($A in Sort($u)))(ys: List(A)): Prop := (a: A) -> Mem(A, a, xs) -> Mem(A, a, ys)
+
+  // ---------------------------------------------------------------- Every and Pairwise
+
+  // Types cannot contain lambdas, so predicates that appear in statements are named.
+  def andP (A: Sort($u))(f: A -> Prop)(g: A -> Prop): A -> Prop := fun (x: A): Prop => And(f(x), g(x))
+
+  def trueP (A: Sort($u)): A -> Prop := fun (x: A): Prop => True
+
+  // `R(x, ·)` and `R(·, y)`.
+  def from (A: Sort($u))(R: A -> A -> Prop)(x: A): A -> Prop := fun (y: A): Prop => R(x, y)
+
+  def into (A: Sort($u))(R: A -> A -> Prop)(y: A): A -> Prop := fun (x: A): Prop => R(x, y)
+
+  def Every (xs: List($A in Sort($u)))(f: A -> Prop): Prop decreases structural(xs) := {
+    match xs returning Prop with
+    | List.nil => True
+    | List.cons x rest => And(f(x), Every(rest, f))
+  }
+
+  def Pairwise (xs: List($A in Sort($u)))(R: A -> A -> Prop): Prop decreases structural(xs) := {
+    match xs returning Prop with
+    | List.nil => True
+    | List.cons x rest => And(Every(rest, List.from(A, R, x)), Pairwise(rest, R))
+  }
+
+  // Every element of `xs` relates to `y`.
+  def allInto (xs: List($A in Sort($u)))(R: A -> A -> Prop): A -> Prop := fun (y: A): Prop => Every(xs, List.into(A, R, y))
+
+  namespace Every {
+    def of_forall (A: Sort($u))(f: A -> Prop)(all: (x: A) -> f(x))(xs: List(A)): Every(xs, f) decreases structural(xs) := {
+      match xs returning Every(xs, f) with
+      | List.nil => True.intro
+      | List.cons x rest => Logic.both(all(x), Every.of_forall(A, f, all, rest))
+    }
+
+    def map (A: Sort($u))(f: A -> Prop)(g: A -> Prop)(step: (x: A) -> f(x) -> g(x))(xs: List(A))(h: Every(xs, f)): Every(xs, g) decreases structural(xs) := {
+      match xs returning Every(xs, g) with
+      | List.nil => True.intro
+      | List.cons x rest => Logic.both(step(x, h.left), Every.map(A, f, g, step, rest, h.right))
+    }
+
+    def zip (A: Sort($u))(f: A -> Prop)(g: A -> Prop)(xs: List(A))(hf: Every(xs, f))(hg: Every(xs, g)): Every(xs, List.andP(A, f, g)) decreases structural(xs) := {
+      match xs returning Every(xs, List.andP(A, f, g)) with
+      | List.nil => True.intro
+      | List.cons x rest => Logic.both(Logic.both(hf.left, hg.left), Every.zip(A, f, g, rest, hf.right, hg.right))
+    }
+
+    def unzip_left (A: Sort($u))(f: A -> Prop)(g: A -> Prop)(xs: List(A))(h: Every(xs, List.andP(A, f, g))): Every(xs, f) :=
+      Every.map(A, List.andP(A, f, g), f, fun (x: A)(p: And(f(x), g(x))): f(x) => p.left, xs, h)
+
+    def unzip_right (A: Sort($u))(f: A -> Prop)(g: A -> Prop)(xs: List(A))(h: Every(xs, List.andP(A, f, g))): Every(xs, g) :=
+      Every.map(A, List.andP(A, f, g), g, fun (x: A)(p: And(f(x), g(x))): g(x) => p.right, xs, h)
+
+    def at (A: Sort($u))(f: A -> Prop)(xs: List(A))(h: Every(xs, f))(a: A)(m: Mem(A, a, xs)): f(a) decreases structural(m) := {
+      match m returning f(a) with
+      | .head y ys => h.left
+      | .tail y z zs old => Every.at(A, f, zs, h.right, y, old)
+    }
+
+    def append (A: Sort($u))(f: A -> Prop)(xs: List(A))(ys: List(A))(hx: Every(xs, f))(hy: Every(ys, f)): Every(List.append(xs, ys), f) decreases structural(xs) := {
+      match xs returning Every(List.append(xs, ys), f) with
+      | List.nil => hy
+      | List.cons x rest => Logic.both(hx.left, Every.append(A, f, rest, ys, hx.right, hy))
+    }
+
+    def split (A: Sort($u))(f: A -> Prop)(xs: List(A))(ys: List(A))(h: Every(List.append(xs, ys), f)): And(Every(xs, f), Every(ys, f)) decreases structural(xs) := {
+      match xs returning And(Every(xs, f), Every(ys, f)) with
+      | List.nil => Logic.both(True.intro, h)
+      | List.cons x rest => {
+        let tail := Every.split(A, f, rest, ys, h.right)
+        Logic.both(Logic.both(h.left, tail.left), tail.right)
+      }
+    }
+
+    def perm (A: Sort($u))(f: A -> Prop)(xs: List(A))(ys: List(A))(p: Perm(A, xs, ys))(h: Every(xs, f)): Every(ys, f) decreases structural(p) := {
+      match p returning Every(ys, f) with
+      | .nil => h
+      | .cons x l1 l2 q => Logic.both(h.left, Every.perm(A, f, l1, l2, q, h.right))
+      | .swap x y l => Logic.both(h.right.left, Logic.both(h.left, h.right.right))
+      | .trans l1 l2 l3 q1 q2 => Every.perm(A, f, l2, l3, q2, Every.perm(A, f, l1, l2, q1, h))
+    }
+  }
+
+  // `Cross(xs, ys, R)`: every element of `xs` relates to every element of `ys`,
+  // indexed by the right-hand element, which is how frames are consumed.
+  def Cross (xs: List($A in Sort($u)))(ys: List(A))(R: A -> A -> Prop): Prop := Every(ys, List.allInto(xs, R))
+
+  namespace Pairwise {
+    def split (A: Sort($u))(R: A -> A -> Prop)(xs: List(A))(ys: List(A))(h: Pairwise(List.append(xs, ys), R)):
+        And(Pairwise(xs, R), And(Pairwise(ys, R), Cross(xs, ys, R))) decreases structural(xs) := {
+      match xs returning And(Pairwise(xs, R), And(Pairwise(ys, R), Cross(xs, ys, R))) with
+      | List.nil => Logic.both(True.intro, Logic.both(h, Every.of_forall(A, List.trueP(A), fun (y: A): True => True.intro, ys)))
+      | List.cons x rest => {
+        let head := Every.split(A, List.from(A, R, x), rest, ys, h.left)
+        let tail := Pairwise.split(A, R, rest, ys, h.right)
+        Logic.both(Logic.both(head.left, tail.left), Logic.both(tail.right.left,
+          Every.zip(A, List.from(A, R, x), List.allInto(rest, R), ys, head.right, tail.right.right)))
+      }
+    }
+
+    def append (A: Sort($u))(R: A -> A -> Prop)(xs: List(A))(ys: List(A))(hx: Pairwise(xs, R))(hy: Pairwise(ys, R))(c: Cross(xs, ys, R)):
+        Pairwise(List.append(xs, ys), R) decreases structural(xs) := {
+      match xs returning Pairwise(List.append(xs, ys), R) with
+      | List.nil => hy
+      | List.cons x rest => {
+        let here := Every.unzip_left(A, List.from(A, R, x), List.allInto(rest, R), ys, c)
+        let later := Every.unzip_right(A, List.from(A, R, x), List.allInto(rest, R), ys, c)
+        Logic.both(Every.append(A, List.from(A, R, x), rest, ys, hx.left, here), Pairwise.append(A, R, rest, ys, hx.right, hy, later))
+      }
+    }
+
+    def perm (A: Sort($u))(R: A -> A -> Prop)(sym: (x: A) -> (y: A) -> R(x, y) -> R(y, x))(xs: List(A))(ys: List(A))(p: Perm(A, xs, ys))(h: Pairwise(xs, R)):
+        Pairwise(ys, R) decreases structural(p) := {
+      match p returning Pairwise(ys, R) with
+      | .nil => h
+      | .cons x l1 l2 q => Logic.both(Every.perm(A, List.from(A, R, x), l1, l2, q, h.left), Pairwise.perm(A, R, sym, l1, l2, q, h.right))
+      | .swap x y l => Logic.both(Logic.both(sym(y, x, h.left.left), h.right.left), Logic.both(h.left.right, h.right.right))
+      | .trans l1 l2 l3 q1 q2 => Pairwise.perm(A, R, sym, l2, l3, q2, Pairwise.perm(A, R, sym, l1, l2, q1, h))
+    }
+  }
+
+  // An invariant made of a unary part and a symmetric pair part.
+  def Inv (xs: List($A in Sort($u)))(U: A -> Prop)(R: A -> A -> Prop): Prop := And(Every(xs, U), Pairwise(xs, R))
+
+  namespace Inv {
+    def perm (A: Sort($u))(U: A -> Prop)(R: A -> A -> Prop)(sym: (x: A) -> (y: A) -> R(x, y) -> R(y, x))
+        (xs: List(A))(ys: List(A))(p: Perm(A, xs, ys))(h: Inv(xs, U, R)): Inv(ys, U, R) :=
+      Logic.both(Every.perm(A, U, xs, ys, p, h.left), Pairwise.perm(A, R, sym, xs, ys, p, h.right))
+
+    // A framed step: the outputs must satisfy the invariant among themselves
+    // (`together`), and must stand in the pair relation to any frame element the
+    // inputs stood in it to (`cross`). The rest of the frame is untouched.
+    def framed (A: Sort($u))(U: A -> Prop)(R: A -> A -> Prop)(xs: List(A))(ys: List(A))(F: List(A))
+        (ih: Inv(List.append(xs, F), U, R))
+        (together: (Inv(xs, U, R) -> Inv(ys, U, R)))
+        (cross: (Inv(xs, U, R) -> (y: A) -> Every(xs, List.into(A, R, y)) -> Every(ys, List.into(A, R, y)))):
+        Inv(List.append(ys, F), U, R) := {
+      let units := Every.split(A, U, xs, F, ih.left)
+      let pairs := Pairwise.split(A, R, xs, F, ih.right)
+      let before := Logic.both(units.left, pairs.left)
+      let after := together(before)
+      let frame := Every.map(A, List.allInto(xs, R), List.allInto(ys, R),
+        fun (y: A)(e: Every(xs, List.into(A, R, y))): Every(ys, List.into(A, R, y)) => cross(before, y, e), F, pairs.right.right)
+      Logic.both(Every.append(A, U, ys, F, after.left, units.right), Pairwise.append(A, R, ys, F, after.right, pairs.right.left, frame))
+    }
+
+    def left (A: Sort($u))(U: A -> Prop)(R: A -> A -> Prop)(xs: List(A))(ys: List(A))(h: Inv(List.append(xs, ys), U, R)): Inv(xs, U, R) :=
+      Logic.both(Every.split(A, U, xs, ys, h.left).left, Pairwise.split(A, R, xs, ys, h.right).left)
+  }
+
+  // ---------------------------------------------------------------- Nodup
+
+  def Ne (A: Sort($u)): A -> A -> Prop := fun (x: A)(y: A): Prop => Not(Eq(A, x, y))
+
+  def Nodup (xs: List($A in Sort($u))): Prop := Pairwise(xs, List.Ne(A))
+
+  namespace Nodup {
+    def ne_symm (x: $A in Sort($u))(y: A)(h: Not(Eq(A, x, y))): Not(Eq(A, y, x)) :=
+      fun (e: Eq(A, y, x)): False => h(Eq.symm(e))
+
+    def perm (xs: List($A in Sort($u)))(ys: List(A))(p: Perm(A, xs, ys))(h: Nodup(xs)): Nodup(ys) :=
+      Pairwise.perm(A, List.Ne(A), fun (x: A)(y: A)(n: Not(Eq(A, x, y))): Not(Eq(A, y, x)) => Nodup.ne_symm(x, y, n), xs, ys, p, h)
+
+    // Disjointness of the two halves of a duplicate-free list.
+    def disjoint (xs: List($A in Sort($u)))(ys: List(A))(h: Nodup(List.append(xs, ys)))(a: A)(left: Mem(A, a, xs))(right: Mem(A, a, ys)): False := {
+      let cross := Pairwise.split(A, List.Ne(A), xs, ys, h).right.right
+      Every.at(A, List.into(A, List.Ne(A), a), xs, Every.at(A, List.allInto(xs, List.Ne(A)), ys, cross, a, right), a, left)(Eq.refl(a))
+    }
+  }
+
+  // ---------------------------------------------------------------- flatMap
+
+  def single (A: Sort($u)): A -> List(A) := fun (a: A): List(A) => List.cons(a, List.nil(A))
+
+  def flatMap (xs: List($A in Sort($u)))(B: Sort($v))(f: A -> List(B)): List(B) decreases structural(xs) := {
+    match xs returning List(B) with
+    | List.nil => List.nil(B)
+    | List.cons x rest => List.append(f(x), flatMap(rest, B, f))
+  }
+
+  def compose (A: Sort($u))(B: Sort($v))(C: Sort($w))(f: A -> List(B))(g: B -> List(C)): A -> List(C) :=
+    fun (a: A): List(C) => flatMap(f(a), C, g)
+
+  namespace flatMap {
+    def append (A: Sort($u))(B: Sort($v))(f: A -> List(B))(xs: List(A))(ys: List(A)):
+        Eq(List(B), flatMap(List.append(xs, ys), B, f), List.append(flatMap(xs, B, f), flatMap(ys, B, f))) decreases structural(xs) := {
+      match xs returning Eq(List(B), flatMap(List.append(xs, ys), B, f), List.append(flatMap(xs, B, f), flatMap(ys, B, f))) with
+      | List.nil => Eq.refl(flatMap(ys, B, f))
+      | List.cons x rest => Eq.trans(congrArg(flatMap.append(A, B, f, rest, ys), List(B), fun (zs: List(B)): List(B) => List.append(f(x), zs)),
+          Eq.symm(List.append_assoc(f(x), flatMap(rest, B, f), flatMap(ys, B, f))))
+    }
+
+    def perm (A: Sort($u))(B: Sort($v))(f: A -> List(B))(xs: List(A))(ys: List(A))(p: Perm(A, xs, ys)):
+        Perm(B, flatMap(xs, B, f), flatMap(ys, B, f)) decreases structural(p) := {
+      match p returning Perm(B, flatMap(xs, B, f), flatMap(ys, B, f)) with
+      | .nil => Perm.nil(B)
+      | .cons x l1 l2 q => Perm.append_left(f(x), flatMap(l1, B, f), flatMap(l2, B, f), flatMap.perm(A, B, f, l1, l2, q))
+      | .swap x y l => Perm.swap_front(f(x), f(y), flatMap(l, B, f))
+      | .trans l1 l2 l3 q1 q2 => Perm.trans(B, flatMap(l1, B, f), flatMap(l2, B, f), flatMap(l3, B, f), flatMap.perm(A, B, f, l1, l2, q1), flatMap.perm(A, B, f, l2, l3, q2))
+    }
+
+    def assoc (A: Sort($u))(B: Sort($v))(C: Sort($w))(f: A -> List(B))(g: B -> List(C))(xs: List(A)):
+        Eq(List(C), flatMap(flatMap(xs, B, f), C, g), flatMap(xs, C, List.compose(A, B, C, f, g))) decreases structural(xs) := {
+      match xs returning Eq(List(C), flatMap(flatMap(xs, B, f), C, g), flatMap(xs, C, List.compose(A, B, C, f, g))) with
+      | List.nil => Eq.refl(List.nil(C))
+      | List.cons x rest => Eq.trans(flatMap.append(B, C, g, f(x), flatMap(rest, B, f)),
+          congrArg(flatMap.assoc(A, B, C, f, g, rest), List(C), fun (zs: List(C)): List(C) => List.append(flatMap(f(x), C, g), zs)))
+    }
+
+    def singleton (xs: List($A in Sort($u))): Eq(List(A), flatMap(xs, A, List.single(A)), xs) decreases structural(xs) := {
+      match xs returning Eq(List(A), flatMap(xs, A, List.single(A)), xs) with
+      | List.nil => Eq.refl(List.nil(A))
+      | List.cons x rest => congrArg(flatMap.singleton(rest), List(A), fun (zs: List(A)): List(A) => List.cons(x, zs))
+    }
+
+    def mem (A: Sort($u))(B: Sort($v))(f: A -> List(B))(xs: List(A))(a: A)(b: B)(inside: Mem(A, a, xs))(here: Mem(B, b, f(a))):
+        Mem(B, b, flatMap(xs, B, f)) decreases structural(inside) := {
+      match inside returning Mem(B, b, flatMap(xs, B, f)) with
+      | .head y ys => Mem.append_left(b, f(y), flatMap(ys, B, f), here)
+      | .tail y z zs old => Mem.append_right(b, f(z), flatMap(zs, B, f), flatMap.mem(A, B, f, zs, y, b, old, here))
+    }
+  }
+}

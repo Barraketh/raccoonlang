@@ -162,7 +162,7 @@ object ModuleLoader {
     decl match {
       case SA.Command.Decl.ConstDecl(_, _, _, span, _, _) => span
       case SA.Command.Decl.AxiomDecl(_, span, _)          => span
-      case SA.Command.Decl.InductiveDecl(_, _, _, span)   => span
+      case SA.Command.Decl.InductiveDecl(_, _, span)      => span
     }
 
 }

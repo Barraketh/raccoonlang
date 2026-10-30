@@ -45,7 +45,7 @@ class TypeClassTests extends munit.FunSuite {
 
   private val prelude =
     """
-      |struct DecEq (A: Type) : Type
+      |inductive DecEq (A: Type) : Type
       | | mk {A: Type} (ok: Bool) : DecEq(A)
       |
       |""".stripMargin
@@ -158,7 +158,7 @@ class TypeClassTests extends munit.FunSuite {
     val p =
       prelude +
         """
-          |struct Wrap (A: Type)(eqA: DecEq(A)) : Type
+          |inductive Wrap (A: Type)(eqA: DecEq(A)) : Type
           | | mk {A: Type}{eqA: DecEq(A)} (ok: Bool) : Wrap(A, eqA)
           |
           |def natEq : DecEq(Nat) := DecEq.mk(Nat, Bool.true)
@@ -179,10 +179,10 @@ class TypeClassTests extends munit.FunSuite {
         |inductive BenchUnit : Type
         | | unit : BenchUnit
         |
-        |struct Dep (A: Sort($u0)) : Sort(Level.max(Level.one, u0))
+        |inductive Dep (A: Sort($u0)) : Sort(Level.max(Level.one, u0))
         | | mk {A: Sort($u0)} (val: BenchUnit) : Dep(A)
         |
-        |struct TC (A: Sort($u0)) : Sort(Level.max(Level.one, u0))
+        |inductive TC (A: Sort($u0)) : Sort(Level.max(Level.one, u0))
         | | mk {A: Sort($u0)} (val: BenchUnit) : TC(A)
         |
         |inductive Target : Type
@@ -238,7 +238,7 @@ class TypeClassTests extends munit.FunSuite {
     val p =
       prelude +
         """
-          |struct Box (A: Type) : Type
+          |inductive Box (A: Type) : Type
           | | mk {A: Type} : Box(A)
           |
           |def instance natEq : DecEq(Nat) := DecEq.mk(Nat, Bool.true)
@@ -344,10 +344,10 @@ class TypeClassTests extends munit.FunSuite {
     val p =
       prelude +
         """
-          |struct TC (A: Type) : Type
+          |inductive TC (A: Type) : Type
           | | mk {A: Type} (ok: Bool) : TC(A)
           |
-          |struct Need (A: Type) : Type
+          |inductive Need (A: Type) : Type
           | | mk {A: Type} : Need(A)
           |
           |def instance bad [need: Need($A)]: TC(A) := TC.mk(A, Bool.false)
@@ -361,15 +361,15 @@ class TypeClassTests extends munit.FunSuite {
     assertEquals(ctorName(runProgram(p)), "Bool.true")
   }
 
-  test("instance candidate accepts cumulative capture") {
+  test("instance candidates over universe-polymorphic families capture the argument's own level") {
     val p =
       prelude +
         """
-          |struct Need (A: Sort(Level.one)) : Sort(Level.one)
-          | | mk {A: Sort(Level.one)} : Need(A)
+          |inductive Need (A: Sort($u)) : Sort(Level.max(Level.one, u))
+          | | mk {A: Sort($u)} : Need(A)
           |
-          |struct TC (A: Sort(Level.one)) : Sort(Level.one)
-          | | mk {A: Sort(Level.one)} (ok: Bool) : TC(A)
+          |inductive TC (A: Sort($u)) : Sort(Level.max(Level.one, u))
+          | | mk {A: Sort($u)} (ok: Bool) : TC(A)
           |
           |def instance needNat : Need(Nat) := Need.mk(Nat)
           |def instance high [need: Need($A)]: TC(A) := TC.mk(A, Bool.true)
@@ -386,7 +386,7 @@ class TypeClassTests extends munit.FunSuite {
     val p =
       prelude +
         """
-          |struct WantEq : Type
+          |inductive WantEq : Type
           | | mk (ok: Bool) : WantEq
           |
           |def instance natEq1 : DecEq(Nat) := DecEq.mk(Nat, Bool.true)
@@ -407,7 +407,7 @@ class TypeClassTests extends munit.FunSuite {
     val p =
       prelude +
         """
-          |struct WantEq : Type
+          |inductive WantEq : Type
           | | mk (ok: Bool) : WantEq
           |
           |def instance loopEq [eqA: DecEq(Nat)]: DecEq(Nat) := eqA

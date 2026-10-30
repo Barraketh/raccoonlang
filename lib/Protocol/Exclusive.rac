@@ -1,0 +1,66 @@
+import Protocol.Laws
+
+// The `Exclusive(K)` building block (resource_core.md §7): atoms are keys, the only step releases a key, and from a
+// duplicate-free inventory no valid configuration holds a key twice. A footprint morphism into it gives disjointness
+// for any protocol, with no further proof.
+namespace Exclusive {
+  open Protocol.{Reach, Valid}
+  open List.{Mem, Perm, Nodup, Subset}
+
+  inductive Step (K: Type) indices (A: List(K))(B: List(K)) : Prop
+   | drop (k: $K in Type) : Step(K, List.cons(k, List.nil(K)), List.nil(K))
+
+  // The step relation as one global, so every use names the same relation.
+  def rel (K: Type): Protocol.Rel(K) := fun (A: List(K))(B: List(K)): Prop => Exclusive.Step(K, A, B)
+
+  def proto (K: Type): Protocol.Proto := Protocol.Proto.mk(K, Exclusive.rel(K))
+
+  // The invariant: no duplicates, and nothing outside the initial keys.
+  def Good (K: Type)(I: List(K))(C: List(K)): Prop := And(Nodup(C), Subset(C, I))
+
+  def reach_good (K: Type)(I: List(K))(C: List(K))(r: Reach(Exclusive.proto(K), I, C))(n: Nodup(I)): Good(K, I, C) decreases structural(r) := {
+    match r returning Good(K, I, C) with
+    | .initial => Logic.both(n, fun (k: K)(m: Mem(K, k, I)): Mem(K, k, I) => m)
+    | .step A B fr s prev => {
+      let (nodup, within) := Exclusive.reach_good(K, I, List.append(A, fr), prev, n)
+      match s returning Good(K, I, List.append(B, fr)) with
+      | .drop k => Logic.both(nodup.right, fun (a: K)(m: Mem(K, a, fr)): Mem(K, a, I) => within(a, Mem.tail(a, k, fr, m)))
+    }
+    | .perm X Y prev p => {
+      let (nodup, within) := Exclusive.reach_good(K, I, X, prev, n)
+      Logic.both(Nodup.perm(X, Y, p, nodup),
+        fun (a: K)(m: Mem(K, a, Y)): Mem(K, a, I) => within(a, Mem.perm(a, Y, X, Perm.symm(X, Y, p), m)))
+    }
+  }
+
+  def valid_good (K: Type)(I: List(K))(C: List(K))(v: Valid(Exclusive.proto(K), I, C))(n: Nodup(I)): Good(K, I, C) := {
+    match v returning Good(K, I, C) with
+    | .mk C0 rest r => {
+      let (nodup, within) := Exclusive.reach_good(K, I, List.append(C0, rest), r, n)
+      Logic.both(List.Pairwise.split(K, List.Ne(K), C0, rest, nodup).left,
+        fun (a: K)(m: Mem(K, a, C0)): Mem(K, a, I) => within(a, Mem.append_left(a, C0, rest, m)))
+    }
+  }
+
+  // Jointly valid packets hold disjoint keys.
+  def disjoint (K: Type)(I: List(K))(A: List(K))(B: List(K))(v: Valid(Exclusive.proto(K), I, List.append(A, B)))(n: Nodup(I))
+      (k: K)(left: Mem(K, k, A))(right: Mem(K, k, B)): False :=
+    Nodup.disjoint(A, B, Exclusive.valid_good(K, I, List.append(A, B), v, n).left, k, left, right)
+
+  // Two jointly held keys are distinct.
+  def distinct (K: Type)(I: List(K))(a: K)(b: K)(v: Valid(Exclusive.proto(K), I, List.cons(a, List.cons(b, List.nil(K)))))(n: Nodup(I)):
+      Not(Eq(K, a, b)) := {
+    let (((apart, _), _), _) := Exclusive.valid_good(K, I, List.cons(a, List.cons(b, List.nil(K))), v, n)
+    apart
+  }
+
+  // No valid configuration holds a key twice.
+  def not_twice (K: Type)(I: List(K))(k: K)(v: Valid(Exclusive.proto(K), I, List.cons(k, List.cons(k, List.nil(K)))))(n: Nodup(I)): False :=
+    Exclusive.distinct(K, I, k, k, v, n)(Eq.refl(k))
+
+  // Every held key is an initial key.
+  def within (K: Type)(I: List(K))(C: List(K))(v: Valid(Exclusive.proto(K), I, C))(n: Nodup(I))(k: K)(m: Mem(K, k, C)): Mem(K, k, I) := {
+    let (_, inside) := Exclusive.valid_good(K, I, C, v, n)
+    inside(k, m)
+  }
+}

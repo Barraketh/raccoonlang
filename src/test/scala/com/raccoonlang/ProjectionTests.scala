@@ -56,7 +56,7 @@ class ProjectionTests extends munit.FunSuite {
   test("non-dependent projections: Pair.fst and Pair.snd") {
     val p =
       """
-        |struct Pair (A: Type)(B: Type) : Type
+        |inductive Pair (A: Type)(B: Type) : Type
         | | mk {A: Type}{B: Type} (fst: A)(snd: B) : Pair(A, B)
         |
         |def first (p: Pair($A1, $B1)): A1 := p.fst
@@ -79,7 +79,7 @@ class ProjectionTests extends munit.FunSuite {
         | | nil {A: Type} : Vec(A, Nat.zero)
         | | cons {A: Type} (tail: Vec(A, $n)) (head: A) : Vec(A, Nat.succ(n))
         |
-        |struct WrapIdx (A: Type) indices (n: Nat) : Type
+        |inductive WrapIdx (A: Type) indices (n: Nat) : Type
         | | mk {A: Type} (x: Vec(A, $n)) : WrapIdx(A, n)
         |
         |def get (A: Type)(n: Nat)(w: WrapIdx(A, n)): Vec(A, n) := w.x
@@ -102,7 +102,7 @@ class ProjectionTests extends munit.FunSuite {
         | | nil {A: Type} : Vec(A, Nat.zero)
         | | cons {A: Type} (tail: Vec(A, $n)) (head: A) : Vec(A, Nat.succ(n))
         |
-        |struct WrapIdx (A: Type) indices (n: Nat) : Type
+        |inductive WrapIdx (A: Type) indices (n: Nat) : Type
         | | mk {A: Type} (x: Vec(A, $n)) : WrapIdx(A, n)
         |
         |def useGet (A: Type)(n: Nat)(w: WrapIdx(A, n)): Vec(A, n) := w.x
@@ -118,7 +118,7 @@ class ProjectionTests extends munit.FunSuite {
         | | nil {A: Type} : Vec(A, Nat.zero)
         | | cons {A: Type} (tail: Vec(A, $n)) (head: A) : Vec(A, Nat.succ(n))
         |
-        |struct WrapIdx (A: Type) indices (n: Nat): Type
+        |inductive WrapIdx (A: Type) indices (n: Nat): Type
         | | mk {A: Type} (x: Vec(A, $n)) : WrapIdx(A, n)
         |
         |def useGet (w: WrapIdx($A, $n)): Vec(A, n) := w.x
@@ -134,7 +134,7 @@ class ProjectionTests extends munit.FunSuite {
         | | nil {A: Type} : Vec(A, Nat.zero)
         | | cons {A: Type} (tail: Vec(A, $n)) (head: A) : Vec(A, Nat.succ(n))
         |
-        |struct DepPair (A: Type) : Type
+        |inductive DepPair (A: Type) : Type
         | | mk {A: Type} (n: Nat)(v: Vec(A, n)) : DepPair(A)
         |
         |def getV (p: DepPair(Nat)): Vec(Nat, p.n) := p.v
@@ -146,7 +146,7 @@ class ProjectionTests extends munit.FunSuite {
   test("typecheck: later field projection can instantiate a family field with an earlier projection") {
     val p =
       """
-        |struct Sigma (A: Type)(B: A -> Type) : Type
+        |inductive Sigma (A: Type)(B: A -> Type) : Type
         | | mk {A: Type}{B: A -> Type} (fst: A)(snd: B(fst)) : Sigma(A, B)
         |
         |def getSnd (A: Type)(B: A -> Type)(p: Sigma(A, B)): B(p.fst) := p.snd
@@ -158,7 +158,7 @@ class ProjectionTests extends munit.FunSuite {
   test("typecheck: projection can quote a function-typed field") {
     val p =
       """
-        |struct HasFn : Type
+        |inductive HasFn : Type
         | | mk (f: Nat -> Nat) : HasFn
         |
         |def getFn (h: HasFn): Nat -> Nat := h.f
@@ -170,7 +170,7 @@ class ProjectionTests extends munit.FunSuite {
   test("typecheck: projection can quote a dependent function-typed field") {
     val p =
       """
-        |struct HasDepFn (A: Type)(B: A -> Type) : Type
+        |inductive HasDepFn (A: Type)(B: A -> Type) : Type
         | | mk {A: Type}{B: A -> Type} (f: (x: A) -> B(x)) : HasDepFn(A, B)
         |
         |def getDepFn (A: Type)(B: A -> Type)(h: HasDepFn(A, B)): (x: A) -> B(x) := h.f
@@ -188,7 +188,7 @@ class ProjectionTests extends munit.FunSuite {
         |inductive Foo (b: Box(Nat)) : Type
         | | intro {b: Box(Nat)} : Foo(b)
         |
-        |struct S : Type
+        |inductive S : Type
         | | mk (x: Foo(Box.mk(Nat))) : S
         |
         |def get (s: S): Foo(Box.mk(Nat)) := s.x
@@ -206,7 +206,7 @@ class ProjectionTests extends munit.FunSuite {
         |inductive Wrap (p: Pack) : Type
         | | intro {p: Pack} : Wrap(p)
         |
-        |struct S : Type
+        |inductive S : Type
         | | mk (x: Wrap(Pack.mk(Nat.zero))) : S
         |
         |def get (s: S): Wrap(Pack.mk(Nat.zero)) := s.x
@@ -218,7 +218,7 @@ class ProjectionTests extends munit.FunSuite {
   test("regression: projection from opaque struct-valued def stays neutral") {
     val p =
       """
-        |struct Pair (A: Type)(B: Type) : Type
+        |inductive Pair (A: Type)(B: Type) : Type
         | | mk {A: Type}{B: Type} (fst: A)(snd: B) : Pair(A, B)
         |
         |// Opaque on purpose
@@ -236,7 +236,7 @@ class ProjectionTests extends munit.FunSuite {
   test("regression: projection in type position from opaque struct constant stays neutral") {
     val p =
       """
-        |struct PairU (A: Sort($u1))(B: Sort($u2)) : Sort(Level.max(u1, u2))
+        |inductive PairU (A: Sort($u1))(B: Sort($u2)) : Sort(Level.max(u1, u2))
         | | mk {A: Sort($u1)}{B: Sort($u2)} (fst: A)(snd: B) : PairU(A, B)
         |
         |// Opaque on purpose
@@ -251,7 +251,7 @@ class ProjectionTests extends munit.FunSuite {
   test("regression: projection from stuck match returning a struct stays neutral") {
     val p =
       """
-        |struct Pair (A: Type)(B: Type) : Type
+        |inductive Pair (A: Type)(B: Type) : Type
         | | mk {A: Type}{B: Type} (fst: A)(snd: B) : Pair(A, B)
         |
         |// Opaque on purpose
@@ -275,7 +275,7 @@ class ProjectionTests extends munit.FunSuite {
   test("typecheck: struct output determined by erased binders supports explicit specialized projection") {
     val p =
       """
-        |struct ChooseLeft (A: Type)(B: Type) indices (Out: Type) : Type
+        |inductive ChooseLeft (A: Type)(B: Type) indices (Out: Type) : Type
         | | mk {A: Type}{B: Type} (x: A) : ChooseLeft(A, B, A)
         |
         |def getExplicit (A: Type)(B: Type)(w: ChooseLeft(A, B, A)): A := w.x
@@ -287,7 +287,7 @@ class ProjectionTests extends munit.FunSuite {
   test("negative: projection does not refine captured struct output from erased binders") {
     val p =
       """
-        |struct ChooseLeft (A: Type)(B: Type) indices (Out: Type) : Type
+        |inductive ChooseLeft (A: Type)(B: Type) indices (Out: Type) : Type
         | | mk {A: Type}{B: Type} (x: A) : ChooseLeft(A, B, A)
         |
         |def getCaptured (w: ChooseLeft($A, $B, $Out)): Out := w.x
@@ -314,7 +314,7 @@ class ProjectionTests extends munit.FunSuite {
         | | nil {A: Type} : Vec(A, Nat.zero)
         | | cons {A: Type} (tail: Vec(A, $n)) (head: A) : Vec(A, Nat.succ(n))
         |
-        |struct IndexedWrap (A: Type) indices (n: Nat) : Type
+        |inductive IndexedWrap (A: Type) indices (n: Nat) : Type
         | | mk {A: Type} (k: Nat)(x: Vec(A, k)) : IndexedWrap(A, k)
         |""".stripMargin
 
@@ -328,7 +328,7 @@ class ProjectionTests extends munit.FunSuite {
         | | nil {A: Type} : Vec(A, Nat.zero)
         | | cons {A: Type} (tail: Vec(A, $n)) (head: A) : Vec(A, Nat.succ(n))
         |
-        |struct Hidden (n: Nat) : Type
+        |inductive Hidden (n: Nat) : Type
         | | mk {m: Nat} (x: Vec(Nat, m)) : Hidden(Nat.zero)
         |
         |def bad (w: Hidden(Nat.zero)): Vec(Nat, Nat.zero) := w.x
@@ -342,14 +342,14 @@ class ProjectionTests extends munit.FunSuite {
     }
   }
 
-  test("negative: struct selector is rejected when a field has hidden dependencies") {
+  test("negative: a family whose field has a hidden dependency has no selectors") {
     val p =
       """
         |inductive Vec (A: Type) indices (n: Nat) : Type
         | | nil {A: Type} : Vec(A, Nat.zero)
         | | cons {A: Type} (tail: Vec(A, $n)) (head: A) : Vec(A, Nat.succ(n))
         |
-        |struct HiddenVec (A: Type) : Type
+        |inductive HiddenVec (A: Type) : Type
         | | mk {A: Type} (v: Vec(A, $n)) : HiddenVec(A)
         |
         |def sameLenLeft (v1: Vec(Nat, $n))(v2: Vec(Nat, n)): Nat := n
@@ -359,25 +359,26 @@ class ProjectionTests extends munit.FunSuite {
 
     LanguageParser.parseProgram(p) match {
       case Success(value, _, _) =>
-        intercept[NotFound] { Elaborator.elab(value, Prelude.test) }
+        intercept[NotFound] { Interpreter.run(Elaborator.elab(value, Prelude.test), Prelude.test) }
       case err: Failure =>
         fail(s"Failed to parse: $err, ${p.substring(err.curIdx)}")
     }
   }
 
-  test("negative: selecting from non-struct Prop family throws") {
+  test("every one-constructor family has selectors for its named fields, Prop ones included") {
     val p =
       """
         |inductive And (P: Prop)(Q: Prop) : Prop
         | | intro {P: Prop}{Q: Prop} (p: P)(q: Q) : And(P, Q)
         |
+        |def first (P: Prop)(Q: Prop)(h: And(P, Q)): P := h.p
         |def bad (P: Prop)(Q: Prop)(h: And(P, Q)): P := h.fst
         |""".stripMargin
 
     LanguageParser.parseProgram(p) match {
       case Success(value, _, _) =>
         val core = Elaborator.elab(value, Prelude.test)
-        intercept[NotAStruct] { Interpreter.run(core, Prelude.test) }
+        intercept[NotFound] { Interpreter.run(core, Prelude.test) }
       case err: Failure => fail(s"Failed to parse: $err, ${p.substring(err.curIdx)}")
     }
   }
@@ -403,7 +404,7 @@ class ProjectionTests extends munit.FunSuite {
   test("negative: unknown field name on struct throws NotFound") {
     val p =
       """
-        |struct Pair (A: Type)(B: Type) : Type
+        |inductive Pair (A: Type)(B: Type) : Type
         | | mk {A: Type}{B: Type} (fst: A)(snd: B) : Pair(A, B)
         |
         |def bad (A: Type)(B: Type)(p: Pair(A, B)): A := p.foo
@@ -417,24 +418,23 @@ class ProjectionTests extends munit.FunSuite {
     }
   }
 
-  test("invalid: struct with multiple constructors is rejected") {
+  test("the struct keyword is gone: a record is an inductive with one constructor") {
     val p =
       """
-        |struct Bad (A: Type) : Type
-        | | mk1 {A: Type} (a: A) : Bad(A)
-        | | mk2 {A: Type} (a: A) : Bad(A)
+        |struct Pair (A: Type)(B: Type) : Type
+        | | mk {A: Type}{B: Type} (fst: A)(snd: B) : Pair(A, B)
         |""".stripMargin
 
     LanguageParser.parseProgram(p) match {
-      case Success(value, _, _) => fail("Struct parsed successfully with multiple constructors")
-      case err: Failure         =>
+      case Success(_, _, _) => fail("struct parsed as a keyword")
+      case _: Failure       =>
     }
   }
 
   test("Prop structs may project Prop-valued fields") {
     val p =
       """
-        |struct And (P: Prop)(Q: Prop) : Prop
+        |inductive And (P: Prop)(Q: Prop) : Prop
         | | intro {P: Prop}{Q: Prop} (left: P)(right: Q) : And(P, Q)
         |
         |def andLeft (P: Prop)(Q: Prop)(h: And(P, Q)): P := h.left
@@ -447,7 +447,7 @@ class ProjectionTests extends munit.FunSuite {
   test("negative: Prop struct projection into Type is restricted when the field is not forced") {
     val p =
       """
-        |struct Nonempty (A: Type) : Prop
+        |inductive Nonempty (A: Type) : Prop
         | | intro {A: Type} (val: A) : Nonempty(A)
         |
         |def bad (h: Nonempty(Nat)): Nat := h.val
@@ -461,19 +461,16 @@ class ProjectionTests extends munit.FunSuite {
     }
   }
 
-  test("invalid: struct with '_' anonymous field is rejected") {
+  test("an anonymous field gets no selector, while the named ones do") {
     val p =
       """
-        |struct Bad (A: Type) : Type
-        | | mk {A: Type} (_: A) : Bad(A)
+        |inductive Tagged (A: Type) : Type
+        | | mk {A: Type} (_: A)(tag: Nat) : Tagged(A)
+        |
+        |def tagOf (t: Tagged(Nat)): Nat := t.tag
         |""".stripMargin
 
-    LanguageParser.parseProgram(p) match {
-      case Success(value, _, _) =>
-        val core = Elaborator.elab(value, Prelude.test)
-        intercept[InvalidStruct] { Interpreter.run(core, Prelude.test) }
-      case err: Failure => fail(s"Failed to parse: $err, ${p.substring(err.curIdx)}")
-    }
+    typecheckDecls(p)
   }
 
 }

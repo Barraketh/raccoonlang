@@ -22,6 +22,14 @@ class UniverseTests extends munit.FunSuite {
     }
   }
 
+  /** The program is rejected with a type mismatch: a value is used at exactly its universe. */
+  private def rejectsMismatch(src: String): Unit =
+    LanguageParser.parseProgram(src) match {
+      case Success(value, _, _) =>
+        intercept[TypeMismatch](Interpreter.run(Elaborator.elab(value, Prelude.test), Prelude.test))
+      case err: Failure => fail(s"Failed to parse: $err, ${src.substring(err.curIdx)}")
+    }
+
   test("Type 0 fits in Type 1 (simple ascription with inductive)") {
     val p =
       """
@@ -69,46 +77,25 @@ class UniverseTests extends munit.FunSuite {
     }
   }
 
-  test("Ascribe higher sort: let s : Sort 2 := Type") {
-    val p =
+  test("No cumulativity: let s : Sort 2 := Type is a type mismatch") {
+    rejectsMismatch(
       """
         |{
         |  let s : Sort(Level.succ(Level.succ(Level.zero))) := Type
         |  s
         |}
         |""".stripMargin
-
-    val res = runProgram(p)
-    res match {
-      case Value.VSort(lvl) => assertEquals(lvl, Value.Level.zero)
-      case other            => fail(s"Expected Sort 0 value (Type), got: $other")
-    }
+    )
   }
 
-  test("def f(u: Level)(A: Sort u)(x: A): A := x; apply at u=1, A=Nat, x=Nat.zero") {
-    val p =
-      """
-        |def f (u: Level)(A: Sort(u))(x: A): A := x
-        |
-        |{ f(Level.one, Nat, Nat.zero) }
-        |""".stripMargin
-
-    val res = runProgram(p)
-    res match {
-      case v => assertEquals(PrettyPrinter.print(v), "0")
-    }
+  test("def f(u: Level)(A: Sort u)(x: A): A := x; apply at u=0, A=Nat; u=1 does not take Nat") {
+    val f = "def f (u: Level)(A: Sort(u))(x: A): A := x\n\n"
+    assertEquals(PrettyPrinter.print(runProgram(f + "{ f(Level.zero, Nat, Nat.zero) }\n")), "0")
+    rejectsMismatch(f + "{ f(Level.one, Nat, Nat.zero) }\n")
   }
 
-  test("Cumulativity: Type fits into Sort 2 via let ascription") {
-    val p =
-      """
-        |{
-        |  let s : Sort(Level.succ(Level.succ(Level.zero))) := Type
-        |  s
-        |}
-        |""".stripMargin
-
-    val res = runProgram(p)
+  test("A let ascription converts with its value's own universe: Type fits Sort 1") {
+    val res = runProgram("{\n  let s : Sort(Level.one) := Type\n  s\n}\n")
     res match {
       case Value.VSort(lvl) => assertEquals(lvl, Value.Level.zero)
       case other            => fail(s"Expected Sort 0 value, got: $other")
@@ -117,20 +104,15 @@ class UniverseTests extends munit.FunSuite {
 
   // Downward non-cumulativity is covered by: Type 1 does not fit in Type 0 (let x : Type := Type fails)
 
-  test("Function result at lower universe accepted by higher ascription (up by 2)") {
-    val p =
-      """
-        |axiom up2 (u: Level)(A: Sort(u)): Sort(Level.succ(Level.succ(u)))
-        |
-        |{ up2(Level.one, Nat) }
-        |""".stripMargin
-
-    val res = runProgram(p)
-    // The application stays opaque. Just assert its type is Sort 3.
+  test("A function's result type follows its level argument (up by 2), which must be the argument's own") {
+    val up2 = "axiom up2 (u: Level)(A: Sort(u)): Sort(Level.succ(Level.succ(u)))\n\n"
+    val res = runProgram(up2 + "{ up2(Level.zero, Nat) }\n")
+    // The application stays opaque. Just assert its type is Sort 2.
     res.tpe match {
-      case Value.VSort(l) => assertEquals(l, Value.Level.succ(Value.Level.succ(Value.Level.one)))
-      case other          => fail(s"Expected result type Sort 3, got: $other")
+      case Value.VSort(l) => assertEquals(l, Value.Level.succ(Value.Level.one))
+      case other          => fail(s"Expected result type Sort 2, got: $other")
     }
+    rejectsMismatch(up2 + "{ up2(Level.one, Nat) }\n")
   }
 
   test("Reject lowering: cannot return Sort (succ u) where Sort u is expected") {
@@ -206,16 +188,17 @@ class UniverseTests extends munit.FunSuite {
   }
 
   // Instead of constructing Sort in term position, test level-parametric usage via a term at the appropriate level
-  test("Level-parametric id at u=1 works for Nat") {
-    val p =
-      """
-        |def idAt (u: Level)(A: Sort(u))(x: A): A := x
-        |
-        |{ idAt(Level.one, Nat, Nat.zero) }
-        |""".stripMargin
-
-    val res = runProgram(p)
-    assertEquals(PrettyPrinter.print(res), "0")
+  test("Level-parametric id at u=0 works for Nat, and a captured level is inferred") {
+    assertEquals(
+      PrettyPrinter.print(
+        runProgram("def idAt (u: Level)(A: Sort(u))(x: A): A := x\n\n{ idAt(Level.zero, Nat, Nat.zero) }\n")
+      ),
+      "0"
+    )
+    assertEquals(
+      PrettyPrinter.print(runProgram("def idAny (A: Sort($u))(x: A): A := x\n\n{ idAny(Nat, Nat.zero) }\n")),
+      "0"
+    )
   }
 
   test("Level.leq: constant can be covered by RHS atom") {

@@ -1,0 +1,18 @@
+// Small logic helpers over the prelude. `And.intro`, `Or.inl` and `Or.inr` take their propositions as explicit erased
+// binders; these capture them from the proofs instead.
+namespace Logic {
+  def both (x: $a in Prop)(y: $b in Prop): And(a, b) := And.intro(a, b, x, y)
+
+  def inl (x: $a in Prop)(b: Prop): Or(a, b) := Or.inl(b, x)
+
+  def inr (a: Prop)(y: $b in Prop): Or(a, b) := Or.inr(a, y)
+
+  // The prelude's `False.elim` targets `Sort(u)`, which excludes propositions.
+  def absurd (h: False)(C: Prop): C := {
+    match h returning C with
+  }
+
+  def falseNeTrue (h: Eq(Bool, Bool.false, Bool.true))(C: Prop): C := {
+    match h returning C with
+  }
+}

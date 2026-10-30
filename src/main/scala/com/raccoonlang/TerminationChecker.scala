@@ -68,6 +68,9 @@ object TerminationChecker {
 
       case CA.DecreaseSpec.Measure(term, sp) =>
         val initialMeasure = TypeChecker.checkTerm(term, bodyEnv)
+        // Every call evaluates the measure again on its arguments without consuming them, so it is a read extent of
+        // its own (L6), and its reads are no uses. A `structural` or `lexicographic` clause only names parameters.
+        TypeChecker.readBoundary(initialMeasure.lin)
         val proofRejection = "decrease measures must live in Type; proofs in Prop cannot be used"
         requireInductiveMetric(initialMeasure.value, sp, Some(proofRejection))
         val quoted = initialMeasure.residual
@@ -122,7 +125,8 @@ object TerminationChecker {
           )
           found
         }
-      case _ => false
+      // Structure eta: a field projection of a neutral value at an eligible type is one of its fields.
+      case _ => StructEta.fields(root).exists(_.exists(field => isFieldOrStrictSubterm(candidate, field)))
     }
 
   private def isFieldOrStrictSubterm(candidate: Value, field: Value): Boolean =

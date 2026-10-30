@@ -304,7 +304,7 @@ class TypePatternTests extends munit.FunSuite {
         |inductive Answer : Type
         | | tt : Answer
         |
-        |struct ChooseLeft (A: Type)(B: Type) indices (Out: Type) : Type
+        |inductive ChooseLeft (A: Type)(B: Type) indices (Out: Type) : Type
         | | mk {A: Type}{B: Type} (x: A) : ChooseLeft(A, B, A)
         |
         |def bad (w: ChooseLeft(Nat, Answer, Answer)): Type := Type
@@ -416,5 +416,38 @@ class TypePatternTests extends munit.FunSuite {
       case err: Failure =>
         fail(s"Failed to parse: $err, ${p.substring(err.curIdx)}")
     }
+  }
+
+  /** The capture the declaration refuses, and the source text its error points at. */
+  private def refusedCapture(src: String): (String, String) = {
+    val e = intercept[CaptureWithoutOpening](typecheckDecls(src))
+    (e.name, e.span.map(sp => src.substring(sp.start, sp.end)).getOrElse(""))
+  }
+
+  test("a level capture with no opening path is refused at its declaration") {
+    // Under Level.max the level is no capture path, so a call would find $u unbound.
+    assertEquals(refusedCapture("def f (A: Sort(Level.max($u, $v))) : Nat := 0\n"), ("u", "$u"))
+    assertEquals(refusedCapture("def f (A: Lin(Level.succ(Level.max($u, $v)))) : Nat := 0\n"), ("u", "$u"))
+    assertEquals(refusedCapture("def f (A: Univ($k, Level.max($u, $v))) : Nat := 0\n"), ("u", "$u"))
+  }
+
+  test("a kind capture under Kind.join is refused at its declaration") {
+    assertEquals(refusedCapture("def f (A: Univ(Kind.join($k1, $k2), $u)) : Nat := 0\n"), ("k1", "$k1"))
+  }
+
+  test("a capture with no opening path in a constraint is refused at its declaration") {
+    assertEquals(refusedCapture("def f (xs: List($A in Sort(Level.max($u, $v)))) : Nat := 0\n"), ("u", "$u"))
+    assertEquals(refusedCapture("def f (x: $A in Sort(Level.max($u, $v))) : Nat := 0\n"), ("u", "$u"))
+  }
+
+  test("captures with an opening path still check and bind at a call") {
+    val src =
+      """
+        |def levelOf (A: Sort(Level.succ($u))) : Level := u
+        |def kindOf (A: Univ($k, $u)) : Kind := k
+        |def len (xs: List($A in Sort($u))) : Nat := List.length(xs)
+        |levelOf(Type)
+        |""".stripMargin
+    assertEquals(PrettyPrinter.print(runProgram(src)), PrettyPrinter.print(runProgram("Level.zero\n")))
   }
 }
