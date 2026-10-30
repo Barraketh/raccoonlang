@@ -407,9 +407,16 @@ object Interpreter {
 
   /**
    * The environment with `decl` checked and added. An error the declaration's checks raise without a location, such as
-   * a redeclared global, is located at the declaration.
+   * a redeclared global, is located at the declaration. This is where a host stack overflow while checking it becomes
+   * `EvaluationTooDeep`, located at the whole declaration (docs/kernel.md, "Evaluation depth"): no boundary inside a
+   * declaration catches one.
    */
   def evalDecl(decl: Decl, env: Env): Env = TypeChecker.at(decl.span) {
+    try checkDecl(decl, env)
+    catch { case _: StackOverflowError => throw EvaluationTooDeep() }
+  }
+
+  private def checkDecl(decl: Decl, env: Env): Env =
     decl match {
       case Decl.ConstDecl(name, ty, body, span, isInstance) =>
         body match {
@@ -452,10 +459,7 @@ object Interpreter {
         lazy val published: Env =
           members.foldLeft(env)((cur, member) => cur.putLazyGlobal(member.name, () => values(member.name)))
         published
-
     }
-
-  }
 
   /**
    * Runs a program over its prelude. Before any declaration is evaluated, a `:= builtin` declared by the program itself
@@ -479,18 +483,30 @@ object Interpreter {
     val env =
       p.decls.foldLeft(initialEnv(prelude)) { case (curWorlds, decl) => evalDecl(decl, curWorlds) }
     p.body.map { b =>
-      val value = TypeChecker.checkTerm(b, env).value
       val span = TypeChecker.sourceSpan(b)
-      entryResult(value.tpe) match {
-        case Some(result) =>
-          rejectLinearGlobal(LinearGlobal.EntryResult, result, span)
-          force(evalApply(value, Vector(ProtocolPrimitives.rootSupply)))
-        case None =>
-          rejectLinearGlobal(LinearGlobal.ProgramResult, value.tpe, span)
-          force(value)
-      }
+      // The program's boundary, as `evalDecl` is a declaration's: an overflow while checking or evaluating the body is
+      // `EvaluationTooDeep` at the whole body.
+      try {
+        val value = TypeChecker.checkTerm(b, env).value
+        entryResult(value.tpe) match {
+          case Some(result) =>
+            rejectLinearGlobal(LinearGlobal.EntryResult, result, span)
+            force(evalApply(value, Vector(ProtocolPrimitives.rootSupply)))
+          case None =>
+            rejectLinearGlobal(LinearGlobal.ProgramResult, value.tpe, span)
+            force(value)
+        }
+      } catch { case _: StackOverflowError => throw EvaluationTooDeep(Some(span)) }
     }
   }
+
+  /**
+   * The program's result as the CLI prints it. Printing forces the proof calls inside it (docs/kernel.md, "Proof
+   * calls"), which is evaluation of the body, so an overflow there is `EvaluationTooDeep` at the body, `body`.
+   */
+  def show(result: Value, body: Span): String =
+    try PrettyPrinter.print(result)
+    catch { case _: StackOverflowError => throw EvaluationTooDeep(Some(body)) }
 
   /**
    * The result type `R` when `tpe` is an entry's, `(sup: Protocol.Supply) -> R`. `R` mentions no linear binder (S1), so

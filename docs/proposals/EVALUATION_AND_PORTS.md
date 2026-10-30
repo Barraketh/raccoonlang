@@ -115,4 +115,7 @@ These are already settled and not reassessed:
      type only for a head that is no lambda, whose application's type needs
      it. With proofs suspended, it saves little (`GpuClient` 1.37 s → 1.31 s).*
   3. #4, #5 and #6;
+     *Status of #4: done on `perf-evaluation`: the CLI runs on a `--stack`
+     thread, 256 MB by default, and an overflow is `EvaluationTooDeep` at the
+     declaration or the body, printing the result included.*
   4. then re-measure, and decide on #7 and on §2's policy question 4.

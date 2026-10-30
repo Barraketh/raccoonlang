@@ -88,22 +88,7 @@ class PackedListTests extends munit.FunSuite {
     }
 
   /** Run on a thread with a small stack, so a recursion per element would overflow. */
-  private def onSmallStack[T](body: => T): T = {
-    var result: Option[Either[Throwable, T]] = None
-    val thread = new Thread(
-      null,
-      () =>
-        result = Some(
-          try Right(body)
-          catch { case t: Throwable => Left(t) }
-        ),
-      "small",
-      512 * 1024
-    )
-    thread.start()
-    thread.join()
-    result.get.fold(throw _, identity)
-  }
+  private def onSmallStack[T](body: => T): T = Execution.onStack(512 * 1024)(body)
 
   private def assertSameList(left: Value, right: Value): Unit = {
     assert(ValueEquivalence.defEq(left, right), s"$left and $right do not convert")

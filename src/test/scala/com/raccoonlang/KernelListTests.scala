@@ -83,40 +83,10 @@ class KernelListTests extends munit.FunSuite {
   }
 
   /** Run on a thread with a large stack, for interpreted recursion as deep as a long list. */
-  private def onLargeStack[T](body: => T): T = {
-    var result: Option[Either[Throwable, T]] = None
-    val thread = new Thread(
-      null,
-      () =>
-        result = Some(
-          try Right(body)
-          catch { case t: Throwable => Left(t) }
-        ),
-      "large",
-      1L << 30
-    )
-    thread.start()
-    thread.join()
-    result.get.fold(throw _, identity)
-  }
+  private def onLargeStack[T](body: => T): T = Execution.onStack(1L << 30)(body)
 
   /** Run on a thread with a 1 MiB stack, so a recursion per element or per nested append would overflow. */
-  private def onSmallStack[T](body: => T): T = {
-    var result: Option[Either[Throwable, T]] = None
-    val thread = new Thread(
-      null,
-      () =>
-        result = Some(
-          try Right(body)
-          catch { case t: Throwable => Left(t) }
-        ),
-      "small",
-      1L << 20
-    )
-    thread.start()
-    thread.join()
-    result.get.fold(throw _, identity)
-  }
+  private def onSmallStack[T](body: => T): T = Execution.onStack(1L << 20)(body)
 
   // ------------ Lists ------------
 

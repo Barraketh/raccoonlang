@@ -844,6 +844,18 @@ host stack, and `NatValueTooLarge` for a closed power too large for the JVM. A
 program that only such a proof made fail may now check. Evaluating a checked
 term raises no other error.
 
+### Evaluation depth
+
+Checking and evaluation recurse on the host stack. The CLI runs its whole
+pipeline on a thread whose stack `--stack` sets, 256 MB unless it is given. A
+stack overflow is caught only at the boundary of a declaration, the prelude's
+included, or of the program's body, and becomes `EvaluationTooDeep`, located
+at the whole declaration or body; no rule inside them observes one. The body's
+boundary covers checking and evaluating it, applying an entry to the root
+supply, and printing the result, which forces the proof calls in it. A demanded
+proof call runs where it is demanded, so its depth adds to its demander's. An
+overflow while loading, parsing or elaborating is not a diagnostic.
+
 ## Axioms
 
 Any module may declare an `axiom`. Its type is checked; its consistency is the

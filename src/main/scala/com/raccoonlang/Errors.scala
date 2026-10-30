@@ -71,6 +71,7 @@ object TypeError {
     case e: NonDecreasingRecursiveCall      => e.copy(span = Some(sp))
     case e: InvalidRecursiveOccurrence      => e.copy(span = Some(sp))
     case e: NatValueTooLarge                => e.copy(span = Some(sp))
+    case e: EvaluationTooDeep               => e.copy(span = Some(sp))
     case e: UserAxiom                       => e.copy(span = Some(sp))
     case e: ProgramBuiltin                  => e.copy(span = Some(sp))
     case e: LinearReused                    => e.copy(span = Some(sp))
@@ -429,6 +430,16 @@ final case class InvalidRecursiveOccurrence(function: String, reason: String, sp
 /** A closed Nat power whose result a JVM integer cannot represent; a representation limit, not a budget. */
 final case class NatValueTooLarge(exponent: BigInt, span: Option[Span] = None) extends TypeError {
   override def msg: String = s"Nat power with exponent $exponent is too large to represent"
+}
+
+/**
+ * Checking a declaration, or checking, evaluating and showing the program's body, exhausted the host stack
+ * (docs/kernel.md, "Evaluation depth"). It is located at the whole declaration or body: a stack overflow is caught only
+ * there.
+ */
+final case class EvaluationTooDeep(span: Option[Span] = None) extends TypeError {
+  override def msg: String =
+    "Evaluation is too deep: it exhausted the stack, whose size the command line sets with --stack"
 }
 
 // Linear types (docs/kernel.md, "Linear types").

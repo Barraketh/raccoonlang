@@ -496,6 +496,11 @@ sbt 'run --root examples examples/nats.rac'
 `--root <dir>` can be repeated. `import Lib.Nat` searches source roots for `Lib/Nat.rac`. When no root is specified,
 the entry file's directory is used.
 
+Loading, checking, evaluation and printing run on a thread whose stack is `--stack <size>` bytes, 256MB unless it is
+given. A size is a positive whole number of bytes, or of KiB, MiB or GiB with the suffix `k`, `m` or `g` in either case,
+as for `-Xss`: `512k`, `256m`, `1g`. A declaration whose checking exhausts that stack, or a program body whose checking,
+evaluation or printing does, is `EvaluationTooDeep` there. See [evaluation depth](docs/kernel.md#evaluation-depth).
+
 Axioms declared by the program or its imports are unchecked assumptions. The CLI lists them on standard error, and
 `--no-user-axioms` rejects them instead, at the first one's declaration. The prelude's axioms are the trusted bootstrap
 and are always allowed; a custom `--prelude`'s axioms are listed on standard error in both modes. See
