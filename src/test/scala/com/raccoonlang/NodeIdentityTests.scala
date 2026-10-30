@@ -198,11 +198,14 @@ class NodeIdentityTests extends munit.FunSuite {
     )
     val succCaseIdentity = succCaseZ.copy(body = CA.Term.LocalRef(binderRef, span))
 
-    val matchA = CA.Term.Match(CA.Term.LocalRef(scrutRef, span), None, Vector(zCase, succCaseZ), span, NodeId.fresh())
+    val matchA =
+      CA.Term.Match(CA.Term.LocalRef(scrutRef, span), None, Vector(zCase, succCaseZ), None, None, span, NodeId.fresh())
     val matchB = CA.Term.Match(
       CA.Term.LocalRef(scrutRef, span),
       None,
       Vector(zCase, succCaseIdentity),
+      None,
+      None,
       span,
       NodeId.fresh()
     )

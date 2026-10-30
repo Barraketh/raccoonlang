@@ -117,7 +117,7 @@ object ValueQuote {
       }
 
     def inlineCase(c: ElabAst.Case): ElabAst.Case =
-      ElabAst.Case(c.ctorName, c.argRefs.map(_.map(reindex)), inlineTerm(c.body), c.span)
+      ElabAst.Case(c.ctorName, c.argRefs.map(_.map(reindex)), inlineTerm(c.body), c.span, c.equation.map(reindex))
   }
 
   /**

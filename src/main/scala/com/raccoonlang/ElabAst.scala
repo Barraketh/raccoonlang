@@ -132,5 +132,15 @@ object ElabAst {
     def name: String = localRef.name
   }
 
-  final case class Case(ctorName: String, argRefs: Vector[Option[CoreAst.LocalRef]], body: Term, span: Span)
+  /**
+   * `equation` is the local of the equation its match names, `match h : e`, bound after the fields to a proof of
+   * `Eq(T, e, C(fields))` (docs/kernel.md, "Match equations").
+   */
+  final case class Case(
+      ctorName: String,
+      argRefs: Vector[Option[CoreAst.LocalRef]],
+      body: Term,
+      span: Span,
+      equation: Option[CoreAst.LocalRef] = None
+  )
 }

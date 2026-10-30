@@ -85,4 +85,124 @@ class MatchRefinementTests extends munit.FunSuite {
 
     intercept[InvalidErasedConstructorBinder] { typecheckDecls(p) }
   }
+
+  // A constructor's parameters are the scrutinee type's own, never unknowns, so an index equation that is stuck (here on
+  // an unknown `f`) leaves each field at the scrutinee's parameters (main-new f598d033). Before, the fields were over
+  // fresh parameters that nothing bound: "expected A#1, actual A#2".
+  private val programs = new ProgramFixtures.Programs(Prelude.default, allowUserAxioms = false)
+
+  private val copyableV =
+    """
+      |inductive V (A: Type) indices (n: Nat) : Type
+      | | nil {A: Type} : V(A, Nat.zero)
+      | | cons {A: Type} (tail: V(A, $n)) (head: A) : V(A, Nat.succ(n))
+      |""".stripMargin
+
+  test("a stuck index equation leaves a field at the scrutinee's type parameter") {
+    def program(result: String, body: String): String =
+      copyableV +
+        s"""
+           |def headOr (A: Type)(B: Type)(f: (m: Nat) -> Nat)(n: Nat)(v: V(A, f(n)))(d: $result): $result := {
+           |  match v returning $result with
+           |  | V.nil => d
+           |  | V.cons tail head => $body
+           |}
+           |""".stripMargin
+    programs.run(program("A", "head"))
+    // A lambda capturing the field closes over the scrutinee's parameter.
+    programs.run(program("A", "(fun (u: Unit): A => head)(Unit.unit)"))
+    programs.assertErrorAt[TypeMismatch](program("B", "head"), "head", "=> head")
+  }
+
+  test("a stuck index equation leaves a field at the scrutinee's kind and level parameters") {
+    // `A`'s kind and level are the scrutinee's variables: the field is of kind `k`, so it is tracked, used once here,
+    // and the constructor's own captures `$k` and `$u` are solved by linking `A`.
+    val kindPolymorphic =
+      """
+        |inductive V (A: Univ($k, $u)) indices (n: Nat) : Univ(k, u)
+        | | nil {A: Univ($k, $u)} : V(A, Nat.zero)
+        | | cons (head: $A in Univ($k, $u))(tail: V(A, $n)) : V(A, Nat.succ(n))
+        |""".stripMargin
+    def program(body: String): String =
+      kindPolymorphic +
+        s"""
+           |def headOr (A: Univ($$k, $$u))(f: (m: Nat) -> Nat)(n: Nat)(v: V(A, f(n)))(d: A): A := {
+           |  match v returning A with
+           |  | V.nil => d
+           |  | V.cons head tail => $body
+           |}
+           |""".stripMargin
+    programs.run(program("head"))
+    programs.assertErrorAt[LinearReused](
+      kindPolymorphic +
+        """
+          |def pair (A: Univ($k, $u))(x: A)(y: A): Nat := 0
+          |
+          |def both (A: Univ($k, $u))(f: (m: Nat) -> Nat)(n: Nat)(v: V(A, f(n))): Nat := {
+          |  match v returning Nat with
+          |  | V.nil => 0
+          |  | V.cons head tail => pair(A, head, head)
+          |}
+          |""".stripMargin,
+      "head",
+      "head)"
+    )
+  }
+
+  test("a stuck index equation leaves a linear family's field at the scrutinee's parameter") {
+    val linearV =
+      """
+        |inductive LV (A: Lin($u)) indices (n: Nat) : Lin(u)
+        | | nil {A: Lin($u)} : LV(A, Nat.zero)
+        | | cons {A: Lin($u)} (tail: LV(A, $n)) (head: A) : LV(A, Nat.succ(n))
+        |""".stripMargin
+    programs.run(
+      linearV +
+        """
+          |def headOr (A: Lin($u))(f: (m: Nat) -> Nat)(n: Nat)(v: LV(A, f(n)))(d: A): A := {
+          |  match v returning A with
+          |  | LV.nil => d
+          |  | LV.cons tail head => head
+          |}
+          |""".stripMargin
+    )
+  }
+
+  test("a stuck index equation keeps every constructor's branch required") {
+    def program(cases: String*): String =
+      copyableV +
+        """
+          |def f (A: Type)(g: (m: Nat) -> Nat)(k: Nat)(v: V(A, g(k))): Unit := {
+          |  match v returning Unit with
+          |""".stripMargin + cases.mkString("", "\n", "\n}\n")
+    val nil = "  | V.nil => Unit.unit"
+    val cons = "  | V.cons tail head => Unit.unit"
+    programs.run(program(nil, cons))
+    intercept[MissingCase](programs.runChecked(program(nil)))
+    intercept[MissingCase](programs.runChecked(program(cons)))
+  }
+
+  test("a witness narrower than its parameter is refined as an index: some(x) exists only at copyable types") {
+    // `some`'s witness `$A in Sort($u)` cannot be linked to an `A: Univ($k, $u)` of variable kind; the branch's
+    // refinement solves `k := copy` instead, as for an index, so the field is copyable there.
+    programs.run(
+      """
+        |inductive CopyOpt (A: Univ($k, $u)) : Univ(k, u)
+        | | none {A: Univ($k, $u)} : CopyOpt(A)
+        | | some (x: $A in Sort($u)) : CopyOpt(A)
+        |
+        |def twice (A: Univ($k, $u))(o: CopyOpt(A)): Nat := {
+        |  match o returning Nat with
+        |  | CopyOpt.none => 0
+        |  | CopyOpt.some x => 1
+        |}
+        |
+        |def get (A: Type)(o: CopyOpt(A))(d: A): Prod(A, A) := {
+        |  match o returning Prod(A, A) with
+        |  | CopyOpt.none => Prod.mk(A, A, d, d)
+        |  | CopyOpt.some x => Prod.mk(A, A, x, x)
+        |}
+        |""".stripMargin
+    )
+  }
 }

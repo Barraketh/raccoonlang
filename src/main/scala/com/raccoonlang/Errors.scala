@@ -19,6 +19,9 @@ object TypeError {
     case e: DuplicateCase                   => e.copy(span = Some(sp))
     case e: UnreachableCase                 => e.copy(span = Some(sp))
     case e: MissingCase                     => e.copy(span = Some(sp))
+    case e: RedundantCase                   => e.copy(span = Some(sp))
+    case e: MatchEquationUnavailable        => e.copy(span = Some(sp))
+    case e: MatchEquationIndexed            => e.copy(span = Some(sp))
     case e: NotAType                        => e.copy(span = Some(sp))
     case e: NonInductiveMatch               => e.copy(span = Some(sp))
     case e: InvalidSingleConstructorMatch   => e.copy(span = Some(sp))
@@ -117,6 +120,25 @@ final case class UnreachableCase(ctor: String, span: Option[Span] = None) extend
 
 final case class MissingCase(ctor: String, span: Option[Span] = None) extends TypeError {
   override def msg: String = s"Missing case : $ctor"
+}
+
+/** A match that names its equation, `match h : e`, where no equation can be stated: `reason` says why. */
+final case class MatchEquationUnavailable(reason: String, span: Option[Span] = None) extends TypeError {
+  override def msg: String = s"This match cannot name its equation: $reason"
+}
+
+/**
+ * A named equation in the case of `ctor` of an indexed family, whose refinement left the constructor's indices apart
+ * from the scrutinee's, so the scrutinee and the constructor value have different types.
+ */
+final case class MatchEquationIndexed(ctor: String, span: Option[Span] = None) extends TypeError {
+  override def msg: String =
+    s"The equation of the case $ctor relates values of different types: its refinement does not equate the constructor's indices with the scrutinee's"
+}
+
+/** A wildcard case that stands for no constructor: the other cases name every reachable one. */
+final case class RedundantCase(span: Option[Span] = None) extends TypeError {
+  override def msg: String = "Redundant wildcard case: the other cases name every reachable constructor"
 }
 
 final case class VarAlreadyLinked(id: Long, span: Option[Span] = None) extends TypeError {

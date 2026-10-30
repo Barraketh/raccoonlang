@@ -9,22 +9,47 @@ import com.raccoonlang.Ledger.LinearInfo
 
 object MatchChecker {
 
+  /** A reachable constructor: its fields and result type at the scrutinee's parameters, and its branch's refinement. */
   private final case class ReachableCtor(
       head: ConstructorHead,
       fieldArgs: Vector[Value],
+      resultTy: Value,
       branchEqStore: EqStore
   )
 
-  private final case class FreshCtor(fieldArgs: Vector[Value], captures: Vector[Value], resultTy: Value)
+  private[raccoonlang] final case class FreshCtor(fieldArgs: Vector[Value], captures: Vector[Value], resultTy: Value)
 
-  private def freshCtor(head: ConstructorHead): FreshCtor =
+  /**
+   * A constructor's telescope at `family`, the scrutinee's type: a fresh value for each stored field and type-pattern
+   * capture, and the constructor's result type over them. The constructor's witnesses of the family's parameters, its
+   * erased binders and the captures named like parameters, are linked to the instance's own parameter arguments, so the
+   * fields' types are at the scrutinee's parameters, as are the result's parameter arguments. Parameters are uniform,
+   * so this needs no equation of the scrutinee's: it unifies each witness, a fresh variable, with its argument,
+   * refining only the telescope's fresh variables, which solves the levels and kinds the witness's type captures. A
+   * witness whose type is narrower than its parameter's, such as `$A in Sort($u)` for a parameter `A: Univ($k, $u)`,
+   * may not unify with an argument that has the parameter's type; it stays fresh, and the branch's refinement relates
+   * it as an index. So a stuck index equation leaves every other field at the scrutinee's parameters, where before it
+   * left them over fresh parameters that nothing bound.
+   */
+  private[raccoonlang] def freshCtor(head: ConstructorHead, family: InductiveFamilyInstance): FreshCtor =
     head.tpe match {
       case pi: VPi =>
         val fresh = BinderOps.freshen(pi)
-        val args = pi.binders.map(binder => fresh(binder.localRef))
+        val binders = pi.binders.map(binder => fresh(binder.localRef))
         val captures = pi.binders.flatMap(_.captures).map(capture => fresh(capture.localRef))
-        FreshCtor(args.drop(head.numErased), captures, pi.codomain(fresh))
+        val result = pi.codomain(fresh)
+        val freshIds = DepSet.from((binders ++ captures).collect { case Var(_, id, _) => id })
+        val resultArgs = inductiveFamilyOf(result).map(_.args).getOrElse {
+          throw WTF(s"Constructor ${head.name}'s result $result is not a family instance")
+        }
+        // Each argument is unified on its own: a failure leaves the store as it was, and that witness fresh.
+        val params = (0 until family.meta.paramCount).foldLeft(EqStore.empty.allow(freshIds)) { (store, idx) =>
+          ValueEquivalence.tryUnify(resultArgs(idx), family.args(idx), store).getOrElse(store)
+        }
+        def atParams(value: Value): Value = ValueOps.materialize(value, params)
+        FreshCtor(binders.drop(head.numErased).map(atParams), captures.map(atParams), atParams(result))
 
+      // A constructor without binders belongs to a family without parameters.
       case _ => FreshCtor(Vector.empty, Vector.empty, head.tpe)
     }
 
@@ -88,10 +113,13 @@ object MatchChecker {
     family.meta.constructorNames.flatMap { ctorName =>
       env(ctorName) match {
         case h: ConstructorHead =>
-          val FreshCtor(fieldArgs, _, resultTy) = freshCtor(h)
+          val FreshCtor(fieldArgs, _, resultTy) = freshCtor(h, family)
           val ctorValue = ConstructorValue(h, fieldArgs, resultTy)
-          val valueRefinable = rootRefinable ++ ctorValue.synDeps
-          val typeRefinable = scrutTpe.synDeps ++ ctorValue.synDeps
+          // The constructor value's own unknowns: its fields and the captures its parameters do not determine. What it
+          // shares with the scrutinee type is the scrutinee's parameters, which only the result refinement may refine.
+          val ctorRefinable = ctorValue.synDeps -- scrutTpe.synDeps
+          val valueRefinable = rootRefinable ++ ctorRefinable
+          val typeRefinable = scrutTpe.synDeps ++ ctorRefinable
 
           val valueRefinement = tryUnify(scrut, ctorValue, valueRefinable)
           val refinement = valueRefinement match {
@@ -105,7 +133,7 @@ object MatchChecker {
             case Left(_: Stuck)         => Some(EqStore.empty)
           }
 
-          branchStore.map(store => ReachableCtor(h, fieldArgs, store))
+          branchStore.map(store => ReachableCtor(h, fieldArgs, resultTy, store))
 
         case _ => throw UnknownConstructor(ctorName, family.head.name)
       }
@@ -113,6 +141,7 @@ object MatchChecker {
   }
 
   private def allowLargeElimination(
+      family: InductiveFamilyInstance,
       scrutTpe: Value,
       reachable: Vector[ReachableCtor]
   ): Boolean = {
@@ -120,8 +149,8 @@ object MatchChecker {
     if (reachable.length > 1) return false
 
     val only = reachable.head
-    val FreshCtor(fields1, captures1, res1) = freshCtor(only.head)
-    val FreshCtor(fields2, captures2, res2) = freshCtor(only.head)
+    val FreshCtor(fields1, captures1, res1) = freshCtor(only.head, family)
+    val FreshCtor(fields2, captures2, res2) = freshCtor(only.head, family)
 
     val refinable0 = DepSet.unionAll(Vector(scrutTpe.synDeps, res1.synDeps, res2.synDeps))
 
@@ -147,22 +176,23 @@ object MatchChecker {
   }
 
   private def checkPropElimination(
-      inductiveName: String,
+      family: InductiveFamilyInstance,
       scrutTpe: Value,
       motiveTy: Value,
       reachable: => Vector[ReachableCtor],
       span: Span
   ): Unit =
     if (getUniverse(scrutTpe) == PropTpe && getUniverse(motiveTy) != PropTpe) {
-      if (!allowLargeElimination(scrutTpe, reachable))
-        throw PropEliminationRestricted(inductiveName, motiveTy, Some(span))
+      if (!allowLargeElimination(family, scrutTpe, reachable))
+        throw PropEliminationRestricted(family.head.name, motiveTy, Some(span))
     }
 
   private final case class PlannedBranch(
       br: CA.Case,
       args: Vector[Value],
       branchEnv: Env,
-      store: EqStore
+      store: EqStore,
+      equation: Option[Value]
   )
 
   private final case class CheckedBranch(
@@ -193,12 +223,16 @@ object MatchChecker {
     if (args.length != br.argRefs.length)
       throw ArityMismatch(args.length, br.argRefs.length, Some(br.span))
     val linearFields = args.map(arg => Linearity.isLinear(arg.tpe))
-    val branchEnv = br.argRefs.zip(args).zip(linearFields).zipWithIndex.foldLeft(planned.branchEnv) {
+    val fieldsEnv = br.argRefs.zip(args).zip(linearFields).zipWithIndex.foldLeft(planned.branchEnv) {
       case (curEnv, (((argRef, argVal), linear), index)) =>
         argRef match {
           case Some(ref) => curEnv.putLocal(ref, argVal, linear = linear, alias = Some(scrutinee.field(index)))
           case None      => curEnv
         }
+    }
+    // The equation, a proof, after the fields; its match's checker made one exactly for the cases that bind it.
+    val branchEnv = br.equation.zip(planned.equation).fold(fieldsEnv) { case (ref, value) =>
+      fieldsEnv.putLocal(ref, value)
     }
     val branchRes = expected match {
       case Some(motive) =>
@@ -207,7 +241,7 @@ object MatchChecker {
       case None => checkTerm(br.body, branchEnv)
     }
     CheckedBranch(
-      EA.Case(br.ctorName, br.argRefs, branchRes.residual, br.span),
+      EA.Case(br.ctorName, br.argRefs, branchRes.residual, br.span, br.equation),
       branchRes,
       planned.store
     )
@@ -224,7 +258,12 @@ object MatchChecker {
     val inductiveName = inductiveFamily.head.name
     val inductiveMeta = inductiveFamily.meta
     val inductiveCtorNames = inductiveMeta.constructorNames
-    val cases = t match {
+    def storedArity(ctorName: String): Int =
+      env(ctorName) match {
+        case head: ConstructorHead => head.totalArity - head.numErased
+        case _                     => throw WTF(s"Inductive metadata points to non-constructor $ctorName", Some(span))
+      }
+    val (written, wildcard, equationSpan) = t match {
       case single: CA.Term.MatchOne =>
         if (inductiveCtorNames.length != 1)
           throw InvalidSingleConstructorMatch(
@@ -233,19 +272,15 @@ object MatchChecker {
             Some(span)
           )
         val ctorName = inductiveCtorNames.head
-        val head = env(ctorName) match {
-          case constructor: ConstructorHead => constructor
-          case _ => throw WTF(s"Inductive metadata points to non-constructor $ctorName", Some(span))
-        }
-        val storedArity = head.totalArity - head.numErased
-        if (single.fieldRefs.length != storedArity)
+        val arity = storedArity(ctorName)
+        if (single.fieldRefs.length != arity)
           throw InvalidDestructuring(
-            s"expected $storedArity stored fields, got ${single.fieldRefs.length}",
+            s"expected $arity stored fields, got ${single.fieldRefs.length}",
             Some(span)
           )
-        Vector(CA.Case(ctorName, true, single.fieldRefs.map(Some(_)), single.body, span))
+        (Vector(CA.Case(ctorName, true, single.fieldRefs.map(Some(_)), single.body, span)), None, None)
       case named: CA.Term.Match =>
-        named.cases.map { c =>
+        val resolved = named.cases.map { c =>
           val candidates =
             if (c.isFullyQualified) inductiveMeta.constructors.collect {
               case ctor if ctor.canonicalName == c.ctorName => ctor.canonicalName
@@ -260,13 +295,56 @@ object MatchChecker {
             case many         => throw AmbiguousName(c.ctorName, many, Some(c.span))
           }
         }
+        (resolved, named.wildcard, named.equation)
     }
 
-    val resolvedCases = cases
+    // A named equation is `Eq(T, e, C(fields))`, so `T` must be copyable data: `Eq` ranges over no proofs and has no
+    // linear carrier (L8). Checked once, at the match, with the `Eq` it uses.
+    val equality = equationSpan.map { at =>
+      getUniverse(scrutTpe) match {
+        case VUniv(kind, _) if kind.isCopy =>
+        case PropTpe =>
+          throw MatchEquationUnavailable("its scrutinee is a proof, and `Eq` does not range over proofs", Some(at))
+        case _ =>
+          throw MatchEquationUnavailable("its scrutinee is linear, and `Eq` has no linear carrier (L8)", Some(at))
+      }
+      MatchEquation.validate(env).fold(reason => throw MatchEquationUnavailable(reason, Some(at)), identity)
+    }
 
-    resolvedCases.groupBy(_.ctorName).find(_._2.length > 1).foreach { case (ctor, duplicateCases) =>
+    /**
+     * What the case `br` binds its equation to, when the match names one: a hypothesis of `Eq(T, e, C(fields))`, at
+     * the scrutinee's value `branchScrut` and its type in the case, and `constructed`, the constructor applied to the
+     * case's fields at its own result type. In an indexed family the two need the case's refinement to share a type;
+     * when it left them apart the equation is `MatchEquationIndexed`.
+     */
+    def hypothesis(br: CA.Case, branchScrut: Value, constructed: Value): Option[Value] =
+      br.equation.zip(equality).map { case (ref, eq) =>
+        val proposition = MatchEquation.proposition(eq, branchScrut, constructed).getOrElse {
+          throw MatchEquationIndexed(br.ctorName, equationSpan)
+        }
+        FreshVar.freshVar(ref.name, proposition)
+      }
+
+    written.groupBy(_.ctorName).find(_._2.length > 1).foreach { case (ctor, duplicateCases) =>
       throw DuplicateCase(ctor, Some(duplicateCases(1).span))
     }
+
+    /**
+     * The match's cases: the written ones and, for a wildcard, a case for each constructor no written case names that
+     * `standsFor` holds of, which are exactly those a missing case would be reported for. Each is the case written out
+     * at the wildcard, with `_` for every field and a fresh copy of its body, so its refinement, ledger, termination
+     * check and value identities are its own. A wildcard stands for at least one constructor.
+     */
+    def withWildcard(standsFor: String => Boolean): Vector[CA.Case] =
+      wildcard.fold(written) { w =>
+        val expanded =
+          inductiveCtorNames.filter(name => standsFor(name) && !written.exists(_.ctorName == name)).map { ctorName =>
+            val fields = Vector.fill(storedArity(ctorName))(None)
+            CA.Case(ctorName, true, fields, CA.freshCopy(w.body), w.span, w.equation)
+          }
+        if (expanded.isEmpty) throw RedundantCase(Some(w.span))
+        written ++ expanded
+      }
 
     lazy val reachableByType: Vector[ReachableCtor] =
       computeReachableCtors(scrut, inductiveFamily, env)
@@ -274,36 +352,46 @@ object MatchChecker {
     val checkedSourceMotive = t.motive.map(syntax => checkTypeTerm(syntax, env))
     val expectedMotive = checkedSourceMotive.orElse(contextualExpected)
     expectedMotive.foreach(motive => assertType(motive.value))
-    expectedMotive.foreach(motive => checkPropElimination(inductiveName, scrutTpe, motive.value, reachableByType, span))
+    expectedMotive.foreach(motive =>
+      checkPropElimination(inductiveFamily, scrutTpe, motive.value, reachableByType, span)
+    )
 
     // The branches follow the scrutinee on every path, so their bindings see what it consumed.
     val branchBaseEnv = after(env, scrutChecked.lin)
     val constructor = ConstructorValue.unapply(scrut)
     val plannedBranches: Vector[PlannedBranch] = constructor match {
       case Some((head, fields)) =>
-        resolvedCases.find(_.ctorName != head.name).foreach { c =>
+        val cases = withWildcard(_ == head.name)
+        cases.find(_.ctorName != head.name).foreach { c =>
           throw UnreachableCase(c.ctorName, Some(c.span))
         }
-        val br = resolvedCases.find(_.ctorName == head.name).getOrElse(throw MissingCase(head.name))
-        Vector(PlannedBranch(br, fields, branchBaseEnv, EqStore.empty))
+        val br = cases.find(_.ctorName == head.name).getOrElse(throw MissingCase(head.name))
+        // The match's value is then its case's, so the case binds its equation to the proof evaluation gives it.
+        val proof = br.equation.zip(equality).map(_ => MatchEquation.proof(env, scrut))
+        Vector(PlannedBranch(br, fields, branchBaseEnv, EqStore.empty, proof))
 
       case None =>
         val reachableMap = reachableByType.map(info => info.head.name -> info).toMap
+        val cases = withWildcard(reachableMap.contains)
         inductiveCtorNames.flatMap { ctorName =>
           reachableMap.get(ctorName) match {
             case None =>
-              resolvedCases.find(_.ctorName == ctorName).foreach { c =>
+              cases.find(_.ctorName == ctorName).foreach { c =>
                 throw UnreachableCase(ctorName, Some(c.span))
               }
               None
             case Some(info) =>
-              val br = resolvedCases.find(_.ctorName == ctorName).getOrElse(throw MissingCase(ctorName))
+              val br = cases.find(_.ctorName == ctorName).getOrElse(throw MissingCase(ctorName))
+              val store = info.branchEqStore
+              val fields = info.fieldArgs.map(arg => ValueOps.materialize(arg, store))
+              def constructed = ConstructorValue(info.head, fields, ValueOps.materialize(info.resultTy, store))
               Some(
                 PlannedBranch(
                   br,
-                  info.fieldArgs.map(arg => ValueOps.materialize(arg, info.branchEqStore)),
-                  ValueOps.materializeEnv(branchBaseEnv, info.branchEqStore),
-                  info.branchEqStore
+                  fields,
+                  ValueOps.materializeEnv(branchBaseEnv, store),
+                  store,
+                  hypothesis(br, ValueOps.materialize(scrut, store), constructed)
                 )
               )
           }
@@ -341,7 +429,7 @@ object MatchChecker {
         }
       val value = Interpreter.evalTypeTerm(residual, env)
       assertType(value)
-      checkPropElimination(inductiveName, scrutTpe, value, reachableByType, span)
+      checkPropElimination(inductiveFamily, scrutTpe, value, reachableByType, span)
       checkedBranches.foreach { branch =>
         val branchValue = ValueOps.materialize(branch.checkedBody.value, branch.store)
         val branchExpected = ValueOps.materialize(value, branch.store)

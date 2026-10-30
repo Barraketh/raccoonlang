@@ -276,11 +276,42 @@ object LanguageParser {
       }
       .named("Case")
 
+  /**
+   * `| _ => e`, a wildcard case: it binds no fields. It is tried before `matchCase`, which commits to a constructor
+   * once it has read `|`.
+   */
+  private def wildcardCase(implicit sourceId: Option[SourceId]): Parser[Wildcard] =
+    (sym("|") ~ P("_") ~ (wsSep ~ argName.spanned(sourceId)).rep(0) ~ sym("=>") ~/ skipAllWs ~ term ~ lineSep)
+      .flatSpanned(sourceId)
+      .map { case (fields, body, span) =>
+        fields.headOption.foreach { field =>
+          throw ParseError(field.span.start, field.span.start, "A wildcard case binds no fields")
+        }
+        Wildcard(body, span)
+      }
+      .named("WildcardCase")
+
+  /** `h :` in `match h : e`, the equation the match names. */
+  private def matchEquation(implicit sourceId: Option[SourceId]): Parser[MatchEquation] =
+    (ident.flatSpanned(sourceId) ~ sym(':')).map { case (name, span) => MatchEquation(name, span) }
+
+  /** A wildcard case is the last case of its match, so a match has at most one. */
   private def matchP(implicit sourceId: Option[SourceId]): Parser[Match] = {
-    (kw("match") ~/ term ~ (kw("returning") ~/ typeTerm).? ~
-      (kwTight("with") ~/ lineSep) ~ matchCase.rep(0)).flatSpanned(sourceId).map { case (scrut, motive, cases, sp) =>
-      Match(scrut, motive, cases, sp)
-    }
+    val anyCase = wildcardCase.map[Either[Wildcard, Case]](Left(_)) | matchCase.map(Right(_))
+    (kw("match") ~/ matchEquation.? ~ term ~ (kw("returning") ~/ typeTerm).? ~ (kwTight("with") ~/ lineSep) ~
+      anyCase.rep(0))
+      .flatSpanned(sourceId)
+      .map { case (equation, scrut, motive, written, sp) =>
+        written.dropRight(1).collectFirst { case Left(wildcard) => wildcard }.foreach { wildcard =>
+          throw ParseError(
+            wildcard.span.start,
+            wildcard.span.start,
+            "A wildcard case is the last case of its match; a nested match takes every case after it, so brace it"
+          )
+        }
+        val cases = written.collect { case Right(c) => c }
+        Match(scrut, motive, cases, written.lastOption.flatMap(_.left.toOption), equation, sp)
+      }
   }
 
   sealed trait TermTrailer

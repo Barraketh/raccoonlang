@@ -174,6 +174,18 @@ Refinement unification has three outcomes:
 For refinement-based coverage, only `Contradiction` justifies excluding a branch.
 Failed attempts expose no partial substitutions.
 
+A branch's fields enter fresh, at the scrutinee type's own parameter arguments:
+the constructor's witnesses of the family's parameters, its erased binders and
+the captures named like parameters, are linked to them. Parameters are uniform,
+so this needs no equation. Refinement then relates the scrutinee to the
+constructor applied to those fields, and the constructor's result indices to
+the scrutinee type's. A stuck equation keeps the constructor reachable and
+provides no refinement; the fields keep their types at the scrutinee's
+parameters. A witness whose type is narrower than its parameter's, such as
+`$A in Sort($u)` for a parameter `A: Univ($k, $u)`, cannot always be linked;
+refinement relates it as it relates an index, so `k := Kind.copy` in that
+branch.
+
 After structural comparison and variable refinement, an exhaustive classifier
 identifies data constructor values, fully applied Type-family instances,
 Type-valued function types, and Type universes as rigid forms. Different
@@ -280,6 +292,69 @@ annotation, or must remain inside the branch.
 
 The feature introduces no runtime value form. Its equality rule is structure
 eta, below.
+
+## Wildcard cases
+
+A match's last case may be `| _ => e`. It stands for one case for each
+reachable constructor that the written cases do not name, which are exactly
+the constructors a missing case would be reported for: the scrutinee's own when
+it is a known constructor, and otherwise every constructor whose result is not
+apart from the scrutinee's type, so a stuck equation keeps one. Each case binds
+its constructor's fields anonymously and checks `e` under that constructor's
+own refinement, as the case written out with `_` for every field would. A
+wildcard that stands for no constructor is `RedundantCase`, at the wildcard;
+one that is not last, a second one, or one that binds fields is a parse error.
+
+The checked match is the expansion, one case per constructor in declaration
+order, and each case has its own copy of `e` whose function types, lambdas and
+matches have fresh node identities (`CoreAst.freshCopy`): two expansions may
+check to different residual code, since their refinements differ, so they must
+not share an identity. Evaluation, conversion, the ledger and the termination
+checker see only written-out cases. So a wildcard over a constructor with a
+linear field drops that field, as `_` does (L4, affine use); each expansion is
+its own path, on which a linear local may be used once; and in a read extent
+the expansions only read, with separation checked at every call of each.
+A diagnostic inside an expansion is located in `e`, but does not name its
+constructor.
+
+## Match equations
+
+`match h : e returning M with …` binds `h` in every case, after the case's
+fields: in the case of constructor `C` with fields `x̄`, `h : Eq(T, e, C(x̄))`,
+where `T` is the scrutinee's type and `e` the scrutinee, both read through the
+case's refinement, and `C(x̄)` is at the constructor's own result type. Nothing
+else changes: the cases, the motive and coverage are as for `match e`, and
+neither the motive nor another hypothesis is rewritten by the equation; a proof
+uses `h` with `Eq.subst` or `Eq.substProp`. Each case a wildcard stands for binds
+`h` at its own constructor. `h` is a local of the cases only, not of the
+scrutinee or the motive, and a field may not share its name.
+
+- **Copyable data.** `T` must be in a `Sort`. `Eq` has no linear carrier (L8),
+  so a scrutinee of linear or variable kind is `MatchEquationUnavailable`, at
+  `h`, and so is a proof, since `Eq` ranges over no proofs.
+- **Indexed families.** The equation relates values of one type. In an indexed
+  family, a case's refinement must therefore equate the constructor's indices
+  with the scrutinee's, as it does at a variable index, or the case is
+  `MatchEquationIndexed`, as at a stuck index such as `f(n)`.
+- **The equality family.** The equation's `Eq` is the global `Eq`, when that is
+  exactly the prelude's equality family, `Eq (A: Sort($u)) indices (x: A)(y: A)
+  : Prop` whose one constructor is `Eq.refl (x: $A in Sort($u)) : Eq(A, x, x)`,
+  checked at the match (`MatchEquation.validate`). Otherwise a named equation is
+  `MatchEquationUnavailable`, so no prelude or program can make `h` state
+  something false.
+- **Evaluation.** A case runs only when the scrutinee's value is its
+  constructor applied to the fields' values, or, at a structure eta type, is
+  viewed as one; `h` is then bound to `Eq.refl` of that value. A blocked match
+  binds nothing. A case the checker takes for a known constructor is checked
+  with that same proof, since the match's value is then the case's; every other
+  case is checked with `h` a hypothesis.
+- **The ledger.** `h` is a proof, so it is never tracked and may be used
+  freely, and the copyable `e` puts nothing linear in the proposition.
+
+It is safe because `h` adds to each case a hypothesis that holds whenever the
+case runs, by reflexivity; a case no run reaches, such as one whose refinement
+is stuck, is checked under an unprovable hypothesis, as it is already checked
+against impossible field values. Evaluation never reduces by `h`.
 
 ## Structure eta and projections
 

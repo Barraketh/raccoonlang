@@ -455,6 +455,8 @@ object Elaborator {
                 field.span
               )
             ),
+            wildcard = None,
+            equation = None,
             field.span
           )
 
@@ -1014,17 +1016,27 @@ object Elaborator {
       }
     case b: SA.Term.Body =>
       elabBodyStatements(b.statements, b.out, env.enterOpenScope, b.span)
-    case SA.Term.Match(scrut, motive, cases, sp) =>
+    case SA.Term.Match(scrut, motive, cases, wildcard, equation, sp) =>
+      // The equation is bound in every case's scope after its fields, the wildcard's included, not in the scrutinee or
+      // the motive.
+      def withEquation(caseEnv: ResolveEnv): (Option[CA.LocalRef], ResolveEnv) =
+        equation match {
+          case Some(eq) =>
+            val (ref, next) = caseEnv.bindRequired(eq.name, eq.span)
+            (Some(ref), next)
+          case None => (None, caseEnv)
+        }
       CA.Term.Match(
         elabTerm(scrut, env),
         motive.map(elabType(_, env)),
         cases.map { c =>
           val caseEnv = env.enterLocalScope
-          val (argRefs, bodyEnv) =
+          val (argRefs, fieldsEnv) =
             c.argNames.foldLeft((Vector.empty[Option[CA.LocalRef]], caseEnv)) { case ((curRefs, curEnv), argName) =>
               val (ref, nextEnv) = curEnv.bind(argName)
               (curRefs :+ ref, nextEnv)
             }
+          val (equationRef, bodyEnv) = withEquation(fieldsEnv)
           val (ctorName, isFullyQualified) =
             if (c.useShortName) (c.ctorPath.head, false)
             else {
@@ -1033,8 +1045,14 @@ object Elaborator {
                 throw LocalCaseHead(first, Some(c.span))
               (globalName(env.resolveGlobalBinding(c.ctorPath, c.span)), true)
             }
-          CA.Case(ctorName, isFullyQualified, argRefs, elabTerm(c.body, bodyEnv), c.span)
+          CA.Case(ctorName, isFullyQualified, argRefs, elabTerm(c.body, bodyEnv), c.span, equationRef)
         },
+        // A wildcard binds no field: the fields of the cases it stands for are anonymous.
+        wildcard.map { w =>
+          val (equationRef, bodyEnv) = withEquation(env.enterLocalScope)
+          CA.Wildcard(elabTerm(w.body, bodyEnv), w.span, equationRef)
+        },
+        equation.map(_.span),
         sp,
         NodeId.fresh()
       )

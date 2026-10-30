@@ -156,7 +156,7 @@ object PrettyPrinter {
     case CoreAst.Term.Derive(_, _)               => printCoreTerm(t)
     case CoreAst.Term.Select(_, _, _)            => printCoreTerm(t)
     case CoreAst.Term.Lam(_, _, _, _, _, _, _)   => s"(${printCoreTerm(t)})"
-    case CoreAst.Term.Match(_, _, _, _, _)       => s"(${printCoreTerm(t)})"
+    case _: CoreAst.Term.Match                   => s"(${printCoreTerm(t)})"
     case CoreAst.Term.MatchOne(_, _, _, _, _, _) => s"(${printCoreTerm(t)})"
     case CoreAst.Term.Body(_, _, _)              => s"(${printCoreTerm(t)})"
     case CoreAst.Term.Pi(_, _, _, _)             => s"(${printCoreTerm(t)})"
@@ -166,7 +166,7 @@ object PrettyPrinter {
     case CoreAst.Term.Lam(ty, _, body, _, _, recursion, _) =>
       val decreaseStr = recursion.map(r => s" ${printDecreaseSpec(r.decreases)}").getOrElse("")
       s"fun ${printBinders(ty.binders)}: ${printTypeTerm(ty.out)}$decreaseStr => ${printCoreTerm(body)}"
-    case m @ CoreAst.Term.Match(_, _, _, _, _)       => printMatch(m)
+    case m: CoreAst.Term.Match                       => printMatch(m)
     case m @ CoreAst.Term.MatchOne(_, _, _, _, _, _) => printMatchOne(m)
     case b: CoreAst.Term.Body                        => printBody(b)
     case CoreAst.Term.Select(base, field, _)         => s"${printTermAtom(base)}[$field]"
@@ -195,8 +195,10 @@ object PrettyPrinter {
   private def printMatch(m: CoreAst.Term.Match): String = {
     val scrutStr = printTermAtom(m.scrut)
     val motiveStr = m.motive.map(motive => s" returning ${printTypeTerm(motive)}").getOrElse("")
-    val casesStr = m.cases.map(printCase).mkString(" ")
-    s"match $scrutStr$motiveStr with $casesStr"
+    val casesStr = (m.cases.map(printCase) ++ m.wildcard.map(w => s"| _ => ${printCoreTerm(w.body)}")).mkString(" ")
+    val equationStr = (m.cases.flatMap(_.equation) ++ m.wildcard.flatMap(_.equation)).headOption
+      .fold("")(ref => s"${ref.name} : ")
+    s"match $equationStr$scrutStr$motiveStr with $casesStr"
   }
 
   private def printMatchOne(m: CoreAst.Term.MatchOne): String = {
@@ -353,7 +355,8 @@ object PrettyPrinter {
     val scrutStr = printElabTermAtom(m.scrut)
     val motiveStr = m.motive.map(motive => s" returning ${printElabTypeTerm(motive)}").getOrElse("")
     val casesStr = m.cases.map(printElabCase).mkString(" ")
-    s"match $scrutStr$motiveStr with $casesStr"
+    val equationStr = m.cases.flatMap(_.equation).headOption.fold("")(ref => s"${ref.name} : ")
+    s"match $equationStr$scrutStr$motiveStr with $casesStr"
   }
 
   /**

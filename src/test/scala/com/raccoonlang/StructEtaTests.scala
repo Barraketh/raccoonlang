@@ -118,4 +118,48 @@ class StructEtaTests extends munit.FunSuite {
       "Eq.refl(t)"
     )
   }
+
+  // KERNEL_FOLLOWUPS 1.3: applying a neutral function value gives a neutral application, whatever made it neutral: a
+  // stuck application of an axiom whose codomain is a function type, a stuck match, here a cast along an axiom, or a
+  // projection of a call's result.
+  test("applying a stuck application, a stuck match or a projection of a call is a neutral application") {
+    run(
+      """
+        |axiom g (n: Nat): (m: Nat) -> Nat
+        |
+        |def h (k: Nat): Nat := g(k)(2)
+        |def again (k: Nat): Eq(Nat, h(k), g(k)(2)) := Eq.refl(g(k)(2))
+        |
+        |def Endo : Prop := (x: True) -> True
+        |axiom ax : Eq(Prop, Endo, Endo)
+        |
+        |def castThenApply (f: Endo)(t: True): True := Eq.mp(ax, f)(t)
+        |def closed : True := castThenApply(fun (x: True): True => x, True.intro)
+        |
+        |inductive Fns : Type
+        | | mk (f: (n: Nat) -> Nat)(g: (n: Nat) -> Nat) : Fns
+        |
+        |axiom make (n: Nat) : Fns
+        |def first (n: Nat): Nat := make(n).f(n)
+        |def firstAgain (n: Nat): Eq(Nat, first(n), make(n).f(n)) := Eq.refl(make(n).f(n))
+        |
+        |def Good (n: Nat): Prop := And(True, (m: Nat) -> Eq(Nat, m, m))
+        |
+        |def good (n: Nat): Good(n) decreases structural(n) := {
+        |  match n returning Good(n) with
+        |  | Nat.zero => And.intro(True, (m: Nat) -> Eq(Nat, m, m), True.intro, fun (m: Nat): Eq(Nat, m, m) => Eq.refl(m))
+        |  | Nat.succ k => {
+        |    let ih := good(k)
+        |    And.intro(True, (m: Nat) -> Eq(Nat, m, m), True.intro, fun (m: Nat): Eq(Nat, m, m) => ih.right(m))
+        |  }
+        |}
+        |""".stripMargin
+    )
+    // Distinct arguments stay apart.
+    assertErrorAt[TypeMismatch](
+      "axiom g (n: Nat): (m: Nat) -> Nat\n\ndef bad (k: Nat): Eq(Nat, g(k)(2), g(k)(3)) := Eq.refl(g(k)(2))\n",
+      "(g(k)(2))",
+      "Eq.refl(g(k)(2))"
+    )
+  }
 }

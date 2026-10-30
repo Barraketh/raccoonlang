@@ -301,12 +301,14 @@ object Interpreter {
       m.cases.find(c => c.ctorName == ctorName).getOrElse(throw UnknownConstructor(ctorName, "", Some(m.span)))
     if (args.length != branch.argRefs.length)
       throw ArityMismatch(branch.argRefs.length, args.length, Some(branch.span))
-    val newEnv = args.zip(branch.argRefs).foldLeft(env) { case (curEnv, (argV, argRef)) =>
+    val fieldsEnv = args.zip(branch.argRefs).foldLeft(env) { case (curEnv, (argV, argRef)) =>
       argRef match {
         case Some(ref) => curEnv.putLocal(ref, argV)
         case None      => curEnv
       }
     }
+    // A named equation, after the fields: the scrutinee is the case's constructor applied to them, so reflexivity.
+    val newEnv = branch.equation.fold(fieldsEnv)(ref => fieldsEnv.putLocal(ref, MatchEquation.proof(env, scrut)))
     evalTerm(branch.body, newEnv)
   }
 

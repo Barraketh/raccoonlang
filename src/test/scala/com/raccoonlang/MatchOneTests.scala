@@ -36,7 +36,7 @@ class MatchOneTests extends munit.FunSuite {
     case m: CA.Term.MatchOne                 => Vector(m) ++ matchOnes(m.body) ++ matchOnes(m.scrut)
     case CA.Term.Body(lets, res, _)          => lets.flatMap(l => matchOnes(l.value)) ++ matchOnes(res)
     case CA.Term.Lam(_, _, body, _, _, _, _) => matchOnes(body)
-    case CA.Term.Match(scrut, _, cases, _, _) =>
+    case CA.Term.Match(scrut, _, cases, _, _, _, _) =>
       matchOnes(scrut) ++ cases.flatMap(c => matchOnes(c.body))
     case CA.Term.App(fn, args, _)   => matchOnes(fn) ++ args.flatMap(matchOnes)
     case CA.Term.Select(base, _, _) => matchOnes(base)

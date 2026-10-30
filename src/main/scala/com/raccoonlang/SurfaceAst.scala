@@ -97,12 +97,24 @@ object SurfaceAst {
     // Lambda: fun (x : A)(y: B): B => body
     final case class Lam(header: FuncHeader, body: Term, span: Span) extends Term
 
+    /**
+     * A match's cases, then its wildcard case if it has one, which is always its last. `equation` is the equation it
+     * names, `match h : e`, bound in every case.
+     */
     final case class Match(
         scrut: Term,
         motive: Option[TypeTerm],
         cases: Vector[Case],
+        wildcard: Option[Wildcard],
+        equation: Option[MatchEquation],
         span: Span
     ) extends Term
+
+    /** `h` in `match h : e`, and where it is written. */
+    final case class MatchEquation(name: String, span: Span)
+
+    /** `| _ => body`: a case for each reachable constructor no other case of its match names. */
+    final case class Wildcard(body: Term, span: Span)
 
     sealed trait BindingPattern {
       def span: Span

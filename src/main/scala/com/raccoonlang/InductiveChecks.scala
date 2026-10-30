@@ -372,6 +372,7 @@ object InductiveChecks {
       InductiveMeta(
         decl.ctors.map(ctor => ConstructorMeta(ctor.shortName, ctor.canonicalName)),
         decl.header.binders.length,
+        decl.header.params.length,
         decl.ctors.length == 1,
         initialPositiveArgs
       )

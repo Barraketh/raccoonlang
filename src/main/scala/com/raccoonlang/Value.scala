@@ -421,11 +421,13 @@ object Value {
 
   /**
    * `selectable` holds for a family with one constructor, which has a selector for each named field; `eta` for one that
-   * also has no indices and no recursive field, and is not in `Prop`.
+   * also has no indices and no recursive field, and is not in `Prop`. The family's arguments are its `paramCount`
+   * parameters, then its indices.
    */
   final case class InductiveMeta(
       constructors: Vector[ConstructorMeta],
       familyArity: Int,
+      paramCount: Int,
       selectable: Boolean,
       positiveArgs: DepSet,
       eta: Option[EtaInfo] = None
@@ -434,6 +436,7 @@ object Value {
       positiveArgs.isEmpty || positiveArgs.max < familyArity,
       "Inductive positive argument indexes must be in range"
     )
+    require(paramCount >= 0 && paramCount <= familyArity, "Inductive parameters are a prefix of its arguments")
 
     lazy val constructorNames: Vector[String] = constructors.map(_.canonicalName)
   }

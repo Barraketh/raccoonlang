@@ -20,13 +20,14 @@ model, and a gap it finds is the model's to close.
 | 1.2 | Results take their body's type, not the declared codomain (gone with cumulativity) | bug | new | 17 |
 | 1.3 | Applying a stuck application, or a projection of a call (fixed) | bug | new | — |
 | 1.4 | Smaller defects: an unlocated internal error, `AlreadyDefined` without a span, open shadowing | bug | new | — |
+| 1.5 | Branch fields typed at fresh parameters when an index equation is stuck (fixed) | bug | port | — |
 | 2.1 | Structure eta (implemented) | expressiveness | port | — |
 | 2.2 | Positivity of stuck computations (implemented) | expressiveness | port | 18 |
 | 2.3 | Bundled protocol families (implemented) | expressiveness | follows | — |
 | 2.4 | Structural recursion on indexed families with variable indices | expressiveness | new | 16 |
 | 2.5 | Mutual inductives and mutual recursion | expressiveness | port | — |
-| 2.6 | Wildcard case | expressiveness | port | — |
-| 2.7 | Match equations | expressiveness | port | — |
+| 2.6 | Wildcard case (implemented) | expressiveness | port | — |
+| 2.7 | Match equations (implemented) | expressiveness | port | — |
 | 2.8 | Partial application and lambdas in types | expressiveness | new | 3 |
 | 2.9 | Implicit arguments on definitions and inferred erased binders | expressiveness | partly port | — |
 | 3.1 | Kind polymorphism (decided and implemented) | design | new | 10 |
@@ -80,7 +81,9 @@ This also makes cumulativity at results (`Sort ≤ Lin`) work.
 ### 1.3 Applying a stuck application, or a projection of a call
 
 **Fixed 2026-10-30** with structure eta: applying a neutral function value, a stuck application or a projection, gives
-a neutral application (`Interpreter.evalApply`).
+a neutral application (`Interpreter.evalApply`). **Confirmed 2026-10-30** on the follow-ups branch: both symptoms
+check, `g(k)(2)` for an axiom `g`, a cast along an axiom applied to an argument, and a projection of a recursive
+call's result applied to one, as `ProjectionOfCall.rac` wrote it (`StructEtaTests`, "applying a stuck application").
 
 **Problem.** Two symptoms:
 - `Interpreter.evalApply` has no case for a stuck application (`VApp`), so
@@ -116,6 +119,26 @@ top-level namespaces and `Morphism` opens the bundled families under aliases.
 Letting an explicit `open` win would be closer to what a reader expects of a
 local import, at the price of a name's meaning changing when an `open` is
 added; either way it is a change to `docs/namespaces.md`, not a bug fix.
+
+### 1.5 Branch fields typed at the scrutinee's parameters
+
+**Fixed 2026-10-30**, porting `main-new`'s `f598d033` (`MatchChecker.freshCtor`; `docs/kernel.md`, "Refinement
+outcomes"; `MatchRefinementTests`).
+
+**Problem.** A match on `v: Vec(A, f(n))`, for an unknown `f`, rejected `| Vec.cons tail head => head` at result type
+`A` with "expected A#3608, actual A#3614". Found while comparing `main-new` with `main-clean`
+([EVALUATION_AND_PORTS.md](EVALUATION_AND_PORTS.md) §3, #3).
+
+**Cause.** Match checking gave every binder of a constructor's telescope a fresh variable, the witnesses of the family's
+parameters included, and related them to the scrutinee's parameters only through the branch's refinement. When an index
+equation was stuck, the branch kept no refinement at all, so its fields' types were over parameters that nothing bound.
+
+**Fix.** A constructor's telescope is opened at the scrutinee's own parameters: each witness of a parameter, an erased
+binder or a capture named like the parameter, is linked to the scrutinee type's argument before refinement. Parameters
+are uniform, so this needs no equation, and only the fields and the captures the parameters do not determine are
+unknowns of the constructor's side. A witness whose type is narrower than its parameter's, such as `$A in Sort($u)` for
+`A: Univ($k, $u)`, is related by the refinement, as an index is. The ledger and the read rules are unaffected: the
+fields are the same locals, tracked by the same types, now at the scrutinee's parameters.
 
 ## 2 Expressiveness gaps that force encodings
 
@@ -228,6 +251,11 @@ recursive definitions, but nothing beyond them.
 
 ### 2.6 Wildcard case (*port*)
 
+**Implemented 2026-10-30** (`docs/kernel.md`, "Wildcard cases"; `WildcardCaseTests`), as on `main-new`: the residual is
+the expansion, each case with a fresh copy of the body, and `RedundantCase` is new. A wildcard drops linear fields,
+each expansion is its own path for the ledger, and a read extent's expansions keep separation per call. Not ported:
+`main-new` frames a failure inside an expansion with its constructor, and `main-clean`'s diagnostics have no frames.
+
 **Problem.** Every match lists every reachable constructor. In Track A, 67 of
 the 88 frame-lemma cases were trivial.
 
@@ -238,6 +266,12 @@ per expanded case. A wildcard binds each case's fields anonymously, so it
 drops a linear field, which affine use allows.
 
 ### 2.7 Match equations (*port*)
+
+**Implemented 2026-10-30** (`docs/kernel.md`, "Match equations"; `MatchEquationTests`). As on `main-new`, `e` must be
+copyable data (`MatchEquationUnavailable` for a linear, kind-polymorphic or proof scrutinee), and the `Eq` used is the
+global one only when it is exactly the equality family. Unlike `main-new`, which refused every indexed family, an
+indexed family is accepted wherever a case's refinement equates the constructor's indices with the scrutinee's, and a
+case where it does not is `MatchEquationIndexed`: rejecting the others would refuse sound programs for no saving.
 
 **Proposal.** Port `match h : e returning M with …`
 (`docs/implemented/MATCH_EQUATION.md`), which binds `h : Eq(T, e, C(…))` in
@@ -384,9 +418,11 @@ catch it.
   - mismatches print as "expected VPi, actual VPi";
   - `Protocol.Tok.mk` as a term reports `NotAType` rather than "no such
     constructor".
-- **Checking speed:** a theorem applied to a concrete run evaluates the run at
-  checking time, because `step` fires whenever its output list is known.
-  `GpuClientFootprint` takes 11.8 s, and 0.3 s with an abstract hypothesis.
+- **Checking speed:** `GpuClientFootprint` takes about 13 s to check. The
+  cause was measured on 2026-10-30, and `step` firing is not it: checking
+  evaluates proof-valued calls that nothing reads, about 19M of them. See
+  [EVALUATION_AND_PORTS.md](EVALUATION_AND_PORTS.md), which also proposes the
+  fix, with a prototype that brings the check to 1.1 s.
 
 ## 5 Suggested order
 
