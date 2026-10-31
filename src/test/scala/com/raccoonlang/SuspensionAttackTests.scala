@@ -796,6 +796,44 @@ class SuspensionAttackTests extends munit.FunSuite {
     )
   }
 
+  test("ref-2 FIXED an eta projection's type holds no template variable that only a proof call's argument mentions") {
+    // R's field type mentions its capture n only as constN's argument, and constN's forced value does not, so eta
+    // eligibility, confirmed through forced values, holds. The projection of a neutral R kept constN(n) suspended in
+    // its type, over the eta template's own variable n, so the closed global g held a free variable: the kernel died
+    // with an AssertionError where eager evaluation printed the projection.
+    val src =
+      """
+        |def constN (n: Nat) : Exists(Nat, fun (k: Nat): Prop => True) :=
+        |  Exists.intro(Nat, fun (k: Nat): Prop => True, 0, True.intro)
+        |
+        |inductive Q (h: Exists(Nat, fun (k: Nat): Prop => True)) : Type
+        | | mk {h: Exists(Nat, fun (k: Nat): Prop => True)} : Q(h)
+        |
+        |// n is read by position off the forced proof, so it is 0 whatever the field.
+        |inductive R : Type
+        | | mk (x: Q(constN($n))) : R
+        |
+        |def built : R := R.mk(Q.mk(Exists.intro(Nat, fun (k: Nat): Prop => True, 5, True.intro)))
+        |
+        |// A closed R that is no constructor: a transport along the prelude's builtin proof `Nat.expand_eq`, which never
+        |// reduces, so the transport is stuck.
+        |def r : R := Eq.subst(Nat.expand_eq(5), Kind.copy, Level.zero, fun (k: Nat): Type => R, built)
+        |
+        |def g : Q(constN(7)) := {
+        |  match r returning Q(constN(7)) with
+        |  | R.mk x => x
+        |}
+        |
+        |g
+        |""".stripMargin
+    assertEquals(
+      result(src),
+      "(match Nat.expand_eq(5) returning (fun (k: Nat) => R)(5) with | Eq.refl z => R.mk(Q.mk)).x"
+    )
+    val g = programs.declsEnv(src).apply("g")
+    assert(g.synDeps.isEmpty && g.tpe.synDeps.isEmpty, PrettyPrinter.print(g.tpe))
+  }
+
   test("ref-1 CONTROL an equation links the call's argument through another variable, and the call sees it") {
     assertEquals(
       result(

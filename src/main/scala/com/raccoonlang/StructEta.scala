@@ -65,8 +65,15 @@ object StructEta {
         ValueEquivalence.tryUnify(resultArg, arg, store).getOrElse(store)
       }
 
-    /** The type of stored field `idx` in `store`, in terms of the variables `store` leaves fresh. */
-    def fieldType(idx: Int, store: EqStore): Value = ValueOps.materialize(fieldVars(idx).tpe, store)
+    /**
+     * The type of stored field `idx` in `store`, in terms of the variables `store` leaves fresh. A proof call that
+     * mentions one of those only in its arguments is forced, as `ValueOps.forceProofCalls` does for a link, so the type
+     * mentions the template's variables only where eager evaluation's did: kept suspended, such a call would leave a
+     * variable of the template free in every projection's type, and in a closed global holding one, though eta
+     * eligibility confirms through forced values that the field's type does not depend on it (`determined`).
+     */
+    def fieldType(idx: Int, store: EqStore): Value =
+      ValueOps.forceProofCalls(fieldVars(idx).tpe, store, templateIds -- store.solvedIds)
   }
 
   /** The telescope of the constructor `ctor`, opened on fresh variables. */
@@ -103,10 +110,9 @@ object StructEta {
     solved.exists { store =>
       template.fieldVars.indices.forall { idx =>
         val earlier = DepSet.from(template.fieldVars.take(idx).collect { case Var(_, id, _) => id })
-        val fieldType = template.fieldType(idx, store)
-        val hidden = (fieldType.synDeps & template.templateIds) -- earlier
-        // Confirmed through forced proof calls, whose own dependencies over-approximate (`Value.forcedDeps`).
-        hidden.isEmpty || Value.forcedDeps(fieldType, hidden).isEmpty
+        // The type holds no proof call over a variable of the template, which `fieldType` forces.
+        val deps = template.fieldType(idx, store).synDeps
+        ((deps & template.templateIds) -- earlier).isEmpty
       }
     }
   }
