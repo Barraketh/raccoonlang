@@ -58,13 +58,14 @@ object ValueQuote {
             ElabAst.Let(reindex(l.localRef), l.ty.map(inlineTypeTerm), inlineTerm(l.value), l.span, l.isInstance)
           }
           ElabAst.Term.Body(nextLets, inlineTerm(res), bodySpan)
-        case ElabAst.Term.Match(scrut, motive, cases, matchSpan, _) =>
+        case ElabAst.Term.Match(scrut, motive, cases, matchSpan, _, proofIntoProp) =>
           ElabAst.Term.Match(
             inlineTerm(scrut),
             motive.map(inlineTypeTerm),
             cases.map(inlineCase),
             matchSpan,
-            NodeId.fresh()
+            NodeId.fresh(),
+            proofIntoProp
           )
       }
 

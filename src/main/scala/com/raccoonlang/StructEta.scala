@@ -153,16 +153,17 @@ object StructEta {
   /**
    * Field `idx` of `base`, a value of a record: its stored field when it is constructor-headed, and otherwise its
    * canonical projection, read off its type, the record's instance. A checked projection evaluates so. A projection is
-   * a match, so it demands its base: a proof call's forced value (docs/kernel.md, "Proof calls").
+   * the one-branch match into its field's type, so out of a suspended proof it is a proof match when the field is a
+   * proof, and otherwise demands the proof (docs/kernel.md, "Proof calls").
    */
   def project(base: Value, idx: Int): Value =
-    Interpreter.force(base) match {
+    base match {
       case ConstructorValue(_, stored) => stored(idx)
-      case forced =>
-        forced.tpe match {
+      case _ =>
+        base.tpe match {
           case InductiveFamilyValue(instance) if instance.meta.record.isDefined =>
-            projections(forced, instance, instance.meta.record.get, idx + 1)(idx)
-          case other => throw WTF(s"Projected $forced of type $other, which is no record")
+            projections(base, instance, instance.meta.record.get, idx + 1)(idx)
+          case other => throw WTF(s"Projected $base of type $other, which is no record")
         }
     }
 
@@ -177,6 +178,9 @@ object StructEta {
    * so with every instance's, and every field's type is the template's at them. Otherwise a variable of the template
    * may remain, a capture no argument determines, and then the field has no projection at `instance` (`undetermined`),
    * which the checker asks of every projection it checks.
+   *
+   * Out of a suspended proof, a proof field's projection is a proof match (`VProofMatch`), and a data field's is the
+   * field of the forced proof.
    */
   private def projections(
       base: Value,
@@ -188,7 +192,14 @@ object StructEta {
     val start = (Vector.empty[Value], template.solve(instance.args))
     (0 until count)
       .foldLeft(start) { case ((built, store), field) =>
-        val projection = stuck(base, info, field, template.fieldType(field, store))
+        val motive = template.fieldType(field, store)
+        val projection = base match {
+          case proof: VSuspendedProof =>
+            if (TypeChecker.getUniverse(motive) == PropTpe)
+              new VProofMatch(info.projectors(field), proof, self(proof, motive))
+            else project(Interpreter.force(proof), field)
+          case _ => stuck(base, info, field, motive)
+        }
         val linked = template.fieldVars(field) match {
           case Var(_, id, _) if !store.subst.contains(id) => store.addLink(id, projection)
           case _                                          => store
@@ -198,10 +209,11 @@ object StructEta {
       ._1
   }
 
-  private def stuck(base: Value, info: RecordInfo, idx: Int, motive: Value): Value = {
-    val env = Env.empty.putLocal(SelfRef, base).putLocal(MotiveRef, motive)
-    Interpreter.stuckMatch(info.projectors(idx), base, env, motive)
-  }
+  private def stuck(base: Value, info: RecordInfo, idx: Int, motive: Value): Value =
+    Interpreter.stuckMatch(info.projectors(idx), base, self(base, motive), motive)
+
+  /** A projector's environment: the projected value and the field's type. */
+  private def self(base: Value, motive: Value): Env = Env.empty.putLocal(SelfRef, base).putLocal(MotiveRef, motive)
 
   /**
    * The types of the fields a projection of field `idx` at `instance` reads: `idx` itself, and every earlier field
@@ -249,20 +261,23 @@ object StructEta {
   object Projection {
     def unapply(value: Value): Option[(Value, InductiveFamilyInstance, RecordInfo, Int)] =
       value match {
-        case thunk: NeutralThunk =>
-          thunk.term.scrut match {
-            case EA.Term.LocalRef(SelfRef, _) if thunk.env.locals.length > SelfRef.id =>
-              thunk.env.localBinding(SelfRef).valueOption.flatMap { base =>
-                base.tpe match {
-                  case InductiveFamilyValue(instance) =>
-                    instance.meta.record.flatMap { info =>
-                      val idx = info.projectors.indexWhere(_.nodeId == thunk.term.nodeId)
-                      Option.when(idx >= 0)((base, instance, info, idx))
-                    }
-                  case _ => None
+        case thunk: NeutralThunk => of(thunk.term, thunk.env)
+        case _                   => None
+      }
+
+    /** The projection that the match `term` in `env` is, when it is a projector: a stuck one's, or a proof match's. */
+    def of(term: EA.Term.Match, env: Env): Option[(Value, InductiveFamilyInstance, RecordInfo, Int)] =
+      term.scrut match {
+        case EA.Term.LocalRef(SelfRef, _) if env.locals.length > SelfRef.id =>
+          env.localBinding(SelfRef).valueOption.flatMap { base =>
+            base.tpe match {
+              case InductiveFamilyValue(instance) =>
+                instance.meta.record.flatMap { info =>
+                  val idx = info.projectors.indexWhere(_.nodeId == term.nodeId)
+                  Option.when(idx >= 0)((base, instance, info, idx))
                 }
-              }
-            case _ => None
+              case _ => None
+            }
           }
         case _ => None
       }

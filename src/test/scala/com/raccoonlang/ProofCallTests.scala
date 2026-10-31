@@ -4,8 +4,10 @@ import com.raccoonlang.ProgramFixtures.Programs
 
 /**
  * Proof calls (docs/kernel.md, "Proof calls"): a call to a checked lambda whose function type is a proposition is a
- * suspension, run once, when something reads the proof's form. These programs check, or fail, exactly as they did when
- * every call ran at once; the first one only checks because an undemanded proof never runs.
+ * suspension, run once, when something reads the proof's form. These programs check, or fail, as they did when every
+ * call ran at once, except where a test says the proof match rule changed it: a match from a suspended proof into a
+ * proposition reads it by its proposition, so it needs every case its type allows. The first one only checks because an
+ * undemanded proof never runs.
  */
 class ProofCallTests extends munit.FunSuite {
   private val programs = new Programs(Prelude.default, allowUserAxioms = true)
@@ -42,7 +44,20 @@ class ProofCallTests extends munit.FunSuite {
     )
   }
 
-  test("a match forces a proof call, and the checker sees its forced value as a known constructor") {
+  test("a match into a proposition leaves a proof call suspended, so the checker reads it by its proposition") {
+    // Changed by proof match suspension: the forced value, `Or.inl`, made `Or.inr` unreachable, and the first program
+    // checked with its one case. Now every case its type allows is required, and printing runs the match.
+    intercept[MissingCase](
+      runChecked(
+        lib +
+          """
+            |def f : True := {
+            |  match pick(3) returning True with
+            |  | Or.inl h => True.intro
+            |}
+            |""".stripMargin
+      )
+    )
     assertEquals(
       result(
         lib +
@@ -50,6 +65,7 @@ class ProofCallTests extends munit.FunSuite {
             |def f : True := {
             |  match pick(3) returning True with
             |  | Or.inl h => True.intro
+            |  | Or.inr h => True.intro
             |}
             |
             |f
@@ -57,29 +73,25 @@ class ProofCallTests extends munit.FunSuite {
       ),
       "True.intro"
     )
-    val src =
-      lib +
-        """
-          |def f : True := {
-          |  match pick(3) returning True with
-          |  | Or.inl h => True.intro
-          |  | Or.inr h => True.intro
-          |}
-          |""".stripMargin
-    assertErrorAt[UnreachableCase](src, "| Or.inr h => True.intro")
   }
 
   test("forcing follows proof calls that return proof calls to the end") {
-    val src =
-      lib +
-        """
-          |def f (n: Nat) : True := {
-          |  match idp(Or(Eq(Nat, n, n), False), idp(Or(Eq(Nat, n, n), False), pick(n))) returning True with
-          |  | Or.inl h => True.intro
-          |  | Or.inr h => True.intro
-          |}
-          |""".stripMargin
-    assertErrorAt[UnreachableCase](src, "| Or.inr h => True.intro")
+    // Printing forces the match, which forces its scrutinee through both `idp` calls to `pick(3)` 's `Or.inl`.
+    assertEquals(
+      result(
+        lib +
+          """
+            |def f (n: Nat) : True := {
+            |  match idp(Or(Eq(Nat, n, n), False), idp(Or(Eq(Nat, n, n), False), pick(n))) returning True with
+            |  | Or.inl h => True.intro
+            |  | Or.inr h => False.elimProp(h, True)
+            |}
+            |
+            |f(3)
+            |""".stripMargin
+      ),
+      "True.intro"
+    )
   }
 
   test("a proof call materialized in a refined branch forces to the refined value") {
@@ -109,26 +121,23 @@ class ProofCallTests extends munit.FunSuite {
           |
           |f(0)
           |""".stripMargin
-    assertEquals(result(program("    | Or.inl e => True.intro")), "True.intro")
-    assertErrorAt[UnreachableCase](
-      program("    | Or.inl e => True.intro\n    | Or.inr t => t"),
-      "| Or.inr t => t"
-    )
+    // Changed by proof match suspension: the zero branch's match read the materialized call's forced value, `Or.inl`,
+    // so it needed that case alone. Now it needs both, and running f(0) forces the call materialized at zero.
+    intercept[MissingCase](runChecked(program("    | Or.inl e => True.intro")))
+    assertEquals(result(program("    | Or.inl e => True.intro\n    | Or.inr t => t")), "True.intro")
   }
 
-  test("applying a proof of a function proposition forces it") {
-    assertEquals(
-      result(
-        """
-          |def allRefl (u: Unit) : (n: Nat) -> Eq(Nat, n, n) := fun (n: Nat): Eq(Nat, n, n) => Eq.refl(n)
-          |
-          |def t : Eq(Nat, 5, 5) := allRefl(Unit.unit)(5)
-          |
-          |t
-          |""".stripMargin
-      ),
-      "Eq.refl(5)"
-    )
+  test("applying a proof of a function proposition leaves it suspended, and printing forces the application") {
+    val src =
+      """
+        |def allRefl (u: Unit) : (n: Nat) -> Eq(Nat, n, n) := fun (n: Nat): Eq(Nat, n, n) => Eq.refl(n)
+        |
+        |def t : Eq(Nat, 5, 5) := allRefl(Unit.unit)(5)
+        |
+        |t
+        |""".stripMargin
+    assert(declsEnv(src).apply("t").isInstanceOf[Value.VProofApply])
+    assertEquals(result(src), "Eq.refl(5)")
   }
 
   test("the program's result is a forced proof, and printing forces the proof calls in data") {

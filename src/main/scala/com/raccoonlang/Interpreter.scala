@@ -98,43 +98,58 @@ object Interpreter {
     pi.codomain(getEnvWithArgs(pi, pi.env, args))
 
   /**
-   * How many demanded proof calls are running (docs/kernel.md, "Proof calls"). Inside one, a proof call runs at once,
-   * as every call did before suspension, so a demanded proof costs what eager evaluation cost and builds no
-   * suspensions. The evaluator is single-threaded, as `FreshVar` and packed storage are; `forceCall` restores the count
-   * however a run ends.
+   * How many demanded suspended proofs are running (docs/kernel.md, "Proof calls"). Inside one, a proof call runs at
+   * once, as every call did before suspension, so a demanded proof costs what eager evaluation cost. A match into a
+   * proposition on a suspended proof, or an application of one, made inside it still suspends: the suspension came from
+   * outside the run, and whether a value is suspended depends only on how it was computed. The evaluator is
+   * single-threaded, as `FreshVar` and packed storage are; `forceSuspended` restores the count however a run ends.
    */
   private var forcing = 0
 
-  /** The weak head normal form of `value` when it is a proof call (`VProofCall`), computed once; any other value. */
+  /**
+   * The weak head normal form of `value` when it is a suspended proof (`VSuspendedProof`), computed once; any other.
+   */
   def force(value: Value): Value =
     value match {
-      case call: VProofCall => forceCall(call)
-      case other            => other
+      case proof: VSuspendedProof => forceSuspended(proof)
+      case other                  => other
     }
 
   /**
-   * A proof call's forced value: its lambda run on its arguments. The body may return another proof call, one of its
-   * arguments or one its closure holds, which was made outside this run; forcing follows that chain in a loop, and
-   * every call on it memoizes the chain's end. A run that fails memoizes nothing, so a later demand fails alike.
+   * A suspended proof's forced value: its computation run (`runSuspended`). The run may return another suspension, one
+   * made outside it, such as an argument or one its closure holds; forcing follows that chain in a loop, and every
+   * suspension on it memoizes the chain's end. A run that fails memoizes nothing, so a later demand fails alike.
    */
-  private def forceCall(call: VProofCall): Value = {
-    if (call.forced ne null) return call.forced
-    var chain = List(call)
+  private def forceSuspended(proof: VSuspendedProof): Value = {
+    if (proof.forced ne null) return proof.forced
+    var chain = List(proof)
     var result: Value = null
     while (result eq null) {
       forcing += 1
       val next =
-        try runLam(chain.head.fn, chain.head.args)
+        try runSuspended(chain.head)
         finally forcing -= 1
       next match {
-        case pending: VProofCall if pending.forced eq null => chain = pending :: chain
-        case done: VProofCall                              => result = done.forced
-        case value                                         => result = value
+        case pending: VSuspendedProof if pending.forced eq null => chain = pending :: chain
+        case done: VSuspendedProof                              => result = done.forced
+        case value                                              => result = value
       }
     }
     chain.foreach(_.forced = result)
     result
   }
+
+  /**
+   * One run of a suspended proof's computation, inside a demanded proof. A proof match forces its scrutinee and a proof
+   * application its head, on the host stack, as eager evaluation evaluated them before the match or application; the
+   * forced value is no suspension, so the match selects its branch, or is stuck, and the application runs.
+   */
+  private def runSuspended(proof: VSuspendedProof): Value =
+    proof match {
+      case call: VProofCall => runLam(call.fn, call.args)
+      case m: VProofMatch   => evalSteps(matchOnStep(m.term, force(m.scrut), m.env, m.tpe))
+      case app: VProofApply => evalSteps(applyStep(force(app.fn), app.args))
+    }
 
   private def captureValues(env: Env, capturedIndexes: RoaringBitmap): Vector[Value] = {
     val values = Vector.newBuilder[Value]
@@ -193,7 +208,8 @@ object Interpreter {
   }
 
   /**
-   * `fn` applied to `vArgs`, which fit its binders. Applying a proof demands it. A lambda binds its arguments itself
+   * `fn` applied to `vArgs`, which fit its binders. Applying a suspended proof does not demand it: the application is a
+   * proof application (`VProofApply`), at the codomain of its proposition. A lambda binds its arguments itself
    * (`lamStep`), or reads them as a native, so only their count is checked here; any other head's application has the
    * head's codomain at them as its type. A checked lambda whose function type is a proposition is not run, outside a
    * demanded proof: the application is a proof call (`VProofCall`).
@@ -204,7 +220,8 @@ object Interpreter {
   private def applyStep(fn: Value, vArgs: Vector[Value]): AnyRef = {
     require(vArgs.nonEmpty, "evalApply requires at least one argument")
 
-    force(fn) match {
+    fn match {
+      case proof: VSuspendedProof => new VProofApply(proof, vArgs)
       case lam: VLam =>
         val pi = lam.tpe
         if (pi.binders.length != vArgs.length) throw ArityMismatch(pi.binders.length, vArgs.length)
@@ -385,7 +402,7 @@ object Interpreter {
   }
 
   /**
-   * `m` stuck on `scrut` in `env`, a value of `outType`; `scrut` is no proof call, since every caller forces it first.
+   * `m` stuck on `scrut` in `env`, a value of `outType`; `scrut` is no suspended proof: no caller passes one.
    * Its identity is its code and its free locals' values (`MatchIdentity`), and its closed environment keeps exactly
    * those locals, so resuming it reads nothing its identity leaves out.
    */
@@ -409,15 +426,22 @@ object Interpreter {
   }
 
   /**
-   * The match `m` on the value `scrut0`, its scrutinee in `env`, which a match demands. A constructor selects its
-   * branch. A value at a structure eta type takes the one branch with its eta view, its field projections
-   * (`StructEta`). Any other value is stuck, a value of `outType`.
+   * The match `m` on the value `scrut0`, its scrutinee in `env`. A match from a proof into a proposition
+   * (`m.proofIntoProp`) on a suspended proof is a proof match (`VProofMatch`), which forces it only when demanded; that
+   * it is suspended is decided by its form, not by whether it was forced. Any other match demands its scrutinee. A
+   * constructor selects its branch. A value at a structure eta type takes the one branch with its eta view, its field
+   * projections (`StructEta`). Any other value is stuck, a value of `outType`.
    */
   private[raccoonlang] def evalMatchOn(m: ETerm.Match, scrut0: Value, env: Env, outType: => Value): Value =
     evalSteps(matchOnStep(m, scrut0, env, outType))
 
   /** `evalMatchOn` 's step: the chosen branch's body is its tail. */
   private def matchOnStep(m: ETerm.Match, scrut0: Value, env: Env, outType: => Value): AnyRef = {
+    scrut0 match {
+      case proof: VSuspendedProof if m.proofIntoProp =>
+        return new VProofMatch(m, proof, RuntimeEnv.closeForEval(env, CapturedIndexes.getCapturedIndexes(m, env)))
+      case _ =>
+    }
     val scrut = force(scrut0)
     val (ctorName, args) = scrut match {
       case ConstructorValue(head, fields) => (head.name, fields)

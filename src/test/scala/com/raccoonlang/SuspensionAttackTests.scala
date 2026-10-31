@@ -6,8 +6,8 @@ import com.raccoonlang.ProgramFixtures.Programs
 /**
  * Adversarial review of proof suspension (EVALUATION_AND_PORTS §2.1, 5c87dec3; docs/kernel.md, "Proof calls"): a call
  * to a checked lambda whose function type is a proposition is a `VProofCall`, run only when something reads its form.
- * Each test names what it attacks. Every program was also run on a build that never suspends, eager evaluation, and
- * its outcome is the same there unless the test says otherwise.
+ * Each test names what it attacks. Every program was also run on a build that never suspends, eager evaluation, and its
+ * outcome is the same there unless the test says otherwise.
  *
  * An attack passes when the kernel refuses the program with the expected error; an ACCEPT of one would be a break.
  * CONTROL tests are sound programs the kernel must accept. LIMIT tests pin an outcome worth knowing that differs from
@@ -252,7 +252,9 @@ class SuspensionAttackTests extends munit.FunSuite {
           |""".stripMargin
     )
     // Outside the branch down(h) is stuck, a proof that is no field of h.
-    rejectsWith[NonDecreasingRecursiveCall](acc + "def walk (h: Acc2) : True decreases structural(h) := walk(down(h))\n")
+    rejectsWith[NonDecreasingRecursiveCall](
+      acc + "def walk (h: Acc2) : True decreases structural(h) := walk(down(h))\n"
+    )
   }
 
   test("term-11 a lexicographic proof component kept by a suspended call, and a later component that must decrease") {
@@ -356,14 +358,29 @@ class SuspensionAttackTests extends munit.FunSuite {
   // ------------------------------------------------------------------------------------------------------------------
 
   test("hid-1 LIMIT an undemanded proof whose run is NatValueTooLarge checks; demanded, it is refused") {
-    // Eager evaluation refused the first program with NatValueTooLarge: the accepted resource change.
+    // Eager evaluation refused the first two programs with NatValueTooLarge: the accepted resource change. A match into
+    // a proposition does not demand its scrutinee (changed by proof match suspension); a large elimination does.
     assertEquals(result(big + "def t : True := big(4294967296)\n\nNat.zero\n"), "0")
+    assertEquals(
+      result(
+        big +
+          """
+            |def t : True := {
+            |  match big(4294967296) returning True with
+            |  | True.intro => True.intro
+            |}
+            |
+            |Nat.zero
+            |""".stripMargin
+      ),
+      "0"
+    )
     rejectsWith[NatValueTooLarge](
       big +
         """
-          |def t : True := {
-          |  match big(4294967296) returning True with
-          |  | True.intro => True.intro
+          |def t : Nat := {
+          |  match big(4294967296) returning Nat with
+          |  | True.intro => 0
           |}
           |""".stripMargin
     )
@@ -395,13 +412,23 @@ class SuspensionAttackTests extends munit.FunSuite {
       rejectsWith[EvaluationTooDeep](
         deep +
           """
+            |def t : Nat := {
+            |  match deep(100000) returning Nat with
+            |  | True.intro => 0
+            |}
+            |""".stripMargin
+      )
+      accepts(deep + "def t : True := deep(100000)\n")
+      // A match into a proposition does not demand it (changed by proof match suspension).
+      accepts(
+        deep +
+          """
             |def t : True := {
             |  match deep(100000) returning True with
             |  | True.intro => True.intro
             |}
             |""".stripMargin
       )
-      accepts(deep + "def t : True := deep(100000)\n")
     }
   }
 
@@ -478,7 +505,7 @@ class SuspensionAttackTests extends munit.FunSuite {
     )
   }
 
-  test("conv-5 CONTROL a capture read off a proof call's proposition, and a selector of a proof call") {
+  test("conv-5 CONTROL a capture read off a proof call's proposition, and a projection of a proof call") {
     assertEquals(
       result(
         """
@@ -581,8 +608,10 @@ class SuspensionAttackTests extends munit.FunSuite {
     )
   }
 
-  test("elim-4 the forced value's other cases are unreachable, at a known argument and in a refined branch") {
-    rejectsWith[UnreachableCase](
+  test("elim-4 a match into a proposition needs every case its type allows, at a known argument and in a branch") {
+    // Changed by proof match suspension: the forced value's other case, `Or.inr`, was UnreachableCase in both programs,
+    // which needed `Or.inl` alone. The call is no constructor value, so the match is checked by type.
+    accepts(
       pick +
         """
           |def t : True := {
@@ -592,7 +621,16 @@ class SuspensionAttackTests extends munit.FunSuite {
           |}
           |""".stripMargin
     )
-    rejectsWith[UnreachableCase](
+    rejectsWith[MissingCase](
+      pick +
+        """
+          |def t : True := {
+          |  match lemB(Bool.true) returning True with
+          |  | Or.inl e => True.intro
+          |}
+          |""".stripMargin
+    )
+    accepts(
       pick +
         """
           |def f (b: Bool) : True := {
@@ -740,56 +778,77 @@ class SuspensionAttackTests extends munit.FunSuite {
   // ------------------------------------------------------------------------------------------------------------------
 
   test("memo-1 CONTROL one let-bound call, materialized in each branch, forces to that branch's constructor") {
-    assertEquals(
-      result(
-        pick +
-          """
-            |def f (b: Bool) : True := {
-            |  let h := lemB(b)
-            |  match b returning True with
-            |  | Bool.true => {
-            |    match h returning True with
-            |    | Or.inl e => True.intro
-            |  }
-            |  | Bool.false => {
-            |    match h returning True with
-            |    | Or.inr e => True.intro
-            |  }
-            |}
-            |f(Bool.false)
-            |""".stripMargin
-      ),
-      "True.intro"
+    // Changed by proof match suspension: each branch's match read its materialized call's forced value and needed that
+    // branch's case alone. Now each needs both; running f(false) forces the call materialized at false, `Or.inr`,
+    // whose case refutes its equation `Eq(Bool, false, true)` only if it is the one taken.
+    def program(f: String) =
+      pick +
+        """
+          |def f (b: Bool) : True := {
+          |  let h := lemB(b)
+          |  match b returning True with
+          |  | Bool.true => {
+          |    match h returning True with
+          |    | Or.inl e => True.intro
+          |    | Or.inr e => True.intro
+          |  }
+          |  | Bool.false => {
+          |    match h returning True with
+          |    | Or.inl e => True.intro
+          |    | Or.inr e => True.intro
+          |  }
+          |}
+          |""".stripMargin + f
+    assertEquals(result(program("f(Bool.false)\n")), "True.intro")
+    rejectsWith[MissingCase](
+      pick +
+        """
+          |def f (b: Bool) : True := {
+          |  let h := lemB(b)
+          |  match b returning True with
+          |  | Bool.true => {
+          |    match h returning True with
+          |    | Or.inl e => True.intro
+          |  }
+          |  | Bool.false => True.intro
+          |}
+          |""".stripMargin
     )
   }
 
-  test("memo-2 CONTROL a call forced before the branch, stuck, is refined with its forced value in each branch") {
-    assertEquals(
-      result(
-        pick +
-          """
-            |def f (b: Bool) : True := {
-            |  let h := lemB(b)
-            |  let early : True := {
-            |    match h returning True with
-            |    | Or.inl e => True.intro
-            |    | Or.inr e => True.intro
-            |  }
-            |  match b returning True with
-            |  | Bool.true => {
-            |    match h returning True with
-            |    | Or.inl e => early
-            |  }
-            |  | Bool.false => {
-            |    match h returning True with
-            |    | Or.inr e => early
-            |  }
-            |}
-            |f(Bool.true)
-            |""".stripMargin
-      ),
-      "True.intro"
-    )
+  test("memo-2 a call forced before the branch, stuck, is checked by type in each branch, as one never forced") {
+    // Changed by proof match suspension: `early` forced h, stuck on b, and each branch's match read h's forced value,
+    // materialized, needing that branch's case alone. Now `early` 's match does not force h, the inferred type of
+    // `forcedEarly` does (quotation), and neither changes how a later match on h checks: by type, with both cases.
+    def program(forcing: String, caseInTrue: String) =
+      pick +
+        """
+          |def f (b: Bool) : True := {
+          |  let h := lemB(b)
+          |  let early : True := {
+          |    match h returning True with
+          |    | Or.inl e => True.intro
+          |    | Or.inr e => True.intro
+          |  }
+          |""".stripMargin + forcing +
+        """
+          |  match b returning True with
+          |  | Bool.true => {
+          |    match h returning True with
+          |""".stripMargin + caseInTrue +
+        """
+          |  }
+          |  | Bool.false => early
+          |}
+          |f(Bool.true)
+          |""".stripMargin
+    val forcing = "  let forcedEarly := {\n    match Bool.true with\n    | Bool.true => h\n  }\n"
+    val both = "    | Or.inl e => early\n    | Or.inr e => early\n"
+    val one = "    | Or.inl e => early\n"
+    assertEquals(result(program(forcing, both)), "True.intro")
+    assertEquals(result(program("", both)), "True.intro")
+    rejectsWith[MissingCase](program(forcing, one))
+    rejectsWith[MissingCase](program("", one))
   }
 
   test("memo-3 a call forced in a branch is not refined outside it, where its match needs every case") {
@@ -820,9 +879,9 @@ class SuspensionAttackTests extends munit.FunSuite {
       rejectsWith[NatValueTooLarge](
         big +
           """
-            |def t : True := {
-            |  match big(4294967296) returning True with
-            |  | True.intro => True.intro
+            |def t : Nat := {
+            |  match big(4294967296) returning Nat with
+            |  | True.intro => 0
             |}
             |""".stripMargin
       )
@@ -869,27 +928,30 @@ class SuspensionAttackTests extends munit.FunSuite {
   }
 
   test("ref-1 CONTROL an equation links the call's argument through another variable, and the call sees it") {
-    assertEquals(
-      result(
-        pick +
-          """
-            |def f (b: Bool)(c: Bool)(e: Eq(Bool, b, c)) : True := {
-            |  let h := lemB(b)
-            |  match c returning True with
-            |  | Bool.true => {
-            |    match e returning True with
-            |    | Eq.refl z => {
-            |      match h returning True with
-            |      | Or.inl q => True.intro
-            |    }
-            |  }
-            |  | Bool.false => True.intro
-            |}
-            |f(Bool.true, Bool.true, Eq.refl(Bool.true))
-            |""".stripMargin
-      ),
-      "True.intro"
-    )
+    // Changed by proof match suspension: the inner match read the call materialized through the link, forced to
+    // `Or.inl`, and needed that case alone; now it is checked by type and needs both. Printing the result runs the
+    // match on the call, which reaches `Or.inl`.
+    def program(cases: String) =
+      pick +
+        """
+          |def f (b: Bool)(c: Bool)(e: Eq(Bool, b, c)) : Or(True, True) := {
+          |  let h := lemB(b)
+          |  match c returning Or(True, True) with
+          |  | Bool.true => {
+          |    match e returning Or(True, True) with
+          |    | Eq.refl z => {
+          |      match h returning Or(True, True) with
+          |""".stripMargin + cases +
+        """
+          |    }
+          |  }
+          |  | Bool.false => Or.inr(True, True.intro)
+          |}
+          |f(Bool.true, Bool.true, Eq.refl(Bool.true))
+          |""".stripMargin
+    val inl = "      | Or.inl q => Or.inl(True, True.intro)\n"
+    assertEquals(result(program(inl + "      | Or.inr q => Or.inr(True, True.intro)\n")), "Or.inl(True.intro)")
+    rejectsWith[MissingCase](program(inl))
   }
 
   // ------------------------------------------------------------------------------------------------------------------
@@ -929,9 +991,10 @@ class SuspensionAttackTests extends munit.FunSuite {
 
   test("port-2 OVER-REJECTION a long chain of suspended proofs through data exhausts the stack eager evaluation kept") {
     // Each step of the loop suspends step(unfactAnd(acc)), whose argument holds the previous step's call, so the chain
-    // is as long as the loop: its dependencies, and forcing it, recurse once per step. Eager evaluation ran each call
-    // as it was made, on a value already in normal form, and checked this program on the same 4 MiB stack. On the
-    // CLI's 256 MiB stack a chain of 100000 checks and one of 1000000 does not. Open: see the review's report.
+    // is as long as the loop. Eager evaluation ran each call as it was made, on a value already in normal form, and
+    // checked this program on the same 4 MiB stack. t's match is into a proposition, so since proof match suspension
+    // nothing forces the chain, which recursed once per step; its dependencies still do, where the closedness check of
+    // the global `chain` computes them, so `chain` is EvaluationTooDeep.
     onSmallStack(rejectsWith[EvaluationTooDeep](chain(5000)))
   }
 
@@ -958,5 +1021,336 @@ class SuspensionAttackTests extends munit.FunSuite {
         |}
         |""".stripMargin
     onSmallStack(assertEquals(result(src), "7"))
+  }
+
+  // ------------------------------------------------------------------------------------------------------------------
+  // 9. Proof matches (EVALUATION_AND_PORTS §2 item 4): a match from a suspended proof into a proposition is itself
+  //    suspended, and the checker reads its scrutinee by its proposition. Eager evaluation's outcome is the same unless
+  //    a test says otherwise.
+  // ------------------------------------------------------------------------------------------------------------------
+
+  test("pm-1 a suspended match whose cases the scrutinee's type refutes, or whose result is false, is refused") {
+    val le =
+      """
+        |inductive Le indices (n: Nat) : Prop
+        | | z : Le(0)
+        | | s (n: Nat)(h: Le(n)) : Le(Nat.succ(n))
+        |def lemZ (u: Unit) : Le(0) := Le.z
+        |""".stripMargin
+    rejectsWith[UnreachableCase](
+      le +
+        """
+          |def t : True := {
+          |  match lemZ(Unit.unit) returning True with
+          |  | Le.z => True.intro
+          |  | Le.s m h => True.intro
+          |}
+          |""".stripMargin
+    )
+    // The case the forced value takes cannot prove the false motive, and the other case has nothing to prove it from.
+    rejectsWith[TypeMismatch](
+      pick +
+        """
+          |def bad : Eq(Bool, Bool.true, Bool.false) := {
+          |  match lemB(Bool.true) returning Eq(Bool, Bool.true, Bool.false) with
+          |  | Or.inl e => e
+          |  | Or.inr f => f
+          |}
+          |""".stripMargin
+    )
+    // CONTROL: a proof of False by an axiom, matched into False with no case, stays suspended; printing forces it to
+    // a match stuck on the call's forced value, the axiom's application, which prints as its syntax.
+    assertEquals(
+      withAxioms.result(
+        """
+          |axiom bot : (n: Nat) -> False
+          |def lemF (n: Nat) : False := bot(n)
+          |def t : False := {
+          |  match lemF(0) returning False with
+          |}
+          |t
+          |""".stripMargin
+      ),
+      "match lemF(0) returning False with "
+    )
+  }
+
+  test("pm-2 a suspended match whose proposition depends on its scrutinee") {
+    // CONTROL: the motive names the let-bound scrutinee, a proof call, which no branch refines; the branch's proof of
+    // Wit(True.intro) converts with Wit(h) by proof irrelevance.
+    accepts(
+      """
+        |inductive Wit (h: True) : Prop
+        | | mk {h: True} : Wit(h)
+        |def lemT (n: Nat) : True := True.intro
+        |def t (n: Nat) : Wit(lemT(n)) := {
+        |  let h := lemT(n)
+        |  match h returning Wit(h) with
+        |  | True.intro => Wit.mk(True.intro)
+        |}
+        |""".stripMargin
+    )
+    // The motive large-eliminates the scrutinee, which reading the motive demands, as eager evaluation ran it.
+    rejectsWith[NatValueTooLarge](
+      big +
+        """
+          |def M (h: True) : Prop := {
+          |  match h returning Prop with
+          |  | True.intro => True
+          |}
+          |def t : True := {
+          |  let h := big(4294967296)
+          |  match h returning M(h) with
+          |  | True.intro => True.intro
+          |}
+          |""".stripMargin
+    )
+    // CONTROL: a motive over a variable index that the case's refinement solves; outside, the motive is unrefined.
+    accepts(
+      """
+        |inductive Is indices (b: Bool) : Prop
+        | | yes : Is(Bool.true)
+        |def idp (p: Prop)(h: p) : p := h
+        |def f (b: Bool)(h: Is(b)) : Eq(Bool, b, Bool.true) := {
+        |  match idp(Is(b), h) returning Eq(Bool, b, Bool.true) with
+        |  | Is.yes => Eq.refl(Bool.true)
+        |}
+        |""".stripMargin
+    )
+    rejectsWith[TypeMismatch](
+      """
+        |inductive Is indices (b: Bool) : Prop
+        | | yes : Is(Bool.true)
+        |def idp (p: Prop)(h: p) : p := h
+        |def f (b: Bool)(h: Is(b)) : Eq(Bool, b, Bool.false) := {
+        |  match idp(Is(b), h) returning Eq(Bool, b, Bool.false) with
+        |  | Is.yes => Eq.refl(Bool.true)
+        |}
+        |""".stripMargin
+    )
+  }
+
+  test("pm-3 linear values read inside a suspended match: reads, checked by the read rules, run after consumption") {
+    val idp = "def idp (p: Prop)(h: p) : p := h\n"
+    // CONTROL: the match observes the packet in its case; it is demanded by printing, after the packet is consumed.
+    assertEquals(
+      result(
+        idp + entry(
+          "Fact(True)",
+          """  let seen : True := {
+            |    match idp(True, True.intro) returning True with
+            |    | True.intro => observes(s, l2(1, 1), halves)
+            |  }
+            |  done(l1(2), s, releaseTwo(l1(2), s, 1, 1, halves), Fact(True), Fact.mk(seen))
+            |""".stripMargin
+        )
+      ),
+      "Fact.mk(True.intro)"
+    )
+    // A packet joined with itself, read in an undemanded case, is still refused.
+    rejectsWith[LinearReusedInType](
+      idp + tokens +
+        """
+          |def bad (s: Protocol.Inst(Protocol.Proto.mk(Nat, Shares), l1(2)))(t: Protocol.Toks(Protocol.Proto.mk(Nat, Shares), l1(2), s, l1(2))) : Nat := {
+          |  let never : True := {
+          |    match idp(True, True.intro) returning True with
+          |    | True.intro => observes(s, List.append(l1(2), l1(2)), joinToks(Nat, Shares, l1(2), s, l1(2), l1(2), t, t))
+          |  }
+          |  done(l1(2), s, releaseOne(l1(2), s, 2, t), Nat, 0)
+          |}
+          |""".stripMargin
+    )
+    // Two suspended matches only read the packet: one consumption checks, a second is refused.
+    def twice(consumptions: String) =
+      idp + tokens +
+        """
+          |def keep (s: Protocol.Inst(Protocol.Proto.mk(Nat, Shares), l1(2)))(halves: Protocol.Toks(Protocol.Proto.mk(Nat, Shares), l1(2), s, l2(1, 1))) : Nat := {
+          |  let b1 : True := {
+          |    match idp(True, True.intro) returning True with
+          |    | True.intro => observes(s, l2(1, 1), halves)
+          |  }
+          |  let b2 : True := {
+          |    match idp(True, True.intro) returning True with
+          |    | True.intro => observes(s, l2(1, 1), halves)
+          |  }
+          |""".stripMargin + consumptions + "}\n"
+    accepts(twice("  done(l1(2), s, releaseTwo(l1(2), s, 1, 1, halves), Nat, 0)\n"))
+    rejectsWith[LinearReused](
+      twice(
+        """  let n := done(l1(2), s, releaseTwo(l1(2), s, 1, 1, halves), Nat, 0)
+          |  done(l1(2), s, releaseTwo(l1(2), s, 1, 1, halves), Nat, n)
+          |""".stripMargin
+      )
+    )
+  }
+
+  test("pm-4 a suspended match as a termination candidate is compared by its forced value's key") {
+    // CONTROL: in the branch, the match forces to h1, a field of the root.
+    accepts(
+      acc +
+        """
+          |def walk (h: Acc2) : True decreases structural(h) := {
+          |  match h returning True with
+          |  | Acc2.step h1 => {
+          |    let c : Acc2 := {
+          |      match idp(Acc2, h) returning Acc2 with
+          |      | Acc2.step k => k
+          |    }
+          |    walk(c)
+          |  }
+          |}
+          |""".stripMargin
+    )
+    // The root itself, through a suspended match, is unchanged.
+    rejectsWith[NonDecreasingRecursiveCall](
+      acc +
+        """
+          |def walk (h: Acc2) : True decreases structural(h) := {
+          |  match h returning True with
+          |  | Acc2.step h1 => {
+          |    let c : Acc2 := {
+          |      match idp(Acc2, h) returning Acc2 with
+          |      | Acc2.step k => h
+          |    }
+          |    walk(c)
+          |  }
+          |}
+          |""".stripMargin
+    )
+    // Outside a branch the match is stuck on the root: no field of it.
+    rejectsWith[NonDecreasingRecursiveCall](
+      acc +
+        """
+          |def walk (h: Acc2) : True decreases structural(h) := {
+          |  let c : Acc2 := {
+          |    match idp(Acc2, h) returning Acc2 with
+          |    | Acc2.step k => k
+          |  }
+          |  walk(c)
+          |}
+          |""".stripMargin
+    )
+    // A rebuilt proof of a field's proposition is a new proof.
+    rejectsWith[NonDecreasingRecursiveCall](
+      acc +
+        """
+          |def walk (h: Acc2) : True decreases structural(h) := {
+          |  match h returning True with
+          |  | Acc2.step h1 => {
+          |    let c : Acc2 := {
+          |      match idp(Acc2, h1) returning Acc2 with
+          |      | Acc2.step k => Acc2.step(k)
+          |    }
+          |    walk(c)
+          |  }
+          |}
+          |""".stripMargin
+    )
+    // The key test forces the candidate, so a failing run is refused with its error, as eager evaluation ran it.
+    rejectsWith[NatValueTooLarge](
+      acc +
+        """
+          |def bigAcc (n: Nat)(h: Acc2) : Acc2 := {
+          |  let x := Nat.pow(2, n)
+          |  h
+          |}
+          |def walk (h: Acc2) : True decreases structural(h) := {
+          |  match h returning True with
+          |  | Acc2.step h1 => {
+          |    let c : Acc2 := {
+          |      match bigAcc(4294967296, h) returning Acc2 with
+          |      | Acc2.step k => k
+          |    }
+          |    walk(c)
+          |  }
+          |}
+          |""".stripMargin
+    )
+  }
+
+  test("pm-5 OVER-REJECTION a field of a matched proof call is no field of the root, where its forced variable was") {
+    // Eager evaluation, and the build before proof match suspension, forced idp(Acc2, h1) to h1, a variable, so the
+    // match linked h1 to Acc2.step(k), and k was a field of a field of the root. The suspended scrutinee is linked to
+    // nothing: k is a fresh proof. The match into a proposition reads the call by its proposition, so this is the cost
+    // of not forcing it. Matching on h1 itself still links it.
+    rejectsWith[NonDecreasingRecursiveCall](
+      acc +
+        """
+          |def walk (h: Acc2) : True decreases structural(h) := {
+          |  match h returning True with
+          |  | Acc2.step h1 => {
+          |    match idp(Acc2, h1) returning True with
+          |    | Acc2.step k => walk(k)
+          |  }
+          |}
+          |""".stripMargin
+    )
+    accepts(
+      acc +
+        """
+          |def walk (h: Acc2) : True decreases structural(h) := {
+          |  match h returning True with
+          |  | Acc2.step h1 => {
+          |    match h1 returning True with
+          |    | Acc2.step k => walk(k)
+          |  }
+          |}
+          |""".stripMargin
+    )
+  }
+
+  test("pm-6 a suspended match is compared by its proposition, and by its forced value's key") {
+    // CONTROL: suspended matches with different forced values convert at one proposition.
+    accepts(
+      """
+        |inductive Bar (h: Or(True, True)) : Type
+        | | mk {h: Or(True, True)} : Bar(h)
+        |def lemL (n: Nat) : Or(True, True) := Or.inl(True, True.intro)
+        |def swap (n: Nat) : Or(True, True) := {
+        |  match lemL(n) returning Or(True, True) with
+        |  | Or.inl a => Or.inr(True, a)
+        |  | Or.inr a => Or.inl(True, a)
+        |}
+        |def f (x: Bar(swap(0))) : Bar(lemL(0)) := x
+        |""".stripMargin
+    )
+    // Suspended matches of propositions that do not convert do not convert.
+    rejectsWith[TypeMismatch](
+      """
+        |inductive Box2 (P: Prop)(h: P) : Type
+        | | mk {P: Prop}{h: P} : Box2(P, h)
+        |def lemT (n: Nat) : True := True.intro
+        |def lemE (n: Nat) : Eq(Nat, n, n) := Eq.refl(n)
+        |def mT : True := {
+        |  match lemT(0) returning True with
+        |  | True.intro => True.intro
+        |}
+        |def mE : Eq(Nat, 0, 0) := {
+        |  match lemE(0) returning Eq(Nat, 0, 0) with
+        |  | Eq.refl z => Eq.refl(0)
+        |}
+        |def f (x: Box2(True, mT)) : Box2(Eq(Nat, 0, 0), mE) := x
+        |""".stripMargin
+    )
+    // A suspended match keys as its forced value, so equal forced values have equal keys and different ones differ.
+    val env = programs.declsEnv(
+      """
+        |def lemL (n: Nat) : Or(True, True) := Or.inl(True, True.intro)
+        |def same : Or(True, True) := {
+        |  match lemL(0) returning Or(True, True) with
+        |  | Or.inl a => Or.inl(True, a)
+        |  | Or.inr a => Or.inr(True, a)
+        |}
+        |def swap : Or(True, True) := {
+        |  match lemL(0) returning Or(True, True) with
+        |  | Or.inl a => Or.inr(True, a)
+        |  | Or.inr a => Or.inl(True, a)
+        |}
+        |def direct : Or(True, True) := Or.inl(True, True.intro)
+        |""".stripMargin
+    )
+    assert(env("same").isInstanceOf[Value.VProofMatch] && env("swap").isInstanceOf[Value.VProofMatch])
+    assertEquals(env("same").key, env("direct").key)
+    assertNotEquals(env("swap").key, env("direct").key)
   }
 }

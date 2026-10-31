@@ -14,10 +14,10 @@ object ValueOps {
   def materializeEnv(env: Env, eqStore: EqStore): Env = new Materializer(eqStore, DepSet.empty).materializeEnv(env)
 
   /**
-   * `value` materialized, with every proof call (`VProofCall`) whose dependencies meet `ids` replaced by its forced
-   * value, materialized in turn, so that the result's dependencies among `ids` are its forced dependencies
-   * (`Value.forcedDeps`). A proof call's own dependencies over-approximate its forced value's; this is the value eager
-   * evaluation held where a link must not mention a variable that only a proof call's arguments mention (`EqStore`).
+   * `value` materialized, with every suspended proof (`VSuspendedProof`) whose dependencies meet `ids` replaced by its
+   * forced value, materialized in turn, so that the result's dependencies among `ids` are its forced dependencies
+   * (`Value.forcedDeps`). A suspension's own dependencies over-approximate its forced value's; this is the value eager
+   * evaluation held where a link must not mention a variable that only a suspension's parts mention (`EqStore`).
    */
   def forceProofCalls(value: Value, eqStore: EqStore, ids: DepSet): Value = {
     val materializer = new Materializer(eqStore, ids)
@@ -25,13 +25,13 @@ object ValueOps {
   }
 
   /**
-   * One materialization: the solved variables of `eqStore`, and the proof calls `forcing` names (`forceProofCalls`),
-   * which is empty for plain materialization, which keeps proof calls suspended. It is a function of the value and the
-   * store, which are immutable, so within a session it materializes each value and environment, by identity, once: a
-   * graph whose parts are shared, such as a tree whose two children are one value, is rebuilt in time linear in its
-   * distinct parts, and keeps its sharing. A session is a root call, or the mapping of an environment that one
-   * returned, which runs later; between sessions it keeps no table, so a value holding a materialized environment does
-   * not retain the work that built it.
+   * One materialization: the solved variables of `eqStore`, and the suspended proofs `forcing` names
+   * (`forceProofCalls`), which is empty for plain materialization, which keeps suspensions suspended. It is a function
+   * of the value and the store, which are immutable, so within a session it materializes each value and environment, by
+   * identity, once: a graph whose parts are shared, such as a tree whose two children are one value, is rebuilt in time
+   * linear in its distinct parts, and keeps its sharing. A session is a root call, or the mapping of an environment
+   * that one returned, which runs later; between sessions it keeps no table, so a value holding a materialized
+   * environment does not retain the work that built it.
    */
   private[raccoonlang] final class Materializer(val eqStore: EqStore, forcing: DepSet) {
     private var depth = 0
@@ -113,17 +113,22 @@ object ValueOps {
           materializePi(pi)
         case VLam(tpe, id, body) =>
           VLam(materializePi(tpe), materializeId(id), materializeLamBody(body))
-        // Still suspended, over the materialized lambda and arguments (docs/kernel.md, "Proof calls"): running it
-        // then gives what materializing its forced value gives, since evaluation commutes with substitution, as
-        // resolving a blocked computation on materialized arguments already assumes. A forced call keeps its forced
-        // value, materialized, which is what eager evaluation held. A call `forcing` names is its forced value.
-        case call: VProofCall =>
-          val fn = materialize(call.fn) match {
-            case lam: VLam => lam
-            case other     => throw WTF(s"Proof call head ${call.fn} materialized to $other")
+        // Still suspended, over its materialized parts (docs/kernel.md, "Proof calls"): running it then gives what
+        // materializing its forced value gives, since evaluation commutes with substitution, as resolving a blocked
+        // computation on materialized arguments already assumes. A forced suspension keeps its forced value,
+        // materialized, which is what eager evaluation held. A suspension `forcing` names is its forced value.
+        case proof: VSuspendedProof =>
+          val next = proof match {
+            case call: VProofCall =>
+              val fn = materialize(call.fn) match {
+                case lam: VLam => lam
+                case other     => throw WTF(s"Proof call head ${call.fn} materialized to $other")
+              }
+              new VProofCall(fn, call.args.map(materialize(_)))
+            case m: VProofMatch   => new VProofMatch(m.term, materialize(m.scrut), materializeEnv(m.env))
+            case app: VProofApply => new VProofApply(materialize(app.fn), app.args.map(materialize(_)))
           }
-          val next = new VProofCall(fn, call.args.map(materialize(_)))
-          if (call.forced ne null) next.forced = Interpreter.force(materialize(call.forced))
+          if (proof.forced ne null) next.forced = Interpreter.force(materialize(proof.forced))
           if (next.synDeps.intersects(forcing)) materialize(Interpreter.force(next)) else next
       }
 

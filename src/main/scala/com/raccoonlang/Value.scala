@@ -28,8 +28,8 @@ object Value {
 
   private[raccoonlang] def needsStructuralDefEq(value: Value): Boolean = {
     // If this is a proof then we fall back to structural; a value at a structure eta type may convert with one of a
-    // different key (`StructEta`). A proof call is a proof, decided without computing its proposition.
-    value.isInstanceOf[VProofCall] || (value.tpe.tpe == PropTpe) || StructEta.eligible(value.tpe).isDefined ||
+    // different key (`StructEta`). A suspended proof is a proof, decided without computing its proposition.
+    value.isInstanceOf[VSuspendedProof] || (value.tpe.tpe == PropTpe) || StructEta.eligible(value.tpe).isDefined ||
     (value match {
       case _: VPi | _: VLam | _: NeutralThunk => true
       case app: VApp =>
@@ -67,12 +67,12 @@ object Value {
 
   /**
    * The ids among `among` that `value` depends on as eager evaluation built it: its dependencies, read from the sources
-   * each form's `synDeps` reads, with every proof call's (`VProofCall`) replaced by its forced value's. A proof call's
-   * own dependencies over-approximate its forced value's, so a decision that a dependency makes more conservative, an
-   * occurs check, a positivity or eta check, or instance search's test of a solved argument, confirms the dependency
-   * here before it acts on it (docs/kernel.md, "Proof calls"). This forces the proof calls whose dependencies meet
-   * `among`, and visits a shared part once; a part whose `synDeps` misses `among` is skipped, since those include the
-   * forced values'.
+   * each form's `synDeps` reads, with every suspended proof's (`VSuspendedProof`) replaced by its forced value's. A
+   * suspension's own dependencies over-approximate its forced value's, so a decision that a dependency makes more
+   * conservative, an occurs check, a positivity or eta check, or instance search's test of a solved argument, confirms
+   * the dependency here before it acts on it (docs/kernel.md, "Proof calls"). This forces the suspensions whose
+   * dependencies meet `among`, and visits a shared part once; a part whose `synDeps` misses `among` is skipped, since
+   * those include the forced values'.
    */
   private[raccoonlang] def forcedDeps(value: Value, among: DepSet): DepSet = {
     val found = DepSet.newBuilder
@@ -88,16 +88,16 @@ object Value {
     def walk(v: Value): Unit =
       if (v.synDeps.intersects(among) && first(v))
         v match {
-          case call: VProofCall    => walk(Interpreter.force(call))
-          case variable: Var       => ids(variable.reductionBlockers); walk(variable.tpe)
-          case _: Level | _: Kind  => ids(v.synDeps)
-          case VUniv(kind, level)  => walk(kind); walk(level)
-          case VConst(_, _, tpe)   => walk(tpe)
-          case app: VApp           => walk(app.head); app.args.foreach(walk); walk(app.tpe)
-          case thunk: NeutralThunk => env(thunk.env); walk(thunk.tpe); thunk.id.captures.foreach(walk)
-          case lam: VLam           => walk(lam.tpe); lamEnv(lam.body); captures(lam.id)
-          case pi: VPi             => captures(pi.id)
-          case poly: VNatPoly      => poly.form.operands.foreach(walk)
+          case proof: VSuspendedProof => walk(Interpreter.force(proof))
+          case variable: Var          => ids(variable.reductionBlockers); walk(variable.tpe)
+          case _: Level | _: Kind     => ids(v.synDeps)
+          case VUniv(kind, level)     => walk(kind); walk(level)
+          case VConst(_, _, tpe)      => walk(tpe)
+          case app: VApp              => walk(app.head); app.args.foreach(walk); walk(app.tpe)
+          case thunk: NeutralThunk    => env(thunk.env); walk(thunk.tpe); thunk.id.captures.foreach(walk)
+          case lam: VLam              => walk(lam.tpe); lamEnv(lam.body); captures(lam.id)
+          case pi: VPi                => captures(pi.id)
+          case poly: VNatPoly         => poly.form.operands.foreach(walk)
           case word: VWord =>
             packed.Words.foreach(word)(
               layer = token => {
@@ -402,27 +402,45 @@ object Value {
   }
 
   /**
-   * A suspended proof call (docs/kernel.md, "Proof calls"): the checked lambda `fn`, whose function type is a
-   * proposition, applied to `args`, not yet run. Only `Interpreter.evalApply` builds one, where eager evaluation would
-   * run `fn`, and materialization rebuilds one; `args` fit `fn` 's binders, as a checked application's do. It stands
-   * for the value that running `fn` on `args` gives, its forced value, which `Interpreter.force` computes once, on
-   * demand, and memoizes in `forced`. Every reader of a proof's form forces it first, as docs/kernel.md lists: a match,
-   * an application, the checker's known-constructor view, the key, quotation, printing and the walks over a value's
-   * form.
+   * A suspended proof (docs/kernel.md, "Proof calls"): a proof whose computation has not run. It is built only where
+   * eager evaluation would run that computation, and materialization rebuilds one. It stands for the value the
+   * computation gives, its forced value, which `Interpreter.force` computes once, on demand, and memoizes in `forced`.
+   * There are three computations:
+   *   - a proof call (`VProofCall`), a checked lambda whose function type is a proposition, applied;
+   *   - a proof match (`VProofMatch`), a match from a suspended proof into a proposition;
+   *   - a proof application (`VProofApply`), a suspended proof of a function proposition, applied.
    *
-   *   - Its type is `fn` 's codomain at `args`, computed when first read, without running `fn`. Eager evaluation took
-   *     the forced value's own type instead. The two are convertible, since `fn` 's body checked against its codomain,
-   *     and are the same normal form outside proofs and functions inside them; every reader of a proof's type reads it
-   *     by conversion or by its universe, or forces the proof first.
-   *   - Its dependencies are `fn` 's and `args` ', computed without forcing. Evaluation introduces no free variable, so
-   *     they include those of its type and of its forced value: an over-approximation of the forced value's, which may
-   *     add only variables in no rigid position of either. A decision that a dependency makes more conservative
-   *     confirms it through forced values (`forcedDeps`), and a link holds the calls that mention its variable forced
+   * Every reader of a proof's form forces it first, as docs/kernel.md lists: a match into a type that is no
+   * proposition, the checker's known-constructor view of one, the key, quotation, printing and the walks over a value's
+   * form. Whether a value is a suspension depends only on how it was computed, never on whether it was forced.
+   *
+   *   - Its type is the computation's proposition, computed when first read, without running it. Eager evaluation took
+   *     the forced value's own type instead. The two are convertible, since the computation checked against that
+   *     proposition, and are the same normal form outside proofs and functions inside them; every reader of a proof's
+   *     type reads it by conversion or by its universe, or forces the proof first.
+   *   - Its dependencies are its parts', computed without forcing. Evaluation introduces no free variable, so they
+   *     include those of its type and of its forced value: an over-approximation of the forced value's, which may add
+   *     only variables in no rigid position of either. A decision that a dependency makes more conservative confirms it
+   *     through forced values (`forcedDeps`), and a link holds the suspensions that mention its variable forced
    *     (`EqStore.linkable`).
    *   - Its key is its forced value's (`ValueKey`), so equal keys still mean convertible values, and termination
    *     checking compares proofs as it compared the forced values.
    */
-  final class VProofCall private[raccoonlang] (val fn: VLam, val args: Vector[Value]) extends Value {
+  sealed abstract class VSuspendedProof extends Value {
+
+    /**
+     * The forced value once `Interpreter.force` has computed it, or materialization has carried it over from the
+     * suspension it rebuilt; never itself a suspension, and `null` before.
+     */
+    private[raccoonlang] var forced: Value = null
+  }
+
+  /**
+   * A proof call: the checked lambda `fn`, whose function type is a proposition, applied to `args`, not yet run. Only
+   * `Interpreter.evalApply` builds one, where eager evaluation would run `fn`; `args` fit `fn` 's binders, as a checked
+   * application's do. Its proposition is `fn` 's codomain at `args`.
+   */
+  final class VProofCall private[raccoonlang] (val fn: VLam, val args: Vector[Value]) extends VSuspendedProof {
     override lazy val tpe: Value = Interpreter.applicationType(fn.tpe, args)
 
     override lazy val synDeps: DepSet = {
@@ -431,12 +449,47 @@ object Value {
       args.foreach(v => res.unionInPlace(v.synDeps))
       res.result()
     }
+  }
 
-    /**
-     * The forced value once `Interpreter.force` has computed it, or materialization has carried it over from the call
-     * it rebuilt; never itself a proof call, and `null` before.
-     */
-    private[raccoonlang] var forced: Value = null
+  /**
+   * A proof match: the checked match `term`, from a proof into a proposition (`ElabAst.Term.Match.proofIntoProp`), on
+   * `scrut`, the value of its scrutinee term in `env`, which is closed over the match's captured locals. Only
+   * `Interpreter` 's match step builds one, on a suspended `scrut`, where eager evaluation would force it. Its
+   * proposition is the match's motive in `env`, which the checker always states. Running it forces `scrut` and takes
+   * the branch its forced value selects, or is stuck.
+   *
+   * Its dependencies are `env` 's: `scrut` was evaluated from the scrutinee term, whose locals `env` holds, and
+   * evaluation introduces no free variable; materialization rebuilds both with one store, which keeps that so.
+   */
+  final class VProofMatch private[raccoonlang] (val term: ElabAst.Term.Match, val scrut: Value, val env: Env)
+    extends VSuspendedProof {
+    override lazy val tpe: Value = term.motive match {
+      case Some(motive) => Interpreter.evalTypeTerm(motive, env)
+      case None         => throw WTF("A proof match's checked match states no motive", Some(term.span))
+    }
+
+    override lazy val synDeps: DepSet = envDeps(env)
+  }
+
+  /**
+   * A proof application: the proof `fn`, of a function proposition, a suspended proof when `Interpreter.evalApply`
+   * built it, applied to `args`, which fit that proposition's binders. Only `Interpreter.evalApply` builds one, where
+   * eager evaluation would force `fn`. Its proposition is the codomain of `fn` 's at `args`. Running it forces `fn` and
+   * applies the forced value.
+   */
+  final class VProofApply private[raccoonlang] (val fn: Value, val args: Vector[Value]) extends VSuspendedProof {
+    override lazy val tpe: Value = fn.tpe match {
+      case pi: VPi => Interpreter.applicationType(pi, args)
+      // A checked application's head has a function type; a proposition of another form takes the forced value's.
+      case _ => Interpreter.force(this).tpe
+    }
+
+    override lazy val synDeps: DepSet = {
+      val res = DepSet.newBuilder
+      res.unionInPlace(fn.synDeps)
+      args.foreach(v => res.unionInPlace(v.synDeps))
+      res.result()
+    }
   }
 
 

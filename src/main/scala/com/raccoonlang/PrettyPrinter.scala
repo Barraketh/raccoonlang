@@ -272,24 +272,24 @@ object PrettyPrinter {
     }
 
     def printElabTermAtom(t: ElabAst.Term): String = t match {
-      case _: ElabAst.Term.Ref               => printElabTerm0(t)
-      case ElabAst.Term.App(_, _, _)         => printElabTerm0(t)
-      case _: ElabAst.Term.Proj              => printElabTerm0(t)
-      case ElabAst.Term.NatLit(_, _)         => printElabTerm0(t)
-      case ElabAst.Term.StrLit(_, _)         => printElabTerm0(t)
-      case ElabAst.Term.Word(_, _, _)        => printElabTerm0(t)
-      case _: ElabAst.Term.Lam               => s"(${printElabTerm0(t)})"
-      case ElabAst.Term.Match(_, _, _, _, _) => s"(${printElabTerm0(t)})"
-      case ElabAst.Term.Body(_, _, _)        => s"(${printElabTerm0(t)})"
-      case ElabAst.Term.Pi(_, _, _, _, _)    => s"(${printElabTerm0(t)})"
+      case _: ElabAst.Term.Ref                  => printElabTerm0(t)
+      case ElabAst.Term.App(_, _, _)            => printElabTerm0(t)
+      case _: ElabAst.Term.Proj                 => printElabTerm0(t)
+      case ElabAst.Term.NatLit(_, _)            => printElabTerm0(t)
+      case ElabAst.Term.StrLit(_, _)            => printElabTerm0(t)
+      case ElabAst.Term.Word(_, _, _)           => printElabTerm0(t)
+      case _: ElabAst.Term.Lam                  => s"(${printElabTerm0(t)})"
+      case ElabAst.Term.Match(_, _, _, _, _, _) => s"(${printElabTerm0(t)})"
+      case ElabAst.Term.Body(_, _, _)           => s"(${printElabTerm0(t)})"
+      case ElabAst.Term.Pi(_, _, _, _, _)       => s"(${printElabTerm0(t)})"
     }
 
     def printElabTerm0(t: ElabAst.Term): String = t match {
       case ElabAst.Term.Lam(ty, body, _, _, _, _, _) =>
         s"fun ${printElabBinders(ty.binders)}: ${printElabTypeTerm(ty.out)} => ${printElabTerm0(body)}"
-      case m @ ElabAst.Term.Match(_, _, _, _, _) => printElabMatch(m)
-      case b: ElabAst.Term.Body                  => printElabBody(b)
-      case tt: ElabAst.TypeTerm                  => printElabTypeTerm(tt)
+      case m @ ElabAst.Term.Match(_, _, _, _, _, _) => printElabMatch(m)
+      case b: ElabAst.Term.Body                     => printElabBody(b)
+      case tt: ElabAst.TypeTerm                     => printElabTypeTerm(tt)
     }
 
     /**
@@ -351,29 +351,41 @@ object PrettyPrinter {
    * Values as source-like text. A variable that `names` names prints by that name, as a binder of the function type or
    * lambda being printed does; any other prints with its id, `x#12`, so that distinct variables of one name differ.
    *
-   * A proof call prints as its forced value (docs/kernel.md, "Proof calls"), so printing runs the calls that nothing
-   * ran before. With `result`, the value is a program's result: a run that fails is the program's failure, and is
-   * thrown as `ForcingFailed`, or as itself for a stack overflow. Otherwise the value is part of a diagnostic, which
-   * runs outside every evaluation boundary: a call whose run fails, even by exhausting the stack, prints as the call.
+   * A suspended proof prints as its forced value (docs/kernel.md, "Proof calls"), so printing runs the suspensions that
+   * nothing ran before. With `result`, the value is a program's result: a run that fails is the program's failure, and
+   * is thrown as `ForcingFailed`, or as itself for a stack overflow. Otherwise the value is part of a diagnostic, which
+   * runs outside every evaluation boundary: a suspension whose run fails, even by exhausting the stack, prints as its
+   * computation (`printSuspended`).
    */
   private final class ValuePrinter(names: Map[Value.VarId, String], result: Boolean) {
 
-    /** The calls of a diagnostic whose run failed, which are not run again: a failed run memoizes nothing. */
-    private val failed = new java.util.IdentityHashMap[Value.VProofCall, java.lang.Boolean]()
+    /** The suspensions of a diagnostic whose run failed, which are not run again: a failed run memoizes nothing. */
+    private val failed = new java.util.IdentityHashMap[Value.VSuspendedProof, java.lang.Boolean]()
 
-    /** The value `call` prints as: its forced value, or, in a diagnostic whose run of it fails, `None`. */
-    private def forced(call: Value.VProofCall): Option[Value] =
+    /** The value `proof` prints as: its forced value, or, in a diagnostic whose run of it fails, `None`. */
+    private def forced(proof: Value.VSuspendedProof): Option[Value] =
       if (result)
-        try Some(Interpreter.force(call))
+        try Some(Interpreter.force(proof))
         catch { case NonFatal(failure) => throw new ForcingFailed(failure) }
-      else if (failed.containsKey(call)) None
+      else if (failed.containsKey(proof)) None
       else
-        try Some(Interpreter.force(call))
+        try Some(Interpreter.force(proof))
         catch {
           case NonFatal(_) | _: StackOverflowError =>
-            failed.put(call, java.lang.Boolean.TRUE)
+            failed.put(proof, java.lang.Boolean.TRUE)
             None
         }
+
+    /**
+     * A suspended proof as its computation: a call or an application as one, a record's projection as `base.field`, any
+     * other match as its syntax.
+     */
+    private def printSuspended(proof: Value.VSuspendedProof): String =
+      proof match {
+        case call: Value.VProofCall => printApp(call.fn, call.args)
+        case app: Value.VProofApply => printApp(app.fn, app.args)
+        case m: Value.VProofMatch   => projection(m.term, m.env).getOrElse(underEnv(m.env).printElabMatch(m.term))
+      }
 
     private def printNatForm(poly: Value.VNatPoly): String = {
       val constant = poly.form.constant
@@ -405,7 +417,12 @@ object PrettyPrinter {
     /** A value that prints as loose syntax, so it is parenthesized where an atom is expected. */
     private def isLoose(value: Value): Boolean =
       value match {
-        case call: Value.VProofCall                     => forced(call).exists(isLoose)
+        // A failed run prints as its computation, which is loose syntax for a match that is no projection only.
+        case proof: Value.VSuspendedProof =>
+          forced(proof).fold(proof match {
+            case m: Value.VProofMatch => projection(m.term, m.env).isEmpty
+            case _                    => false
+          })(isLoose)
         case _: Value.VPi                               => true
         case Value.VLam(_, _: Value.ValueId.LocalId, _) => true
         case thunk: Value.NeutralThunk                  => projection(thunk).isEmpty
@@ -538,11 +555,12 @@ object PrettyPrinter {
      * A named record field's canonical projection (`StructEta.Projection`), as `base.field`. An anonymous field's
      * prints as the stuck match it is.
      */
-    def projection(thunk: Value.NeutralThunk): Option[String] =
-      thunk match {
-        case StructEta.Projection(base, _, info, idx) if info.fieldNames(idx) != "_" =>
-          Some(s"${printAtom(base)}.${info.fieldNames(idx)}")
-        case _ => None
+    def projection(thunk: Value.NeutralThunk): Option[String] = projection(thunk.term, thunk.env)
+
+    /** The match `term` in `env` as `base.field`, when it is a named field's projector (`StructEta.Projection.of`). */
+    private def projection(term: ElabAst.Term.Match, env: Env): Option[String] =
+      StructEta.Projection.of(term, env).collect {
+        case (base, _, info, idx) if info.fieldNames(idx) != "_" => s"${printAtom(base)}.${info.fieldNames(idx)}"
       }
 
     /** A stuck match: a record's projection as `base.field`, any other as its syntax under its environment. */
@@ -550,8 +568,8 @@ object PrettyPrinter {
       projection(thunk).getOrElse(underEnv(thunk.env).printElabMatch(thunk.term))
 
     def print(value: Value): String = value match {
-      // Printed as its forced value, which eager evaluation printed (docs/kernel.md, "Proof calls"), or as the call.
-      case call: Value.VProofCall                      => forced(call).fold(printApp(call.fn, call.args))(print)
+      // Printed as its forced value, which eager evaluation printed (docs/kernel.md, "Proof calls"), or as itself.
+      case proof: Value.VSuspendedProof                => forced(proof).fold(printSuspended(proof))(print)
       case packed.Strings.Literal(text)                => UnicodeScalarString.renderQuoted(text)
       case nil if Kernel.isListNil(nil)                => "[]"
       case word: Value.VWord                           => printWord(word)
@@ -585,8 +603,8 @@ object PrettyPrinter {
    * A value as source-like text. A `String.mk` whose list ends in `nil` and holds only closed scalar characters prints
    * as a literal; any other string prints as its constructor applied to its list. A function type prints as one, a
    * record's projection as `base.field`, and a stuck match as its syntax. Printing never fails: a value whose binders
-   * or body cannot be opened prints in a shorter form, and a proof call whose run fails prints as the call. This is how
-   * a diagnostic shows a value.
+   * or body cannot be opened prints in a shorter form, and a suspended proof whose run fails prints as its computation.
+   * This is how a diagnostic shows a value.
    */
   def print(value: Value): String = printWith(value, result = false)
 

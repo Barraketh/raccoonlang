@@ -81,7 +81,7 @@ object CapturedIndexes {
         goTerm(ty, cutoff, refs)
         goTerm(body, cutoff, refs)
 
-      case Match(scrut, motive, cases, _, _) =>
+      case Match(scrut, motive, cases, _, _, _) =>
         goTerm(scrut, cutoff, refs)
         motive.foreach(goTerm(_, cutoff, refs))
         cases.foreach { c =>

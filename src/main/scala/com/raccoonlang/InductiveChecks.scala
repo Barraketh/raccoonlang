@@ -145,7 +145,7 @@ object InductiveChecks {
       case ElabAst.Term.App(fn, args, _)   => terms(fn +: args)
       case proj: ElabAst.Term.Proj         => proj.family == name || mentionsGlobal(proj.base, name)
       case ElabAst.Term.Body(lets, res, _) => terms(lets.flatMap(let => let.ty.toVector :+ let.value) :+ res)
-      case ElabAst.Term.Match(scrut, motive, cases, _, _) => terms((scrut +: motive.toVector) ++ cases.map(_.body))
+      case ElabAst.Term.Match(scrut, motive, cases, _, _, _) => terms((scrut +: motive.toVector) ++ cases.map(_.body))
       case ElabAst.Term.Pi(binders, out, _, _, _) => binders.exists(b => binderType(b.ty)) || mentionsGlobal(out, name)
       case ElabAst.Term.Lam(ty, body, _, _, _, _, _) => mentionsGlobal(ty, name) || mentionsGlobal(body, name)
     }
@@ -155,8 +155,9 @@ object InductiveChecks {
     if (target.isDirectOccurrence(value)) false
     else
       value match {
-        // These walks read a value's form, so they read a proof call's forced value (docs/kernel.md, "Proof calls").
-        case call: VProofCall => doesNotOccur(target, Interpreter.force(call))
+        // These walks read a value's form, so they read a suspended proof's forced value (docs/kernel.md, "Proof
+        // calls").
+        case proof: VSuspendedProof => doesNotOccur(target, Interpreter.force(proof))
 
         case thunk: NeutralThunk => thunkDoesNotContain(target, thunk)
 
@@ -204,7 +205,7 @@ object InductiveChecks {
     if (target.isDirectOccurrence(value)) true
     else
       value match {
-        case call: VProofCall => occursPositively(target, Interpreter.force(call), assumed)
+        case proof: VSuspendedProof => occursPositively(target, Interpreter.force(proof), assumed)
 
         // A stuck computation that mentions the target cannot certify that it occurs positively.
         case thunk: NeutralThunk => thunkDoesNotContain(target, thunk)
@@ -250,7 +251,7 @@ object InductiveChecks {
    */
   private def sameFamilyArgsDoNotContain(target: PositivityTarget, value: Value): Boolean =
     value match {
-      case call: VProofCall => sameFamilyArgsDoNotContain(target, Interpreter.force(call))
+      case proof: VSuspendedProof => sameFamilyArgsDoNotContain(target, Interpreter.force(proof))
 
       // A stuck computation that does not mention the family holds no application of it.
       case thunk: NeutralThunk => thunkDoesNotContain(target, thunk)

@@ -83,8 +83,8 @@ object Linearity {
           // A native's type is walked above; its body is a builtin computation, which is not opened.
           case _: LamBody.Native => false
         })
-      // The walk reads a value's form, so a proof call's forced value (docs/kernel.md, "Proof calls").
-      case call: VProofCall => axiomMentionsLinear(Interpreter.force(call))
+      // The walk reads a value's form, so a suspended proof's forced value (docs/kernel.md, "Proof calls").
+      case proof: VSuspendedProof => axiomMentionsLinear(Interpreter.force(proof))
       // A stuck match is not opened, and a variable is linear only by its own type, tested above.
       case _: NeutralThunk | _: Var | _: VConst | _: ConstructorHead | _: VNatPoly | _: Level | LevelTpe | _: Kind |
           KindTpe | _: VUniv | PropTpe | KernelObject =>
@@ -330,7 +330,7 @@ object Ledger {
       case EA.Term.Proj(base, _, _, _, _) => firstReference(id, base)
       case EA.Term.Body(lets, res, _) =>
         terms(lets.flatMap(let => let.ty.toVector :+ let.value) :+ res)
-      case EA.Term.Match(scrut, motive, cases, _, _) => terms((scrut +: motive.toVector) ++ cases.map(_.body))
+      case EA.Term.Match(scrut, motive, cases, _, _, _) => terms((scrut +: motive.toVector) ++ cases.map(_.body))
       case EA.Term.Pi(binders, out, _, _, _) =>
         binders.iterator
           .map(b => binderType(b.ty))

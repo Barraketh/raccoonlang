@@ -47,7 +47,7 @@ class ResidualizationTests extends munit.FunSuite {
       case EA.Term.Lam(ty, body, _, _, _, _, _) =>
         containsGlobal(ty, name) ||
         containsGlobal(body, name)
-      case EA.Term.Match(scrut, motive, cases, _, _) =>
+      case EA.Term.Match(scrut, motive, cases, _, _, _) =>
         containsGlobal(scrut, name) ||
         motive.exists(ty => containsGlobal(ty, name)) ||
         cases.exists(c => containsGlobal(c.body, name))
@@ -163,7 +163,7 @@ class ResidualizationTests extends munit.FunSuite {
         |""".stripMargin
 
     resultTerm(checkBody(p).term) match {
-      case EA.Term.Match(_, _, cases, _, _) =>
+      case EA.Term.Match(_, _, cases, _, _, _) =>
         assertEquals(cases.map(_.ctorName).toSet, Set("Bool.true", "Bool.false"))
         cases.foreach(c => assert(containsGlobal(c.body, "id")))
       case other => fail(s"Expected stuck match with literal branches, got $other")
@@ -184,7 +184,7 @@ class ResidualizationTests extends munit.FunSuite {
         |""".stripMargin
 
     resultTerm(checkBody(p).term) match {
-      case EA.Term.Match(scrut, _, _, _, _) =>
+      case EA.Term.Match(scrut, _, _, _, _, _) =>
         assert(containsGlobal(scrut, "idBool"))
         assert(containsGlobal(scrut, "opaqueBool"))
       case other => fail(s"Expected stuck match residual, got $other")

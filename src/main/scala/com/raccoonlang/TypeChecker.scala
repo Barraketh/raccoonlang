@@ -73,15 +73,15 @@ object TypeChecker {
   }
 
   /**
-   * `value` has type `tyVal`. A proof call's type is its lambda's codomain, convertible with its forced value's (docs/
-   * kernel.md, "Proof calls"); when that does not fit, the forced value's type decides, so a mismatch reports the type
-   * eager evaluation reported.
+   * `value` has type `tyVal`. A suspended proof's type is its computation's proposition, convertible with its forced
+   * value's (docs/kernel.md, "Proof calls"); when that does not fit, the forced value's type decides, so a mismatch
+   * reports the type eager evaluation reported.
    */
   def checkType(value: Value, tyVal: Value): Unit =
     value match {
-      case call: VProofCall =>
-        try checkFits(call.tpe, tyVal)
-        catch { case _: TypeMismatch => checkFits(Interpreter.force(call).tpe, tyVal) }
+      case proof: VSuspendedProof =>
+        try checkFits(proof.tpe, tyVal)
+        catch { case _: TypeMismatch => checkFits(Interpreter.force(proof).tpe, tyVal) }
       case _ => checkFits(value.tpe, tyVal)
     }
 
@@ -93,10 +93,15 @@ object TypeChecker {
   }
 
   /**
-   * `fn` applied to `args`, checked against its binders. Applying a proof demands it, so they are its forced value's.
+   * `fn` applied to `args`, checked against its binders. Applying a suspended proof does not demand it, so they are its
+   * proposition's, a function type; a suspension whose proposition is of another form is read as its forced value, as
+   * eager evaluation read it, so it reports what it reported.
    */
   private def checkApplyValue(fn: Value, args: Vector[Value]): Value = {
-    val head = Interpreter.force(fn)
+    val head = fn match {
+      case proof: VSuspendedProof if proof.tpe.isInstanceOf[VPi] => proof
+      case other                                                 => Interpreter.force(other)
+    }
     head.tpe match {
       case pi: VPi =>
         BinderOps.checkAndInstantiate(pi.binders, pi.env, args)
@@ -145,7 +150,7 @@ object TypeChecker {
           }
           loop(res, appHead = false)
         case _: EA.Term.Lam =>
-        case EA.Term.Match(scrut, motive, cases, _, _) =>
+        case EA.Term.Match(scrut, motive, cases, _, _, _) =>
           loop(scrut, appHead = false)
           motive.foreach(loop(_, appHead = false))
           cases.foreach(c => loop(c.body, appHead = false))
@@ -369,7 +374,7 @@ object TypeChecker {
       info <- family.meta.record
       index <- info.fieldIndex(select.field)
     } yield checkProjection(checked, family, info, index, select.span, env)
-    // A diagnostic shows the base as eager evaluation did, so a proof call's forced value.
+    // A diagnostic shows the base as eager evaluation did, so a suspended proof's forced value.
     projected.getOrElse(throw noField(select, Interpreter.force(checked.value)))
   }
 

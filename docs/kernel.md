@@ -643,8 +643,8 @@ a proposition convertible with every other, so a converted comparison would
 accept any call, including a call on the matched proof itself. A proof
 component instead decreases when the call passes, by structural key, a proof
 field of the current root or a proof field of one of those, transitively. It
-is unchanged when its key equals the root's. A proof call keys as its forced
-value ([proof calls](#proof-calls)). Any other proof is neither, and
+is unchanged when its key equals the root's. A suspended proof keys as its
+forced value ([proof calls](#proof-calls)). Any other proof is neither, and
 the call is `NonDecreasingRecursiveCall`; this covers a rebuilt proof of a
 field's proposition. As in conversion, equal keys are trusted to mean equal
 values. The search follows proof fields only; it does not enter data fields,
@@ -663,7 +663,10 @@ change the proof's type. Termination checking reads the link. Elsewhere a proof
 and the constructor value it is linked to convert, as proofs of one
 proposition, but the link is the proof's value in the branch, as for a refined
 data variable: a nested match on the same variable sees a known constructor, so
-its other cases are `UnreachableCase`.
+its other cases are `UnreachableCase`. A match into a proposition on a proof
+call links nothing, since the call is no variable: its fields are no fields of
+the root, even where the call's forced value is a variable that matching would
+have linked.
 
 ## Mutual blocks
 
@@ -779,56 +782,126 @@ A call to a checked lambda whose function type is a proposition (F2) is a
 *proof call*. Applying the lambda does not run it, except inside a demanded
 proof: the call's value is a suspension of the lambda and its argument values.
 The suspension runs the lambda the first time something reads the proof's form,
-and keeps the result, its *forced value*. Conversion never reads a proof's form,
-since proof irrelevance decides first, so only these force one:
+and keeps the result, its *forced value*.
 
-- a match on it or a projection of its field, which is a match, during checking
-  and at run time, and the checker's view of a match's scrutinee as a known
-  constructor, under which the other cases are `UnreachableCase`;
-- applying it, as a proof of a function proposition;
+Two other computations on a suspension suspend too (prototype, pending a
+decision; see EVALUATION_AND_PORTS §2 item 4):
+
+- a *proof match*: a match from a proof into a proposition, whose scrutinee is
+  a proof and whose motive is a proposition, on a suspended scrutinee. The
+  checker records the two universes on the checked match, and no substitution
+  changes either. Its proposition is the motive at the scrutinee, the motive's
+  value in the match's environment. When it is forced, it forces its scrutinee
+  and takes the branch the forced value selects, or is stuck. A projection of a
+  proof field is one: it is the one-branch match from its record into the
+  field's type;
+- a *proof application*: applying a suspended proof of a function proposition.
+  Its proposition is the codomain of the proof's at the arguments. When it is
+  forced, it forces the proof and applies the forced value.
+
+On a scrutinee or head that is no suspension, a constructor value, a variable
+or a stuck value, both evaluate as before. A match into a type that is no
+proposition, a large elimination, forces its scrutinee as before, and reduces
+only at a constructor. Whether a value is a suspension depends only on how it
+was computed: a suspension that something forced is still one, and a match into
+a proposition on it suspends again.
+
+Conversion never reads a proof's form, since proof irrelevance decides first,
+so only these force one:
+
+- a match on it into a type that is no proposition, or a projection of a data
+  field, during checking and at run time, and the checker's view of such a
+  match's scrutinee as a known constructor, under which the other cases are
+  `UnreachableCase`;
 - its key, which the termination checker compares (see [recursion on
   proofs](#recursion-on-proofs)), and conversion when two proofs' propositions
   do not convert;
 - quotation, for an inferred motive or a `derive` result, and printing, of the
   program's result or a diagnostic;
 - the walks that read a value's form: positivity, the axiom lint S3, and
-  reading a type-pattern capture by position.
+  reading a type-pattern capture by position;
+- instance search, which applies a candidate or unifies it by its type.
 
 A demanded proof runs as every call ran before: a proof call inside it runs at
-once, so demanding a proof costs what evaluating it eagerly cost. A proof
-nothing demands never runs, so an exponential proof that nothing inspects costs
-nothing. Materialization keeps a suspension suspended, over the materialized
-lambda and arguments; a forced one keeps its forced value, materialized.
+once, so demanding a proof costs what evaluating it eagerly cost. A proof match
+or application inside it on a suspension from outside the run still suspends;
+when it is the run's result, forcing goes on with it. A proof nothing demands
+never runs, so an exponential proof that nothing inspects costs nothing.
+Materialization keeps a suspension suspended, over its materialized parts; a
+forced one keeps its forced value, materialized.
 
-A suspension's proposition is the lambda's codomain at its arguments, computed
-when first read, without running the body. Evaluation used to take the forced
-value's own type instead. The two convert, since the body checked against the
-codomain, and as normal forms they are the same outside the proofs and
-functions inside them. Every reader of a proof's type reads it by conversion or
-by its universe, or forces the proof first; a proof whose codomain does not fit
-an expected type is tried at its forced value's type, so a mismatch reports
-that type, as before.
+A suspension's proposition is computed when first read, without running it.
+Evaluation used to take the forced value's own type instead. The two convert,
+since the computation checked against the proposition, and as normal forms they
+are the same outside the proofs and functions inside them. Every reader of a
+proof's type reads it by conversion or by its universe, or forces the proof
+first; a proof whose proposition does not fit an expected type is tried at its
+forced value's type, so a mismatch reports that type, as before.
 
-A suspension's dependencies are the lambda's and the arguments', computed
-without running it. Evaluation introduces no free variable, so they include its
-forced value's, but may include more: a variable that only the arguments
-mention. Such a variable occurs in no rigid position of the forced value or its
-type, so unification never reaches it, and a refinable set that includes it
-refines nothing more. The decisions that a dependency makes conservative
-confirm it through forced values instead: the occurs check, positivity, a
-record's eta eligibility, and instance search's test of a solved argument. A
-link whose value mentions its variable only in a proof call's arguments holds
-that value with those calls forced, as it did before. So does each value built
-on such a decision: instance search's solved argument, and an eta projection's
-type, which forces the calls that mention a template variable no family
+A suspension's dependencies are its parts': a proof call's lambda and
+arguments, a proof application's proof and arguments, and a proof match's
+environment, which holds the locals of its scrutinee. They are computed without
+running it. Evaluation introduces no free variable, so they include its forced
+value's, but may include more: a variable that only the arguments mention.
+Such a variable occurs in no rigid position of the forced value or its type, so
+unification never reaches it, and a refinable set that includes it refines
+nothing more. The decisions that a dependency makes conservative confirm it
+through forced values instead: the occurs check, positivity, a record's eta
+eligibility, and instance search's test of a solved argument. A link whose
+value mentions its variable only in a suspension's parts holds that value with
+those suspensions forced, as it did before. So does each value built on such a
+decision: instance search's solved argument, and an eta projection's type,
+which forces the suspensions that mention a template variable no family
 argument determines, such as a capture, so that no projection's type holds one.
 
-**Why the results do not change.** A forced value is the value eager
-evaluation computed: evaluation is deterministic, the arguments are values, and
-the lambda reads only its closure and its arguments; a global it names was
-checked where the name was checked, never where it runs. Every reader of a
-proof's form forces it, and the other readers read a proof by its proposition,
-which converts with the one before. In particular:
+**The checker's view of a proof match.** A match from a suspended proof into a
+proposition reads the scrutinee by its proposition alone. The scrutinee is no
+constructor value, so there is no known-constructor view. The match is checked
+by type: it needs one case for every constructor its type allows, and refuses a
+case its type refutes. Each case's fields are fresh proofs, related to the
+scrutinee's type by the case's refinement. They are linked to nothing, since
+only a proof variable links to the constructor a case matched (see [recursion
+on proofs](#recursion-on-proofs)). The scrutinee's type is the suspension's
+proposition, and unification compares it with each constructor's type
+directly, not the proofs, whose comparison would read the suspension's key.
+
+- The match's motive decides whether to force. It is the written `returning`
+  or the expected type, when the match states one before its cases are
+  checked. When it is no proposition, the match is a large elimination and is
+  checked as before: the scrutinee is forced, and the match sees its forced
+  value, and a known constructor there.
+- A match whose motive is inferred from its cases is checked by type. The
+  motive is unknown when the view must be chosen, so the view does not force.
+  The inferred universe then decides only the match's value: a proof match
+  into a proposition, and otherwise the forced scrutinee, reduced. This is a
+  choice: such a large elimination loses the known-constructor view it had.
+- The view depends only on the scrutinee's form, so it never depends on
+  whether an earlier demand forced and memoized the call.
+
+This changes which programs check, which plain suspension did not.
+
+- A match into a proposition on a proof call that wrote only the forced
+  value's case, as `UnreachableCase` required, is now `MissingCase`.
+- One that wrote every case its type allows was refused with `UnreachableCase`
+  and now checks.
+- A recursion on proofs that matched a proof call whose forced value was a
+  proof variable, and recursed on a field of the case, was linked through that
+  variable. It is now `NonDecreasingRecursiveCall`; matching on the variable
+  itself still links it.
+- A program whose only demand of a proof was a match into a proposition no
+  longer runs that proof, so a failure or depth that the proof alone caused no
+  longer fails it.
+
+**Why the results do not change, outside that view.** A forced value is the
+value eager evaluation computed: evaluation is deterministic, the parts are
+values, and a lambda reads only its closure and its arguments; a global it
+names was checked where the name was checked, never where it runs. A proof
+match's forced value is the value eager evaluation gave the match, and a proof
+application's the value it gave the application. Every reader of a proof's
+form forces it, and the other readers read a proof by its proposition, which
+converts with the one before. The checker's view of a proof match, above, is
+the one rule that reads a suspension differently from its forced value. In
+particular:
 
 - **The ledger and the read rules** (S1) decide from the checker's view, not
   from evaluation: a checked node's summary of uses is built from its syntax as
@@ -842,12 +915,13 @@ which converts with the one before. In particular:
   refuses a ghost in it.
 - **`--no-user-axioms`** rejects a program's axioms from its declarations,
   before anything is evaluated.
-- **Running a program** forces its result, and printing forces the proof calls
-  inside it, so a program prints what it printed before; a running program
-  reads a proof only where the list above forces it. A run that fails while
-  the result prints fails the program, as it did when the body ran it. A
-  diagnostic is printed outside every evaluation boundary, so there a call
-  whose run fails, by an error or by exhausting the stack, prints as the call.
+- **Running a program** forces its result, and printing forces the
+  suspensions inside it, so a program prints what it printed before; a running
+  program reads a proof only where the list above forces it. A run that fails
+  while the result prints fails the program, as it did when the body ran it. A
+  diagnostic is printed outside every evaluation boundary, so there a
+  suspension whose run fails, by an error or by exhausting the stack, prints as
+  its computation: a call or application as one, a match as its syntax.
 - **A recursive call's check** inside a local lambda in a recursive body ran
   again whenever eager evaluation applied the lambda during checking; it ran
   first when the lambda's body was checked, on its parameters, and the subterm
@@ -855,8 +929,9 @@ which converts with the one before. In particular:
 
 Skipping an undemanded proof also skips what it would have exhausted: time,
 host stack, and `NatValueTooLarge` for a closed power too large for the JVM. A
-program that only such a proof made fail may now check. Evaluating a checked
-term raises no other error.
+program that only such a proof made fail may now check, and with proof matches
+that includes a proof that only a match into a proposition read. Evaluating a
+checked term raises no other error.
 
 ### Evaluation depth
 
@@ -868,8 +943,8 @@ instead of recursing into it. The loop changes no value, neutral or blocking
 set, and an error is located at the innermost term being evaluated, as before:
 it removes host frames only, so evaluation that exhausted the stack may now
 finish. A native's result, a constructor's or a neutral head's application,
-and a proof call are values at once; a demanded proof call runs its body in a
-loop of its own.
+and a suspended proof are values at once; a demanded suspension runs in a loop
+of its own.
 
 Recursion outside tail position, and checking, recurse on the host stack. The
 CLI runs its whole pipeline on a thread whose stack `--stack` sets, 256 MB
@@ -881,10 +956,13 @@ applying an entry to the root supply, and printing the result, which forces the
 proof calls in it. A demanded proof call runs where it is demanded, so its
 depth adds to its demander's. A proof call whose argument holds another call,
 directly or through data, recurses into it to compute its dependencies, and
-into its run where its body matches on it, where eager evaluation had run the
-inner call already: a chain of such calls, built by a loop, needs stack in
-proportion to its length. An overflow while loading, parsing or elaborating
-is not a diagnostic.
+into its run where it is demanded and forces that call: a large elimination of
+it, or a demanded proof match on it, where eager evaluation had run the inner
+call already. A chain of such calls, built by a loop, needs stack in proportion
+to its length where its dependencies are computed, as a global's closedness
+check computes them, or where it is demanded. A match into a proposition does
+not demand it. An overflow while loading, parsing or elaborating is not a
+diagnostic.
 
 ## Axioms
 

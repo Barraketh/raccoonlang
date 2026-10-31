@@ -19,8 +19,9 @@ import scala.collection.mutable
  * and recursive slots, and each function type's universe; so the motive and every argument the checker inserted are
  * part of it, being checked code. It leaves out what evaluation does not read: source positions, the names of locals
  * and binders, and the node identities of the function types, lambdas and matches inside it, which name nodes, not code
- * (`NodeId`): the values two nodes of one code build convert by opening, or by their own code. It renames every local,
- * bound or mentioned: a free one by the order of its first mention, and a bound one by its offset from the cutoff. So
+ * (`NodeId`): the values two nodes of one code build convert by opening, or by their own code. It also leaves out a
+ * match's `proofIntoProp`, which decides only whether a suspended scrutinee is forced, not what the match computes. It
+ * renames every local, bound or mentioned: a free one by the order of its first mention, and a bound one by its offset from the cutoff. So
  * two matches have one `MatchCode` exactly when one is the other with its free locals renamed one to one, in order of
  * first mention, and its bound slots shifted together, which evaluates to the same result once each free local holds
  * the same value; `MatchId` pairs the code with those values.
@@ -220,7 +221,7 @@ object MatchIdentity {
             local(ref)
             atom(peer)
           }
-        case ETerm.Match(scrut, motive, cases, _, _) =>
+        case ETerm.Match(scrut, motive, cases, _, _, _) =>
           long(Tag.Match)
           term(scrut)
           option(motive)(term)

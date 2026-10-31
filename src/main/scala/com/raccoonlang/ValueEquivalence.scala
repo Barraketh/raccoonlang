@@ -149,14 +149,14 @@ object ValueEquivalence {
 
     private def defEqStructural(a: Value, b: Value): Boolean =
       (a, b) match {
-        // Structurally, a proof call is its forced value, which comparing keys has computed already (docs/kernel.md,
-        // "Proof calls"). Proofs of convertible propositions never get here.
-        case (call: VProofCall, _)  => defEq(Interpreter.force(call), b)
-        case (_, call: VProofCall)  => defEq(a, Interpreter.force(call))
-        case (PropTpe, PropTpe)     => true
-        case (LevelTpe, LevelTpe)   => true
-        case (KindTpe, KindTpe)     => true
-        case (l1: Level, l2: Level) => l1 == l2 || Level.leq(l1, l2) && Level.leq(l2, l1)
+        // Structurally, a suspended proof is its forced value, which comparing keys has computed already (docs/
+        // kernel.md, "Proof calls"). Proofs of convertible propositions never get here.
+        case (proof: VSuspendedProof, _) => defEq(Interpreter.force(proof), b)
+        case (_, proof: VSuspendedProof) => defEq(a, Interpreter.force(proof))
+        case (PropTpe, PropTpe)          => true
+        case (LevelTpe, LevelTpe)        => true
+        case (KindTpe, KindTpe)          => true
+        case (l1: Level, l2: Level)      => l1 == l2 || Level.leq(l1, l2) && Level.leq(l2, l1)
         // Kinds are in normal form, so equal kinds are equal values.
         case (k1: Kind, k2: Kind)                                         => k1 == k2
         case (VUniv(k1, l1), VUniv(k2, l2))                               => defEq(k1, k2) && defEq(l1, l2)
@@ -340,9 +340,9 @@ object ValueEquivalence {
       case InductiveFamilyValue(_) if value.tpe.isInstanceOf[VUniv] => Some(TypeFamily)
       case pi: VPi  => if (pi.tpe == PropTpe) None else Some(FunctionType)
       case _: VUniv => Some(TypeUniverse)
-      // A proof call is a proof, as `VCtor` proofs above are no rigid form either.
+      // A suspended proof is a proof, as `VCtor` proofs above are no rigid form either.
       case _: Var | _: NeutralThunk | _: VLam | _: VConst | _: VApp | _: ConstructorHead | _: VNatPoly |
-          _: VProofCall =>
+          _: VSuspendedProof =>
         None
       // Level and kind arithmetic and these primitive forms have no nominal apartness rule.
       case _: Level | LevelTpe | _: Kind | KindTpe | PropTpe | KernelObject => None

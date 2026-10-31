@@ -121,13 +121,17 @@ object ElabAst {
     /**
      * A match. Its stuck values are identified by its code, not by `nodeId` (`MatchIdentity`); the node keeps the last
      * layout computed for it, which is a function of the node and a cutoff, so no copy needs it.
+     * `proofIntoProp` holds when the checker found the scrutinee a proof and the motive a proposition, a universe that
+     * no substitution changes: evaluating the match then leaves a suspended scrutinee unforced (`Value.VProofMatch`).
+     * Only a checked match sets it, and its motive is then present; a copy of a checked match keeps it.
      */
     final case class Match(
         scrut: Term,
         motive: Option[TypeTerm],
         cases: Vector[Case],
         span: Span,
-        nodeId: NodeId
+        nodeId: NodeId,
+        proofIntoProp: Boolean = false
     ) extends Term {
       @volatile private[raccoonlang] var layoutCache: MatchIdentity.Layout = null
     }

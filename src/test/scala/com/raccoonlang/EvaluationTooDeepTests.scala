@@ -74,9 +74,9 @@ class EvaluationTooDeepTests extends munit.FunSuite {
         |
         |""".stripMargin
     onSmallStack {
-      // The match demands the proof, which overflows while it runs.
+      // The match, a large elimination, demands the proof, which overflows while it runs.
       val demanded =
-        deep + "def t : True := {\n  match deep(100000) returning True with\n  | True.intro => True.intro\n}\n"
+        deep + "def t : Nat := {\n  match deep(100000) returning Nat with\n  | True.intro => 0\n}\n"
       intercept[EvaluationTooDeep](runChecked(demanded + "Nat.zero\n"))
       // Nothing demands this one, so it only checks if proof calls are suspended again.
       assertEquals(result(deep + "def t : True := deep(100000)\n\nNat.zero\n"), "0")

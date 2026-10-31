@@ -88,9 +88,10 @@ object MatchChecker {
       case Var(_, id, _) => DepSet.single(id)
       case _             => DepSet.empty
     }
+    val proof = getUniverse(scrutTpe) == PropTpe
     val proofRoot = scrut match {
-      case Var(_, id, _) if getUniverse(scrutTpe) == PropTpe => Some(id)
-      case _                                                 => None
+      case Var(_, id, _) if proof => Some(id)
+      case _                      => None
     }
     // Unification never links a proof root: it compares proofs by their propositions, and neither the scrutinee type
     // nor a fresh constructor value mentions the root. The result-only path does not make it refinable.
@@ -109,7 +110,11 @@ object MatchChecker {
           // scrutinee type.
           val refinable = scrutTpe.synDeps ++ ctorValue.synDeps
 
-          val valueRefinement = tryUnify(scrut, ctorValue, rootRefinable ++ refinable)
+          // Unification compares proofs by their propositions, so a proof scrutinee is unified with the constructor
+          // value by its type alone; comparing the proofs themselves would read a suspended scrutinee's form, its key.
+          val valueRefinement =
+            if (proof) tryUnify(scrutTpe, resultTy, rootRefinable ++ refinable)
+            else tryUnify(scrut, ctorValue, rootRefinable ++ refinable)
           val refinement = valueRefinement match {
             case Left(_: Stuck) =>
               refineConstructorResult(resultTy, scrutTpe, EqStore.empty.allow(refinable))
@@ -261,10 +266,17 @@ object MatchChecker {
   def checkMatch(t: CA.Term.MatchTerm, env: Env, contextualExpected: Option[CheckedTypeTerm] = None): CheckedTerm = {
     val span = t.span
     val scrutChecked = checkTerm(t.scrut, env)
-    // The known-constructor view, refinement and the match's own value read the scrutinee's form, so a proof call is
-    // forced, and the match sees its forced value and that value's type, as before suspension (docs/kernel.md, "Proof
-    // calls").
-    val scrut = Interpreter.force(scrutChecked.value)
+    lazy val checkedSourceMotive = t.motive.map(syntax => checkTypeTerm(syntax, env))
+    // A suspended proof is forced only by a match whose motive, stated before its cases, is no proposition: a large
+    // elimination, whose known-constructor view, refinement and value read the scrutinee's form, so it sees the forced
+    // value and that value's type, as before suspension. Into a proposition, or with a motive inferred from the cases,
+    // the match reads a suspension by its proposition alone: it is no constructor value, so the match is checked by
+    // type, whether or not something forced it earlier (docs/kernel.md, "Proof calls").
+    val scrut = scrutChecked.value match {
+      case proof: VSuspendedProof if checkedSourceMotive.orElse(contextualExpected).exists(_.value.tpe != PropTpe) =>
+        Interpreter.force(proof)
+      case other => other
+    }
     val scrutTpe = scrut.tpe
 
     val inductiveFamily = inductiveFamilyOf(scrutTpe).getOrElse(throw NonInductiveMatch(scrut.tpe))
@@ -330,7 +342,7 @@ object MatchChecker {
      * case's fields at its own result type. In an indexed family the two need the case's refinement to share a type;
      * when it left them apart the equation is `MatchEquationIndexed`.
      */
-    def hypothesis(br: CA.Case, branchScrut: Value, constructed: Value): Option[Value] =
+    def hypothesis(br: CA.Case, branchScrut: => Value, constructed: => Value): Option[Value] =
       br.equation.zip(equality).map { case (ref, eq) =>
         val proposition = MatchEquation.proposition(eq, branchScrut, constructed).getOrElse {
           throw MatchEquationIndexed(br.ctorName, equationSpan)
@@ -362,7 +374,6 @@ object MatchChecker {
     lazy val reachableByType: Vector[ReachableCtor] =
       computeReachableCtors(scrut, inductiveFamily, env)
 
-    val checkedSourceMotive = t.motive.map(syntax => checkTypeTerm(syntax, env))
     val expectedMotive = checkedSourceMotive.orElse(contextualExpected)
     expectedMotive.foreach(motive => assertType(motive.value))
     expectedMotive.foreach(motive =>
@@ -456,14 +467,17 @@ object MatchChecker {
       Some(chosenMotive.residual),
       checkedBranches.map(_.residual),
       span,
-      t.nodeId
+      t.nodeId,
+      proofIntoProp = getUniverse(scrutTpe) == PropTpe && chosenMotive.value.tpe == PropTpe
     )
     val value = constructor match {
       case Some(_) =>
         checkedBranches.headOption.map(_.checkedBody.value).getOrElse {
           throw WTF("Known constructor match had no checked branch", Some(span))
         }
-      // Structure eta: a value at an eligible type takes the one branch with its field projections. Any other is stuck.
+      // A suspended scrutinee: a proof match into a proposition, or, for an inferred motive that is none, forced and
+      // reduced. Structure eta: a value at an eligible type takes the one branch with its field projections. Any other
+      // is stuck.
       case None => Interpreter.evalMatchOn(checkedMatch, scrut, env, chosenMotive.value)
     }
     CheckedTerm(value, checkedMatch, linearInfo(value, scrutChecked.lin, checkedBranches))
