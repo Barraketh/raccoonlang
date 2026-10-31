@@ -49,6 +49,15 @@ object ElabAst {
     final case class App(fn: Term, args: Vector[Term], span: Span) extends Term with TypeTerm
 
     /**
+     * A projection (docs/kernel.md, "Structure eta and projections"): stored field `index`, named `field`, of `base`, a
+     * value of the record `family`. It evaluates to `base` 's stored field when `base` is constructor-headed and to the
+     * field's canonical projection otherwise (`StructEta.project`), so it needs no motive of its own; the checker has
+     * found the field's type determined at `base` 's type, or `base` constructor-headed. `family` and `field` name it
+     * in printing, as `family.field(base)`.
+     */
+    final case class Proj(base: Term, family: String, field: String, index: Int, span: Span) extends TypeTerm
+
+    /**
      * Nat literal: a nonnegative numeral, from source or from a quoted constant. Its value is built on first evaluation
      * and shared by every later one, as values never change.
      */

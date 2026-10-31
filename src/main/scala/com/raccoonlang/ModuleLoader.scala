@@ -161,9 +161,9 @@ object ModuleLoader {
 
   private def declSpan(decl: SA.Command.Decl): Span =
     decl match {
-      case SA.Command.Decl.ConstDecl(_, _, _, span, _, _) => span
-      case SA.Command.Decl.AxiomDecl(_, span, _)          => span
-      case SA.Command.Decl.InductiveDecl(_, _, span)      => span
+      case SA.Command.Decl.ConstDecl(_, _, _, span, _) => span
+      case SA.Command.Decl.AxiomDecl(_, span, _)       => span
+      case SA.Command.Decl.InductiveDecl(_, _, span)   => span
     }
 
 }

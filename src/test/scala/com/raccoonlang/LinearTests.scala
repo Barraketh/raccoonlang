@@ -596,7 +596,7 @@ class LinearTests extends munit.FunSuite {
           |
           |""".stripMargin
     run(pack + "def size (p: Pack) : Nat := p.n\n")
-    // Sound since S1 was relaxed: w's selector type reads its struct (F3), and consumes it; the proof selectors read it
+    // Sound since S1 was relaxed: w's type reads its struct (F3), and w consumes it; the proof projections read it
     // (F2), so the struct must still be consumed.
     run(pack + "def tag (p: Pack) : Nat := {\n  let w := p.w\n  0\n}\n")
     run(

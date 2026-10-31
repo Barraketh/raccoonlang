@@ -248,12 +248,12 @@ def zip(va: Vec($A, $n))(vb: Vec($B, n)): Vec(Pair(A, B), n) decreases measure(n
 
 ### Records and Projections
 
-A record is an inductive family with exactly one constructor. Each of its named fields has a selector, and
-`p.field` selects that field from a value `p` of the family. Projections from `Prop` records obey Prop elimination
-restrictions, and a record whose field type names a capture that is no family parameter has no selectors. A record
-without indices or recursive fields, outside `Prop`, also has structure eta: a value converts with its constructor
-applied to its projections, and a match on a neutral value computes (see
-[structure eta](docs/kernel.md#structure-eta-and-projections)).
+A record is an inductive family with exactly one constructor. `p.field` projects a named field from a value `p` of
+the family, a kernel operation; `Pair.fst(p)` writes the same projection explicitly. Projections from `Prop` records
+obey Prop elimination restrictions, and a field whose type names a capture that the family's arguments do not
+determine has no projection. A record without indices or recursive fields, outside `Prop`, also has structure eta: a
+value converts with its constructor applied to its projections, and a match on a neutral value computes (see
+[projections and structure eta](docs/kernel.md#structure-eta-and-projections)).
 
 Example: simple non-dependent projections
 
@@ -476,7 +476,7 @@ as a no-op for compatibility with source files that name their prelude dependenc
 
 Prelude declarations can use `:= builtin` when their canonical name has a native implementation in the runtime builtin
 registry. A builtin's declared type is trusted, not checked, so a program, or a module it imports, cannot declare one
-(`ProgramBuiltin`). `Kind`, `Univ`, `Sort`, `Lin`, `Bool`, `Nat`, the kind-polymorphic `List`, `Char`, `String`, their constructors and selectors, the native Nat arithmetic,
+(`ProgramBuiltin`). `Kind`, `Univ`, `Sort`, `Lin`, `Bool`, `Nat`, the kind-polymorphic `List`, `Char`, `String`, their constructors and fields, the native Nat arithmetic,
 subtraction, and comparisons, and the native `List.append` and `List.length` are built into the kernel: every
 environment has them, including with `--no-prelude`, and they cannot be redeclared. So are the resource-protocol
 families `List.Perm`, `Protocol.Proto`, `Protocol.Reach` and `Protocol.Valid`, the opaque `Protocol.Supply`,

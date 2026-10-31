@@ -119,8 +119,8 @@ class ValuePrintingTests extends munit.FunSuite {
     assertEquals(PrettyPrinter.print(level), s"Level.max(Level.succ(u#${u.id}), Level.succ(Level.succ(Level.one)))")
   }
 
-  // A record's projection of a neutral value, from its selector or structure eta, used to print as `match#LocalId(…)`.
-  test("a stuck selector prints as a projection, and another stuck match as its syntax") {
+  // A record's projection of a neutral value used to print as `match#LocalId(…)`.
+  test("a stuck projection prints as one, and another stuck match as its syntax") {
     val projected = mismatch("def f (P: Protocol.Proto)(x: P.Atom) : Nat := x\n")
     assert(projected.matches("Type mismatch: expected type: Nat, actual: P#[0-9]+\\.Atom"), projected)
     val record =

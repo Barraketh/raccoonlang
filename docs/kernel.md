@@ -171,10 +171,11 @@ match, as every stuck match does: a predicate defined by cases that two types
 must share is a definition. Positivity opens a lambda in a field type on fresh
 arguments, so the family being declared occurs in neither its type nor its body
 ([family argument size](#family-argument-size)), and the size rules read the
-types a lambda gives. A record's selector states a field type's lambda with the
-earlier fields selected from the record, except where the lambda rebinds their
-names; in a linear record such a lambda would capture the record, so that
-selector is `LinearCapture` (F5), and the field is reached by destructuring.
+types a lambda gives. A projection's type is a field type's lambda as a value,
+over the earlier fields' projections, so it captures no local and F5 does not
+arise: a linear record whose field type holds a lambda over an earlier copyable
+field projects that field, while a lambda over an earlier linear field is
+`LinearCapture` in the constructor's own telescope.
 
 ## Nominal Type families
 
@@ -310,7 +311,7 @@ may read a field whose type names the family, such as `T(p.fst)` for a field
 The family being declared is fresh: no value made before its declaration can
 name it, so a reference to it starts only at its own head and reaches a value
 only through what that value is built from. So a stuck computation, such as a
-selector of a parameter, `List(P.Atom)`, or a stuck call of an earlier global,
+projection of a parameter, `List(P.Atom)`, or a stuck call of an earlier global,
 certifies that the family is absent when its type, its captures, the values of
 its environment and its match term do not mention it (main-new's
 declaration-time rule). A stuck computation that does mention it cannot certify
@@ -424,28 +425,103 @@ against impossible field values. Evaluation never reduces by `h`.
 
 ## Structure eta and projections
 
-A family with exactly one constructor is a **record**. Every record has a field
-selector for each named field: a lazy definition whose body is the one-branch
-match returning that field, with the selector's declared result type as
-motive, checked where it is first used. A record whose field type names a
-capture that is no family parameter, a hidden dependency such as `$n` in
-`(v: Vec(A, $n))`, has no selectors. There is no `struct` keyword: records are
-ordinary `inductive` declarations.
+A family with exactly one constructor is a **record**. There is no `struct`
+keyword: records are ordinary `inductive` declarations. A record's named fields
+are declared in its namespace, beside its constructor, so no global shares a
+field's name (`AlreadyDefined`), and `open Prod` aliases `fst` and `snd`.
+
+**Projection** is a kernel operation. `r.field` selects a named field of a
+value `r` of a record, and `Prod.fst(p)` writes `p.fst` explicitly, requiring
+`p` to be a `Prod` and taking exactly that one argument. `Prod.fst` unapplied is
+no function value (`UnappliedField`). A selection `r.name` that names no field
+of a record is `NotFound`; in particular a family with more than one
+constructor, or none, has no fields, and a global `Fam.name` in a record's
+namespace is applied as written, `Fam.name(r)`.
+
+A projection is the stuck evaluation of a canonical one-branch match,
+`match r returning T with | mk x0 … xn => xi`, one match node per field of the
+family, whose motive `T` is the field's type at `r`. On a constructor value it
+is the stored field; on any other it is stuck, so two projections of one field
+of convertible values convert, and a projection of a recursive record's
+neutral value reduces no further. The checked term is a node of its own
+(`ElabAst.Term.Proj`), which evaluates the same way and quotes back to itself:
+the projector is a closed term over its own locals, with a motive that is a
+value, so a residual could not splice it in.
+
+The field's type at `r` is read off the record's **template**, its
+constructor's telescope opened once on fresh variables: the field's type there,
+with the constructor's result unified with `r`'s type one argument at a time,
+and the earlier fields linked to their projections. An argument that unifies
+states what every constructor value of that type satisfies; one that does not,
+such as a stuck index equation, leaves the template's variables free, as a
+match leaves a stuck branch unrefined. So an indexed record projects too. For
+`Sized indices (n: Nat) | mk (k: Nat)(v: Vec(Nat, k)) : Sized(k)`, `s.v` is a
+`Vec(Nat, n)` at `s : Sized(n)`, since every constructor value there has `k`
+equal to `n`, though `s.k` stays a projection. For `G indices (k: Nat) | mk
+(m: Nat)(v: Vec(Nat, m)) : G(Nat.succ(m))`, `g.v` is a `Vec(Nat, g.m)` at a
+variable index, whose equation is stuck, and a `Vec(Nat, 2)` at `G(3)`. A field
+whose type still depends on a variable of the template, a capture that no
+argument determines, such as `$n` in `(v: Vec(A, $n))`, has no projection at
+that type (`InvalidStruct`), and neither has a field whose type depends on that
+one; the record's other fields project, and a constructor-headed record projects
+every field, to the stored one.
+
+A projection is checked as its one-branch match would be:
+
+- **Prop.** Projecting out of a proof is that match's elimination: a data field
+  is a large elimination, refused unless the family allows it
+  (`PropEliminationRestricted`), and a proof field a small one. The motive holds
+  the projections of the earlier fields that the field's type depends on, and
+  those are checked too: `e.proof` of `Exists`'s `intro (witness: A)(proof:
+  p(witness))` is refused as `e.witness` is, since it would hold the witness's
+  projection in a type, where an elimination of `Eq` into data reads it back.
+  An earlier field that the type's arguments solve is no projection there, so
+  `x.h` of `W indices (n: Nat) | mk (n: Nat)(m: Nat)(h: Eq(Nat, n, n)) : W(n)`
+  is `Eq(Nat, k, k)` at `W(k)`, while `x.m` is refused.
+- **The ledger.** A projection uses its record, so a second projection of a
+  linear record on one path is `LinearReused`, and the other fields are dropped
+  (L4, affine use). In a read extent it is no call but an inspection, as a match
+  is, and its provenance is field `i` of its record's (S1): `(r, p ++ [i])` of a
+  record that is exactly the region `(r, p)`, and the record's whole provenance
+  otherwise. So `observe(join(p.fst, p.snd))` in a proof reads two separate
+  regions, while `join(p.fst, p.fst)`, a field with its record, or a field with
+  the same field taken by a match of the record, overlap; a stored field's
+  index counts no erased argument or capture, as a match's fields do not.
 
 A record is **eta-eligible** when it also has no indices and no recursive
-field, and is not in `Prop`; its kind and level do not matter, so linear and
-kind-polymorphic records are eligible, and so are the kernel's `Proto`,
-`Observed` and `Fresh`. A record whose field type depends on a capture that the
-family's arguments do not determine is not. Proofs of a `Prop` record are
-irrelevant instead.
+field, is not in `Prop`, and its arguments determine every field's type; its
+kind and level do not matter, so linear and kind-polymorphic records are
+eligible, and so are the kernel's `Proto`, `Observed` and `Fresh`. Proofs of a
+`Prop` record are irrelevant instead.
+
+Each condition protects the eta view:
+
+- **One constructor.** A neutral value of a family with several constructors is
+  none of them, so there is no constructor form to expand it to.
+- **No indices.** At a variable index the expansion can have another type:
+  `G.mk(g.m, g.v)` is a `G(Nat.succ(g.m))`, not the `G(k)` that `g` is, so a
+  match on `g` would run a branch checked under `k = succ(m)` at a `k` that is
+  only a variable. This asks more than soundness does, since a record whose
+  result every index can take would expand correctly, but eta there needs a
+  field that the index solves to expand to the index, and no program needs it.
+- **No recursive field.** Match evaluation on a neutral value takes its branch,
+  so a structurally recursive function applied to a neutral value of a
+  recursive record would unfold forever during checking, `last(x)` to
+  `last(x.next)` to `last(x.next.next)`. Any field that mentions a family of the
+  block counts, even one that reaches it only under another family, as in
+  `List(Tree)`, whose own stuck match would stop the unfolding: telling those
+  apart is not worth its cost.
+- **Not in `Prop`.** Proof irrelevance already identifies proofs, and the view
+  would build data projections out of a proof in unification and match
+  evaluation, which no elimination check sees: with irrelevance, the witnesses
+  of any two proofs of one `Exists` would convert.
+- **Determined field types.** The view holds a projection of every field, and a
+  field whose type depends on a capture that no argument determines has none.
 
 Eta is a rule, not a representation. At an eligible type, a value is
 definitionally its constructor applied to its fields. Its *eta view* is its
 stored fields when it is constructor-headed, and its field projections
-otherwise. A projection is the stuck evaluation of a canonical one-branch
-match, one match node per field, whose motive is the field's type at the
-projected value, so projections of one field of convertible values convert. The
-view is read by:
+otherwise. The view is read by:
 
 - **conversion**: a constructor-headed value converts with a value that is not
   when its stored fields convert with the other's projections, and its type
@@ -455,15 +531,19 @@ view is read by:
   the fields whose types mention them;
 - **match evaluation**, during checking and at run time: a match on a neutral
   value at an eligible type takes its one branch with the projections, so a
-  destructuring computes, and a selector of a neutral value is its projection;
+  destructuring computes;
 - **structural descent**: a projection of a neutral value is one of its fields.
+  A projection of a neutral value of a record without eta, such as `t.kids` of
+  a tree, is no structural subterm of it, though once a match has refined the
+  root to its constructor, a projection of the root is the matched field.
 
 So `P` converts with `Protocol.Proto.mk(P.Atom, P.Step)`, and a pair `p` with
-`Prod.mk(A, B, p.fst, p.snd)`. Applying a neutral function value, such as the
-projection of a function field, gives a neutral application. Eta adds no use of
-a linear value: it acts in conversion and evaluation, which the ledger does not
-see, while a match still consumes its scrutinee (L4) and a selector application
-is a use or a read as L5 says.
+`Prod.mk(A, B, p.fst, p.snd)`, but a tree `t` not with `Tree.node(t.val,
+t.kids)`. Applying a neutral function value, such as the projection of a
+function field, gives a neutral application. Eta adds no use of a linear value:
+it acts in conversion and evaluation, which the ledger does not see, while a
+match still consumes its scrutinee (L4) and a projection is a use or a read as
+L5 says.
 
 ## Recursion on proofs
 
@@ -660,7 +740,7 @@ given or obtains from them, alone or in packets.
 
 `Toks`, `Observed` and `Fresh` are linear inductive families, checked by the
 ordinary rules (see [linear types](#linear-types)). `Observed` and `Fresh` are
-records, so they have selectors and structure eta: `o.valid` reads `o`, and
+records, so they have projections and structure eta: `o.valid` reads `o`, and
 `o.toks` consumes it. `Toks` has an index, so a packet is
 a constructor value, never a packed word. The [family argument size
 check](#family-argument-size) charges a `Proto` by its fields, an atom type and
@@ -771,7 +851,7 @@ are ordinary checked definitions; like every protocol theorem, they are trustwor
 
 - **Prelude support.** Packets travel in the kernel's `List` and the prelude's `Prod`, which are kind-polymorphic,
   with `Fact(p)`, a proof as copyable data, so that a fact travels in a `Prod` beside the tokens it is about, and
-  `Eq.subst` transports a linear value, such as a packet along an equation of its atom lists. A `Prod` selector
+  `Eq.subst` transports a linear value, such as a packet along an equation of its atom lists. A `Prod` projection
   consumes a pair of packets and drops the other one (L5), so the library destructures them.
 - **Protocols.** The laws take a protocol `P: Proto`, as the kernel families do; `Protocol.Rel(Atom)` abbreviates a step
   relation's type, and a concrete protocol is `Proto.mk(Atom, Step)`.
@@ -859,13 +939,16 @@ is copyable and `List(Protocol.Supply)` is linear.
   read extent, so it may read the scrutinee:
   `match xs returning Tag(count(xs))`. The root is still refined, for
   termination checking.
-- **L5 Projections.** A record's selector is a definition whose body is a
-  match, so the ledger and the read rules decide it. A selector of a linear
+- **L5 Projections.** A projection is the one-branch match that returns its
+  field ([projections](#structure-eta-and-projections)), so the ledger and the
+  read rules decide it as they decide that match. A projection of a linear
   record that returns data consumes the record and drops its other fields, so
-  two selections of one record are `LinearReused`; destructuring with
-  `let (…) := p` keeps every field. One whose field's type mentions an earlier
-  field reads the record in its codomain, and one that returns a proof or a
-  type is a read extent: applying it reads the record and does not consume it.
+  two projections of one record are `LinearReused`; destructuring with
+  `let (…) := p` keeps every field. A field's type that mentions an earlier
+  field holds that field's projection, a read of the record, and a projection
+  that returns a proof or a type is a read extent: it reads the record and does
+  not consume it. In a read extent a projection is the field's region of its
+  record.
 - **L6 Recursion** may decrease through linear data. A parameter component of
   a metric only names a parameter and is not a use; a measure, a clause or a
   component, is evaluated again at every call without consuming anything, so it
@@ -1022,7 +1105,7 @@ carry the empty summary, and evaluation makes none of these checks.
     later call over it tests regions that no single path combines.
   - A field of a scrutinee that is not exactly one region, and a call's result,
     get whole provenances, not paths: so the fields of a constructed value, or
-    two selector applications to one record, overlap one another.
+    projections of a call's result, overlap one another.
   - F5 covers reads, as above.
   - Quotation still refuses linear values and never names a tracked local, so
     an inferred motive that would need one is `MissingReturningClause`, an

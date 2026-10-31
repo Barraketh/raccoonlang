@@ -64,6 +64,7 @@ object ValueQuote {
           }
         case ElabAst.Term.App(fn, args, appSpan) =>
           ElabAst.Term.App(inlineAppHead(fn), args.map(inlineTerm), appSpan)
+        case proj: ElabAst.Term.Proj   => proj.copy(base = inlineTerm(proj.base))
         case ElabAst.Term.NatLit(_, _) => t
         case ElabAst.Term.StrLit(_, _) => t
         case ElabAst.Term.Word(consHead, pieces, wordSpan) =>
@@ -193,6 +194,10 @@ object ValueQuote {
         val fn = quoteAppHead(head, context, span)
         ElabAst.Term.App(fn, args.map(arg => quoteTerm(arg, context, span)), span)
 
+      // A projection quotes as one, which evaluates back to the same canonical projection.
+      case StructEta.Projection(base, instance, info, idx) =>
+        ElabAst.Term.Proj(quoteTerm(base, context, span), instance.head.name, info.fieldNames(idx), idx, span)
+
       case NeutralThunk(term, env, _, _, _) => quoteClosedMatch(term, env, context, span)
 
       case lam: VLam => quoteLam(lam, context, span)
@@ -303,7 +308,7 @@ object ValueQuote {
       if (run.length > 0) {
         val text = ElabAst.Term.StrLit(run.toString, span)
         pieces += ElabAst.Term.WordPiece.Splice(
-          ElabAst.Term.App(ElabAst.Term.GlobalRef(Kernel.StringDataName, span), Vector(text), span)
+          ElabAst.Term.Proj(text, Kernel.StringName, Kernel.StringDataField, 0, span)
         )
         run.setLength(0)
       }

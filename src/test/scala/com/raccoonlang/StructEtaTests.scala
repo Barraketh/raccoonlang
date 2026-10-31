@@ -100,7 +100,7 @@ class StructEtaTests extends munit.FunSuite {
     )
     def eta(name: String): Boolean =
       env(name) match {
-        case Value.VConst(_, Value.Inductive(meta), _) => meta.eta.isDefined
+        case Value.VConst(_, Value.Inductive(meta), _) => meta.record.exists(_.eta)
         case other                                     => fail(s"$name is $other")
       }
     assert(!eta("Both2") && !eta("Tagged") && !eta("Stream") && !eta("Hidden"))

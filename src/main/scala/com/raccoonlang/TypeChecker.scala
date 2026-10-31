@@ -119,6 +119,7 @@ object TypeChecker {
         case EA.Term.App(fn, args, _) =>
           loop(fn, appHead = true)
           args.foreach(arg => loop(arg, appHead = false))
+        case EA.Term.Proj(base, _, _, _, _) => loop(base, appHead = false)
         case EA.Term.Pi(binders, out, _, _, _) =>
           binders.foreach(b => loopBinderType(b.ty))
           loop(out, appHead = false)
@@ -190,29 +191,11 @@ object TypeChecker {
   private def checkTypeTermHere(term: CA.TypeTerm, env: Env): CheckedTypeTerm =
     term match {
       case app: CA.Term.App =>
-        // Each argument sees what the head and the earlier arguments consumed, for the bindings it makes; a read
-        // among them still reads the locals live at the start of the application, by joint liveness.
-        val fn = checkTerm(app.fn, env)
-        var argEnv = after(env, fn.lin)
-        val args = app.args.map { arg =>
-          val checked = checkTerm(arg, argEnv)
-          argEnv = after(argEnv, checked.lin)
-          checked
+        fieldSelector(app.fn, env) match {
+          case Some(selector) => checkFieldCall(app, selector, env)
+          case None           => checkApplication(app, env)
         }
-        val value = checkApplyValue(fn.value, args.map(_.value))
-        val residual = EA.Term.App(fn.residual, args.map(_.residual), app.span)
-        val inputs = Input(fn.lin, sourceSpan(app.fn)) +: app.args.zip(args).map { case (arg, checked) =>
-          Input(checked.lin, sourceSpan(arg))
-        }
-        CheckedTypeTerm(value, residual, Ledger.call(value, inputs, sourceSpan(app), env))
-      case CA.Term.Select(base, field, span) =>
-        val checkedBase = checkTerm(base, env)
-        val (selectorName, value) = checkSelect(base, checkedBase.value, field, span, env)
-        CheckedTypeTerm(
-          value,
-          EA.Term.App(EA.Term.GlobalRef(selectorName, span), Vector(checkedBase.residual), span),
-          Ledger.call(value, Vector(Input(checkedBase.lin, sourceSpan(base))), sourceSpan(term), env)
-        )
+      case select: CA.Term.Select => checkSelect(select, env)
       case derive: CA.Term.Derive =>
         val goal = getType(derive.goal, env)
         val value = InstanceSearch.solve(goal, env)
@@ -301,50 +284,137 @@ object TypeChecker {
     )
   }
 
+  /**
+   * An application whose head is not a field selector. Each argument sees what the head and the earlier arguments
+   * consumed, for the bindings it makes; a read among them still reads the locals live at the start of the application,
+   * by joint liveness.
+   */
+  private def checkApplication(app: CA.Term.App, env: Env): CheckedTypeTerm = {
+    val fn = checkTerm(app.fn, env)
+    var argEnv = after(env, fn.lin)
+    val args = app.args.map { arg =>
+      val checked = checkTerm(arg, argEnv)
+      argEnv = after(argEnv, checked.lin)
+      checked
+    }
+    val value = checkApplyValue(fn.value, args.map(_.value))
+    val residual = EA.Term.App(fn.residual, args.map(_.residual), app.span)
+    val inputs = Input(fn.lin, sourceSpan(app.fn)) +: app.args.zip(args).map { case (arg, checked) =>
+      Input(checked.lin, sourceSpan(arg))
+    }
+    CheckedTypeTerm(value, residual, Ledger.call(value, inputs, sourceSpan(app), env))
+  }
+
   def inductiveFamilyOf(value: Value): Option[InductiveFamilyInstance] =
     value match {
       case InductiveFamilyValue(instance) => Some(instance)
       case _                              => None
     }
 
+  /** The field `index` of the record `info` of the family whose head is `family`, written `Fam.field`. */
+  private final case class FieldSelector(family: VConst, info: RecordInfo, index: Int)
+
+  /** `field` of `head` when it is a record family's head with that field. */
+  private def recordField(head: Value, field: String): Option[FieldSelector] =
+    head match {
+      case family @ VConst(_, Inductive(meta), _) =>
+        meta.record.flatMap(info => info.fieldIndex(field).map(FieldSelector(family, info, _)))
+      case _ => None
+    }
+
   /**
-   * The selector `field` of the family of `baseValue`, the value of `base`, applied to it. A base whose type is no
-   * family instance has no selectors, so the selection names nothing (`noSelector`).
+   * The field `fn` names when it is `Fam.field` for a field of the record `Fam`, as the elaborator resolves a field of
+   * a record's namespace (`Elaborator.NameNode`): the selection of the field from the family's global.
    */
-  private def checkSelect(base: CA.Term, baseValue: Value, field: String, span: Span, env: Env): (String, Value) = {
-    val vType = baseValue.tpe
-    val family = inductiveFamilyOf(vType).getOrElse(throw noSelector(base, baseValue, field))
-    val indName = family.head.name
-    val meta = family.meta
+  private def fieldSelector(fn: CA.Term, env: Env): Option[FieldSelector] =
+    fn match {
+      case CA.Term.Select(CA.Term.GlobalRef(name, _), field, _) => recordField(env(name), field)
+      case _                                                    => None
+    }
 
-    if (!meta.selectable) throw NotAStruct(indName)
+  /**
+   * `Fam.field(r)`, sugar for `r.field` that also requires `r` to be of the family `Fam`. A field is no function value,
+   * so it takes exactly the record.
+   */
+  private def checkFieldCall(app: CA.Term.App, selector: FieldSelector, env: Env): CheckedTypeTerm = {
+    if (app.args.length != 1) throw ArityMismatch(1, app.args.length, Some(app.span))
+    val record = app.args.head
+    val checked = checkTerm(record, env)
+    val family = inductiveFamilyOf(checked.value.tpe).filter(_.head.name == selector.family.name).getOrElse {
+      throw TypeMismatch(selector.family, checked.value.tpe, Some(sourceSpan(record)))
+    }
+    checkProjection(checked, family, selector.info, selector.index, app.span, env)
+  }
 
-    val selectorName = s"$indName.$field"
-    val selector = env(selectorName)
-    (selectorName, checkApplyValue(selector, Vector(baseValue)))
+  /** `base.field`: the projection of that field, when the family of `base` 's type is a record that has one. */
+  private def checkSelect(select: CA.Term.Select, env: Env): CheckedTypeTerm = {
+    val checked = checkTerm(select.base, env)
+    val projected = for {
+      family <- inductiveFamilyOf(checked.value.tpe)
+      info <- family.meta.record
+      index <- info.fieldIndex(select.field)
+    } yield checkProjection(checked, family, info, index, select.span, env)
+    projected.getOrElse(throw noField(select, checked.value))
   }
 
   /**
-   * `base.field` where `base` 's type is no family instance: `NotFound`. A base that is a type former, a family or an
-   * opaque type such as `Protocol.Tok` in `Protocol.Tok.mk`, has no constructor of that name, since a constructor would
-   * have resolved as the family's member; anything else has no field.
+   * Field `index` of the record `info` of `family`, the type of the value `checked` checked to, at `span`
+   * (docs/kernel.md, "Structure eta and projections"): the one-branch match that returns the field, as a node of its
+   * own (`EA.Term.Proj`). Its type is the field's at the value, which the family's arguments must determine unless the
+   * value is constructor-headed (`InvalidStruct`), and projecting out of a proof is checked as that match's elimination
+   * would be (`MatchChecker.checkProjectionElimination`). In the ledger it is that match too (`Ledger.project`).
    */
-  private def noSelector(base: CA.Term, baseValue: Value, field: String): NotFound = {
+  private def checkProjection(
+      checked: CheckedTerm,
+      family: InductiveFamilyInstance,
+      info: RecordInfo,
+      index: Int,
+      span: Span,
+      env: Env
+  ): CheckedTypeTerm = {
+    val base = checked.value
+    val field = info.fieldNames(index)
+    val value = StructEta.project(base, index)
+    if (StructEta.undetermined(info, value.tpe))
+      throw InvalidStruct(
+        family.head.name,
+        s"the type ${value.tpe} of its field $field depends on a capture that ${base.tpe} does not determine",
+        Some(span)
+      )
+    MatchChecker.checkProjectionElimination(base, family, info, index, env, span)
+    CheckedTypeTerm(
+      value,
+      EA.Term.Proj(checked.residual, family.head.name, field, index, span),
+      Ledger.project(checked.lin, index, value)
+    )
+  }
+
+  /**
+   * `base.field` where `base` 's type has no such field. `Fam.field` unapplied, for a field of the record `Fam`, is no
+   * function value (`UnappliedField`). Otherwise it is `NotFound`: a base that is a type former, a family or an opaque
+   * type such as `Protocol.Tok` in `Protocol.Tok.mk`, has no constructor of that name, since a constructor would have
+   * resolved as the family's member; anything else has no field of that name.
+   */
+  private def noField(select: CA.Term.Select, baseValue: Value): TypeError = {
     def typeFormer(tpe: Value): Boolean =
       tpe match {
         case _: Universe => true
         case pi: VPi     => typeFormer(pi.codomain(BinderOps.freshen(pi)))
         case _           => false
       }
-    baseValue match {
-      case VConst(name, Inductive(_) | Symbol, tpe) if typeFormer(tpe) =>
-        NotFound(s"$name.$field", reason = Some(s"$name has no constructor $field"))
-      case _ =>
-        val text = PrettyPrinter.printTerm(base)
-        NotFound(
-          s"$text.$field",
-          reason = Some(s"$text is of type ${baseValue.tpe}, which is no family, so has no fields")
-        )
+    val field = select.field
+    recordField(baseValue, field) match {
+      case Some(selector) => UnappliedField(selector.family.name, field)
+      case None =>
+        baseValue match {
+          case VConst(name, Inductive(_) | Symbol, tpe) if typeFormer(tpe) =>
+            NotFound(s"$name.$field", reason = Some(s"$name has no constructor $field"))
+          case _ =>
+            val text = PrettyPrinter.printTerm(select.base)
+            val fields =
+              if (inductiveFamilyOf(baseValue.tpe).isEmpty) "is no family, so has no fields" else s"has no field $field"
+            NotFound(s"$text.$field", reason = Some(s"$text is of type ${baseValue.tpe}, which $fields"))
+        }
     }
   }
 

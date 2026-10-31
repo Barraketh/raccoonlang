@@ -68,6 +68,8 @@ object CapturedIndexes {
 
       case Term.App(fn, args, _) => goTerms(fn +: args, cutoff, refs)
 
+      case Term.Proj(base, _, _, _, _) => goTerm(base, cutoff, refs)
+
       case Term.Body(lets, res, _) =>
         lets.foreach { l =>
           goTerm(l.value, cutoff, refs)

@@ -241,6 +241,18 @@ object Ledger {
     }
 
   /**
+   * A projection of stored field `index` of a record whose info is `record`, whose value is `value`: the one-branch
+   * match that returns that field (L4, L5). It uses its record, so a second projection of a linear record on one path
+   * is a second use, and the other fields are dropped. Inside a read extent it is no call but an inspection, as a match
+   * is, and it is field `index` of its record's provenance (S1): `(r, p ++ [index])` of a record that is exactly the
+   * region `(r, p)`, the record's whole provenance otherwise. So two projections of one field overlap, and so do a
+   * field and its record, while sibling fields are separate.
+   */
+  def project(record: LinearInfo, index: Int, value: Value): LinearInfo =
+    if (record eq LinearInfo.empty) LinearInfo.empty
+    else LinearInfo(record.uses, record.provenance.field(index), record.pending).at(value)
+
+  /**
    * Separation at one call: the provenances of its linear inputs, each with the span to report a shared region at, are
    * pairwise disjoint, and the roots of their union were jointly live. Only linear values carry provenance, so the
    * unrestricted inputs need no test.
@@ -312,7 +324,8 @@ object Ledger {
           case EA.Term.WordPiece.Layer(before, after) => before ++ after
           case EA.Term.WordPiece.Splice(list)         => Vector(list)
         })
-      case EA.Term.App(fn, args, _) => terms(fn +: args)
+      case EA.Term.App(fn, args, _)       => terms(fn +: args)
+      case EA.Term.Proj(base, _, _, _, _) => firstReference(id, base)
       case EA.Term.Body(lets, res, _) =>
         terms(lets.flatMap(let => let.ty.toVector :+ let.value) :+ res)
       case EA.Term.Match(scrut, motive, cases, _, _) => terms((scrut +: motive.toVector) ++ cases.map(_.body))

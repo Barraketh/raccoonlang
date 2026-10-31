@@ -62,7 +62,7 @@ class NodeIdentityTests extends munit.FunSuite {
 
   private def declaredLam(program: CA.Program, name: String): CA.Term.Lam =
     program.decls
-      .collectFirst { case CA.Decl.ConstDecl(`name`, _, CA.ConstBody.TermBody(lam: CA.Term.Lam), _, _, _) =>
+      .collectFirst { case CA.Decl.ConstDecl(`name`, _, CA.ConstBody.TermBody(lam: CA.Term.Lam), _, _) =>
         lam
       }
       .getOrElse(fail(s"No lambda declaration named $name"))

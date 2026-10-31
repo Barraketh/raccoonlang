@@ -342,7 +342,7 @@ class ProjectionTests extends munit.FunSuite {
     }
   }
 
-  test("negative: a family whose field has a hidden dependency has no selectors") {
+  test("negative: a field with a hidden dependency has no projection") {
     val p =
       """
         |inductive Vec (A: Type) indices (n: Nat) : Type
@@ -359,13 +359,13 @@ class ProjectionTests extends munit.FunSuite {
 
     LanguageParser.parseProgram(p) match {
       case Success(value, _, _) =>
-        intercept[NotFound] { Interpreter.run(Elaborator.elab(value, Prelude.test), Prelude.test) }
+        intercept[InvalidStruct] { Interpreter.run(Elaborator.elab(value, Prelude.test), Prelude.test) }
       case err: Failure =>
         fail(s"Failed to parse: $err, ${p.substring(err.curIdx)}")
     }
   }
 
-  test("every one-constructor family has selectors for its named fields, Prop ones included") {
+  test("every one-constructor family has projections for its named fields, Prop ones included") {
     val p =
       """
         |inductive And (P: Prop)(Q: Prop) : Prop
@@ -383,7 +383,7 @@ class ProjectionTests extends munit.FunSuite {
     }
   }
 
-  test("negative: selecting from non-struct multi-ctor inductive throws") {
+  test("negative: selecting from a multi-constructor family throws NotFound") {
     val p =
       """
         |inductive Or (A: Type)(B: Type) : Type
@@ -396,7 +396,7 @@ class ProjectionTests extends munit.FunSuite {
     LanguageParser.parseProgram(p) match {
       case Success(value, _, _) =>
         val core = Elaborator.elab(value, Prelude.test)
-        intercept[NotAStruct] { Interpreter.run(core, Prelude.test) }
+        intercept[NotFound] { Interpreter.run(core, Prelude.test) }
       case err: Failure => fail(s"Failed to parse: $err, ${p.substring(err.curIdx)}")
     }
   }
@@ -461,7 +461,7 @@ class ProjectionTests extends munit.FunSuite {
     }
   }
 
-  test("an anonymous field gets no selector, while the named ones do") {
+  test("an anonymous field has no name to project by, while the named ones do") {
     val p =
       """
         |inductive Tagged (A: Type) : Type

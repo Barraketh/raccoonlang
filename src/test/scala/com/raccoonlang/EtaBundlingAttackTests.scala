@@ -500,15 +500,24 @@ class EtaBundlingAttackTests extends munit.FunSuite {
     )
   }
 
-  // Documented as conservative (docs/kernel.md, S1 "Kept conservative"): two selector applications to one record
-  // overlap, though destructuring the same record (above) is accepted.
-  test("linear, documented over-rejection: observe(join(p.fst, p.snd)) in a proof") {
-    rejectsWith[LinearReusedInType](
+  // Once documented as conservative, when a selector application was a call whose result covered its whole record: a
+  // projection reads its field's region (docs/kernel.md, S1), as destructuring the same record (above) does, so two
+  // sibling fields are separate. The same field twice still overlaps.
+  test("linear: observe(join(p.fst, p.snd)) in a proof reads separate fields; join(p.fst, p.fst) overlaps") {
+    accepts(
       base +
         """
           |def ok (s: Protocol.Inst(SP, l1(4)))(p: Both(Protocol.Toks(SP, l1(4), s, l1(2)), Protocol.Toks(SP, l1(4), s, l1(2))))
           |    : Protocol.Valid(SP, l1(4), l2(2, 2)) :=
           |  Protocol.observe(SP, l1(4), s, l2(2, 2), joinToks(Nat, Shares, l1(4), s, l1(2), l1(2), p.fst, p.snd)).valid
+          |""".stripMargin
+    )
+    rejectsWith[LinearReusedInType](
+      base +
+        """
+          |def bad (s: Protocol.Inst(SP, l1(4)))(p: Both(Protocol.Toks(SP, l1(4), s, l1(2)), Protocol.Toks(SP, l1(4), s, l1(2))))
+          |    : Protocol.Valid(SP, l1(4), l2(2, 2)) :=
+          |  Protocol.observe(SP, l1(4), s, l2(2, 2), joinToks(Nat, Shares, l1(4), s, l1(2), l1(2), p.fst, p.fst)).valid
           |""".stripMargin
     )
   }

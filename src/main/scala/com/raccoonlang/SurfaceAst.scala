@@ -212,8 +212,7 @@ object SurfaceAst {
           decreases: Option[DecreaseSpec],
           body: ConstBody,
           span: Span,
-          isInstance: Boolean = false,
-          lazyGlobal: Boolean = false
+          isInstance: Boolean = false
       ) extends Decl
 
       final case class AxiomDecl(

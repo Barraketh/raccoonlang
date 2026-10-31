@@ -52,7 +52,7 @@ object TypeError {
     case e: InvalidLevelSubtraction         => e.copy(span = Some(sp))
     case e: WTF                             => e.copy(span = Some(sp))
     case e: InvalidStruct                   => e.copy(span = Some(sp))
-    case e: NotAStruct                      => e.copy(span = Some(sp))
+    case e: UnappliedField                  => e.copy(span = Some(sp))
     case e: NoInstanceFound                 => e.copy(span = Some(sp))
     case e: CyclicInstanceSearch            => e.copy(span = Some(sp))
     case e: InvalidInstance                 => e.copy(span = Some(sp))
@@ -365,12 +365,18 @@ final case class InvalidLevelSubtraction(l: Level, sub: Int, span: Option[Span] 
   override def msg: String = s"Tried to subtract $sub from $l"
 }
 
+/**
+ * A field of the record `inductive` that has no projection at the projected value's type, for `reason`: its type
+ * depends on a capture that the type's arguments do not determine (docs/kernel.md, "Structure eta and projections").
+ */
 final case class InvalidStruct(inductive: String, reason: String, span: Option[Span] = None) extends TypeError {
   override def msg: String = s"Invalid struct $inductive: $reason"
 }
 
-final case class NotAStruct(inductive: String, span: Option[Span] = None) extends TypeError {
-  override def msg: String = s"Cannot select a field from $inductive, which has more than one constructor"
+/** `inductive.field`, a field of the record `inductive`, used as a value: a field is selected from a record. */
+final case class UnappliedField(inductive: String, field: String, span: Option[Span] = None) extends TypeError {
+  override def msg: String =
+    s"$inductive.$field is a field of $inductive, not a function: apply it to a record, as $inductive.$field(r), or write r.$field"
 }
 
 final case class NoInstanceFound(goal: Value, span: Option[Span] = None) extends TypeError {

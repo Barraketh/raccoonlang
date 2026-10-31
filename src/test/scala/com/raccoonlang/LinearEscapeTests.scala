@@ -1082,7 +1082,7 @@ class LinearEscapeTests extends munit.FunSuite {
 
   // ------------ Batch 3: selectors with dependent fields ------------
 
-  // Projecting the type component reads the struct: a type-valued selector's body is a read extent, which may drop the
+  // Projecting the type component reads the struct: a type-valued projection is a read extent, which may drop the
   // linear field. Projecting the linear component consumes the struct, and its value may then be dropped.
   test("L5: selectors of an existential linear struct") {
     val pks =

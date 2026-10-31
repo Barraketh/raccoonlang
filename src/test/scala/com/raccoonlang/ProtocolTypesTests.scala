@@ -54,8 +54,8 @@ class ProtocolTypesTests extends munit.FunSuite {
       Kernel.env(name) match {
         case family @ VConst(`name`, Inductive(meta), _) =>
           assertEquals(meta.familyArity, arity, name)
-          // Observed and Fresh have one constructor and no indices, so they have selectors and structure eta.
-          assertEquals(meta.eta.isDefined, name != "Protocol.Toks", name)
+          // Observed and Fresh have one constructor and no indices, so they have projections and structure eta.
+          assertEquals(meta.record.exists(_.eta), name != "Protocol.Toks", name)
           assertEquals(codomain(family), VLin(Level.zero), name)
         case other => fail(s"$name is $other")
       }
@@ -346,9 +346,9 @@ class ProtocolTypesTests extends munit.FunSuite {
     )
   }
 
-  // Structure eta: Observed and Fresh have one constructor, so they have selectors. A selector returning data consumes
+  // Structure eta: Observed and Fresh have one constructor, so they are records. A projection returning data consumes
   // its struct and drops the other fields; one returning a proof, such as `valid`, is a read extent and only reads it.
-  test("Observed and Fresh have selectors; a proof selector reads its struct, a data selector consumes it") {
+  test("Observed and Fresh project; a proof projection reads its struct, a data projection consumes it") {
     run(
       swap +
         """

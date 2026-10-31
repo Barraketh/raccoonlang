@@ -18,8 +18,11 @@ private[raccoonlang] object Kernel {
   val ListNilName = "List.nil"
   val ListConsName = "List.cons"
   val CharMkName = "Char.mk"
+  val StringName = "String"
   val StringMkName = "String.mk"
-  val StringDataName = "String.data"
+
+  /** The one stored field of `String.mk`, `String`'s record field 0. */
+  val StringDataField = "data"
 
   private val Source =
     """def Sort (l: Level): Type := builtin
@@ -76,7 +79,7 @@ private[raccoonlang] object Kernel {
    *
    * `Supply`, `Inst` and `Tok` are opaque builtins (`Builtins.Opaque`): symbols without constructors, so no term builds
    * or matches a supply or a token. `Toks`, `Observed` and `Fresh` are linear inductives; `Observed` and `Fresh` are
-   * records, with selectors and structure eta (`StructEta`).
+   * records, with projections and structure eta (`StructEta`).
    *
    * Every family and opaque builtin here takes a protocol as a `Proto`: structure eta makes a variable `P` convert with
    * `Proto.mk(P.Atom, P.Step)`, positivity accepts a field type that projects a parameter, and the size check charges a

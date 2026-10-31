@@ -142,6 +142,7 @@ object InductiveChecks {
           case ElabAst.Term.WordPiece.Splice(list)         => Vector(list)
         })
       case ElabAst.Term.App(fn, args, _)   => terms(fn +: args)
+      case proj: ElabAst.Term.Proj         => proj.family == name || mentionsGlobal(proj.base, name)
       case ElabAst.Term.Body(lets, res, _) => terms(lets.flatMap(let => let.ty.toVector :+ let.value) :+ res)
       case ElabAst.Term.Match(scrut, motive, cases, _, _) => terms((scrut +: motive.toVector) ++ cases.map(_.body))
       case ElabAst.Term.Pi(binders, out, _, _, _) => binders.exists(b => binderType(b.ty)) || mentionsGlobal(out, name)
@@ -359,16 +360,11 @@ object InductiveChecks {
       )
     }
 
-  private def familyArgsOf(result: Value): Vector[Value] =
-    result match {
-      case ConstSpine(_, args) => args
-      case _                   => Vector.empty
-    }
-
   /**
    * One family of a block, checked against the block's provisional heads: its type and initial metadata, its universe,
    * the positive arguments its header allows, each constructor's result arguments with its field types, for the block's
-   * positive arguments, how each constructor recurses, and its structure eta.
+   * positive arguments, how each constructor recurses, and whether it has the shape structure eta needs (`etaShape`):
+   * one constructor, no indices, no recursive field, which mentions no family of the block, and not in `Prop`.
    */
   private final case class CheckedFamily(
       decl: Decl.InductiveDecl,
@@ -378,7 +374,7 @@ object InductiveChecks {
       headerPositive: DepSet,
       constructorFields: Vector[(Vector[Value], Vector[Value])],
       recursion: Vector[ConstructorRecursion],
-      eta: Option[EtaInfo]
+      etaShape: Boolean
   ) {
     def name: String = decl.header.name
   }
@@ -413,6 +409,10 @@ object InductiveChecks {
    * family of the block. Each family's universe, size rule and structure eta are its own; a field is recursive when it
    * mentions any family of the block, and the positive arguments are a fixed point over the block. Only when every
    * family has checked are the final heads, then the constructors, published.
+   *
+   * A family with one constructor is a record (`RecordInfo`), whose template is read from its published constructor, so
+   * that a recursive field's type names the final head; each record's template and eta are forced once the block is
+   * published.
    */
   def evalInductiveBlock(decls: Vector[Decl.InductiveDecl], env: Env): Env = {
     // All direct Value matches in this function and its private helpers rely on EqStore.empty: no Vars are solved in
@@ -428,7 +428,6 @@ object InductiveChecks {
           decl.ctors.map(ctor => ConstructorMeta(ctor.shortName, ctor.canonicalName)),
           header.binders.length,
           header.params.length,
-          decl.ctors.length == 1,
           DepSet.from(0 until header.arity)
         )
       (decl, familyType, initialMeta)
@@ -443,14 +442,33 @@ object InductiveChecks {
 
     val positiveArgs = blockPositiveArgs(checked)
     // Only after all constructor checks succeed do we add the block to the environment: every final head, then the
-    // constructors, whose types name the heads.
-    val withHeads = checked.foldLeft(env) { (cur, family) =>
-      val meta = family.initialMeta.copy(positiveArgs = positiveArgs(family.name), eta = family.eta)
-      cur.putGlobal(family.name, VConst(family.name, Inductive(meta), family.familyType))
-    }
-    checked.foldLeft(withHeads) { (cur, family) =>
+    // constructors, whose types name the heads. A record reads its constructor from the published block.
+    lazy val published: Env = checked.foldLeft(withHeads) { (cur, family) =>
       installConstructors(family.decl, cur, listShape(family.decl, family.universe, family.recursion))
     }
+    lazy val records: Map[String, RecordInfo] = checked.flatMap { family =>
+      family.decl.ctors match {
+        case Vector(ctor) =>
+          def constructor = published(ctor.canonicalName) match {
+            case head: ConstructorHead => head
+            case other                 => throw WTF(s"Constructor ${ctor.canonicalName} is published as $other")
+          }
+          val fieldNames = ctor.fields.map(_.name)
+          val info =
+            new RecordInfo(ctor.canonicalName, fieldNames, family.etaShape, family.familyType, () => constructor)
+          Some(family.name -> info)
+        case _ => None
+      }
+    }.toMap
+    lazy val withHeads: Env = checked.foldLeft(env) { (cur, family) =>
+      val meta = family.initialMeta.copy(positiveArgs = positiveArgs(family.name), record = records.get(family.name))
+      cur.putGlobal(family.name, VConst(family.name, Inductive(meta), family.familyType))
+    }
+    records.values.foreach { info =>
+      info.template
+      info.eta
+    }
+    published
   }
 
   /**
@@ -606,53 +624,10 @@ object InductiveChecks {
     }
     val recursion = constructors.map(_._2)
 
-    // Structure eta: one constructor, no indices, no recursive field, which mentions no family of the block, not in Prop.
-    val eta = (decl.ctors, recursion) match {
-      case (Vector(ctor), Vector(only))
-          if header.indices.isEmpty && familyUniverse != PropTpe && only.recursiveFields.isEmpty =>
-        val allBinders = ctor.erasedBinders ++ ctor.fields
-        val (resultArgs, fieldVars, templateIds) =
-          if (allBinders.isEmpty)
-            (familyArgsOf(TypeChecker.getType(ctor.resultTy, blockEnv)), Vector.empty, DepSet.empty)
-          else
-            TypeChecker.getType(
-              Term.Pi(allBinders, ctor.resultTy, ctor.span, NodeId.fresh()),
-              blockEnv
-            ) match {
-              case pi: VPi =>
-                val fresh = BinderOps.freshen(pi)
-                val opened = pi.binders.map(binder => fresh(binder.localRef))
-                val captured = pi.binders.flatMap(_.captures).map(capture => fresh(capture.localRef))
-                val ids = DepSet.from((opened ++ captured).collect { case Var(_, id, _) => id })
-                (familyArgsOf(pi.codomain(fresh)), opened.drop(ctor.erasedBinders.length), ids)
-              case other => throw WTF(s"Constructor ${ctor.canonicalName} has binders but type $other")
-            }
-        Some(
-          EtaInfo(
-            ctor.canonicalName,
-            resultArgs,
-            fieldVars,
-            templateIds,
-            StructEta.projectors(ctor.canonicalName, ctor.fields.map(_.name))
-          )
-        )
-      case _ => None
-    }
-    // A field whose type depends on a capture that no family argument determines is a hidden dependency: its
-    // projection would have no type, so the family has no eta.
-    val determinedEta = eta.filter { info =>
-      val store =
-        info.resultArgs.zip(familyArgs).foldLeft[Option[EqStore]](Some(EqStore.empty.allow(info.templateIds))) {
-          case (store, (template, arg)) => store.flatMap(s => ValueEquivalence.tryUnify(template, arg, s).toOption)
-        }
-      store.exists { solved =>
-        val known = familyArgs.foldLeft(DepSet.empty)(_ ++ _.synDeps)
-        info.fieldVars.indices.forall { idx =>
-          val earlier = DepSet.from(info.fieldVars.take(idx).collect { case Var(_, id, _) => id })
-          val deps = ValueOps.materialize(info.fieldVars(idx).tpe, solved).synDeps
-          !((deps & info.templateIds) -- earlier -- known).nonEmpty
-        }
-      }
+    val etaShape = (decl.ctors, recursion) match {
+      case (Vector(_), Vector(only)) =>
+        header.indices.isEmpty && familyUniverse != PropTpe && only.recursiveFields.isEmpty
+      case _ => false
     }
     CheckedFamily(
       decl,
@@ -662,7 +637,7 @@ object InductiveChecks {
       headerPositive,
       constructors.map(_._1),
       recursion,
-      determinedEta
+      etaShape
     )
   }
 }

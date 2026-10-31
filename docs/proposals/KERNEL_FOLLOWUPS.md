@@ -35,6 +35,7 @@ model, and a gap it finds is the model's to close.
 | 2.8 | Partial application and lambdas in types (decided: lambdas in types, implemented) | expressiveness | new | 3 |
 | 2.9 | Implicit arguments on definitions and inferred erased binders | expressiveness | partly port | — |
 | 2.10 | Over-rejections found by the matching review (`Nat` metrics by `<` and rank components: decided and implemented; par-5 kept; positivity and guards for decision) | expressiveness | new | — |
+| 2.11 | Field projection as a kernel operation (decided and implemented) | expressiveness | new | — |
 | 3.1 | Kind polymorphism (decided and implemented) | design | new | 10 |
 | 3.2 | Linear closures | design | new | 11 |
 | 3.3 | Supply splitting | design | new | 6 |
@@ -199,7 +200,7 @@ block extended it to siblings. No known program needs the form.
 
 ### 2.1 Structure eta (*port*)
 
-**Decided 2026-10-30:** follow `main-new`. Every family that has one constructor, no indices and no recursive field, and is not in `Prop`, gets structure eta and generated field selectors, at every kind, linear ones included. The model validates eta for carriers, and relaxed S1 lets conversion compare linear values. The `struct` keyword is removed: a struct is an `inductive` that meets those conditions. `Observed` and `Fresh` then get selectors without further change. **Implemented** (`docs/kernel.md`, "Structure eta and projections"). Every one-constructor family gets selectors, indexed ones too, as `struct` gave them; eta needs the conditions above, and a family whose field depends on a capture its arguments do not determine has neither.
+**Decided 2026-10-30:** follow `main-new`. Every family that has one constructor, no indices and no recursive field, and is not in `Prop`, gets structure eta and generated field selectors, at every kind, linear ones included; since 2.11, projections instead of selectors. The model validates eta for carriers, and relaxed S1 lets conversion compare linear values. The `struct` keyword is removed: a struct is an `inductive` that meets those conditions. `Observed` and `Fresh` then get selectors without further change. **Implemented** (`docs/kernel.md`, "Structure eta and projections"). Every one-constructor family gets selectors, indexed ones too, as `struct` gave them; eta needs the conditions above, and a family whose field depends on a capture its arguments do not determine has neither.
 
 **Problem.** Without eta, a variable `P : Proto` does not convert with
 `Proto.mk(P.Atom, P.Step)`. This is half of why every protocol family and
@@ -455,6 +456,33 @@ Two more follow the spec and need no change. **root-5:** since 2.4 links the roo
 on the same root sees its constructor and its other cases are `UnreachableCase`, as they always were for a family
 without indices. **wild-6:** each case a wildcard stands for knows the scrutinee's constructor, so its body cannot
 match the scrutinee again on the other constructors, exactly as the cases written out could not.
+
+### 2.11 Field projection as a kernel operation
+
+**Decided 2026-10-30:** replace the elaborator's generated selectors by a projection the kernel checks and evaluates.
+**Implemented** (`docs/kernel.md`, "Structure eta and projections"; `ProjectionAttackTests`). `r.field` is, for every
+record, the canonical projection that eta views already were, whose type is read off the constructor's telescope at the
+record's type; its checked term is a node of its own, `ElabAst.Term.Proj`, and no global is generated. A record's
+fields are declared in its namespace, so `Prod.fst(p)` stays an explicit spelling of `p.fst`, an `open` aliases a
+field, and no global shares a field's name; `Prod.fst` unapplied is `UnappliedField`. A selection names a field and
+nothing else: the selectors' fallback that applied any global `Fam.name` to a record, as a method, worked only for
+records, and nothing in the suite, the library or the GPU experiment relied on it, so it was dropped (decided
+2026-10-30), with `NotAStruct`; a selection that names no field is `NotFound`.
+
+**Problem.** Each selector was a lazily checked definition `Fam.field (self: Fam(…)) : T := match self returning T
+with | mk … => field`, whose `T` restated the field's type as surface syntax with the earlier fields rewritten to
+selector calls. The generator gave up on a type capture that shadows an earlier field and on a hidden dependency, which
+cost the whole family its selectors, and a selector of a linear record whose field type held a lambda over an earlier
+field was `LinearCapture`. An application of a selector was a call, so in a read extent its result covered the whole
+record: `observe(join(p.fst, p.snd))` in a proof was refused, though destructuring `p` was accepted.
+
+**What changed.** In a read extent a projection is field `i` of its record's region, as a match field is, so that
+program is accepted, while one field twice still overlaps. A field whose type no argument determines has no projection
+(`InvalidStruct`), but the record's other fields project. An indexed record projects as before, now by unifying the
+constructor's result with the record's type one argument at a time, which types `s.v` as a `Vec(Nat, n)` at
+`Sized(n)` where a selector typed it by `s.k`. A projection out of a proof also checks the earlier fields its type
+reads, as a selector's declared type did: `e.proof` of an `Exists` is refused, since it would hold `e.witness` in a
+type.
 
 ## 3 Language design questions
 

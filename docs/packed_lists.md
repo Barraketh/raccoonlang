@@ -428,7 +428,7 @@ inductive String : Type
  | mk (data: List(Char)) : String
 ```
 
-with the selectors `Char.val` and `String.data`. None can be redeclared.
+with the fields `Char.val` and `String.data`. None can be redeclared.
 
 `Char.mk` is unconstrained: a character is text only when its code is a closed
 Unicode scalar value, a numeral at most U+10FFFF outside the surrogates. Why:

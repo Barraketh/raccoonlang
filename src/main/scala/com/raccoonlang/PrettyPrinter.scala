@@ -188,10 +188,12 @@ object PrettyPrinter {
           val headStr = printElabTermAtom(fn)
           val argsStr = args.map(printElabTermAtom).mkString(", ")
           s"$headStr($argsStr)"
-        case Term.NatLit(number, _) => number.toString
-        case Term.StrLit(text, _)   => UnicodeScalarString.renderQuoted(text)
-        case word: Term.Word        => printElabWord(word)
-        case lam: Term.Lam          => printElabTerm0(lam)
+        // As written explicitly, which takes a base of any form, and reads back as the same projection.
+        case Term.Proj(base, family, field, _, _) => s"$family.$field(${printElabTermAtom(base)})"
+        case Term.NatLit(number, _)               => number.toString
+        case Term.StrLit(text, _)                 => UnicodeScalarString.renderQuoted(text)
+        case word: Term.Word                      => printElabWord(word)
+        case lam: Term.Lam                        => printElabTerm0(lam)
         case Term.Pi(binders, out, _, _, _) =>
           val bindersStr = binders
             .map(printElabPiBinder)
@@ -202,6 +204,7 @@ object PrettyPrinter {
       def ptAtom(t: ElabAst.TypeTerm): String = t match {
         case _: Term.Ref            => pt(t)
         case Term.App(_, _, _)      => pt(t)
+        case _: Term.Proj           => pt(t)
         case Term.NatLit(_, _)      => pt(t)
         case Term.StrLit(_, _)      => pt(t)
         case _: Term.Word           => pt(t)
@@ -271,6 +274,7 @@ object PrettyPrinter {
     def printElabTermAtom(t: ElabAst.Term): String = t match {
       case _: ElabAst.Term.Ref               => printElabTerm0(t)
       case ElabAst.Term.App(_, _, _)         => printElabTerm0(t)
+      case _: ElabAst.Term.Proj              => printElabTerm0(t)
       case ElabAst.Term.NatLit(_, _)         => printElabTerm0(t)
       case ElabAst.Term.StrLit(_, _)         => printElabTerm0(t)
       case ElabAst.Term.Word(_, _, _)        => printElabTerm0(t)
@@ -498,18 +502,13 @@ object PrettyPrinter {
       ElabAst.Binder(b.localRef, b.ty, Span(0, 0), b.isInstance)
 
     /**
-     * A record field's projection: a stuck selector or eta projection, a one-branch match on a generated `__self`
-     * returning one of its fields, as `base.field`.
+     * A named record field's canonical projection (`StructEta.Projection`), as `base.field`. An anonymous field's
+     * prints as the stuck match it is.
      */
     def projection(thunk: Value.NeutralThunk): Option[String] =
-      thunk.term match {
-        case ElabAst.Term.Match(ElabAst.Term.LocalRef(self, _), _, Vector(only), _, _)
-            if self.name.startsWith(StructEta.SelfName) && self.id < thunk.env.locals.length =>
-          only.body match {
-            case ElabAst.Term.LocalRef(field, _) if field.name != "_" && only.argRefs.contains(Some(field)) =>
-              thunk.env.locals(self.id).valueOption.map(base => s"${printAtom(base)}.${field.name}")
-            case _ => None
-          }
+      thunk match {
+        case StructEta.Projection(base, _, info, idx) if info.fieldNames(idx) != "_" =>
+          Some(s"${printAtom(base)}.${info.fieldNames(idx)}")
         case _ => None
       }
 

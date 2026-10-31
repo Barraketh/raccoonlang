@@ -121,6 +121,7 @@ object Interpreter {
   def evalTypeTerm(tt: ElabAst.TypeTerm, env: Env): Value = tt match {
     case ref: ETerm.Ref         => evalRef(ref, env)
     case ETerm.App(fn, args, _) => evalApplyTerm(fn, args, env)
+    case proj: ETerm.Proj       => StructEta.project(evalTerm(proj.base, env), proj.index)
     case lit: ETerm.NatLit      => lit.value
     case lit: ETerm.StrLit      => lit.value
     case word: ETerm.Word       => evalWord(word, env)
@@ -275,26 +276,23 @@ object Interpreter {
     NeutralThunk(m, closedEnv, lamId, outType, blockers)
   }
 
-  private def evalMatch(m: ETerm.Match, env: Env): Value = evalMatchOn(m, evalTerm(m.scrut, env), env)
+  private def evalMatch(m: ETerm.Match, env: Env): Value = {
+    val scrut = evalTerm(m.scrut, env)
+    evalMatchOn(m, scrut, env, m.motive.fold(scrut.tpe)(evalTypeTerm(_, env)))
+  }
 
   /**
    * The match `m` on the value `scrut`, its scrutinee in `env`. A constructor selects its branch. A value at a
    * structure eta type takes the one branch with its eta view, its field projections (`StructEta`). Any other value is
-   * stuck.
+   * stuck, a value of `outType`.
    */
-  private[raccoonlang] def evalMatchOn(m: ETerm.Match, scrut: Value, env: Env): Value = {
+  private[raccoonlang] def evalMatchOn(m: ETerm.Match, scrut: Value, env: Env, outType: => Value): Value = {
     val (ctorName, args) = scrut match {
       case ConstructorValue(head, fields) => (head.name, fields)
       case _ =>
-        StructEta.fields(scrut).filter(_ => m.cases.length == 1) match {
+        (if (m.cases.length == 1) StructEta.fields(scrut) else None) match {
           case Some(fields) => (m.cases.head.ctorName, fields)
-          case None         =>
-            // We are either blocked or stuck
-            val outType: Value = m.motive match {
-              case Some(motive) => evalTypeTerm(motive, env)
-              case None         => scrut.tpe
-            }
-            return stuckMatch(m, scrut, env, outType)
+          case None         => return stuckMatch(m, scrut, env, outType)
         }
     }
 
@@ -335,24 +333,17 @@ object Interpreter {
    */
   def evalDecl(decl: Decl, env: Env): Env = TypeChecker.at(decl.span) {
     decl match {
-      case Decl.ConstDecl(name, ty, body, span, isInstance, lazyGlobal) =>
+      case Decl.ConstDecl(name, ty, body, span, isInstance) =>
         body match {
           // Only kernel and prelude sources declare builtins (`run`), and their declared types are trusted. None is a
           // global of linear type (S2): the kernel's are not, and every entry the kernel leaves to a prelude is a
           // `Native`, which only a function type instantiates.
           case CoreAst.ConstBody.Builtin(_) =>
             if (isInstance) throw WTF("Builtin declarations cannot be instances", Some(span))
-            def value(env: Env): Value = Builtins.instantiate(name, TypeChecker.getType(ty, env), span)
-            if (lazyGlobal) {
-              env.putLazyGlobal(name, () => value(env))
-            } else {
-              putGlobal(env, name, value(env), isInstance)
-            }
+            putGlobal(env, name, Builtins.instantiate(name, TypeChecker.getType(ty, env), span), isInstance)
 
           case CoreAst.ConstBody.TermBody(term) =>
-            if (lazyGlobal && isInstance) throw WTF("Lazy global instances are not supported", Some(span))
-
-            lazy val checkedTy =
+            val checkedTy =
               TypeChecker.at(ty.span) {
                 val checked = TypeChecker.checkTypeTerm(ty, env)
                 TypeChecker.assertType(checked.value)
@@ -360,10 +351,7 @@ object Interpreter {
                 rejectLinearGlobal(LinearGlobal.Definition(name), checked.value, TypeChecker.sourceSpan(ty))
                 checked
               }
-            lazy val checked = TypeChecker.checkTermAgainst(term, env, checkedTy)
-
-            if (lazyGlobal) env.putLazyGlobal(name, () => checked.value)
-            else putGlobal(env, name, checked.value, isInstance)
+            putGlobal(env, name, TypeChecker.checkTermAgainst(term, env, checkedTy).value, isInstance)
         }
 
       case Decl.AxiomDecl(name, ty, _, isInstance) =>
@@ -404,7 +392,7 @@ object Interpreter {
    */
   def run(p: Program, prelude: Prelude.Config = Prelude.default, allowUserAxioms: Boolean = true): Option[Value] = {
     p.decls.foreach {
-      case Decl.ConstDecl(name, _, CoreAst.ConstBody.Builtin(builtin), _, _, _) =>
+      case Decl.ConstDecl(name, _, CoreAst.ConstBody.Builtin(builtin), _, _) =>
         throw ProgramBuiltin(name, Some(builtin))
       case _ =>
     }

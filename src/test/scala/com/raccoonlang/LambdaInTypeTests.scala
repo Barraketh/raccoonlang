@@ -84,7 +84,7 @@ class LambdaInTypeTests extends munit.FunSuite {
     intercept[NotAType](runChecked(lib + "def f (x: fun (y: Nat): Nat => y) : Nat := 0\n"))
   }
 
-  test("a field type may hold a lambda, and a record's selectors state it with the earlier fields selected") {
+  test("a field type may hold a lambda, and a record's projections state it with the earlier fields projected") {
     assertEquals(
       result(
         lib +
@@ -101,8 +101,8 @@ class LambdaInTypeTests extends munit.FunSuite {
     )
   }
 
-  // The selector's type is checked against the field's: a wrong rewrite of a shadowed name would select `n`.
-  test("a lambda's parameter, a case field and a let shadow an earlier field in a selector's type") {
+  // A projection's type is the field's own, so a name the lambda rebinds is never mistaken for the field `n`.
+  test("a lambda's parameter, a case field and a let shadow an earlier field in a projection's type") {
     run(
       lib +
         """

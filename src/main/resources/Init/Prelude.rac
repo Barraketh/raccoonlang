@@ -564,8 +564,8 @@ namespace String {
   def length (s: String): Nat := List.length(s.data)
 }
 
-// A pair of any kinds: linear when either component is (docs/kernel.md, "Kinds"). Its selectors consume a linear pair
-// and drop the other component.
+// A pair of any kinds: linear when either component is (docs/kernel.md, "Kinds"). Its projections consume a linear
+// pair and drop the other component.
 inductive Prod (A: Univ($k1, $u))(B: Univ($k2, $v)) : Univ(Kind.join(k1, k2), Level.max(u, v))
  | mk {A: Univ($k1, $u)}{B: Univ($k2, $v)} (fst: A)(snd: B) : Prod(A, B)
 

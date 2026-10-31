@@ -402,33 +402,48 @@ object Value {
   final case class ConstructorMeta(shortName: String, canonicalName: String)
 
   /**
-   * Structure eta for an eligible family (`StructEta`): its one constructor's name; a template of its telescope, opened
-   * once on fresh variables (`templateIds`), as the family arguments of its result (`resultArgs`) and its stored fields
-   * (`fieldVars`), whose types state each field's type in terms of the arguments and the earlier fields; and one
-   * canonical projector per field.
+   * A record (docs/kernel.md, "Structure eta and projections"): a family with exactly one constructor, `ctorName`,
+   * whose stored fields are named `fieldNames`, an anonymous one `_`. Each stored field has one canonical projector
+   * (`StructEta`), and `base.field` projects a named one. `template` is the constructor's telescope opened once on
+   * fresh variables (`StructEta.Template`), from which `StructEta` states a field's type at a value.
+   *
+   * `eta` holds when the record is also eligible for structure eta: `etaShape`, no indices, no recursive field and not
+   * in `Prop`, and every field's type determined by the arguments of the family, of type `familyType`, and the earlier
+   * fields. A recursive field's type names the family itself, so the template is read from the published constructor,
+   * which `constructor` gives; `InductiveChecks` forces the template and `eta` once the family's block is published.
    */
-  final case class EtaInfo(
-      ctorName: String,
-      resultArgs: Vector[Value],
-      fieldVars: Vector[Value],
-      templateIds: DepSet,
-      projectors: Vector[ElabAst.Term.Match]
+  final class RecordInfo(
+      val ctorName: String,
+      val fieldNames: Vector[String],
+      etaShape: Boolean,
+      familyType: Value,
+      constructor: () => ConstructorHead
   ) {
-    def fieldCount: Int = fieldVars.length
+    val projectors: Vector[ElabAst.Term.Match] = StructEta.projectors(ctorName, fieldNames)
+
+    lazy val template: StructEta.Template = StructEta.template(constructor())
+
+    // A record that is not eta-shaped has no eta whatever its template, which is then not read here: a recursive
+    // field's type names the family, whose eta this would ask while the template is opened.
+    lazy val eta: Boolean = etaShape && StructEta.determined(template, familyType)
+
+    def fieldCount: Int = fieldNames.length
+
+    /** The stored field named `name`. An anonymous field has no name to select it by. */
+    def fieldIndex(name: String): Option[Int] =
+      if (name == "_") None else Some(fieldNames.indexOf(name)).filter(_ >= 0)
   }
 
   /**
-   * `selectable` holds for a family with one constructor, which has a selector for each named field; `eta` for one that
-   * also has no indices and no recursive field, and is not in `Prop`. The family's arguments are its `paramCount`
-   * parameters, then its indices.
+   * `record` is present exactly for a family with one constructor (`RecordInfo`). The family's arguments are its
+   * `paramCount` parameters, then its indices.
    */
   final case class InductiveMeta(
       constructors: Vector[ConstructorMeta],
       familyArity: Int,
       paramCount: Int,
-      selectable: Boolean,
       positiveArgs: DepSet,
-      eta: Option[EtaInfo] = None
+      record: Option[RecordInfo] = None
   ) {
     require(
       positiveArgs.isEmpty || positiveArgs.max < familyArity,

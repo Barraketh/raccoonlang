@@ -2,7 +2,6 @@ package com.raccoonlang
 
 import com.raccoonlang.TypeChecker._
 import com.raccoonlang.Value._
-import com.raccoonlang.telescope.BinderOps
 import com.raccoonlang.{CoreAst => CA, ElabAst => EA}
 import com.raccoonlang.ValueQuote.{quoteContext, quoteType}
 import com.raccoonlang.Ledger.LinearInfo
@@ -31,27 +30,12 @@ object MatchChecker {
    * it as an index. So a stuck index equation leaves every other field at the scrutinee's parameters, where before it
    * left them over fresh parameters that nothing bound.
    */
-  private[raccoonlang] def freshCtor(head: ConstructorHead, family: InductiveFamilyInstance): FreshCtor =
-    head.tpe match {
-      case pi: VPi =>
-        val fresh = BinderOps.freshen(pi)
-        val binders = pi.binders.map(binder => fresh(binder.localRef))
-        val captures = pi.binders.flatMap(_.captures).map(capture => fresh(capture.localRef))
-        val result = pi.codomain(fresh)
-        val freshIds = DepSet.from((binders ++ captures).collect { case Var(_, id, _) => id })
-        val resultArgs = inductiveFamilyOf(result).map(_.args).getOrElse {
-          throw WTF(s"Constructor ${head.name}'s result $result is not a family instance")
-        }
-        // Each argument is unified on its own: a failure leaves the store as it was, and that witness fresh.
-        val params = (0 until family.meta.paramCount).foldLeft(EqStore.empty.allow(freshIds)) { (store, idx) =>
-          ValueEquivalence.tryUnify(resultArgs(idx), family.args(idx), store).getOrElse(store)
-        }
-        def atParams(value: Value): Value = ValueOps.materialize(value, params)
-        FreshCtor(binders.drop(head.numErased).map(atParams), captures.map(atParams), atParams(result))
-
-      // A constructor without binders belongs to a family without parameters.
-      case _ => FreshCtor(Vector.empty, Vector.empty, head.tpe)
-    }
+  private[raccoonlang] def freshCtor(head: ConstructorHead, family: InductiveFamilyInstance): FreshCtor = {
+    val opened = StructEta.template(head)
+    val params = opened.solve(family.args.take(family.meta.paramCount))
+    def atParams(value: Value): Value = ValueOps.materialize(value, params)
+    FreshCtor(opened.fieldVars.map(atParams), opened.captures.map(atParams), atParams(opened.result))
+  }
 
   /**
    * A constructor branch must inhabit the scrutinee's declared fiber. Its result telescope therefore supplies equations
@@ -190,6 +174,28 @@ object MatchChecker {
       if (!allowLargeElimination(family, scrutTpe, reachable))
         throw PropEliminationRestricted(family.head.name, motiveTy, Some(span))
     }
+
+  /**
+   * The Prop elimination check of a projection of field `index` of `scrut`, a value of the record `info` of `family`:
+   * the check of the one-branch match on `scrut` that returns the field, whose motive is the field's type, and so of
+   * the projections of the earlier fields that type holds, each checked as it would be written out
+   * (`StructEta.readFields`). So projecting a data field out of a proof is refused unless the family allows its large
+   * elimination, and so is projecting a proof field whose type depends on such a data field, such as `h` of
+   * `Exists.intro (w: A)(h: P(w))`, which would hold `w` 's projection in a type, where an elimination into data could
+   * read it back. Whether the family allows it does not depend on the motive, so the first data field's type decides.
+   */
+  private[raccoonlang] def checkProjectionElimination(
+      scrut: Value,
+      family: InductiveFamilyInstance,
+      info: RecordInfo,
+      index: Int,
+      env: Env,
+      span: Span
+  ): Unit =
+    if (getUniverse(scrut.tpe) == PropTpe)
+      StructEta.readFields(info, family, index).find(getUniverse(_) != PropTpe).foreach { dataType =>
+        checkPropElimination(family, scrut.tpe, dataType, computeReachableCtors(scrut, family, env), span)
+      }
 
   private final case class PlannedBranch(
       br: CA.Case,
@@ -453,10 +459,8 @@ object MatchChecker {
         checkedBranches.headOption.map(_.checkedBody.value).getOrElse {
           throw WTF("Known constructor match had no checked branch", Some(span))
         }
-      // Structure eta: a value at an eligible type takes the one branch with its field projections.
-      case None =>
-        if (StructEta.fields(scrut).isDefined) Interpreter.evalMatchOn(checkedMatch, scrut, env)
-        else Interpreter.stuckMatch(checkedMatch, scrut, env, chosenMotive.value)
+      // Structure eta: a value at an eligible type takes the one branch with its field projections. Any other is stuck.
+      case None => Interpreter.evalMatchOn(checkedMatch, scrut, env, chosenMotive.value)
     }
     CheckedTerm(value, checkedMatch, linearInfo(value, scrutChecked.lin, checkedBranches))
   }

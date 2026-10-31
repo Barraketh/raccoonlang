@@ -38,6 +38,7 @@ class ResidualizationTests extends munit.FunSuite {
         }
       case EA.Term.App(fn, args, _) =>
         containsGlobal(fn, name) || args.exists(arg => containsGlobal(arg, name))
+      case EA.Term.Proj(base, _, _, _, _) => containsGlobal(base, name)
       case EA.Term.Pi(binders, out, _, _, _) =>
         binders.exists(binder => containsGlobalBinderType(binder.ty, name)) || containsGlobal(out, name)
       case EA.Term.Body(lets, res, _) =>
@@ -109,7 +110,7 @@ class ResidualizationTests extends munit.FunSuite {
     assert(containsGlobal(res, "opaqueBool"))
   }
 
-  test("checked residual elaborates projection syntax to selector application") {
+  test("checked residual elaborates projection syntax to a projection node") {
     val p =
       """
         |inductive Pair (A: Type)(B: Type) : Type
@@ -122,11 +123,11 @@ class ResidualizationTests extends munit.FunSuite {
         |""".stripMargin
 
     checkBody(p).term match {
-      case EA.Term.Body(lets, EA.Term.App(EA.Term.GlobalRef("Pair.fst", _), Vector(EA.Term.LocalRef(ref, _)), _), _) =>
+      case EA.Term.Body(lets, EA.Term.Proj(EA.Term.LocalRef(ref, _), "Pair", "fst", 0, _), _) =>
         assertEquals(lets.length, 1)
         assertEquals(ref, lets.head.localRef)
         assert(containsGlobal(lets.head.value, "Pair.mk"))
-      case other => fail(s"Expected selector application over local pair, got $other")
+      case other => fail(s"Expected a projection of the local pair, got $other")
     }
   }
 
