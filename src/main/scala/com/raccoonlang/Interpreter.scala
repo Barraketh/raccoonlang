@@ -145,19 +145,20 @@ object Interpreter {
 
     fn.tpe match {
       case pi: VPi =>
-        val envWithArgs = getEnvWithArgs(pi, pi.env, vArgs)
+        // Only a head that stays applied needs the application's type, so a lambda never builds it.
+        def resultTy: Value = pi.codomain(getEnvWithArgs(pi, pi.env, vArgs))
         fn match {
-          case lam @ VLam(_, _, _) => runLam(lam, vArgs)
-          case h: VConst           => VApp(h, vArgs, pi.codomain(envWithArgs))
-          case h: ConstructorHead =>
-            val resultTy = pi.codomain(envWithArgs)
-            val fields = vArgs.drop(h.numErased)
-            ConstructorValue(h, fields, resultTy)
-          case blocker @ ReductionBlockers(blockerIds) =>
-            VBlockedApp(blocker, vArgs, pi.codomain(envWithArgs), blockerIds)
+          // `runLam` binds a core lambda's arguments to these same binders, with the same arity and capture checks. A
+          // native reads its arguments unbound, so binding them here is what checks them.
+          case lam @ VLam(_, _, body) =>
+            if (body.isInstanceOf[LamBody.Native]) getEnvWithArgs(pi, pi.env, vArgs)
+            runLam(lam, vArgs)
+          case h: VConst                               => VApp(h, vArgs, resultTy)
+          case h: ConstructorHead                      => ConstructorValue(h, vArgs.drop(h.numErased), resultTy)
+          case blocker @ ReductionBlockers(blockerIds) => VBlockedApp(blocker, vArgs, resultTy, blockerIds)
           // A neutral function with nothing to wait on, such as a field projection of an axiom or a stuck application
           // of one, applies to a neutral application (KERNEL_FOLLOWUPS 1.3).
-          case neutral @ (_: NeutralThunk | _: VApp) => VApp(neutral, vArgs, pi.codomain(envWithArgs))
+          case neutral @ (_: NeutralThunk | _: VApp) => VApp(neutral, vArgs, resultTy)
           case _                                     => throw CannotApplyNonFunction(fn)
         }
       case _ => throw CannotApplyNonFunction(fn.tpe)
