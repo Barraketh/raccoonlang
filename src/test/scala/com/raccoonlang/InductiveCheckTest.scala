@@ -385,4 +385,45 @@ class InductiveCheckTest extends munit.FunSuite {
           |""".stripMargin
     )
   }
+
+  // Each update is a closure that holds the map before it both as a captured value and in its environment, so a
+  // traversal that rechecks shared parts takes time doubling with each update: 64 updates once took longer than any
+  // test runs.
+  private def updates(classifier: String, value: String): String =
+    s"""
+       |def put (m: Nat -> $classifier)(k: Nat)(v: $classifier): Nat -> $classifier :=
+       |  fun (x: Nat): $classifier => {
+       |    match Nat.beq(x, k) returning $classifier with
+       |    | Bool.true => v
+       |    | Bool.false => m(x)
+       |  }
+       |
+       |def fill (m: Nat -> $classifier)(n: Nat): Nat -> $classifier decreases structural(n) := {
+       |  match n returning Nat -> $classifier with
+       |  | Nat.zero => m
+       |  | Nat.succ k => put(fill(m, k), k, $value)
+       |}
+       |""".stripMargin
+
+  test("A result index built by a long chain of closure updates checks each shared part once") {
+    elabAndTypecheck(
+      updates("Nat", "k") +
+        """
+          |inductive Filled indices (m: Nat -> Nat) : Prop
+          | | mk (m: Nat -> Nat) : Filled(fill(m, 64))
+          |""".stripMargin
+    )
+  }
+
+  test("A family inside a long chain of closure updates is still found") {
+    intercept[NonStrictlyPositive] {
+      elabAndTypecheck(
+        updates("Type", "Nat") +
+          """
+            |inductive Bad : Type
+            | | mk (h: Eq(Nat -> Type, fill(fun (x: Nat): Type => (y: Bad) -> Nat, 64), fill(fun (x: Nat): Type => Nat, 64))) : Bad
+            |""".stripMargin
+      )
+    }
+  }
 }
