@@ -34,9 +34,25 @@ object InductiveChecks {
   // - isDirectOccurrence identifies a value that is exactly the target.
   // - mayOccurIn is the conservative fallback for opaque leaves, which the
   //   traversal does not inspect structurally.
+  //
+  // A target also remembers, by identity, the values it is known not to occur
+  // in. Values are immutable, so absence is a fact about the value; remembering
+  // it lets the traversal check a part shared by several others once. A chain
+  // of closures, each capturing the one before both as a value and in its
+  // environment, otherwise costs time exponential in its length.
   private sealed trait PositivityTarget {
     def isDirectOccurrence(value: Value): Boolean
     def mayOccurIn(value: Value): Boolean
+
+    private val absent = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap[Value, java.lang.Boolean])
+
+    /** Whether the target does not occur in `value`, computing it with `check` the first time. */
+    def absentFrom(value: Value)(check: => Boolean): Boolean =
+      absent.contains(value) || {
+        val result = check
+        if (result) absent.add(value)
+        result
+      }
   }
 
   private object PositivityTarget {
@@ -68,7 +84,7 @@ object InductiveChecks {
   }
 
   private def lambdaDoesNotContain(target: PositivityTarget, lam: VLam): Boolean =
-    lam.id match {
+    target.absentFrom(lam)(lam.id match {
       // A global or native function is closed and declared before the family being checked, so it cannot contain the
       // target. Opening a native function on fresh arguments would also return its own stuck application.
       case ValueId.Const(_) => true
@@ -83,7 +99,7 @@ object InductiveChecks {
           val args = lam.tpe.binders.map(binder => fresh(binder.localRef))
           doesNotOccur(target, Interpreter.runLam(lam, args))
         }
-    }
+    })
 
   /**
    * Whether every part of a word satisfies `part`, in one loop over its tokens: each layer's payloads and the end;
@@ -112,10 +128,12 @@ object InductiveChecks {
   private def thunkDoesNotContain(target: PositivityTarget, thunk: NeutralThunk): Boolean =
     target match {
       case PositivityTarget.InductiveBlock(names) =>
-        doesNotOccur(target, thunk.tpe) &&
-        thunk.id.captures.forall(doesNotOccur(target, _)) &&
-        thunk.env.locals.forall(_.valueOption.forall(doesNotOccur(target, _))) &&
-        !names.exists(mentionsGlobal(thunk.term, _))
+        target.absentFrom(thunk)(
+          doesNotOccur(target, thunk.tpe) &&
+            thunk.id.captures.forall(doesNotOccur(target, _)) &&
+            thunk.env.locals.forall(_.valueOption.forall(doesNotOccur(target, _))) &&
+            !names.exists(mentionsGlobal(thunk.term, _))
+        )
       case local: PositivityTarget.LocalVar => !local.mayOccurIn(thunk)
     }
 
@@ -153,7 +171,7 @@ object InductiveChecks {
   private def doesNotOccur(target: PositivityTarget, value: Value): Boolean =
     if (target.isDirectOccurrence(value)) false
     else
-      value match {
+      target.absentFrom(value)(value match {
         case thunk: NeutralThunk => thunkDoesNotContain(target, thunk)
 
         case InductiveFamilyValue(instance) =>
@@ -185,7 +203,7 @@ object InductiveChecks {
 
         case _: Level | LevelTpe | _: Kind | KindTpe | _: VUniv | _: Var | _: VConst | PropTpe | KernelObject =>
           !target.mayOccurIn(value)
-      }
+      })
 
   /**
    * Checks that the target only occurs positively in value: 1) Does not occur in the domain of any Pis 2) Only appears

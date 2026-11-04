@@ -316,7 +316,10 @@ certifies that the family is absent when its type, its captures, the values of
 its environment and its match term do not mention it (main-new's
 declaration-time rule). A stuck computation that does mention it cannot certify
 a positive occurrence, nor uniformity, and a stuck application whose arguments
-mention it is not positive, as before.
+mention it is not positive, as before. The check remembers, by identity, the
+values it has found free of the family, so a value that several others share is
+read once: a chain of closures that each hold the one before, both as a captured
+value and in an environment, costs time linear in its length, not exponential.
 
 ### Current limits
 
