@@ -88,8 +88,8 @@ class AxiomTests extends munit.FunSuite {
 
     assertEquals(Interpreter.axioms(axiomPrelude.core).map(_.name), Vector("trusted"))
     assertEquals(Interpreter.axioms(core).map(_.name), Vector("magic", "choose"))
-    // The bundled prelude's trusted axioms: none, since `Nat.mul_add` is proved by expansion.
-    assertEquals(Interpreter.axioms(Prelude.default.core), Vector.empty)
+    // The bundled prelude's trusted axioms: the division laws; `Nat.mul_add` is proved by expansion.
+    assertEquals(Interpreter.axioms(Prelude.default.core).map(_.name), Vector("Nat.div_add_mod", "Nat.mod_lt"))
   }
 
   test("disallowing user axioms rejects a program axiom at its span") {

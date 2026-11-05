@@ -218,6 +218,14 @@ namespace Nat {
 
   def max (a: Nat)(b: Nat): Nat := Bool.cond(Nat.ble(a, b), Nat, b, a)
 
+  // Laws of native division beyond its reductions (docs/nat-normal-forms.md, "Division and remainder"): the division
+  // law, which holds at every divisor by the conventions `div(a, 0) = 0` and `mod(a, 0) = a`, and the remainder bound,
+  // which keeps its premise because `mod(a, 0) = a`. Together they determine both natives at every positive divisor;
+  // neither is definitional at a symbolic one.
+  axiom div_add_mod (a: Nat)(b: Nat): Eq(Nat, Nat.add(Nat.mul(b, Nat.div(a, b)), Nat.mod(a, b)), a)
+
+  axiom mod_lt (a: Nat)(b: Nat)(h: Nat.lt(0, b)): Nat.lt(Nat.mod(a, b), b)
+
   // Order laws. The native comparison cancels common terms, so `le(n, n)` and closed instances are definitional, and a
   // comparison that computes to `false` is refuted by an empty match; the general laws are short recursions.
   def lt_irrefl (n: Nat)(h: Nat.lt(n, n)): False := {

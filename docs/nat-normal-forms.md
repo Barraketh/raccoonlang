@@ -43,11 +43,13 @@ such as `Lib.Nat` are unrelated families. Ordinary source functions acquire no
 arithmetic laws from their names.
 
 The prelude adds source definitions such as `Nat.le`, `Nat.lt`, and
-`Nat.decEq`, the builtin proof `Nat.expand_eq`, and the theorems `Nat.mul_add`,
+`Nat.decEq`, the builtin proof `Nat.expand_eq`, two axioms about the natives,
+`Nat.div_add_mod` and `Nat.mod_lt`, and the theorems `Nat.mul_add`,
 `Nat.mul_pow`, and `Nat.pow_mul`, all described below. They live in the prelude
-because `Eq` is a prelude family. The prelude declares no axiom about the
-natives: distributivity is proved by expansion, and division and remainder have
-no laws ([below](#division-and-remainder)).
+because `Eq` is a prelude family; the division axioms come after `Nat.lt`,
+which one of them states. Distributivity is proved by expansion; the division
+law and the remainder bound are assumed
+([below](#division-and-remainder)).
 
 The kernel trusts the normal forms: every conversion they decide must be a
 valid identity. It trusts the expansion the same way, since `Nat.expand_eq`
@@ -477,18 +479,29 @@ refute `div(x, 2) = 3`. Unification links a refinable variable to a stuck
 application like any other value, and otherwise leaves an equation that
 conversion does not decide stuck.
 
-**No laws.** At a symbolic divisor, neither the division law nor the remainder
-bound is definitional, and the prelude assumes neither. The GPU proofs use
-division in two ways. They compute it on closed numbers, as in
-`Nat.mod(v, Cuda.u32Limit)` for a known `v`. They also carry stuck
-applications such as `Nat.mod(Nat.add(value, lane), Cuda.u32Limit)` through
-conversion and induction, and rewrite along hypotheses such as
-`Eq(Nat, Nat.mod(offset, 4), 0)`. If proofs come to need the laws, the axioms
-to add would be the standard characterization:
-`a = b * div(a, b) + mod(a, b)`, and `0 < b -> mod(a, b) < b`. Both hold of
-the natives, and at the reducing numerals they hold by conversion alone. The
-bound must keep its premise, because `mod(a, 0) = a` turns it into `a < 0` at
-`b = 0`.
+**Laws.** At a symbolic divisor, neither the division law nor the remainder
+bound is definitional, so the prelude assumes both as axioms:
+
+```
+axiom Nat.div_add_mod (a: Nat)(b: Nat):
+  Eq(Nat, Nat.add(Nat.mul(b, Nat.div(a, b)), Nat.mod(a, b)), a)
+axiom Nat.mod_lt (a: Nat)(b: Nat)(h: Nat.lt(0, b)): Nat.lt(Nat.mod(a, b), b)
+```
+
+Both hold of the natives, and at the reducing numerals they hold by conversion
+alone. The bound keeps its premise, because `mod(a, 0) = a` turns it into
+`a < 0` at `b = 0`. Together they are the standard characterization: for
+`0 < b`, any `q` and `r < b` with `a = b * q + r` are `div(a, b)` and
+`mod(a, b)`, which follows by comparing `q` with `div(a, b)` and distributing
+with `Nat.mul_add`. So the left-out identities below are theorems, not
+conversions: `div(4 * a + 1, 4) = a` holds, but only as an equation that a
+proof rewrites along.
+
+They became necessary when proofs had to evaluate kernel code that divides
+symbolic numbers: a GPU thread's warp index `threadIdx.x / 32` past its first
+warp, and index arithmetic such as a tile's row `t / tilesN` (lemur-raccoon
+`experiments/gpu-semantics`, DESIGN §13). Without them such a step can only be
+computed on closed numbers.
 
 **Termination.** A measure compares a stuck application as an atom, so
 `div(n, 4) + k` decreases with `k`. A call at `div(n, 2)` does not decrease

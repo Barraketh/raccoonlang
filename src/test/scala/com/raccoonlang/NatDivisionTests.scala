@@ -350,7 +350,8 @@ class NatDivisionTests extends munit.FunSuite {
         |def byOne (x: Nat): Nat.lt(Nat.mod(x, 1), 1) := Eq.refl(Bool.true)
         |""".stripMargin
     )
-    // OVER-REJECTION: each bound holds but needs a law, which is neither definitional nor assumed.
+    // OVER-REJECTION: each bound holds but needs a law, which is not definitional; the first is the prelude axiom
+    // `Nat.mod_lt` (below), and the others follow from the axioms.
     for (claim <- Vector("Nat.lt(Nat.mod(x, 4), 4)", "Nat.le(Nat.div(x, 4), x)", "Nat.le(Nat.mod(x, 4), x)"))
       intercept[TypeMismatch](runChecked(s"def bound (x: Nat): $claim := Eq.refl(Bool.true)\n"))
   }
@@ -412,6 +413,30 @@ class NatDivisionTests extends munit.FunSuite {
       "Nat.mod(x, y)" -> "Nat.sub(x, Nat.mul(Nat.div(x, y), y))",
       "Nat.mod(x, x)" -> "0"
     )
+  }
+
+  test("the prelude assumes the division law and the guarded remainder bound, which programs use without user axioms") {
+    run(
+      """
+        |def law (a: Nat)(b: Nat): Eq(Nat, Nat.add(Nat.mul(b, Nat.div(a, b)), Nat.mod(a, b)), a) := Nat.div_add_mod(a, b)
+        |def word (offset: Nat): Nat.lt(Nat.mod(offset, 4), 4) := Nat.mod_lt(offset, 4, Eq.refl(Bool.true))
+        |def bound (a: Nat)(k: Nat): Nat.lt(Nat.mod(a, Nat.succ(k)), Nat.succ(k)) := Nat.mod_lt(a, Nat.succ(k), Eq.refl(Bool.true))
+        |def atZero (a: Nat): Eq(Nat, a, a) := Nat.div_add_mod(a, 0)
+        |def atOne (a: Nat): Eq(Nat, a, a) := Nat.div_add_mod(a, 1)
+        |def closed : Eq(Nat, 7, 7) := Nat.div_add_mod(7, 3)
+        |// A warp index and lane: 32 * (t / 32) + t % 32 = t, and t % 32 < 32.
+        |def warp (t: Nat): Eq(Nat, Nat.add(Nat.mul(32, Nat.div(t, 32)), Nat.mod(t, 32)), t) := Nat.div_add_mod(t, 32)
+        |def lane (t: Nat): Nat.lt(Nat.mod(t, 32), 32) := Nat.mod_lt(t, 32, Eq.refl(Bool.true))
+        |""".stripMargin
+    )
+    // The bound's premise cannot be met at a zero divisor, where `mod(a, 0) = a`.
+    intercept[TypeMismatch] {
+      runChecked("def bad (a: Nat): Nat.lt(Nat.mod(a, 0), 0) := Nat.mod_lt(a, 0, Eq.refl(Bool.true))\n")
+    }
+    // The axioms are not conversions: the law at a symbolic divisor still needs the axiom.
+    intercept[TypeMismatch] {
+      runChecked("def refl (a: Nat)(b: Nat): Eq(Nat, Nat.add(Nat.mul(b, Nat.div(a, b)), Nat.mod(a, b)), a) := Eq.refl(a)\n")
+    }
   }
 
   test(

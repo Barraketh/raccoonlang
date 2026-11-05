@@ -58,7 +58,8 @@ reduces only where a numeral argument fixes the result: a zero divisor gives
 `div(a, 1) = a` and `mod(a, 1) = 0`, and a zero dividend gives zero. Otherwise
 it is stuck on its arguments, an atom of the normal forms that converts by
 congruence and resumes under substitution. No law about them is definitional
-at a symbolic divisor, and the prelude assumes none.
+at a symbolic divisor; the prelude assumes the division law and the remainder
+bound as axioms, `Nat.div_add_mod` and `Nat.mod_lt`.
 
 Unequal symbolic forms do not establish contradiction. Refinement keeps
 whole-variable linking and successor cancellation, and otherwise leaves
@@ -976,7 +977,8 @@ it. An overflow while loading, parsing or elaborating is not a diagnostic.
 
 Any module may declare an `axiom`. Its type is checked; its consistency is the
 author's responsibility. The prelude's axioms are the trusted bootstrap; the
-bundled prelude declares none. Axioms declared by the program or the modules it
+bundled prelude declares two, the division law `Nat.div_add_mod` and the
+remainder bound `Nat.mod_lt`. Axioms declared by the program or the modules it
 imports are user axioms: `Interpreter.axioms` lists them, in declaration order,
 from the program's own declarations, since the loader merges every loaded module
 into the program while the prelude's declarations stay in `Prelude.Config.core`.
