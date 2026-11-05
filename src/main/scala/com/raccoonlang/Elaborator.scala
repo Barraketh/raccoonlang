@@ -455,15 +455,10 @@ object Elaborator {
       (base, field, span) => CA.Term.Select(base, field, span)
     )
 
+  /** A function type, its parameters as the parser grouped them (`LanguageParser.typeTerm`). */
   private def elabPi(pi: SA.Term.Pi, env: ResolveEnv): CA.Term.Pi = {
-    val piEnv = env.enterLocalScope
-    val (binder, binderEnv) = elabBinder(pi.binder, piEnv)
-    val body = elabType(pi.body, binderEnv)
-    val span = Span(binder.span.start, body.span.end, binder.span.source.orElse(body.span.source))
-    body match {
-      case pi: CA.Term.Pi => CA.Term.Pi(binder +: pi.binders, pi.out, span, NodeId.fresh())
-      case other          => CA.Term.Pi(Vector(binder), other, span, NodeId.fresh())
-    }
+    val (binders, bodyEnv) = elabBinders(pi.binders, env.enterLocalScope)
+    CA.Term.Pi(binders, elabType(pi.body, bodyEnv), pi.span, NodeId.fresh())
   }
 
   /** A capture-free pattern as the type it denotes. */

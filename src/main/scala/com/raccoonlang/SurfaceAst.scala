@@ -90,8 +90,11 @@ object SurfaceAst {
       require(args.nonEmpty, "Type application requires at least one argument")
     }
 
-    // Pi (x: A) -> B x
-    final case class Pi(binder: Binder, body: TypeTerm, span: Span) extends Term with TypeTerm
+    // A function type of one group of parameters, `(x: A) -> B -> C`: an arrow chain as written. A parenthesized
+    // chain is an atom, so `A -> (B -> C)` is a Pi of one parameter whose body is a Pi, and `A -> B -> C` one Pi of two.
+    final case class Pi(binders: Vector[Binder], body: TypeTerm, span: Span) extends Term with TypeTerm {
+      require(binders.nonEmpty, "A function type has at least one parameter")
+    }
 
     // Explicit instance search expression: derive[Goal]
     final case class Derive(goal: TypeTerm, span: Span) extends Term with TypeTerm

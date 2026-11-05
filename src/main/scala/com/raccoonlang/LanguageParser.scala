@@ -164,13 +164,9 @@ object LanguageParser {
   private def nonEmptyParenArgs[A](arg: => Parser[A]): Parser[Vector[A]] =
     sym('(') ~/ skipAllWs ~ arg.rep(1, layoutSym(',')) ~ layoutSymTight(')')
 
-  private def simplePi(implicit sourceId: Option[SourceId]): Parser[Pi] =
-    (param ~ skipAllWs ~ sym("->") ~/ skipAllWs ~ typeTerm).flatSpanned(sourceId).map { Pi.tupled }
-
   /** A type's atoms. A lambda is one, so that a type may apply a family or a function to a predicate. */
   private def typeAtom(implicit sourceId: Option[SourceId]): Parser[TypeTerm] =
     lambda |
-      simplePi |
       deriveP |
       sym('(') ~ skipAllWs ~ typeTerm ~ layoutSymTight(')') |
       rootTypeTerm |
@@ -196,18 +192,38 @@ object LanguageParser {
       }
     }
 
+  /** One link of an arrow chain: a named binder `(x: A)`, which the rest of the chain may mention, or a type. */
+  private def arrowItem(implicit sourceId: Option[SourceId]): Parser[Either[Binder, TypeTerm]] =
+    param.map[Either[Binder, TypeTerm]](Left(_)) | typeExpr.map[Either[Binder, TypeTerm]](Right(_))
+
+  /**
+   * A type: an arrow chain `d1 -> ... -> dn -> out`, one function type of the n parameters `d1 ... dn`, or a type
+   * expression alone. A parenthesized chain is an atom (`typeAtom`), so the grouping is the one written:
+   * `A -> (B -> C)` takes one argument and returns a function, `A -> B -> C` takes two.
+   */
   private def typeTerm(implicit sourceId: Option[SourceId]): Parser[TypeTerm] =
-    (typeExpr ~ (skipAllWs ~ sym("->") ~/ skipAllWs ~ typeExpr).rep(0))
+    (arrowItem ~ (skipAllWs ~ sym("->") ~/ skipAllWs ~ arrowItem).rep(0))
       .flatSpanned(sourceId)
-      .map { case (first, others, sp) =>
-        val pieces = first +: others
-        pieces.init.foldRight(pieces.last: TypeTerm) { case (lhs, rhs) => arrow(lhs, rhs, sp) }
-      }
+      .filter("a type after the last arrow", { case (first, others, _) => (first +: others).last.isRight })
+      .map { case (first, others, sp) => arrowChain(first +: others, sp) }
       .named("a type")
 
-  /** The non-dependent function type `domain -> codomain`, whose binder is anonymous. */
-  private def arrow(domain: TypeTerm, codomain: TypeTerm, span: Span): Pi =
-    Pi(Binder("_", BinderType.TypePattern(TypePattern.Type(domain), domain.span), domain.span), codomain, span)
+  /** An arrow chain whose last item is a type (its parsers filter for it): that type alone, or `arrowPi`. */
+  private def arrowChain(items: Vector[Either[Binder, TypeTerm]], span: Span): TypeTerm =
+    if (items.length == 1) arrowOut(items) else arrowPi(items, span)
+
+  /**
+   * The function type of an arrow chain of at least two items whose last is a type: each earlier item a parameter, a
+   * named binder as written or a type as the anonymous binder `_`.
+   */
+  private def arrowPi(items: Vector[Either[Binder, TypeTerm]], span: Span): Pi =
+    Pi(items.init.map {
+      case Left(binder)  => binder
+      case Right(domain) => Binder("_", BinderType.TypePattern(TypePattern.Type(domain), domain.span), domain.span)
+    }, arrowOut(items), span)
+
+  private def arrowOut(items: Vector[Either[Binder, TypeTerm]]): TypeTerm =
+    items.last.fold(binder => throw new IllegalStateException(s"arrow chain ending in binder ${binder.name}"), identity)
 
   /**
    * What may continue a type after a pattern application: an argument list, a projection or an arrow. A pattern
@@ -386,18 +402,23 @@ object LanguageParser {
     ((P(".") ~/ identAtom).flatSpanned(sourceId).map(TermDot.tupled) |
       parenArgs(term).flatSpanned(sourceId).map(TermApp.tupled)).rep(0)
 
-  /** A term, which an arrow may follow: `A -> B` is a term, the non-dependent function type, as it is a type. */
+  /**
+   * A term, which an arrow chain may continue: `A -> B` and `(x: A) -> B` are terms, function types, as they are types
+   * (`typeTerm`). A named binder heads a chain only; alone it is no term.
+   */
   private def term(implicit sourceId: Option[SourceId]): Parser[Term] =
-    (termExpr.spanned(sourceId) ~ (skipAllWs ~ sym("->") ~/ skipAllWs ~ typeTerm).?)
+    ((param.map[Either[Binder, Term]](Left(_)) | termExpr.map[Either[Binder, Term]](Right(_))).spanned(sourceId) ~
+      (skipAllWs ~ sym("->") ~/ skipAllWs ~ arrowItem).rep(0))
+      .flatSpanned(sourceId)
+      .filter("a type after the last arrow", { case (head, rest, _) => rest.lastOption.fold(head.value.isRight)(_.isRight) })
       .map {
-        case (lhs, None) => lhs.value
-        case (lhs, Some(codomain)) =>
-          arrow(asType(lhs.value, lhs.span), codomain, Span(lhs.span.start, codomain.span.end, lhs.span.source))
+        case (head, rest, _) if rest.isEmpty => head.value.fold(binder => throw new IllegalStateException(s"lone binder ${binder.name}"), identity)
+        case (head, rest, sp)                => arrowPi(head.value.map(asType(_, head.span)) +: rest, sp)
       }
       .named("a term")
 
   private def termExpr(implicit sourceId: Option[SourceId]): Parser[Term] =
-    ((lambda | matchP | body | simplePi | termAtom) ~ termTrailers).map { case (base, trailers) =>
+    ((lambda | matchP | body | termAtom) ~ termTrailers).map { case (base, trailers) =>
       trailers.foldLeft(base) {
         case (cur, TermDot(name, sp)) => Select(cur, name, sp)
         case (cur, TermApp(args, sp)) => App(cur, args, sp)

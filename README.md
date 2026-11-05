@@ -194,7 +194,9 @@ constructor ends its line, so a match's cases never share a line with its header
 `returning` clause may start the line after its scrutinee.
 
 `A -> B` is the non-dependent function type wherever a type or a term may stand: as a binder type, a codomain or an
-argument, as in `List.nil(Nat -> Nat)`. A binder type may be any type, such as an application followed by an arrow,
+argument, as in `List.nil(Nat -> Nat)`. An arrow chain is one function type of all its parameters, named, `(x: A)`, or
+not: `A -> B -> C` takes two arguments at once, `f(a, b)`. Parentheses group: `A -> (B -> C)` takes one and returns a
+function, `f(a)(b)`, and is the type of `fun (x: A): (B -> C) => …`. A binder type may be any type, such as an application followed by an arrow,
 `(f: List(Nat) -> Nat)`, an application of an application, `(h: R(x)(y, z))`, or an application headed by a
 projection, `(h: P.Step(A, B))`; a pattern with captures, such as `List($A)`, applies a name once. A lambda binds at
 least one parameter. `use` is an identifier except at the start of a block's statement, where it begins a `use`

@@ -43,6 +43,12 @@ class FunctionEqualityTests extends munit.FunSuite {
     )
   }
 
+  test("Pi equality respects grouping: a parenthesized codomain is a function type of its own") {
+    assertDifferent("Nat -> Nat -> Nat", "Nat -> (Nat -> Nat)")
+    assertDifferent("(x: Nat) -> (y: Nat) -> Nat", "(x: Nat) -> ((y: Nat) -> Nat)")
+    assertDifferent("(x: Nat) -> Nat -> (y: Nat) -> Nat", "(x: Nat) -> Nat -> ((y: Nat) -> Nat)")
+  }
+
   test("Pi equality compares constrained capture classifiers exactly") {
     assertDifferent("(x: $A in Type) -> Type", "(x: $B in Sort(Level.one)) -> Type")
     assertDifferent("(x: $A in Prop) -> Prop", "(x: $B in Type) -> Prop")

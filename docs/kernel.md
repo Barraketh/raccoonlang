@@ -127,6 +127,14 @@ finds no position 1. These refusals are sound.
 
 ## Function-type equality
 
+A function type is one group of parameters: the parser reads an arrow chain
+`(x: A) -> B -> C` as one function type of two parameters, and a parenthesized
+codomain as a function type of its own, so `A -> (B -> C)` takes one argument
+and returns a function. A lambda's or a definition's parameters are one group
+the same way, so `fun (x: A): (B -> C) => …` has type `A -> (B -> C)`, not
+`A -> B -> C`. Types of different groupings differ: application takes a group's
+arguments together, so the two are not interchangeable.
+
 Function types compare binder domains and constrained-capture classifiers by
 exact definitional equality. Universes are not cumulative: an argument, too, is
 checked by conversion of its type with the binder's, so `Type` is no

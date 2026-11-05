@@ -140,6 +140,38 @@ class ParserTests extends munit.FunSuite {
     )
   }
 
+  test("an arrow chain is one function type; a parenthesized codomain is a function type of its own") {
+    assertEquals(
+      result(
+        """
+          |def flat : Nat -> Nat -> Nat := fun (x: Nat)(y: Nat): Nat => Nat.add(x, y)
+          |def nested : Nat -> (Nat -> Nat) := fun (x: Nat): (Nat -> Nat) => fun (y: Nat): Nat => Nat.add(x, y)
+          |def h (x: Nat) : Nat -> Nat := fun (y: Nat): Nat => Nat.add(x, y)
+          |def named : Nat -> (Nat -> Nat) := h
+          |def dep : (x: Nat) -> ((y: Nat) -> Eq(Nat, Nat.add(x, y), Nat.add(x, y))) :=
+          |  fun (x: Nat): ((y: Nat) -> Eq(Nat, Nat.add(x, y), Nat.add(x, y))) =>
+          |    fun (y: Nat): Eq(Nat, Nat.add(x, y), Nat.add(x, y)) => Eq.refl(Nat.add(x, y))
+          |def mixed : (x: Nat) -> Nat -> (y: Nat) -> Nat := fun (x: Nat)(z: Nat)(y: Nat): Nat => Nat.add(x, y)
+          |Nat.add(Nat.add(flat(1, 2), nested(1)(2)), Nat.add(named(1)(2), mixed(1, 0, 2)))
+          |""".stripMargin
+      ),
+      "12"
+    )
+    assertErrorAt[TypeMismatch](
+      "def g : Nat -> (Nat -> Nat) := fun (x: Nat)(y: Nat): Nat => y\n",
+      "fun (x: Nat)(y: Nat): Nat => y"
+    )
+    assertErrorAt[TypeMismatch](
+      "def g : Nat -> Nat -> Nat := fun (x: Nat): (Nat -> Nat) => fun (y: Nat): Nat => y\n",
+      "fun (x: Nat): (Nat -> Nat) => fun (y: Nat): Nat => y"
+    )
+  }
+
+  test("a named binder heads an arrow chain, and is no type alone") {
+    parseError("def f : (x: Nat) := 0\n")
+    parseError("def f : Nat -> (x: Nat) := 0\n")
+  }
+
   test("a definition without parameters may have a function type") {
     assertEquals(result("def f : Nat -> Nat := Nat.succ\nf(1)\n"), "2")
     assertEquals(result("def g : (n: Nat) -> Nat := fun (n: Nat): Nat => Nat.succ(n)\ng(1)\n"), "2")
