@@ -189,20 +189,41 @@ object Interpreter {
   def runLam(lam: VLam, args: Vector[Value]): Value = {
     lam.body match {
       case LamBody.Native(run, nativeEnv, _) => run(args, nativeEnv)
+      // A recursive definition's self slot holds the lambda itself; a member of a mutual block reads its block's
+      // members from the globals its environment was closed over, where the block is published.
       case LamBody.Core(term, coreEnv) =>
-        val bodyEnv = getEnvWithArgs(lam.tpe, coreEnv, args)
-
-        // Update env with recursive reference; a member of a mutual block reads its block's members from the globals
-        // its environment was closed over, where the block is published.
-        val selfEnv = term.recursiveSelf match {
-          case Some(ref) => bodyEnv.putLocal(ref, lam)
-          case None      => bodyEnv
-        }
-        val recurEnv = term.recursivePeers.foldLeft(selfEnv) { case (env, (ref, name)) =>
-          env.putLocal(ref, coreEnv(name))
-        }
-        evalTerm(term.body, recurEnv)
+        runCore(
+          lam.tpe,
+          term,
+          coreEnv,
+          args,
+          index => if (term.recursiveSelf.isDefined) lam else coreEnv(term.recursivePeers(index)._2)
+        )
     }
+  }
+
+  /**
+   * The body of `lam`, a recursive definition or a member of a mutual block, on `args`, with its recursive slots bound
+   * to `recursive` instead: one value for its self slot, or one for each member of its block, in the block's order.
+   * Conversion opens two such definitions on shared fresh values for both (`ValueEquivalence`), so that it compares
+   * their bodies, not their unfoldings.
+   */
+  def runLamOnRecursive(lam: VLam, args: Vector[Value], recursive: Vector[Value]): Value =
+    lam.body match {
+      case LamBody.Core(term, coreEnv) => runCore(lam.tpe, term, coreEnv, args, recursive)
+      case native                      => throw WTF(s"A native function has no recursive slots: $native")
+    }
+
+  /**
+   * `term` 's body over `coreEnv` on `args`, its recursive slots bound in order to `recursive(0)`, `recursive(1)`, …
+   */
+  private def runCore(tpe: VPi, term: ETerm.Lam, coreEnv: Env, args: Vector[Value], recursive: Int => Value): Value = {
+    val bodyEnv = getEnvWithArgs(tpe, coreEnv, args)
+    val selfEnv = term.recursiveSelf.fold(bodyEnv)(ref => bodyEnv.putLocal(ref, recursive(0)))
+    val recurEnv = term.recursivePeers.iterator.zipWithIndex.foldLeft(selfEnv) { case (env, ((ref, _), index)) =>
+      env.putLocal(ref, recursive(index))
+    }
+    evalTerm(term.body, recurEnv)
   }
 
   private def forceThunk(thunk: NeutralThunk, eqStore: EqStore): Value =

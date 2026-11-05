@@ -83,6 +83,61 @@ object ValueEquivalence {
 
     private def isNative(lam: VLam): Boolean = lam.body.isInstanceOf[LamBody.Native]
 
+    /**
+     * A recursive function as the fixpoint it is: `members` is its block, in the block's order, and it is member
+     * `index`; a recursive definition is the one member of its own, read through its self slot, not through a peer slot
+     * (`mutual`). Its body reaches its block only through those slots, never by name, since a definition is checked
+     * before it is published.
+     */
+    private final case class Fixpoint(members: Vector[VLam], index: Int, mutual: Boolean)
+
+    private object Fixpoint {
+      def of(lam: VLam): Option[Fixpoint] =
+        lam.body match {
+          case LamBody.Core(term, _) if term.recursiveSelf.isDefined => Some(Fixpoint(Vector(lam), 0, mutual = false))
+          case LamBody.Core(term, env) if term.recursivePeers.nonEmpty =>
+            val index = lam.id match {
+              case ValueId.Const(name) => term.recursivePeers.indexWhere(_._2 == name)
+              case _: ValueId.LocalId  => -1
+            }
+            // Every member of a block is a recursive lambda over that block (`Interpreter.evalDecl`).
+            Some(
+              Fixpoint(term.recursivePeers.map { case (_, name) => env(name).asInstanceOf[VLam] }, index, mutual = true)
+            )
+          case _ => None
+        }
+    }
+
+    /**
+     * Two fixpoints convert when they are the same member of blocks of one shape whose members' bodies convert pairwise
+     * with the blocks' recursive slots bound to shared fresh variables, one for each pair of members, as `fix` bodies
+     * compare (Coq's conversion of mutual fixpoints). Unfolding the slots to the functions instead would compare the
+     * same pair again inside the bodies' stuck matches, which capture them, without end. It is sound: the paired
+     * variables stand for any common values of the slots, so the blocks' bodies are one function of their recursive
+     * slots, and the blocks, which are its fixpoints and terminate, are the same functions. A pair of different shapes
+     * does not convert.
+     */
+    private def defEqFixpoints(f1: Fixpoint, f2: Fixpoint): Boolean =
+      f1.mutual == f2.mutual && f1.index >= 0 && f1.index == f2.index && f1.members.length == f2.members.length && {
+        val pairs = f1.members.zip(f2.members)
+        // Each pair's shared arguments, while every pair so far has one type.
+        val opened = pairs.foldLeft(Option(Vector.empty[Vector[Value]])) { case (done, (m1, m2)) =>
+          done.flatMap { args =>
+            if (m1.tpe.binders.length != m2.tpe.binders.length) None else defEqPi(m1.tpe, m2.tpe).map(args :+ _)
+          }
+        }
+        opened.exists { args =>
+          // Every pair has one type, so a variable of the first member's type stands for both.
+          val shared = f1.members.map(member => FreshVar.freshVar(PrettyPrinter.print(member), member.tpe))
+          pairs.lazyZip(args).forall { case ((m1, m2), memberArgs) =>
+            defEq(
+              Interpreter.runLamOnRecursive(m1, memberArgs, shared),
+              Interpreter.runLamOnRecursive(m2, memberArgs, shared)
+            )
+          }
+        }
+      }
+
     private def sameValueObject(v1: Value, v2: Value): Boolean =
       v1.asInstanceOf[AnyRef] eq v2.asInstanceOf[AnyRef]
 
@@ -109,15 +164,17 @@ object ValueEquivalence {
           // other natives, such as termination-checking stand-ins, are opaque. Opening a stuck native on fresh
           // arguments would only return its own application again.
           else if (isNative(l1) && isNative(l2)) false
-          else {
-            defEqPi(l1.tpe, l2.tpe) match {
-              case Some(vars) =>
-                val res1 = Interpreter.runLam(l1, vars)
-                val res2 = Interpreter.runLam(l2, vars)
-                defEq(res1, res2)
-              case None => false
+          else
+            (Fixpoint.of(l1), Fixpoint.of(l2)) match {
+              case (Some(f1), Some(f2)) => defEqFixpoints(f1, f2)
+              // At most one recursive function, opened with its slots bound to its block. Only its own slots lead back
+              // to it, so the comparison meets it again only against values the other function's code builds, from its
+              // arguments and its closure, and opening those, when they are not recursive, runs out; a recursive one
+              // among them is a pair of fixpoints.
+              case _ =>
+                defEqPi(l1.tpe, l2.tpe)
+                  .exists(vars => defEq(Interpreter.runLam(l1, vars), Interpreter.runLam(l2, vars)))
             }
-          }
 
         case (l: VWord, r: VWord) => defEqWords(l, r)
 
