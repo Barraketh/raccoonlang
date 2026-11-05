@@ -226,8 +226,9 @@ object ValueKey {
       }
     case Value.VLam(_, id, _) =>
       valueIdKey(tag(Tag.Lam), id)
+    // The match's interned code, then its captures (`Value.MatchId`).
     case m: Value.NeutralThunk =>
-      valueIdKey(tag(Tag.NeutralThunk), m.id)
+      mixValues(mixLong(tag(Tag.NeutralThunk), m.id.code.serial), m.id.captures)
     case p: Value.VPi =>
       mixLong(valueIdKey(tag(Tag.Pi), p.id), p.binders.length.toLong)
     case Value.ConstructorHead(n, _, _, _, _) =>

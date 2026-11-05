@@ -8,8 +8,9 @@ import com.raccoonlang.{ElabAst => EA}
  * Records, their projections and structure eta (docs/kernel.md, "Structure eta and projections"). A record is a family
  * with one constructor (`RecordInfo`). A projection of one of its fields is the stuck evaluation of a canonical
  * one-branch match, `match self returning motive with | mk x0 … xn => xi`, with one match node per field of the family,
- * so two projections of one field of convertible values convert by identity. Its motive is the field's type at the
- * projected value. On a constructor value a projection is the stored field.
+ * by which `Projection` recognizes it; two projections of one field of convertible values convert by the match's
+ * identity, its code and captures (`MatchIdentity`). Its motive is the field's type at the projected value. On a
+ * constructor value a projection is the stored field.
  *
  * Eta is a rule, not a representation. A record is eligible when it also has no indices and no recursive field, is not
  * in `Prop`, and the family's arguments determine every field's type (`RecordInfo.eta`); its kind and level do not

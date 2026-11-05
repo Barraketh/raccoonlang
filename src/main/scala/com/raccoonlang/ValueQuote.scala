@@ -15,29 +15,43 @@ object ValueQuote {
       context: QuoteContext
   )
 
-  // Inlining captures can change closure code, so every rebuilt Pi, lambda, or match receives a fresh semantic ID.
-  private final class ClosedEnvInliner(env: Env, context: QuoteContext) {
+  /**
+   * Rebuilds code closed over `env` for `context`, at `depth`, the length of the environment the rebuilt code is
+   * evaluated in: a local the code binds, at or above `env` 's length, moves with its binder to `depth` plus its
+   * offset; a free one is the local `renamed` gives it, or else its value quoted in `context`, as an application head
+   * where it is one. Its slots may move and its captures change, so every rebuilt Pi, lambda, or match receives a fresh
+   * semantic ID (`NodeId`).
+   */
+  private final class ClosedEnvInliner(
+      env: Env,
+      context: QuoteContext,
+      depth: Int,
+      renamed: collection.Map[Int, CoreAst.LocalRef] = Map.empty
+  ) {
     private val envLength = env.locals.length
 
     def reindex(ref: CoreAst.LocalRef): CoreAst.LocalRef =
-      ref.copy(id = ref.id - envLength + context.localEnvLength)
+      ref.copy(id = ref.id - envLength + depth)
 
-    private def inlineLocal(ref: CoreAst.LocalRef, refSpan: Span): ElabAst.Term =
-      if (ref.id < envLength) quoteTerm(env(ref), context, refSpan)
-      else ElabAst.Term.LocalRef(reindex(ref), refSpan)
+    private def inlineLocal(ref: CoreAst.LocalRef, refSpan: Span, appHead: Boolean): ElabAst.Term =
+      if (ref.id >= envLength) ElabAst.Term.LocalRef(reindex(ref), refSpan)
+      else
+        renamed.get(ref.id) match {
+          case Some(local)     => ElabAst.Term.LocalRef(local, refSpan)
+          case None if appHead => quoteAppHead(env(ref), context, refSpan)
+          case None            => quoteTerm(env(ref), context, refSpan)
+        }
 
     private def inlineAppHead(t: ElabAst.Term): ElabAst.Term =
       t match {
-        case ElabAst.Term.LocalRef(ref, refSpan) =>
-          if (ref.id < envLength) quoteAppHead(env(ref), context, refSpan)
-          else ElabAst.Term.LocalRef(reindex(ref), refSpan)
-        case other => inlineTerm(other)
+        case ElabAst.Term.LocalRef(ref, refSpan) => inlineLocal(ref, refSpan, appHead = true)
+        case other                               => inlineTerm(other)
       }
 
     def inlineTerm(t: ElabAst.Term): ElabAst.Term =
       t match {
         // A term-position local can inline to a lambda or body, so do not require a type term here.
-        case ElabAst.Term.LocalRef(ref, refSpan) => inlineLocal(ref, refSpan)
+        case ElabAst.Term.LocalRef(ref, refSpan) => inlineLocal(ref, refSpan, appHead = false)
         case tt: ElabAst.TypeTerm                => inlineTypeTerm(tt)
         case ElabAst.Term.Body(lets, res, bodySpan) =>
           val nextLets = lets.map { l =>
@@ -58,7 +72,7 @@ object ValueQuote {
       t match {
         case ElabAst.Term.GlobalRef(_, _) => t
         case ElabAst.Term.LocalRef(ref, refSpan) =>
-          inlineLocal(ref, refSpan) match {
+          inlineLocal(ref, refSpan, appHead = false) match {
             case tt: ElabAst.TypeTerm => tt
             case other                => throw CannotQuoteValue(env(ref), s"$other is not a type term", Some(refSpan))
           }
@@ -76,7 +90,15 @@ object ValueQuote {
           ElabAst.Term.Word(consHead, nextPieces, wordSpan)
         case pi: ElabAst.Term.Pi => inlinePi(pi)
         case ElabAst.Term.Lam(ty, body, lamSpan, name, recursiveSelf, _, recursivePeers) =>
-          ElabAst.Term.Lam(inlinePi(ty), inlineTerm(body), lamSpan, name, recursiveSelf, NodeId.fresh(), recursivePeers)
+          ElabAst.Term.Lam(
+            inlinePi(ty),
+            inlineTerm(body),
+            lamSpan,
+            name,
+            recursiveSelf.map(reindex),
+            NodeId.fresh(),
+            recursivePeers.map { case (ref, peer) => (reindex(ref), peer) }
+          )
       }
 
     private def inlinePi(pi: ElabAst.Term.Pi): ElabAst.Term.Pi = {
@@ -198,7 +220,7 @@ object ValueQuote {
       case StructEta.Projection(base, instance, info, idx) =>
         ElabAst.Term.Proj(quoteTerm(base, context, span), instance.head.name, info.fieldNames(idx), idx, span)
 
-      case NeutralThunk(term, env, _, _, _) => quoteClosedMatch(term, env, context, span)
+      case thunk: NeutralThunk => quoteClosedMatch(thunk, context, span)
 
       case lam: VLam => quoteLam(lam, context, span)
 
@@ -271,21 +293,40 @@ object ValueQuote {
     quoteForm(poly.form)
   }
 
-  private def quoteClosedMatch(
-      term: ElabAst.Term.Match,
-      env: Env,
-      context: QuoteContext,
-      span: Span
-  ): ElabAst.Term.Match = {
-    val inliner = new ClosedEnvInliner(env, context)
-
-    ElabAst.Term.Match(
-      quoteTerm(Interpreter.evalTerm(term.scrut, env), context, term.scrut.span),
-      term.motive.map(motive => quoteType(Interpreter.evalTypeTerm(motive, env), context, motive.span)),
-      term.cases.map(inliner.inlineCase),
-      span,
-      NodeId.fresh()
-    )
+  /**
+   * A stuck match, as its own code over its captures, so that evaluating the quotation builds a match of the same code
+   * (`MatchIdentity`) on the captures' quotations, which converts with it. A capture that a local of `context` holds,
+   * and no earlier capture does, is read from that local, at the places its free local was read; every other is quoted
+   * once, as a `let` before the match, in the order of the captures. The free locals are then distinct locals below the
+   * rebuilt match, mentioned in the same order, and its bound locals keep their offsets, so its code is the original's.
+   * Only an application head may name a raw recursive self (`LocalResidualPolicy.AppHeadOnly`), and the checked code
+   * reads one only there, so such a capture is read from its local too. A linear capture has no residual, even when a
+   * local holds it, as for `quoteTerm`.
+   */
+  private def quoteClosedMatch(thunk: NeutralThunk, context: QuoteContext, span: Span): ElabAst.Term = {
+    val env = thunk.env
+    val layout = MatchIdentity.layout(thunk.term, env.locals.length)
+    val renamed = scala.collection.mutable.HashMap.empty[Int, CoreAst.LocalRef]
+    val taken = scala.collection.mutable.HashSet.empty[Int]
+    val lets = Vector.newBuilder[ElabAst.Let]
+    var letCount = 0
+    var index = 0
+    while (index < layout.freeCount) {
+      val slot = layout.freeSlot(index)
+      val binding = env.localBinding(CoreAst.LocalRef(slot, s"#$slot"))
+      if (Linearity.isLinear(binding.value.tpe)) throw CannotQuoteValue(binding.value, "linear value", Some(span))
+      quotedAppHeadFor(context.quote, binding.value) match {
+        case Some(ElabAst.Term.LocalRef(local, _)) if taken.add(local.id) => renamed.update(slot, local)
+        case _ =>
+          val local = CoreAst.LocalRef(context.localEnvLength + letCount, binding.name)
+          lets += ElabAst.Let(local, None, quoteTerm(binding.value, context, span), span)
+          renamed.update(slot, local)
+          letCount += 1
+      }
+      index += 1
+    }
+    val rebuilt = new ClosedEnvInliner(env, context, context.localEnvLength + letCount, renamed).inlineTerm(thunk.term)
+    if (letCount == 0) rebuilt else ElabAst.Term.Body(lets.result(), rebuilt, span)
   }
 
   /**
@@ -447,7 +488,7 @@ object ValueQuote {
     val nextContext = QuoteContext(nextQuote, context.localEnvLength + freshLocals.length)
     val result = pi.codomain(freshEnv)
     val quotedOut = quoteType(result, nextContext, span)
-    val inliner = new ClosedEnvInliner(pi.env, context)
+    val inliner = new ClosedEnvInliner(pi.env, context, context.localEnvLength)
 
     val quotedBinders = pi.binders.map { b =>
       ElabAst.Binder(inliner.reindex(b.localRef), inliner.inlineBinderType(b.ty), Span(0, 0), b.isInstance)

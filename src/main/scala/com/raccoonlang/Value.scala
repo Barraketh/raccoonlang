@@ -53,6 +53,18 @@ object Value {
     final case class LocalId(nodeId: NodeId, captures: Vector[Value]) extends ValueId
   }
 
+  /** An interned canonical match code (`MatchIdentity`): one object, and one serial, per code in the process. */
+  final class MatchCode private[raccoonlang] (val serial: Long) {
+    override def toString: String = s"MatchCode($serial)"
+  }
+
+  /**
+   * A stuck match's identity (docs/kernel.md, "Stuck matches"): its code, and the values of its free locals in the
+   * order the code first mentions them (`MatchIdentity.Layout`). Two identities with one code and convertible captures
+   * evaluate the same code on convertible values, so their matches convert.
+   */
+  final case class MatchId(code: MatchCode, captures: Vector[Value])
+
   private[raccoonlang] def envDeps(env: Env): DepSet = {
     val res = DepSet.newBuilder
     env.locals.foreach(_.valueOption.foreach(value => res.unionInPlace(value.synDeps)))
@@ -333,11 +345,15 @@ object Value {
     override def synDeps: DepSet = repr.synDeps
   }
 
-  case class NeutralThunk(term: ElabAst.Term.Match, env: Env, id: ValueId.LocalId, tpe: Value, blockerIds: DepSet)
+  /**
+   * A stuck match: `term` closed over `env`, a value of `tpe`, its motive, waiting on `blockerIds`. `env` keeps exactly
+   * the locals whose values `id` captures (`Interpreter.stuckMatch`), and materialization maps both alike, so the
+   * captures are everything the match reads.
+   */
+  case class NeutralThunk(term: ElabAst.Term.Match, env: Env, id: MatchId, tpe: Value, blockerIds: DepSet)
     extends Value {
     override lazy val synDeps: DepSet = {
       val res = DepSet.newBuilder
-      res.unionInPlace(envDeps(env))
       res.unionInPlace(tpe.synDeps)
       id.captures.foreach(v => res.unionInPlace(v.synDeps))
       res.result()

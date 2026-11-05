@@ -283,18 +283,20 @@ object Interpreter {
     rest
   }
 
+  /**
+   * `m` stuck on `scrut` in `env`, a value of `outType`. Its identity is its code and its free locals' values
+   * (`MatchIdentity`), and its closed environment keeps exactly those locals, so resuming it reads nothing its identity
+   * leaves out.
+   */
   private[raccoonlang] def stuckMatch(
       m: ETerm.Match,
       scrut: Value,
       env: Env,
       outType: Value
   ): Value = {
-    val capturedIndexes = CapturedIndexes.getCapturedIndexes(m, env)
-    val matchCaptures = captureValues(env, capturedIndexes)
-    val lamId = ValueId.LocalId(m.nodeId, matchCaptures)
-    val closedEnv = RuntimeEnv.closeForEval(env, capturedIndexes)
-    val blockers = ReductionBlockers.of(scrut)
-    NeutralThunk(m, closedEnv, lamId, outType, blockers)
+    val layout = MatchIdentity.layout(m, env.locals.length)
+    val closedEnv = RuntimeEnv.closeForEval(env, layout.capturedIndexes)
+    NeutralThunk(m, closedEnv, MatchId(layout.code, layout.captures(env)), outType, ReductionBlockers.of(scrut))
   }
 
   private def evalMatch(m: ETerm.Match, env: Env): Value = {

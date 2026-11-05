@@ -105,16 +105,15 @@ object InductiveChecks {
 
   /**
    * A stuck computation (KERNEL_FOLLOWUPS 2.2; main-new's declaration-time rule): the family is absent from it when its
-   * type, its captures, the local values of its environment and its match term do not mention it. By freshness, the
-   * code of a computation made before the declaration cannot name the family, so only a term written in the declaration
-   * itself, such as a match in a field type, needs its names read.
+   * type, its captures, which are the local values of its environment (`NeutralThunk`), and its match term do not
+   * mention it. By freshness, the code of a computation made before the declaration cannot name the family, so only a
+   * term written in the declaration itself, such as a match in a field type, needs its names read.
    */
   private def thunkDoesNotContain(target: PositivityTarget, thunk: NeutralThunk): Boolean =
     target match {
       case PositivityTarget.InductiveBlock(names) =>
         doesNotOccur(target, thunk.tpe) &&
         thunk.id.captures.forall(doesNotOccur(target, _)) &&
-        thunk.env.locals.forall(_.valueOption.forall(doesNotOccur(target, _))) &&
         !names.exists(mentionsGlobal(thunk.term, _))
       case local: PositivityTarget.LocalVar => !local.mayOccurIn(thunk)
     }

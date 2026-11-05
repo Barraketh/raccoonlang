@@ -149,7 +149,7 @@ class RefinementTests extends munit.FunSuite {
     val thunkSz = Interpreter.evalApply(env("pick"), Vector(sz, neutralN))
     val idZ = thunkZ.asInstanceOf[NeutralThunk].id
     val idSz = thunkSz.asInstanceOf[NeutralThunk].id
-    assertEquals(idZ.nodeId, idSz.nodeId)
+    assertEquals(idZ.code, idSz.code)
     assertNotEquals(idZ.captures, idSz.captures)
     expectStuck(ValueEquivalence.tryUnify(thunkZ, thunkSz, EqStore.empty))
   }

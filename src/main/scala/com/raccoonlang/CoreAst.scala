@@ -216,8 +216,9 @@ object CoreAst {
    * `term` written again: the same syntax with a fresh node identity for every node that carries one, so its function
    * types, lambdas and matches are its own, not shared with `term` (`NodeId`: an identity is shared only by
    * representations of the same code, and two checks of one term in different refinements may give different residual
-   * code). Locals are slots in their scope, so the copy keeps them: it is checked where `term` would be. A wildcard's
-   * expansion checks a copy of its body in each case it stands for.
+   * code). A stuck match is identified by its checked code, not its node (`MatchIdentity`), so copies that check to the
+   * same code are the same match. Locals are slots in their scope, so the copy keeps them: it is checked where `term`
+   * would be. A wildcard's expansion checks a copy of its body in each case it stands for.
    */
   private[raccoonlang] def freshCopy(term: Term): Term = {
     def tpe(t: TypeTerm): TypeTerm =

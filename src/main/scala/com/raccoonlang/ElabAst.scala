@@ -118,13 +118,19 @@ object ElabAst {
         recursivePeers: Vector[(CoreAst.LocalRef, String)] = Vector.empty
     ) extends TypeTerm
 
+    /**
+     * A match. Its stuck values are identified by its code, not by `nodeId` (`MatchIdentity`); the node keeps the last
+     * layout computed for it, which is a function of the node and a cutoff, so no copy needs it.
+     */
     final case class Match(
         scrut: Term,
         motive: Option[TypeTerm],
         cases: Vector[Case],
         span: Span,
         nodeId: NodeId
-    ) extends Term
+    ) extends Term {
+      @volatile private[raccoonlang] var layoutCache: MatchIdentity.Layout = null
+    }
   }
 
   final case class Binder(

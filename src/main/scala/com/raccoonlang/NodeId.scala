@@ -5,7 +5,9 @@ import java.util.concurrent.atomic.AtomicLong
 /**
  * Process-local unique semantic identity for closure-producing syntax, distinct from diagnostic source locations. New
  * or code-changing syntax gets a fresh ID; checked residuals preserve the ID. An ID may be shared only by
- * representations of the same code.
+ * representations of the same code, whose captures are read from the same slots. A function type's or an anonymous
+ * lambda's value is identified by its node (`Value.ValueId.LocalId`); a stuck match is identified by its code instead
+ * (`MatchIdentity`), so a match's node only names it, as a record's projector is recognized by its node.
  */
 final class NodeId private (val value: Long) extends AnyVal {
   override def toString: String = s"NodeId($value)"

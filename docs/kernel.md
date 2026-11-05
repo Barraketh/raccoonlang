@@ -183,9 +183,10 @@ local (F5).
 
 Conversion compares two lambdas by their bodies on shared fresh arguments, so
 `fun (a: Nat): Prop => Eq(Nat, a, a)` and `fun (b: Nat): Prop => Eq(Nat, b, b)`
-convert. A body stuck on a match it writes itself converts only with that same
-match, as every stuck match does: a predicate defined by cases that two types
-must share is a definition. Positivity opens a lambda in a field type on fresh
+convert. A body stuck on a match converts with a body stuck on the same match
+written elsewhere, by its code ([stuck matches](#stuck-matches)), so a
+predicate defined by cases may be written out in each type that shares it.
+Positivity opens a lambda in a field type on fresh
 arguments, so the family being declared occurs in neither its type nor its body
 ([family argument size](#family-argument-size)), and the size rules read the
 types a lambda gives. A projection's type is a field type's lambda as a value,
@@ -193,6 +194,69 @@ over the earlier fields' projections, so it captures no local and F5 does not
 arise: a linear record whose field type holds a lambda over an earlier copyable
 field projects that field, while a lambda over an earlier linear field is
 `LinearCapture` in the constructor's own telescope.
+
+## Stuck matches
+
+A match whose scrutinee is no constructor, nor, at a structure eta type, a
+value with an eta view, is stuck: a value of its motive that waits on its
+scrutinee and resumes when refinement makes it a constructor. A stuck match is
+its checked code closed over the locals it reads, its *captures*. Two stuck
+matches convert when their code is the same and their captures convert, in
+order. The code is the checked match, compared exactly: its scrutinee, its
+motive, each case with its constructor, fields, equation and body, and every
+argument and proof the checker inserted, up to the names and source positions
+of its locals and binders. A local it reads is compared by value, and the
+captures are ordered by where the code first names them; a local it binds, a
+field, a `let` or a binder, is compared by its position. So `isZ(x)` and
+`isZ2(x)` convert for
+
+```
+def isZ (n: Nat): Bool := {
+  match n returning Bool with
+  | Nat.zero => Bool.true
+  | Nat.succ m => Bool.false
+}
+def isZ2 (k: Nat): Bool := {
+  match k returning Bool with
+  | Nat.zero => Bool.true
+  | Nat.succ j => Bool.false
+}
+```
+
+and so do `isZ` and a lambda in a type that writes the same match. Matches that
+differ in a case, in their motive or in their scrutinee do not convert, even
+when they agree on every constructor: conversion does not compare branches,
+and a motive is code even where its values convert. A case that names a field
+it does not use binds a slot that an anonymous field does not, so
+`| Nat.succ m => e` and the wildcard's `| Nat.succ _ => e` are different code.
+
+**Recursive functions** convert as fixpoints. Two recursive definitions, or two
+members at one position of mutual blocks of one size, convert when every pair
+of members has one type and, opened on shared fresh arguments, their bodies
+convert with the blocks' recursive slots bound to shared fresh variables, one
+for each pair: the two blocks' bodies are then one function of their recursive
+slots, and two terminating fixpoints of one function are the same functions.
+Opening them with their slots bound to the functions themselves would compare
+the same pair again inside the stuck matches that capture them, without end. A
+recursive function does not convert with one of another shape, such as a
+member of a mutual block with a single recursive definition, while a function
+that is not recursive is opened as any lambda, so a wrapper
+`def h (n: Nat): Nat := f(n)` converts with `f`.
+
+**Quotation**, which motive inference uses, rebuilds a stuck match as its own
+code over its captures: a capture that a local of the context holds is read
+from that local, and every other is quoted once, in a `let` before the match.
+Evaluating the quotation gives a stuck match of the same code on the same
+values, which converts with the one quoted, whatever its captures hold.
+
+It is sound because the code decides what a match computes: two matches of one
+code resumed on convertible captures evaluate the same code on convertible
+values, and node identities, names and positions change no result. Codes are
+interned by exact structural equality, so a hash collision cannot make two
+codes one, and a stuck match's key, its code's serial number and its captures'
+keys, guards against accidental collisions as every key does. A capture may be
+a recursive function, and comparing two that are terminates, since their
+recursive slots are paired rather than unfolded.
 
 ## Nominal Type families
 
@@ -393,7 +457,9 @@ The checked match is the expansion, one case per constructor in declaration
 order, and each case has its own copy of `e` whose function types, lambdas and
 matches have fresh node identities (`CoreAst.freshCopy`): two expansions may
 check to different residual code, since their refinements differ, so they must
-not share an identity. Evaluation, conversion, the ledger and the termination
+not share an identity; a stuck match is identified by its code instead
+([stuck matches](#stuck-matches)), so two expansions that check to the same
+code are the same match. Evaluation, conversion, the ledger and the termination
 checker see only written-out cases. So a wildcard over a constructor with a
 linear field drops that field, as `_` does (L4, affine use); each expansion is
 its own path, on which a linear local may be used once; and in a read extent
@@ -459,7 +525,8 @@ A projection is the stuck evaluation of a canonical one-branch match,
 `match r returning T with | mk x0 … xn => xi`, one match node per field of the
 family, whose motive `T` is the field's type at `r`. On a constructor value it
 is the stored field; on any other it is stuck, so two projections of one field
-of convertible values convert, and a projection of a recursive record's
+of convertible values convert ([stuck matches](#stuck-matches)), and a
+projection of a recursive record's
 neutral value reduces no further. The checked term is a node of its own
 (`ElabAst.Term.Proj`), which evaluates the same way and quotes back to itself:
 the projector is a closed term over its own locals, with a motive that is a

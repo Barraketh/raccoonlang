@@ -181,7 +181,7 @@ class NodeIdentityTests extends munit.FunSuite {
     assert(ValueEquivalence.defEq(Interpreter.evalApply(closedSuccZ, Vector(z)), succZ))
   }
 
-  test("distinct blocked matches retain identity and repeated evaluation preserves it") {
+  test("blocked matches of different code stay apart and repeated evaluation preserves identity") {
     val env = fixture
     val scrutRef = CA.LocalRef(0, "n")
     val binderRef = CA.LocalRef(1, "k")
@@ -220,10 +220,18 @@ class NodeIdentityTests extends munit.FunSuite {
     assert(!ValueEquivalence.defEq(checkedA.value, checkedB.value))
     intercept[UnificationFailed](ValueEquivalence.unify(checkedA.value, checkedB.value, EqStore.empty))
 
-    val first = Interpreter.evalTerm(checkedA.residual, envWithScrut)
-    val second = Interpreter.evalTerm(checkedA.residual, envWithScrut)
+    val first = Interpreter.evalTerm(checkedA.residual, envWithScrut).asInstanceOf[Value.NeutralThunk]
+    val second = Interpreter.evalTerm(checkedA.residual, envWithScrut).asInstanceOf[Value.NeutralThunk]
     assertEquals(first.key, second.key)
-    assertEquals(first.asInstanceOf[Value.NeutralThunk].id.nodeId, matchA.nodeId)
+    assertEquals(first.id, second.id)
+    assertEquals(first.term.nodeId, matchA.nodeId)
+
+    // The same code written again, with its own node identities, is the same stuck match.
+    val again = TypeChecker.checkTerm(CA.freshCopy(matchA), envWithScrut)
+    assertNotEquals(again.residual.asInstanceOf[EA.Term.Match].nodeId, matchA.nodeId)
+    assertEquals(again.value.asInstanceOf[Value.NeutralThunk].id.code, first.id.code)
+    assertEquals(again.value.key, checkedA.value.key)
+    assert(ValueEquivalence.defEq(again.value, checkedA.value))
   }
 
   test("checking preserves nested syntax IDs and independent elaboration allocates new ones") {
@@ -289,7 +297,7 @@ class NodeIdentityTests extends munit.FunSuite {
     assertEquals(checkedMatch.nodeId, match1.nodeId)
   }
 
-  test("quotation inlines captures into rebuilt match branches with fresh nested IDs") {
+  test("quotation rebuilds a stuck match as its own code over its quoted captures, with fresh nested IDs") {
     val src =
       source +
         """
@@ -314,8 +322,10 @@ class NodeIdentityTests extends munit.FunSuite {
     val build = env("build")
     val thunkZ = Interpreter.evalApply(build, Vector(z, neutral)).asInstanceOf[Value.NeutralThunk]
     val thunkSuccZ = Interpreter.evalApply(build, Vector(succZ, neutral)).asInstanceOf[Value.NeutralThunk]
-    assertEquals(thunkZ.id.nodeId, matchNode.nodeId)
-    assertEquals(thunkSuccZ.id.nodeId, matchNode.nodeId)
+    assertEquals(thunkZ.term.nodeId, matchNode.nodeId)
+    assertEquals(thunkZ.id.code, thunkSuccZ.id.code)
+    // Captures in the order the code first mentions them: the scrutinee, then `captured`.
+    assertEquals(thunkZ.id.captures, Vector(neutral, z))
     assertNotEquals(thunkZ.key, thunkSuccZ.key)
     assert(!ValueEquivalence.defEq(thunkZ, thunkSuccZ))
 
@@ -326,8 +336,18 @@ class NodeIdentityTests extends munit.FunSuite {
       ),
       localEnvLength = 1
     )
-    val quotedZ = ValueQuote.quoteTerm(thunkZ, quoteContext, span).asInstanceOf[EA.Term.Match]
-    val quotedSuccZ = ValueQuote.quoteTerm(thunkSuccZ, quoteContext, span).asInstanceOf[EA.Term.Match]
+    // A capture a local holds is read from it; the other is quoted once, as a let before the rebuilt match.
+    def quote(thunk: Value.NeutralThunk): (EA.Let, EA.Term.Match) =
+      ValueQuote.quoteTerm(thunk, quoteContext, span) match {
+        case EA.Term.Body(Vector(let), rebuilt: EA.Term.Match, _) => (let, rebuilt)
+        case other                                                => fail(s"Expected a let and a match, got $other")
+      }
+    val (letZ, quotedZ) = quote(thunkZ)
+    val (letSuccZ, quotedSuccZ) = quote(thunkSuccZ)
+    assertEquals(PrettyPrinter.printElabTerm(letZ.value), "N.z")
+    assertEquals(PrettyPrinter.printElabTerm(letSuccZ.value), "N.s(N.z)")
+    assertEquals(letZ.localRef.id, 1)
+    assertEquals(quotedZ.scrut.asInstanceOf[EA.Term.LocalRef].ref, quotedScrutRef)
     assertNotEquals(quotedZ.nodeId, matchNode.nodeId)
     assertNotEquals(quotedSuccZ.nodeId, matchNode.nodeId)
 
@@ -338,13 +358,20 @@ class NodeIdentityTests extends munit.FunSuite {
     assertNotEquals(branchSuccZ.nodeId, sourceBranchIds.head)
     assertNotEquals(branchZ.ty.nodeId, sourceBranchZ.ty.nodeId)
     assertNotEquals(branchSuccZ.ty.nodeId, sourceBranchZ.ty.nodeId)
-    assertEquals(PrettyPrinter.printElabTerm(branchZ.body), "N.z")
-    assertEquals(PrettyPrinter.printElabTerm(branchSuccZ.body), "N.s(N.z)")
+    assertEquals(branchZ.body.asInstanceOf[EA.Term.LocalRef].ref, letZ.localRef)
 
+    // Evaluating the quotation builds the same code on the same captures, so the same stuck match.
     val quotedEnv = env.putLocal(quotedScrutRef, neutral)
+    val requotedZ = Interpreter.evalTerm(ValueQuote.quoteTerm(thunkZ, quoteContext, span), quotedEnv)
+    val requotedSuccZ = Interpreter.evalTerm(ValueQuote.quoteTerm(thunkSuccZ, quoteContext, span), quotedEnv)
+    assertEquals(requotedZ.key, thunkZ.key)
+    assertEquals(requotedSuccZ.key, thunkSuccZ.key)
+    assert(ValueEquivalence.defEq(requotedZ, thunkZ))
+    assert(!ValueEquivalence.defEq(requotedZ, thunkSuccZ))
+
     val eqStore = EqStore.empty.allow(DepSet(neutral.id)).addLink(neutral.id, z)
-    val quotedValueZ = Interpreter.resolveInEqStore(Interpreter.evalTerm(quotedZ, quotedEnv), eqStore)
-    val quotedValueSuccZ = Interpreter.resolveInEqStore(Interpreter.evalTerm(quotedSuccZ, quotedEnv), eqStore)
+    val quotedValueZ = Interpreter.resolveInEqStore(requotedZ, eqStore)
+    val quotedValueSuccZ = Interpreter.resolveInEqStore(requotedSuccZ, eqStore)
     val originalValueZ = Interpreter.resolveInEqStore(thunkZ, eqStore)
     val originalValueSuccZ = Interpreter.resolveInEqStore(thunkSuccZ, eqStore)
     assertNotEquals(quotedValueZ.key, quotedValueSuccZ.key)

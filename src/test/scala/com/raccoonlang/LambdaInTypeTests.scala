@@ -124,8 +124,24 @@ class LambdaInTypeTests extends munit.FunSuite {
     )
   }
 
-  // As every stuck match, a lambda's body stuck on its own match converts by the match's identity, so only with itself.
-  test("lambdas whose bodies are stuck on matches written apart do not convert") {
+  // As every stuck match, a lambda's body stuck on its own match converts by the match's identity, its code and its
+  // captures, so with the same match written apart.
+  test("lambdas whose bodies are stuck on the same match written apart convert") {
+    runChecked(
+      lib +
+        """
+          |def apart (xs: List(Nat))(h: All(xs, fun (x: Nat): Prop => match x returning Prop with
+          |  | Nat.zero => True
+          |  | Nat.succ k => False
+          |)) : All(xs, fun (y: Nat): Prop => match y returning Prop with
+          |  | Nat.zero => True
+          |  | Nat.succ j => False
+          |) := h
+          |""".stripMargin
+    )
+  }
+
+  test("lambdas whose bodies are stuck on different matches do not convert") {
     intercept[TypeMismatch](
       runChecked(
         lib +
@@ -134,8 +150,8 @@ class LambdaInTypeTests extends munit.FunSuite {
             |  | Nat.zero => True
             |  | Nat.succ k => False
             |)) : All(xs, fun (x: Nat): Prop => match x returning Prop with
-            |  | Nat.zero => True
-            |  | Nat.succ k => False
+            |  | Nat.zero => False
+            |  | Nat.succ k => True
             |) := h
             |""".stripMargin
       )

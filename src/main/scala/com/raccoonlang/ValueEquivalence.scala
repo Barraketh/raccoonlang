@@ -190,7 +190,10 @@ object ValueEquivalence {
 
         case (c1: ConstructorHead, c2: ConstructorHead) if c1.name == c2.name => true
 
-        case (s1: NeutralThunk, s2: NeutralThunk) => defEqLamId(s1.id, s2.id)
+        // One code on convertible captures evaluates alike (`Value.MatchId`).
+        case (s1: NeutralThunk, s2: NeutralThunk) =>
+          (s1.id.code eq s2.id.code) && s1.id.captures.length == s2.id.captures.length &&
+          s1.id.captures.lazyZip(s2.id.captures).forall(defEq)
 
         case (Var(_, id1, _), Var(_, id2, _)) if id1 == id2 => true
         case _                                              => false

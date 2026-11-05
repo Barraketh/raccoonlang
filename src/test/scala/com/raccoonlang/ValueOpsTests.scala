@@ -251,7 +251,7 @@ class ValueOpsTests extends munit.FunSuite {
     val thunk = NeutralThunk(
       matchTerm,
       runtimeEnv,
-      ValueId.LocalId(matchTerm.nodeId, Vector(scrut, captured)),
+      MatchId(MatchIdentity.layout(matchTerm, runtimeEnv.locals.length).code, Vector(scrut, captured)),
       valueType,
       DepSet(scrut.id)
     )
