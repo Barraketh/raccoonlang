@@ -72,8 +72,9 @@ Note that at this point I have done 0 optimization - these performance wins are 
 - Canonical sums of products for builtin Nat addition, multiplication, and powers, deciding associativity,
   commutativity, units, numeral arithmetic, and the exponent product law `x^a * x^b = x^(a + b)` by conversion, plus
   native truncated subtraction, comparisons, division, and remainder
-    - Distributivity is the prelude axiom `Nat.mul_add`; `(x * y)^a` and `(x^a)^b` are the prelude theorems
-      `Nat.mul_pow` and `Nat.pow_mul`
+    - Distribution on request: `Nat.expand` multiplies products of sums out, and the prelude's builtin
+      `Nat.expand_eq` proves the expansion equal to its argument, so distributivity is the prelude theorem
+      `Nat.mul_add`; `(x * y)^a` and `(x^a)^b` are the prelude theorems `Nat.mul_pow` and `Nat.pow_mul`
     - `Nat.div` and `Nat.mod` follow Lean at a zero divisor (`div(a, 0) = 0`, `mod(a, 0) = a`) and stay stuck on
       open arguments unless a divisor of zero or one or a dividend of zero fixes the result; no law about them is
       assumed

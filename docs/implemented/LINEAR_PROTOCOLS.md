@@ -324,7 +324,10 @@ removed), linear families with recursion
 over linear values, and copyable functions; its `Protocol.lean` and
 `Morphism.lean` hold the library's laws. Three kernel rules are gaps in it:
 nested, non-uniform and under-binder recursion in linear families (L9), large
-indices (L2), and function types over `Lin(v)` in `Sort(v)` (F1).
+indices (L2), and function types over `Lin(v)` in `Sort(v)` (F1). Conversion
+is not mechanized: the soundness of the Nat normal forms, and of the expansion
+behind the prelude's `Nat.expand_eq`, is owed by the design's conversion
+catalogue ([Nat normal forms](../nat-normal-forms.md#trust-and-the-formalization)).
 
 **The design.** `raccoon-formalization/DESIGN.md`, under review and not yet
 implemented, replaces the deep embedding with a semantic model over an

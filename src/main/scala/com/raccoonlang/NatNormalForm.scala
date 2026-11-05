@@ -10,7 +10,8 @@ import scala.collection.mutable
  * are associative and commutative with units, `0 * x = 0`, closed arithmetic computes, and multiplying by a numeral
  * distributes. Powers of equal bases multiply by adding exponents, symbolic or not, and `1^e = 1`. Nothing symbolic
  * distributes, so a product of sums stays a product whose factors are the sums, and a power of a product stays a power.
- * Each operation does work linear in its operands and result, plus sorting factor bases and computing gcds.
+ * Each operation does work linear in its operands and result, plus sorting factor bases and computing gcds. Only
+ * `Expansion`, which `Nat.expand` applies on request, multiplies sums out, at a cost that can be exponential.
  */
 private[raccoonlang] object NatNormalForm {
 
@@ -593,6 +594,223 @@ private[raccoonlang] object NatNormalForm {
   def substituteAtoms(poly: VNatPoly, replace: Value => Value): Value = {
     val result = substitute(poly.form, replace)
     if (result eq poly.form) poly else result.toValue
+  }
+
+  /**
+   * The product of two monomials: their factors merged in `factorOrder`, equal ones by adding exponents, as `Product`
+   * merges them, in one pass since both are already in that order. Each has a factor, so the product is never a lone
+   * sum with exponent one, and it has a sum factor only when one of them does.
+   */
+  private def multiplyMonomials(left: Monomial, right: Monomial): Monomial = {
+    val merged = Vector.newBuilder[Factor]
+    var leftIndex = 0
+    var rightIndex = 0
+    while (leftIndex < left.factors.length && rightIndex < right.factors.length) {
+      val leftFactor = left.factors(leftIndex)
+      val rightFactor = right.factors(rightIndex)
+      val compare = factorOrder.compare(leftFactor, rightFactor)
+      if (compare < 0) {
+        merged += leftFactor
+        leftIndex += 1
+      } else if (compare > 0) {
+        merged += rightFactor
+        rightIndex += 1
+      } else {
+        merged += mergeFactors(leftFactor, rightFactor)
+        leftIndex += 1
+        rightIndex += 1
+      }
+    }
+    merged ++= left.factors.iterator.drop(leftIndex)
+    merged ++= right.factors.iterator.drop(rightIndex)
+    new Monomial(merged.result())
+  }
+
+  /**
+   * The product of two expanded forms, multiplied out: the sum of the products of their summands, so the result is
+   * expanded. The products are collected by monomial and sorted once. Nothing cancels, so every operand of either side
+   * is an operand of the result, and the result's metadata is theirs.
+   */
+  private def multiplyExpanded(left: Form, right: Form): Form =
+    if (left.terms.isEmpty) scale(right, left.constant)
+    else if (right.terms.isEmpty) scale(left, right.constant)
+    else {
+      val collected = mutable.HashMap.empty[ValueKey.Key, Term]
+      def collect(coefficient: BigInt, monomial: Monomial): Unit =
+        collected.updateWith(monomial.key) {
+          case Some(term) => Some(new Term(term.coefficient + coefficient, term.monomial))
+          case None       => Some(new Term(coefficient, monomial))
+        }
+      if (right.constant != 0) left.terms.foreach(term => collect(term.coefficient * right.constant, term.monomial))
+      if (left.constant != 0) right.terms.foreach(term => collect(term.coefficient * left.constant, term.monomial))
+      left.terms.foreach { leftTerm =>
+        right.terms.foreach { rightTerm =>
+          collect(
+            leftTerm.coefficient * rightTerm.coefficient,
+            multiplyMonomials(leftTerm.monomial, rightTerm.monomial)
+          )
+        }
+      }
+      val terms = collected.valuesIterator.toArray
+      java.util.Arrays.sort(terms, termOrder)
+      new Form(
+        left.constant * right.constant,
+        new Terms(
+          terms.toVector,
+          left.synDeps ++ right.synDeps,
+          left.needsStructuralDefEq || right.needsStructuralDefEq
+        )
+      )
+    }
+
+  private val termOrder: java.util.Comparator[Term] = (left: Term, right: Term) =>
+    ValueKey.Key.ordering.compare(left.monomial.key, right.monomial.key)
+
+  /**
+   * An expanded form raised to a positive known exponent, multiplied out. A numeral or a single term raises as the
+   * normal forms do, which keeps it expanded: a symbolic exponent is only scaled. A sum is multiplied by itself; its
+   * power has more terms than the exponent, so an exponent beyond an `Int` is a representation limit.
+   */
+  private def raiseExpanded(base: Form, exponent: BigInt): Form =
+    if (base.terms.isEmpty || base.constant == 0 && base.terms.length == 1) power(base, exponent)
+    else if (!exponent.isValidInt) throw NatValueTooLarge(exponent)
+    else {
+      var result = base
+      var remaining = exponent.toInt - 1
+      while (remaining > 0) {
+        result = multiplyExpanded(result, base)
+        remaining -= 1
+      }
+      result
+    }
+
+  /**
+   * The fully distributed forms, for `Nat.expand` (docs/nat-normal-forms.md, "Expansion"). An **expanded** form has no
+   * numeral power of a sum, and its symbolic powers' bases and exponents are expanded. Expansion multiplies every
+   * numeral power of a sum out and collects like terms. A symbolic power stays a power of its expanded base to its
+   * expanded exponent; when that exponent gains a known part `k`, the power is `base^k * base^e` by the product law,
+   * and `base^k` is multiplied out. Atoms, including stuck native applications and stuck matches, are opaque.
+   *
+   * Every step is an instance of the definitional laws or of distributivity, so an expansion equals its input. Expanded
+   * forms are canonical for the definitional laws together with distributivity: two expressions over the same atoms
+   * have identical expansions exactly when those laws equate them. An expanded form is its own expansion. The result
+   * can be exponentially larger than its input: a product of `k` sums of two atoms has `2^k` terms.
+   *
+   * One instance expands one value, each distinct operand once.
+   */
+  private final class Expansion {
+    private val expanded = mutable.HashMap.empty[ValueKey.Key, Value]
+
+    /** The expansion of a Nat value: zero and atoms are their own, and an expanded form is returned as it is. */
+    def apply(value: Value): Value =
+      value match {
+        case poly: VNatPoly =>
+          expanded.getOrElse(poly.key, null) match { // unlike get, allocates no Some
+            case null =>
+              val form = expandForm(poly.form)
+              val next = if (form eq poly.form) poly else form.toValue
+              expanded.update(poly.key, next)
+              // An expansion is expanded, so expanding it again, as `expandTerm` does with bases, is a lookup.
+              expanded.update(next.key, next)
+              next
+            case known => known
+          }
+        case other => other
+      }
+
+    /**
+     * A numeral power base that is a form is a sum, which multiplies out. An operand is unchanged when its expansion is
+     * the operand itself, or a value with its key: the memo may hold another object for an equal expansion.
+     */
+    private def isExpanded(factor: Factor): Boolean =
+      factor match {
+        case power: NumeralPower  => !power.base.isInstanceOf[VNatPoly]
+        case power: SymbolicPower => unchanged(power.base) && unchanged(power.exponent)
+      }
+
+    private def unchanged(operand: Value): Boolean = {
+      val next = apply(operand)
+      (next eq operand) || next.key == operand.key
+    }
+
+    /** The form itself when every factor is expanded; otherwise the expanded terms summed with the unchanged ones. */
+    private def expandForm(source: Form): Form = {
+      val parts = mutable.ArrayBuffer.empty[Form]
+      val unchanged = Vector.newBuilder[Term]
+      source.terms.foreach { term =>
+        if (term.monomial.factors.forall(isExpanded)) unchanged += term else parts += expandTerm(term)
+      }
+      if (parts.isEmpty) source
+      else {
+        parts += new Form(source.constant, Terms.collected(unchanged.result()))
+        sumAll(parts)
+      }
+    }
+
+    /**
+     * The coefficient, atoms and symbolic powers as one product, then each power to multiply out. A zero product, such
+     * as one with `0^(e + 1)` once an exponent gains a known part, skips the rest.
+     */
+    private def expandTerm(term: Term): Form = {
+      val product = new Product(term.coefficient)
+      val powers = mutable.ArrayBuffer.empty[(Value, BigInt)]
+      term.monomial.factors.foreach {
+        case power: NumeralPower =>
+          power.base match {
+            case sum: VNatPoly => powers += (sum -> power.exponent)
+            case atom          => product.multiplyValue(atom, power.exponent)
+          }
+        case power: SymbolicPower =>
+          val base = apply(power.base)
+          apply(power.exponent) match {
+            case exponent: VNatPoly if exponent.form.constant > 0 =>
+              powers += (base -> exponent.form.constant)
+              product.multiplyPower(base, exponent.form.dropPrefix(exponent.form.constant).toValue)
+            case exponent => product.multiplyPower(base, exponent)
+          }
+      }
+      var result = product.result()
+      val pending = powers.iterator
+      while (!result.isZeroForm && pending.hasNext) {
+        val (base, exponent) = pending.next()
+        result = multiplyExpanded(result, raiseExpanded(fromValue(apply(base)), exponent))
+      }
+      result
+    }
+  }
+
+  /** The fully distributed form of a Nat value (`Expansion`). */
+  def expansion(value: Value): Value = new Expansion()(value)
+
+  /**
+   * `Nat.expand`: the expansion with each of its monomials stuck as `Nat.expand` of that monomial, so that
+   * `expand(r * (c + 1))` is `expand(r*c) + expand(r)`, and a closed value is its own expansion. Distinct monomials
+   * give distinct atoms, so two applications convert exactly when the expansions of their arguments convert. The result
+   * is a sum of atoms with the expansion's coefficients and constant, so `expand(a + b)` is `expand(a) + expand(b)`, a
+   * known successor shows, and subtraction and comparisons cancel common terms.
+   *
+   * Returning the expansion itself would not be stable under substitution: `expand(x)` would be `x`, which becomes
+   * `a * (b + c)` under `x := a * (b + c)`, while `expand(a * (b + c))` is `a*b + a*c`, and the normal forms do not
+   * distribute. A stuck monomial expands again when a dependency of it is solved. The resumed monomials sum to the
+   * wrapped expansion of the substituted expansion, since wrapping commutes with sums and numeral multiples, and that
+   * equals the substituted argument by the laws, so by canonicity it is the result for the substituted argument.
+   */
+  def expand(value: Value): Value = {
+    val expanded = fromValue(expansion(value))
+    if (expanded.terms.isEmpty) expanded.toValue
+    else {
+      val wrapped = expanded.terms.iterator.map { term =>
+        val monomial = new Form(0, Terms.collected(Vector(new Term(1, term.monomial)))).toValue
+        val atom = stuck(Kernel.expand, Kernel.natType, monomial)
+        new Term(term.coefficient, new Monomial(Vector(new NumeralPower(atom, 1))))
+      }.toArray
+      java.util.Arrays.sort(wrapped, termOrder)
+      // Each atom depends on its monomial's operands, which together are the expansion's, and a stuck native
+      // application needs structural conversion (`Value.needsStructuralDefEq`), as the first atom shows.
+      val atoms =
+        new Terms(wrapped.toVector, expanded.synDeps, wrapped(0).monomial.factors(0).base.needsStructuralDefEq)
+      new Form(expanded.constant, atoms).toValue
+    }
   }
 
   /**

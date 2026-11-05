@@ -6,10 +6,10 @@ import com.raccoonlang.Value._
  * Declarations present in every environment, beneath any prelude. The kernel owns `Sort`, `Lin`, Bool, Nat, List, Char
  * and String, and the resource-protocol declarations: `List.Perm`, the `Protocol` families, the opaque `Supply`, `Inst`
  * and `Tok`, and the primitives (`ProtocolSource`). NatNormalForm implements Nat arithmetic, truncated subtraction,
- * comparisons, and division and remainder natively; Nat successors are always compact. `packed.Words` implements List
- * append and length natively; `packed.Strings` builds string literals and interns closed characters. Preludes and
- * programs cannot redeclare these names, so every value of type Nat, Bool, List, Char or String belongs to these
- * families, and code may recognise their constructors by name.
+ * comparisons, division and remainder, and expansion natively; Nat successors are always compact. `packed.Words`
+ * implements List append and length natively; `packed.Strings` builds string literals and interns closed characters.
+ * Preludes and programs cannot redeclare these names, so every value of type Nat, Bool, List, Char or String belongs to
+ * these families, and code may recognise their constructors by name.
  */
 private[raccoonlang] object Kernel {
   val NatName = "Nat"
@@ -54,6 +54,7 @@ private[raccoonlang] object Kernel {
       |  def ble (a: Nat)(b: Nat): Bool := builtin
       |  def div (a: Nat)(b: Nat): Nat := builtin
       |  def mod (a: Nat)(b: Nat): Nat := builtin
+      |  def expand (n: Nat): Nat := builtin
       |}
       |
       |inductive List (A: Univ($k, $u)) : Univ(k, u)
@@ -201,6 +202,7 @@ private[raccoonlang] object Kernel {
   lazy val ble: VLam = native("Nat.ble")
   lazy val div: VLam = native("Nat.div")
   lazy val mod: VLam = native("Nat.mod")
+  lazy val expand: VLam = native("Nat.expand")
   lazy val append: VLam = native("List.append")
   lazy val length: VLam = native("List.length")
 

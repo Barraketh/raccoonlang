@@ -7,7 +7,10 @@ Nothing else distributes: a product of sums stays a product, and a power of a
 product stays a power. The normal forms are canonical for exactly these laws, so
 definitional equality decides them completely. Every operation takes time
 linear in the size of its operands and result, so normalization needs no
-limits, budgets, or fuel.
+limits, budgets, or fuel. Distribution happens only on request: the kernel's
+`Nat.expand` multiplies products of sums out, and the prelude's
+`Nat.expand_eq` proves the expansion equal to its argument
+([expansion](#expansion)), so distributivity is a theorem.
 
 ## Terms
 
@@ -30,20 +33,26 @@ limits, budgets, or fuel.
 Nat and Bool are built into the kernel. `Kernel` declares `Bool` with `false`
 and `true`, `Nat` with exactly `Nat.zero : Nat` and `Nat.succ : Nat -> Nat`, and
 native `Nat.add`, `Nat.mul`, `Nat.pow`, `Nat.sub`, `Nat.pred`, `Nat.isZero`,
-`Nat.beq`, `Nat.ble`, `Nat.div`, and `Nat.mod`. These declarations are
-elaborated and evaluated once, beneath every prelude and program, including
-with `--no-prelude`. Preludes and programs cannot redeclare those names, so
-every value of type Nat or Bool belongs to these families and quotation can
-name the native operations directly. Nothing validates a Nat declaration
-because no other Nat declaration can exist; namespaced inductives such as
-`Lib.Nat` are unrelated families. Ordinary source functions acquire no
+`Nat.beq`, `Nat.ble`, `Nat.div`, `Nat.mod`, and `Nat.expand`. These
+declarations are elaborated and evaluated once, beneath every prelude and
+program, including with `--no-prelude`. Preludes and programs cannot redeclare
+those names, so every value of type Nat or Bool belongs to these families and
+quotation can name the native operations directly. Nothing validates a Nat
+declaration because no other Nat declaration can exist; namespaced inductives
+such as `Lib.Nat` are unrelated families. Ordinary source functions acquire no
 arithmetic laws from their names.
 
 The prelude adds source definitions such as `Nat.le`, `Nat.lt`, and
-`Nat.decEq`, one axiom about the natives, `Nat.mul_add`, and the theorems
-`Nat.mul_pow` and `Nat.pow_mul`, all described below. They live in the prelude
-because `Eq` is a prelude family. Division and remainder have no axioms
-([below](#division-and-remainder)).
+`Nat.decEq`, the builtin proof `Nat.expand_eq`, and the theorems `Nat.mul_add`,
+`Nat.mul_pow`, and `Nat.pow_mul`, all described below. They live in the prelude
+because `Eq` is a prelude family. The prelude declares no axiom about the
+natives: distributivity is proved by expansion, and division and remainder have
+no laws ([below](#division-and-remainder)).
+
+The kernel trusts the normal forms: every conversion they decide must be a
+valid identity. It trusts the expansion the same way, since `Nat.expand_eq`
+states that an expansion equals its argument
+([trust](#trust-and-the-formalization)).
 
 ## Literals
 
@@ -95,18 +104,22 @@ These are not definitional:
 - Powers of powers with a symbolic outer exponent: `(x^a)^b = x^(a * b)`,
   including `(x^2)^b = x^(2 * b)` and `4^b = 2^(2 * b)`.
 
-The prelude declares the distributive law as an axiom:
+The prelude proves the distributive law by [expansion](#expansion): both
+sides have the same expansion, and `Nat.expand_eq` relates each side to it.
 
 ```
-axiom Nat.mul_add (a: Nat)(b: Nat)(c: Nat):
-  Eq(Nat, Nat.mul(a, Nat.add(b, c)), Nat.add(Nat.mul(a, b), Nat.mul(a, c)))
+def Nat.mul_add (a: Nat)(b: Nat)(c: Nat):
+  Eq(Nat, Nat.mul(a, Nat.add(b, c)), Nat.add(Nat.mul(a, b), Nat.mul(a, c))) :=
+  Eq.trans(Nat.expand_eq(Nat.mul(a, Nat.add(b, c))),
+           Eq.symm(Nat.expand_eq(Nat.add(Nat.mul(a, b), Nat.mul(a, c)))))
 ```
 
-Every other semiring identity follows from this axiom and conversion. Right
+Every other semiring identity follows from this theorem and conversion. Right
 distributivity `(a + b) * c = a * c + b * c` is `Nat.mul_add(c, a, b)`, because
 both sides convert by commutativity, and `a * (b + 1) = a * b + a` is
-`Nat.mul_add(a, b, 1)`. The axiom cannot be proved inside the system: no law
-reduces a product with a symbolic successor, so induction has no step to use.
+`Nat.mul_add(a, b, 1)`. Conversion and induction alone cannot prove the law: no
+law reduces a product with a symbolic successor, so induction has no step to
+use. Until expansion it was the prelude's one axiom.
 
 The successor equation of powers is definitional, so the left-out exponent laws
 are prelude theorems, proved by induction on the exponent:
@@ -211,11 +224,17 @@ which expands, while splitting an exponent gives `x^a * x^b`, which merges back
 into one factor. The last row differs because of the power-of-a-power conflict
 above.
 
-The same asymmetry decides which laws are lemmas. Multiplication's successor
-equation is not definitional, so distributivity is the axiom `Nat.mul_add`.
-Power's successor equation is definitional, so every left-out exponent law is a
-theorem: `Nat.mul_pow` by induction on the exponent, and `Nat.pow_mul` by
-induction on the outer exponent, using `Nat.mul_add` to rewrite `a * (b + 1)`.
+The same asymmetry decides how the laws are proved. Multiplication's successor
+equation is not definitional, so induction cannot prove distributivity, and
+`Nat.mul_add` is proved by expansion instead. Power's successor equation is
+definitional, so every left-out exponent law is a theorem by induction:
+`Nat.mul_pow` on the exponent, and `Nat.pow_mul` on the outer exponent, using
+`Nat.mul_add` to rewrite `a * (b + 1)`.
+
+**Distribution on request.** Deciding distributivity in conversion would expand
+every product of sums that conversion meets, with the cost above. `Nat.expand`
+expands only where a proof applies it, so the cost falls on that proof, and the
+default normal forms, their cost, and their stability are unchanged.
 
 ## One representation
 
@@ -373,7 +392,8 @@ an ever-longer term or factor sequence, for quadratic total work.
 Coefficients, constants, and exponents grow only as the program's own closed
 arithmetic grows them. Merging two symbolic powers adds their exponent forms,
 and raising one to a numeral scales its exponent, both linear in the exponents'
-size; a symbolic exponent is never expanded or factored.
+size; a symbolic exponent is never expanded or factored. Only
+[expansion](#expansion), on request, multiplies sums out.
 
 ## Truncated subtraction and comparisons
 
@@ -464,7 +484,7 @@ division in two ways. They compute it on closed numbers, as in
 applications such as `Nat.mod(Nat.add(value, lane), Cuda.u32Limit)` through
 conversion and induction, and rewrite along hypotheses such as
 `Eq(Nat, Nat.mod(offset, 4), 0)`. If proofs come to need the laws, the axioms
-to add would be the standard characterization, in the style of `Nat.mul_add`:
+to add would be the standard characterization:
 `a = b * div(a, b) + mod(a, b)`, and `0 < b -> mod(a, b) < b`. Both hold of
 the natives, and at the reducing numerals they hold by conversion alone. The
 bound must keep its premise, because `mod(a, 0) = a` turns it into `a < 0` at
@@ -473,6 +493,138 @@ bound must keep its premise, because `mod(a, 0) = a` turns it into `a < 0` at
 **Termination.** A measure compares a stuck application as an atom, so
 `div(n, 4) + k` decreases with `k`. A call at `div(n, 2)` does not decrease
 `n`, because `div(n, 2) < n` needs a law and fails at `n = 0`.
+
+## Expansion
+
+`Nat.expand` is the kernel's native for distribution on request. The
+**expansion** of a value multiplies every product of sums out and collects like
+terms. The prelude's `Nat.expand_eq(n) : Eq(Nat, n, Nat.expand(n))` proves the
+expansion equal to its argument, so an identity whose two sides have the same
+expansion is `Eq.trans(Nat.expand_eq(lhs), Eq.symm(Nat.expand_eq(rhs)))`, as in
+`r * (c + 1) = r * c + r`:
+
+```
+Eq.trans(Nat.expand_eq(Nat.mul(r, Nat.add(c, 1))),
+         Eq.symm(Nat.expand_eq(Nat.add(Nat.mul(r, c), r))))
+```
+
+### Expanded forms
+
+An **expanded** form is a normal form with no numeral power of a sum, whose
+symbolic powers have expanded bases and exponents. Expansion builds one through
+the operations above, keeping every other term as it is:
+
+- A numeral power of a sum, `s^k`, is the expansion of `s` multiplied by itself
+  `k` times. The product of two expanded forms is the sum of the products of
+  their summands, and the product of two monomials without a sum factor is one
+  monomial without one.
+- A symbolic power is a power of its expanded base to its expanded exponent.
+  When the expanded exponent gains a known part, as `(a + 1) * (b + 1)` gains
+  one in `a*b + a + b + 1`, the power splits by the product law, and the numeral
+  power of the base multiplies out like any other. So `0^((a + 1) * (b + 1))`
+  expands to zero.
+- Atoms are opaque. Expansion never looks inside a variable, a stuck native
+  application such as `div(x * (y + 1), 2)` or `sub(p, q)`, or a stuck match.
+
+| Expression | Expansion |
+| --- | --- |
+| `(a + b) * (c + d)` | `a*c + a*d + b*c + b*d` |
+| `r * (c + 1)` | `r*c + r` |
+| `(2*a + 2*b) * c` | `2*a*c + 2*b*c` |
+| `(a + b)^2` | `a^2 + 2*a*b + b^2` |
+| `x^(a * (b + c))` | `x^(a*b + a*c)` |
+| `(a * (b + c))^e` | `(a*b + a*c)^e` |
+| `x^((a + 1) * (b + 1))` | `x * x^(a*b + a + b)` |
+| `div(x * (y + 1), 2) * (c + d)` | `div(x * (y + 1), 2) * c + div(x * (y + 1), 2) * d` |
+| `(x * y)^a` and `(x^a)^b` | themselves: no exponent law is added |
+
+**Canonicity.** Two expressions over the same atoms have identical expansions
+exactly when the definitional laws and distributivity equate them. Each step
+above is an instance of those laws, so identical expansions denote equal
+expressions. Conversely, expansion maps every expression to a polynomial with
+natural coefficients over the atoms and the symbolic powers, and the expanded
+forms with merging addition and distributing multiplication satisfy every law:
+the arguments of [canonicity](#canonicity) carry over, with monomials that never
+hold a sum, and multiplication distributes by construction. A symbolic power is
+identified by its expanded base, which is canonical by induction, so
+`((a + b) * (c + d))^e * (a*c + a*d + b*c + b*d)^f` expands to one power with
+exponent `e + f`. An expanded form is its own expansion.
+
+### `Nat.expand` and `Nat.expand_eq`
+
+`Nat.expand(n)` is the expansion of `n` with each of its monomials stuck as
+`Nat.expand` of that monomial, and the expansion's coefficients and constant
+outside. So `Nat.expand(r * (c + 1))` and `Nat.expand(r * c + r)` are both
+`Nat.expand(r * c) + Nat.expand(r)`, and a closed value is its own expansion. A
+stuck monomial is an atom of the normal forms, like a stuck division: it
+converts with another exactly when their monomials convert, and resumes,
+expanding again, when a dependency of its monomial is solved. Distinct
+monomials give distinct atoms, so two applications of `Nat.expand` convert
+exactly when the expansions of their arguments convert. The result is a sum of
+atoms, so:
+
+- `Nat.expand(a + b)` is `Nat.expand(a) + Nat.expand(b)`, and
+  `Nat.expand(2 * a)` is `2 * Nat.expand(a)`.
+- A known successor shows: `Nat.expand((a + 1) * (b + 1))` has constant one,
+  so `0 < Nat.expand((a + 1) * (b + 1))` holds by conversion.
+- Truncated subtraction and comparisons cancel common monomials:
+  `Nat.expand(r * c) <= Nat.expand(r * (c + 1))` holds by conversion, and
+  `Nat.expand_eq` carries it back to `r * c <= r * (c + 1)`.
+
+Returning the expansion itself would not be [stable under
+substitution](#why-these-laws-and-no-more). `Nat.expand(x)` would be `x`, which
+becomes `a * (b + c)` under `x := a * (b + c)`, while `Nat.expand(a * (b + c))`
+would be `a*b + a*c`, and the default forms do not relate the two. A type
+mentioning `Nat.expand(x * x)` would then differ before and after a refinement
+of `x`. Wrapping each atom alone would fail the same way, since resumed atoms
+multiply by the default forms. A stuck monomial instead expands its substituted
+monomial when it resumes. Wrapping commutes with sums and numeral multiples, so
+the resumed monomials sum to the wrapped expansion of the substituted
+expansion. That equals the substituted argument by the laws, so by canonicity
+it is `Nat.expand` of the substituted argument.
+
+`Nat.expand_eq` is a `:= builtin` declaration of the prelude: its type names
+the prelude's `Eq`, so the kernel cannot state it, and a program cannot declare
+a builtin. Its value at `n` is its own application `Nat.expand_eq(n)`, at the
+declared type instantiated at `n`. It never reduces, so a match on it stays
+stuck, as on an axiom; it converts by congruence and, as a proof, with every
+proof of its proposition; and it quotes and displays as a call of the builtin.
+It is not an axiom, so proofs that use it, or `Nat.mul_add`, check under
+`--no-user-axioms`.
+
+### Trust and the formalization
+
+The kernel trusts that expansion preserves value, so that every
+`Eq(Nat, n, Nat.expand(n))` holds, as it trusts that the normal forms decide
+only valid identities. It trusts the declared type of `Nat.expand_eq` as it
+trusts every builtin's, and a custom prelude is trusted with it. Nothing else
+is trusted: `Nat.mul_add` is a checked definition.
+
+In a model, `Nat.expand` is the identity and `Nat.expand_eq(n)` is reflexivity.
+The native's one reduction, from `Nat.expand(n)` to the expansion with each
+monomial `m` replaced by `Nat.expand(m)`, is then the soundness of expansion, a
+ring normalization lemma beside the soundness of the normal forms. The Lean
+formalization (`raccoon-formalization`, `DESIGN.md` §5) lists the normalizer's
+soundness in its conversion catalogue and does not model expansion yet; the two
+natives and that lemma are owed there.
+
+### Cost and limits
+
+Expansion can be exponential: a product of `k` sums of two atoms has `2^k`
+terms. It runs only where `Nat.expand` is applied, and each application expands
+its whole argument, including products of sums nested in its operands, so a
+proof by expansion costs as much as the expansions it asks for. `Nat.mul_add`
+expands `a * (b + c)` and `a*b + a*c`, which is cheap when `a`, `b`, and `c`
+are sums of products of atoms. No budget limits expansion. A numeral power of a
+sum with an exponent beyond a 32-bit integer has more terms than the JVM can
+hold, so it raises `NatValueTooLarge`, a representation limit like that of
+closed powers.
+
+**Left out.** Expansion does not look inside atoms, so `div(x * (y + 1), 2)`
+and `div(x*y + x, 2)` have different expansions; `congrArg` along `Nat.mul_add`
+relates them. It does not factor. `Nat.expand(Nat.expand(x))` is `Nat.expand`
+of the stuck atom `Nat.expand(x)`, not `Nat.expand(x)`; `Nat.expand_eq`
+relates them.
 
 ## Atom equality and conversion
 
@@ -603,6 +755,11 @@ other load, so treat them as relative.
 | Product of 64 sums over such atoms: conversion | 1.9 ms | 8.3 MiB |
 | 2048-term sum: peel 64 successors | 0.9 us | 6 KiB |
 | 2048-term sum: `ble(sub(p + 5, p), 5)` | 0.06 us | 0.3 KiB |
+| `Nat.expand` of `r * (c + 1)` and of `r*c + r` | 4.7 us | 25 KiB |
+| 2048-term expanded sum: expansion | 36 us | 170 KiB |
+| `(a + b + c + d)^8`: expansion, 165 terms | 0.23 ms | 690 KiB |
+| Product of 10 two-atom sums: expansion, 1024 terms | 0.9 ms | 1.1 MiB |
+| Product of 14 two-atom sums: expansion, 16384 terms | 24 ms | 18 MiB |
 
 Symbolic powers left the other rows unchanged within noise. The substitution
 row allocates less than before because collecting the unchanged terms'
@@ -611,3 +768,8 @@ patterns described under cost. Conversion over
 structural atoms is dominated by the quadratic grouping of 128 distinct
 structural atoms, each comparison opening two lambdas. The full test suite takes
 about 18 CPU seconds, most of it JVM startup and compilation.
+
+Expansion costs about 1.5 us and 1.2 KiB per term of a product of sums: each
+product of two summands merges their factors in one pass and is collected by
+monomial. Checking the GPU proofs that use `Nat.mul_add` took the same time
+with the theorem as with the axiom.

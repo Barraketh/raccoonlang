@@ -24,16 +24,16 @@ class NatNormalFormRandomTests extends munit.FunSuite {
     atom.key -> index
   }.toMap
 
-  private def generate(random: Random, depth: Int): Expr =
+  private def generate(random: Random, depth: Int, exponent: Random => Expr = symbolicExponent): Expr =
     if (depth == 0 || random.nextInt(4) == 0) {
       if (random.nextInt(3) == 0) Num(random.nextInt(4)) else Atom(random.nextInt(atoms.length))
     } else
       random.nextInt(11) match {
-        case 0 | 1 | 2 => Add(generate(random, depth - 1), generate(random, depth - 1))
-        case 3 | 4 | 5 => Mul(generate(random, depth - 1), generate(random, depth - 1))
-        case 6 | 7     => Pow(generate(random, depth - 1), Num(random.nextInt(4)))
-        case 8         => Pow(generate(random, depth - 1), symbolicExponent(random))
-        case _         => Succ(generate(random, depth - 1))
+        case 0 | 1 | 2 => Add(generate(random, depth - 1, exponent), generate(random, depth - 1, exponent))
+        case 3 | 4 | 5 => Mul(generate(random, depth - 1, exponent), generate(random, depth - 1, exponent))
+        case 6 | 7     => Pow(generate(random, depth - 1, exponent), Num(random.nextInt(4)))
+        case 8         => Pow(generate(random, depth - 1, exponent), exponent(random))
+        case _         => Succ(generate(random, depth - 1, exponent))
       }
 
   /** A small exponent over the atoms, at most 8 under the assignments' range, so evaluation stays bounded. */
@@ -46,6 +46,18 @@ class NatNormalFormRandomTests extends munit.FunSuite {
       case _     => Mul(Num(2), atom)
     }
   }
+
+  /**
+   * A symbolic exponent, or sometimes a product of sums, which the normal forms keep as a product and expansion
+   * multiplies out, exposing a known part when both sums have one. At most 20 under the assignments' range.
+   */
+  private def expandingExponent(random: Random): Expr =
+    if (random.nextInt(3) == 0)
+      Mul(
+        Add(Atom(random.nextInt(atoms.length)), Num(1)),
+        Add(Atom(random.nextInt(atoms.length)), Num(random.nextInt(2)))
+      )
+    else symbolicExponent(random)
 
   private def build(expr: Expr, atomValues: Vector[Value]): Value =
     expr match {
@@ -111,6 +123,41 @@ class NatNormalFormRandomTests extends munit.FunSuite {
       case Pow(base, exponent) => Pow(rearrange(random, base), rearrange(random, exponent))
       case Succ(predecessor) =>
         if (random.nextBoolean()) Add(Num(1), rearrange(random, predecessor)) else Succ(rearrange(random, predecessor))
+    }
+
+  /**
+   * Rewrite by distributivity in either direction, `x * (y + z) = x*y + x*z` and `(y + z) * x = y*x + z*x`, at any
+   * depth, including inside bases and exponents. Counts the rewrites in `distributions`.
+   */
+  private def distribute(random: Random, expr: Expr, distributions: Array[Int]): Expr = {
+    def again(next: Expr): Expr = distribute(random, next, distributions)
+    expr match {
+      case Atom(_) | Num(_) => expr
+      case Mul(x, Add(y, z)) if random.nextBoolean() =>
+        distributions(0) += 1
+        Add(Mul(again(x), again(y)), Mul(again(x), again(z)))
+      case Mul(Add(y, z), x) if random.nextBoolean() =>
+        distributions(0) += 1
+        Add(Mul(again(y), again(x)), Mul(again(z), again(x)))
+      case Add(Mul(x, y), Mul(other, z)) if x == other && random.nextBoolean() =>
+        distributions(0) += 1
+        Mul(again(x), Add(again(y), again(z)))
+      case Add(left, right)    => Add(again(left), again(right))
+      case Mul(left, right)    => Mul(again(left), again(right))
+      case Pow(base, exponent) => Pow(again(base), again(exponent))
+      case Succ(predecessor)   => Succ(again(predecessor))
+    }
+  }
+
+  /** No numeral power of a sum, at any depth: the invariant of expanded forms. */
+  private def distributed(value: Value): Boolean =
+    value match {
+      case poly: VNatPoly =>
+        poly.form.terms.forall(_.monomial.factors.forall {
+          case power: NatNormalForm.NumeralPower  => !power.base.isInstanceOf[VNatPoly]
+          case power: NatNormalForm.SymbolicPower => distributed(power.base) && distributed(power.exponent)
+        })
+      case _ => true
     }
 
   private def substituteNumerals(value: Value, assignment: Vector[BigInt]): Value =
@@ -281,5 +328,71 @@ class NatNormalFormRandomTests extends munit.FunSuite {
       )
     }
     assert(reduced > 100 && stuck > 100, s"$reduced reduced and $stuck stuck")
+  }
+
+  test("expansion preserves value, multiplies every sum out, and is its own expansion") {
+    val random = new Random(5150L)
+    val points = assignments(random)
+    var changed = 0
+    for (_ <- 0 until 400) {
+      val expr = generate(random, 4, expandingExponent)
+      val value = build(expr)
+      val expanded = NatNormalForm.expansion(value)
+      if (!(expanded eq value)) changed += 1
+      assert(distributed(expanded), s"$expr expands to $expanded")
+      assert(NatNormalForm.expansion(expanded) eq expanded, s"$expr")
+      points.foreach { point =>
+        assertEquals(substituteNumerals(expanded, point).key, constant(evaluate(expr, point)).key, s"$expr at $point")
+      }
+    }
+    assert(changed > 100, s"only $changed expressions changed")
+  }
+
+  test("expressions equal by distributivity and the definitional laws have identical expansions") {
+    val random = new Random(8086L)
+    val distributions = Array(0)
+    var distinctForms = 0
+    for (_ <- 0 until 1000) {
+      val expr = generate(random, 4, expandingExponent)
+      val rewritten = rearrange(random, distribute(random, expr, distributions))
+      if (build(rewritten).key != build(expr).key) distinctForms += 1
+      assertEquals(
+        NatNormalForm.expansion(build(rewritten)).key,
+        NatNormalForm.expansion(build(expr)).key,
+        s"$expr versus $rewritten"
+      )
+    }
+    assert(distributions(0) > 150 && distinctForms > 75, s"${distributions(0)} rewrites, $distinctForms distinct")
+  }
+
+  test("an open Nat.expand resumes under substitution to Nat.expand of the substituted argument") {
+    val random = new Random(6502L)
+    val points = assignments(random)
+    val variables = atoms.collect { case variable: Var => variable }
+    def solving(links: Vector[(Var, Value)]): EqStore =
+      links.foldLeft(EqStore.empty.allow(DepSet(links.map(_._1.id): _*))) { case (store, (variable, value)) =>
+        store.addLink(variable.id, value)
+      }
+    var open = 0
+    for (_ <- 0 until 300) {
+      val expr = generate(random, 3, expandingExponent)
+      val result = NatNormalForm.expand(build(expr))
+      if (termCount(result) > 0 || stuckOn(Kernel.expand, result)) open += 1
+      points.foreach { point =>
+        assertEquals(
+          ValueOps.materialize(result, solving(variables.zip(point.map(constant)))).key,
+          constant(evaluate(expr, point)).key,
+          s"$expr at $point"
+        )
+      }
+      val index = random.nextInt(atoms.length)
+      val replacement = replaceAtom(generate(random, 2), index, Num(2))
+      assertEquals(
+        ValueOps.materialize(result, solving(Vector(variables(index) -> build(replacement)))).key,
+        NatNormalForm.expand(build(replaceAtom(expr, index, replacement))).key,
+        s"$expr with $index := $replacement"
+      )
+    }
+    assert(open > 200, s"only $open open expansions")
   }
 }

@@ -111,6 +111,30 @@ object NatNormalFormBench {
       }
     }
 
+    // Expansion multiplies products of sums out, on request: k sums of two atoms give 2^k terms.
+    val r = fresh("r")
+    val c = fresh("c")
+    val successorProduct = mul(r, add(c, one))
+    val successorSum = add(mul(r, c), r)
+    benchmark("r*(c+1) and r*c + r: Nat.expand", warmup = 200000, iterations = 10000) {
+      NatNormalForm.expand(successorProduct)
+      NatNormalForm.expand(successorSum)
+    }
+    val quartet = sum(Vector.tabulate(4)(index => fresh(s"s$index")))
+    benchmark("(a+b+c+d)^8: expansion, 165 terms", warmup = 20, iterations = 20) {
+      NatNormalForm.expansion(pow(quartet, 8))
+    }
+    val wideSum = sum(Vector.tabulate(2048)(index => mul(fresh(s"u$index"), fresh(s"w$index"))))
+    benchmark("2048 terms: expansion of an expanded form", warmup = 20, iterations = 100) {
+      NatNormalForm.expansion(wideSum)
+    }
+    Vector(10, 14).foreach { count =>
+      val sums = product(Vector.tabulate(count)(index => add(fresh(s"p$index"), fresh(s"q$index"))))
+      benchmark(s"$count sums: expansion, ${1 << count} terms", warmup = 3, iterations = 5) {
+        NatNormalForm.expansion(sums)
+      }
+    }
+
     // Observations of lambdas from different programs are convertible atoms with different keys, so conversion aligns
     // them before comparing.
     def observer(parameter: String): Value =

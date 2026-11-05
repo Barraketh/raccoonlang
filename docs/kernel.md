@@ -4,9 +4,9 @@
 
 `Bool`, `Nat`, their constructors, and the native `Nat.add`, `Nat.mul`,
 `Nat.pow`, `Nat.sub`, `Nat.pred`, `Nat.isZero`, `Nat.beq`, `Nat.ble`,
-`Nat.div`, and `Nat.mod` are kernel declarations present beneath every prelude
-and program; they cannot be redeclared. Ordinary source functions acquire no
-arithmetic laws merely from their names.
+`Nat.div`, `Nat.mod`, and `Nat.expand` are kernel declarations present beneath
+every prelude and program; they cannot be redeclared. Ordinary source functions
+acquire no arithmetic laws merely from their names.
 
 Arithmetic evaluates to sums of products with arbitrary-precision nonnegative
 coefficients, constants, and exponents. The normal forms decide exactly these
@@ -18,11 +18,20 @@ product, powers of equal bases multiply by adding exponents
 distributes: a product of sums stays a product whose factors are the sums, so
 `a * (b + c)` and `a * b + a * c` are different forms, and a power with a
 symbolic exponent keeps its whole base, so `(x * y)^a` and `(x^a)^b` are not
-split. The prelude axiom `Nat.mul_add` states distributivity, and every other
-semiring identity follows from it and conversion; the prelude theorems
-`Nat.mul_pow` and `Nat.pow_mul` state `(x * y)^a = x^a * y^a` and
-`(x^a)^b = x^(a * b)`. Normalization needs no limits; a closed power too large
-for the JVM to represent raises `NatValueTooLarge`.
+split. Distribution happens only on request: `Nat.expand` multiplies every
+product of sums out and collects like terms, and the prelude's builtin
+`Nat.expand_eq(n) : Eq(Nat, n, Nat.expand(n))` proves the expansion equal to its
+argument. On a closed value `Nat.expand` is the identity; otherwise each
+monomial of the expansion is stuck as `Nat.expand` of that monomial, an atom
+that converts by congruence and expands again when it resumes, which keeps
+`Nat.expand` stable under substitution. Two applications convert exactly when
+their expansions do, and the stuck monomials add, show known successors, and
+cancel in comparisons. The prelude theorem `Nat.mul_add`, proved by expansion,
+states distributivity, and every other semiring identity follows from it and
+conversion; the prelude theorems `Nat.mul_pow` and `Nat.pow_mul` state
+`(x * y)^a = x^a * y^a` and `(x^a)^b = x^(a * b)`. Normalization needs no
+limits; a closed power too large for the JVM to represent raises
+`NatValueTooLarge`. Expansion can be exponential and has no budget either.
 
 Each Nat value has one representation: zero is the `Nat.zero` constructor, a
 lone neutral atom is itself, and everything else, including every successor, is
@@ -683,19 +692,22 @@ definitions follow L1 to L9 as single ones do.
 ## Axioms
 
 Any module may declare an `axiom`. Its type is checked; its consistency is the
-author's responsibility. The prelude's axioms, such as `Nat.mul_add`, are the
-trusted bootstrap. Axioms declared by the program or the modules it imports are
-user axioms: `Interpreter.axioms` lists them, in declaration order, from the
-program's own declarations, since the loader merges every loaded module into the
-program while the prelude's declarations stay in `Prelude.Config.core`.
+author's responsibility. The prelude's axioms are the trusted bootstrap; the
+bundled prelude declares none. Axioms declared by the program or the modules it
+imports are user axioms: `Interpreter.axioms` lists them, in declaration order,
+from the program's own declarations, since the loader merges every loaded module
+into the program while the prelude's declarations stay in `Prelude.Config.core`.
 
 A `:= builtin` declaration is trusted further than an axiom: its native's
 behaviour is taken to match its declared type, which is not checked. Only the
 kernel and the prelude declare builtins. `Interpreter.run` rejects one declared
 by the program, or a module it imports, as `ProgramBuiltin` at its `builtin`,
-before evaluating any declaration, whatever the axiom policy. A custom prelude
-given with `--prelude` is trusted as the bundled one is, builtins and axioms
-included; the CLI lists its axioms on standard error.
+before evaluating any declaration, whatever the axiom policy. The bundled
+prelude's builtins are `Level.succ`, `Level.max`, and `Nat.expand_eq`, whose
+value is its own application, a proof that holds because the kernel's expansion
+preserves value. A custom prelude given with `--prelude` is trusted as the
+bundled one is, builtins and axioms included; the CLI lists its axioms on
+standard error.
 
 The CLI reports user axioms on standard error. With `--no-user-axioms`,
 `Interpreter.run` rejects the first one as `UserAxiom` at its declaration

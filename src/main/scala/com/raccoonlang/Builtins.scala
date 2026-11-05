@@ -2,6 +2,7 @@ package com.raccoonlang
 
 import com.raccoonlang.Value._
 import com.raccoonlang.packed.Words
+import com.raccoonlang.telescope.BinderOps
 
 private object Builtins {
   private sealed trait Entry {
@@ -63,6 +64,15 @@ private object Builtins {
   }
 
   /**
+   * A native whose application is a value of its own: the native applied to the arguments, at the declared codomain
+   * instantiated at them. It never reduces, converts by congruence, and quotes as a call of the native by name.
+   * `Nat.expand_eq(n)` is one, a proof of `Eq(Nat, n, Nat.expand(n))`, which holds because `Nat.expand` preserves its
+   * argument (`NatNormalForm.expansion`); as a proof it converts with every proof of its proposition.
+   */
+  private def ownApplication(self: VLam, pi: VPi, args: Vector[Value]): Value =
+    VApp(self, args, pi.codomain(BinderOps.instantiateFull(pi.binders, pi.env, args)))
+
+  /**
    * No two `Native` entries are extensionally equal functions, so conversion may treat distinct native lambdas as
    * unequal without opening them (see ValueEquivalence).
    */
@@ -90,6 +100,9 @@ private object Builtins {
       "Nat.ble" -> Native((_, _, args) => NatNormalForm.ble(args(0), args(1))),
       "Nat.div" -> Native((_, _, args) => NatNormalForm.div(args(0), args(1))),
       "Nat.mod" -> Native((_, _, args) => NatNormalForm.mod(args(0), args(1))),
+      "Nat.expand" -> Native((_, _, args) => NatNormalForm.expand(args(0))),
+      // Declared by the prelude, whose `Eq` its type names.
+      "Nat.expand_eq" -> Native(ownApplication),
       "List.append" -> Native((_, _, args) => Words.append(args(0), args(1))),
       "List.length" -> Native((_, _, args) => Words.length(args(0))),
       "Protocol.Supply" -> Opaque,

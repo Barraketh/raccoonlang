@@ -73,6 +73,9 @@ class AxiomTests extends munit.FunSuite {
       case err: Failure         => fail(s"Failed to parse: $err, ${src.substring(err.curIdx)}")
     }
 
+  /** A prelude with one trusted axiom; the bundled prelude declares none. */
+  private lazy val axiomPrelude = Prelude.fromSource("custom prelude", "axiom trusted : Nat\n")
+
   test("the axiom report lists the program's axioms and not the prelude's") {
     val core = elab(
       """
@@ -80,10 +83,13 @@ class AxiomTests extends munit.FunSuite {
         |def two : Nat := Nat.succ(Nat.succ(Nat.zero))
         |axiom choose (A: Type)(x: A): A
         |""".stripMargin,
-      Prelude.default
+      axiomPrelude
     )
 
+    assertEquals(Interpreter.axioms(axiomPrelude.core).map(_.name), Vector("trusted"))
     assertEquals(Interpreter.axioms(core).map(_.name), Vector("magic", "choose"))
+    // The bundled prelude's trusted axioms: none, since `Nat.mul_add` is proved by expansion.
+    assertEquals(Interpreter.axioms(Prelude.default.core), Vector.empty)
   }
 
   test("disallowing user axioms rejects a program axiom at its span") {
@@ -109,15 +115,15 @@ class AxiomTests extends munit.FunSuite {
         |def two : Nat := Nat.succ(Nat.succ(Nat.zero))
         |
         |{
-        |  two
+        |  Nat.add(two, trusted)
         |}
         |""".stripMargin,
-      Prelude.default
+      axiomPrelude
     )
 
     assertEquals(Interpreter.axioms(core), Vector.empty)
-    val res = Interpreter.run(core, Prelude.default, allowUserAxioms = false).getOrElse(fail("Program has no body"))
-    assertEquals(PrettyPrinter.print(res), "2")
+    val res = Interpreter.run(core, axiomPrelude, allowUserAxioms = false).getOrElse(fail("Program has no body"))
+    assertEquals(PrettyPrinter.print(res), "trusted + 2")
   }
 
   /** Writes `modules`, by path relative to a fresh root, and loads and elaborates the entry `Main.rac` among them. */
