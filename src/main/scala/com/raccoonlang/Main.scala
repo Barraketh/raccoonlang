@@ -14,7 +14,10 @@ object Main {
   private val LogTimestampFormat =
     DateTimeFormatter.ofPattern("HH:mm:ss.SSS").withZone(ZoneId.systemDefault())
 
-  /** The CLI's arguments. `files` are the entries, as written: one, unless `batch`. `json` is batch output's form. */
+  /**
+   * The CLI's arguments. `files` are the entries, as written: one, unless `batch`; none with `serve`, which needs a
+   * `socket`. `json` is batch output's form.
+   */
   private[raccoonlang] final case class CliArgs(
       roots: Vector[Path] = Vector.empty,
       preludePath: Option[Path] = None,
@@ -24,13 +27,16 @@ object Main {
       stackBytes: Long = DefaultStackBytes,
       batch: Boolean = false,
       json: Boolean = false,
+      serve: Boolean = false,
+      socket: Option[Path] = None,
       files: Vector[String] = Vector.empty
   )
 
   private[raccoonlang] val Usage =
     "Usage: raccoon-lang [--root <dir>] [--prelude <file> | --no-prelude] [--no-user-axioms] [--wait-for-enter] " +
       "[--stack <size>] <file>\n" +
-      "       raccoon-lang [options] --batch [--json] <file>..."
+      "       raccoon-lang [options] --batch [--json] <file>...\n" +
+      "       raccoon-lang --serve --socket <path>"
 
   /** The stack of the thread that checks and runs a program, unless `--stack` sets it. */
   private val DefaultStackBytes = 256L << 20
@@ -67,19 +73,22 @@ object Main {
         case "--no-user-axioms" :: tail    => loop(tail, cur.copy(noUserAxioms = true))
         case "--batch" :: tail             => loop(tail, cur.copy(batch = true))
         case "--json" :: tail              => loop(tail, cur.copy(json = true))
+        case "--serve" :: tail             => loop(tail, cur.copy(serve = true))
+        case "--socket" :: path :: tail    => loop(tail, cur.copy(socket = Some(Paths.get(path))))
         case "--stack" :: size :: tail     =>
           parseStackSize(size) match {
             case Some(bytes) => loop(tail, cur.copy(stackBytes = bytes))
             case None        => None
           }
-        case ("--root" | "--prelude" | "--stack") :: Nil => None
+        case ("--root" | "--prelude" | "--socket" | "--stack") :: Nil => None
         case file :: tail                                             => loop(tail, cur.copy(files = cur.files :+ file))
       }
 
     loop(args.toList, CliArgs()).filter { cli =>
       !(cli.noPrelude && cli.preludePath.nonEmpty) &&
       (!cli.json || cli.batch) &&
-      (if (cli.batch) cli.files.nonEmpty else cli.files.length == 1)
+      (cli.socket.nonEmpty == cli.serve) &&
+      (if (cli.serve) cli.files.isEmpty && !cli.batch else if (cli.batch) cli.files.nonEmpty else cli.files.length == 1)
     }
   }
 
@@ -94,9 +103,11 @@ object Main {
       scala.io.StdIn.readLine()
     }
 
-    // The whole pipeline runs on a thread of --stack bytes, which returns the exit code. What it does not catch, the main
-    // thread rethrows, and the JVM reports.
-    val exitCode = Execution.onStack(cli.stackBytes)(run(cli, new ModuleChecker, Paths.get(""), System.out, System.err))
+    val exitCode =
+      if (cli.serve) Server.serve(cli.socket.get)
+      // The whole pipeline runs on a thread of --stack bytes, which returns the exit code. What it does not catch, the
+      // main thread rethrows, and the JVM reports.
+      else Execution.onStack(cli.stackBytes)(run(cli, new ModuleChecker, Paths.get(""), System.out, System.err))
     sys.exit(exitCode)
   }
 

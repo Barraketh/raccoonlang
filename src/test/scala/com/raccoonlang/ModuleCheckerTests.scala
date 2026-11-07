@@ -1,8 +1,12 @@
 package com.raccoonlang
 
-import java.io.{ByteArrayOutputStream, PrintStream}
+import java.io.{BufferedReader, ByteArrayOutputStream, InputStreamReader, PrintStream}
+import java.net.UnixDomainSocketAddress
+import java.nio.channels.{Channels, SocketChannel}
 import java.nio.charset.StandardCharsets
 import java.nio.file.{Files, Path, Paths}
+import scala.collection.mutable
+import scala.util.control.NonFatal
 
 import com.raccoonlang.ModuleChecker.{EntryResult, Listener, Options, PreludeSource}
 
@@ -207,7 +211,64 @@ class ModuleCheckerTests extends munit.FunSuite {
     assertEquals(rejectedWith[AlreadyDefined](sibling).name, "Lib.one")
   }
 
-  test("CLI arguments: one file alone, several with --batch") {
+  test("a server answers runs as the CLI does, one after another, and re-checks an edited import") {
+    val root = project()
+    val socket = Files.createTempDirectory("rac").resolve("s.sock")
+    val server = new Thread(() => { Server.serve(socket); () })
+    server.start()
+
+    def request(json: String): (String, String, Int) = {
+      val deadline = System.nanoTime() + 60e9.toLong
+      def connect(): SocketChannel =
+        try SocketChannel.open(UnixDomainSocketAddress.of(socket))
+        catch {
+          case NonFatal(e) if System.nanoTime() < deadline =>
+            Thread.sleep(50)
+            connect()
+        }
+      val channel = connect()
+      try {
+        Channels.newOutputStream(channel).write((json + "\n").getBytes(StandardCharsets.UTF_8))
+        val reader = new BufferedReader(new InputStreamReader(Channels.newInputStream(channel), StandardCharsets.UTF_8))
+        val out = new StringBuilder
+        val err = new StringBuilder
+        var exit = Option.empty[Int]
+        while (exit.isEmpty) {
+          val fields = Json.parse(reader.readLine()).asInstanceOf[Map[String, Any]]
+          fields.get("out").foreach(out ++= _.toString)
+          fields.get("err").foreach(err ++= _.toString)
+          exit = fields.get("exit").map(_.asInstanceOf[Double].toInt)
+        }
+        (out.result(), err.result(), exit.get)
+      } finally channel.close()
+    }
+    def check(args: String*): (String, String, Int) =
+      request(Json.obj("cwd" -> Json.quote(root.toString), "args" -> args.map(Json.quote).mkString("[", ",", "]")))
+
+    try {
+      val (out, err, code) = check("Ok.rac")
+      assertEquals(code, 0, err)
+      assert(out.contains(": Loaded\n") && out.contains("\n2\n") && out.trim.endsWith(": Done"), out)
+
+      write(root, "Base.rac", "namespace Lib {\n  def one : Nat := 5\n}\n")
+      val (_, rejected, rejectedCode) = check("Ok.rac")
+      assertEquals(rejectedCode, 1)
+      assert(rejected.contains(s"${root.resolve("Ok.rac").toRealPath()}:2:"), rejected)
+
+      write(root, "Base.rac", "namespace Lib {\n  def one : Nat := 1\n}\n")
+      assertEquals(check("Ok.rac")._3, 0)
+      val (batch, _, batchCode) = check("--batch", "--json", "Ok.rac", "Uses.rac")
+      assertEquals(batchCode, 1)
+      assertEquals(batch.trim.split("\n").length, 2)
+      assertEquals(check("--json", "Ok.rac")._3, 2)
+    } finally {
+      request("""{"stop": true}""")
+      server.join(60000)
+    }
+    assert(!Files.exists(socket))
+  }
+
+  test("CLI arguments: one file alone, several with --batch, none with --serve") {
     def parsed(args: String*) = Main.parseArgs(args)
     assert(parsed("a.rac").nonEmpty)
     assert(parsed("a.rac", "b.rac").isEmpty)
@@ -215,6 +276,10 @@ class ModuleCheckerTests extends munit.FunSuite {
     assert(parsed("--batch").isEmpty)
     assert(parsed("--json", "a.rac").isEmpty)
     assert(parsed("--batch", "--json", "a.rac").exists(_.json))
+    assert(parsed("--serve", "--socket", "s").exists(_.serve))
+    assert(parsed("--serve").isEmpty)
+    assert(parsed("--serve", "--socket", "s", "a.rac").isEmpty)
+    assert(parsed("--socket", "s", "a.rac").isEmpty)
     assert(parsed("--no-prelude", "--prelude", "p.rac", "a.rac").isEmpty)
   }
 

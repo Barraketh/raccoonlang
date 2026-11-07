@@ -1,0 +1,122 @@
+#!/usr/bin/env python3
+"""A client of `raccoon-lang --serve` that behaves as `raccoon-lang` does.
+
+    raccoon-client [--socket <path>] <raccoon-lang arguments>...
+    raccoon-client [--socket <path>] --stop
+
+The arguments are the CLI's: one file, or `--batch [--json]` and several. The client prints what the CLI would print
+on its standard output and error, and exits with its exit code; relative paths are read from the client's directory.
+The server keeps every module's results between runs (docs/namespaces.md, "Imports"), so a run checks again only the
+modules whose source, or an import's, changed.
+
+When no server answers on the socket, the client starts one, and waits for it: by default
+`java -cp <classpath> com.raccoonlang.Main --serve --socket <path>`, with the class path that
+`sbt compile graalvmNativeImageClasspath` writes to target/graalvm/classpath.txt in this checkout; RACCOON_SERVER
+overrides the command before `--serve`. Its output goes to `<socket>.log`. The socket is RACCOON_SOCKET, or one per
+checkout in the temporary directory. A server whose compiler was rebuilt asks to be restarted; the client restarts it
+and asks again. `--stop` stops the server.
+"""
+import hashlib
+import json
+import os
+import socket
+import subprocess
+import sys
+import tempfile
+import time
+
+CHECKOUT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+START_TIMEOUT = 120
+
+
+def default_socket():
+    tag = hashlib.sha256(CHECKOUT.encode()).hexdigest()[:12]
+    return os.path.join(tempfile.gettempdir(), f'raccoon-{tag}.sock')
+
+
+def server_command(path):
+    if os.environ.get('RACCOON_SERVER'):
+        command = os.environ['RACCOON_SERVER'].split()
+    else:
+        classpath = os.path.join(CHECKOUT, 'target', 'graalvm', 'classpath.txt')
+        if not os.path.isfile(classpath):
+            sys.exit(f'raccoon-client: run `sbt compile graalvmNativeImageClasspath` in {CHECKOUT}, or set RACCOON_SERVER')
+        with open(classpath) as f:
+            command = ['java', '-cp', f.read().strip(), 'com.raccoonlang.Main']
+    return command + ['--serve', '--socket', path]
+
+
+def connect(path):
+    client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        client.connect(path)
+        return client
+    except OSError:
+        client.close()
+        return None
+
+
+def wait(path, until_up):
+    deadline = time.monotonic() + START_TIMEOUT
+    while time.monotonic() < deadline:
+        client = connect(path)
+        if client is not None:
+            client.close()
+        if (client is not None) == until_up:
+            return
+        time.sleep(0.1)
+    sys.exit(f'raccoon-client: the server on {path} did not {"start" if until_up else "stop"}; see {path}.log')
+
+
+def start(path):
+    with open(path + '.log', 'ab') as log:
+        subprocess.Popen(server_command(path), stdin=subprocess.DEVNULL, stdout=log, stderr=log,
+                         start_new_session=True)
+    wait(path, until_up=True)
+
+
+def ask(path, request):
+    """Sends `request`; relays the reply. Returns the exit code, or None when the server asks to be restarted."""
+    client = connect(path)
+    if client is None:
+        start(path)
+        client = connect(path)
+    with client, client.makefile('rb') as replies:
+        client.sendall((json.dumps(request) + '\n').encode())
+        for line in replies:
+            reply = json.loads(line)
+            if 'out' in reply:
+                sys.stdout.write(reply['out'])
+                sys.stdout.flush()
+            if 'err' in reply:
+                sys.stderr.write(reply['err'])
+                sys.stderr.flush()
+            if 'exit' in reply:
+                return int(reply['exit'])
+            if 'restart' in reply:
+                return None
+    sys.exit('raccoon-client: the server closed the connection without an exit code')
+
+
+def main(args):
+    path = os.environ.get('RACCOON_SOCKET') or default_socket()
+    if args[:1] == ['--socket'] and len(args) > 1:
+        path, args = args[1], args[2:]
+    if args == ['--stop']:
+        probe = connect(path)
+        if probe is None:
+            return 0
+        probe.close()
+        ask(path, {'stop': True})
+        wait(path, until_up=False)
+        return 0
+    request = {'cwd': os.getcwd(), 'args': args}
+    code = ask(path, request)
+    if code is None:
+        wait(path, until_up=False)
+        code = ask(path, request)
+    return 1 if code is None else code
+
+
+if __name__ == '__main__':
+    sys.exit(main(sys.argv[1:]))

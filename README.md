@@ -507,7 +507,7 @@ Axioms declared by the program or its imports are unchecked assumptions. The CLI
 and are always allowed; a custom `--prelude`'s axioms are listed on standard error in both modes. See
 [axioms](docs/kernel.md#axioms).
 
-### Check many entries
+### Check many entries, or keep results between checks
 
 ```bash
 raccoon-lang --root lib --batch [--json] a.rac b.rac ...
@@ -521,6 +521,19 @@ that imports it, directly or not, with its own error, located in it. With `--jso
 object: `entry`, as written; `verdict`; `exit_code`, the single-file CLI's; `seconds`; `stdout` and `stderr`, what the
 single-file CLI prints there, less its log lines; and `error_module`, the file its error is located in, or `null`. The
 exit code is 0 when every entry is accepted, 1 otherwise.
+
+```bash
+raccoon-lang --serve --socket /tmp/raccoon.sock
+scripts/raccoon-client --root lib program.rac
+scripts/raccoon-client --root lib --batch --json a.rac b.rac
+```
+
+`--serve` keeps each module's results between runs, served over a Unix domain socket, one run at a time. A result is
+kept by the module's canonical path, its source and its imports' results, and the run's source roots, prelude and
+stack size; every run reads its sources again, so a module whose source, or an import's, changed is checked again, and
+nothing else is. `scripts/raccoon-client` takes the CLI's arguments and prints what the CLI would print, with its exit
+code, from a server it starts when none answers; `scripts/raccoon-client --stop` stops it. A server whose compiler was
+rebuilt restarts on its next run. The protocol is in `Server.scala`.
 
 ### Build the native binary
 
