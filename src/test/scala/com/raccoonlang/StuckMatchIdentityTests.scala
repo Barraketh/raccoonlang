@@ -356,6 +356,9 @@ class StuckMatchIdentityTests extends munit.FunSuite {
     // A capture that is no local is quoted as a let, and two captures holding one local are told apart.
     accepted(isZ + inferred("Eq(Bool, isZ(Nat.mul(k, k)), Bool.true)"))
     accepted(sel + inferred("Eq(Nat, sel(j, k, k), k)"))
+    // The second capture is a stuck match with a capture of its own that is no local: its let follows the first
+    // capture's instead of taking its slot.
+    accepted(sel + inferred("Eq(Nat, sel(j, Nat.mul(k, k), sel(k, Nat.mul(j, j), j)), k)"))
     accepted(
       isZ +
         """

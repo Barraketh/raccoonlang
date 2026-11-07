@@ -300,8 +300,10 @@ object ValueQuote {
    * A stuck match, as its own code over its captures, so that evaluating the quotation builds a match of the same code
    * (`MatchIdentity`) on the captures' quotations, which converts with it. A capture that a local of `context` holds,
    * and no earlier capture does, is read from that local, at the places its free local was read; every other is quoted
-   * once, as a `let` before the match, in the order of the captures. The free locals are then distinct locals below the
-   * rebuilt match, mentioned in the same order, and its bound locals keep their offsets, so its code is the original's.
+   * once, as a `let` before the match, in the order of the captures, and quoted at its let's depth, so that lets of its
+   * own (a stuck match it holds) take the slots after the earlier captures' lets. The free locals are then distinct
+   * locals below the rebuilt match, mentioned in the same order, and its bound locals keep their offsets, so its code
+   * is the original's.
    * Only an application head may name a raw recursive self (`LocalResidualPolicy.AppHeadOnly`), and the checked code
    * reads one only there, so such a capture is read from its local too. A linear capture has no residual, even when a
    * local holds it, as for `quoteTerm`.
@@ -322,7 +324,9 @@ object ValueQuote {
         case Some(ElabAst.Term.LocalRef(local, _)) if taken.add(local.id) => renamed.update(slot, local)
         case _ =>
           val local = CoreAst.LocalRef(context.localEnvLength + letCount, binding.name)
-          lets += ElabAst.Let(local, None, quoteTerm(binding.value, context, span), span)
+          // Quoted where it is bound, after the lets before it: its own lets, if any, take the slots after theirs.
+          val here = context.copy(localEnvLength = context.localEnvLength + letCount)
+          lets += ElabAst.Let(local, None, quoteTerm(binding.value, here, span), span)
           renamed.update(slot, local)
           letCount += 1
       }
