@@ -31,9 +31,6 @@ object ErrorReporter {
        |""".stripMargin
   }
 
-  def pretty(err: TypeError, loaded: ModuleLoader.LoadedProgram): String =
-    pretty(err, loaded.sources)
-
   def pretty(err: TypeError, sources: Vector[ModuleLoader.LoadedSource]): String = {
     if (sources.isEmpty)
       return err.getMessage

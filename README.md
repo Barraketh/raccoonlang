@@ -472,7 +472,8 @@ sbt "run path/to/program.rac"
 ```
 
 The CLI reads a `.rac` file, loads its imports, elaborates it, typechecks it, evaluates it, and pretty-prints the
-resulting value when the program body produces one.
+resulting value when the program body produces one. Each module is checked against exactly its own imports, as a
+standalone check of it would be (see [imports](docs/namespaces.md#imports)).
 
 `Init/Prelude.rac` is bundled and loaded automatically before user code. An explicit `import Init.Prelude` is accepted
 as a no-op for compatibility with source files that name their prelude dependency.
@@ -486,8 +487,8 @@ families `List.Perm`, `Protocol.Proto`, `Protocol.Reach` and `Protocol.Valid`, t
 `Protocol.Inst` and `Protocol.Tok`, which have no constructors, the linear `Protocol.Toks`, `Protocol.Observed` and
 `Protocol.Fresh`, and the primitives `Protocol.new`, `Protocol.step` and `Protocol.observe` (see
 [resource protocols](docs/kernel.md#resource-protocols)). A program body of type `(sup: Protocol.Supply) -> R`, for an
-unrestricted `R`, is an entry: once it has checked, `Interpreter.run` applies it to the root supply, and the CLI prints
-the result.
+unrestricted `R`, is an entry: once it has checked, `Interpreter.runBody` applies it to the root supply, and the CLI
+prints the result.
 
 ```bash
 sbt 'run --root examples examples/nats.rac'
@@ -505,6 +506,21 @@ Axioms declared by the program or its imports are unchecked assumptions. The CLI
 `--no-user-axioms` rejects them instead, at the first one's declaration. The prelude's axioms are the trusted bootstrap
 and are always allowed; a custom `--prelude`'s axioms are listed on standard error in both modes. See
 [axioms](docs/kernel.md#axioms).
+
+### Check many entries
+
+```bash
+raccoon-lang --root lib --batch [--json] a.rac b.rac ...
+```
+
+`--batch` checks several entries in one process, under the same options as a single file, and checks each module
+once: an entry that imports a module checked for an earlier one reuses its result. It prints a verdict line per entry,
+`accepted` or `rejected`, with its seconds, then what the single-file CLI would print for it, its result or its error,
+except that an error printed for an earlier entry is named, not printed again. A module that fails fails every entry
+that imports it, directly or not, with its own error, located in it. With `--json`, each entry is one line, a JSON
+object: `entry`, as written; `verdict`; `exit_code`, the single-file CLI's; `seconds`; `stdout` and `stderr`, what the
+single-file CLI prints there, less its log lines; and `error_module`, the file its error is located in, or `null`. The
+exit code is 0 when every entry is accepted, 1 otherwise.
 
 ### Build the native binary
 

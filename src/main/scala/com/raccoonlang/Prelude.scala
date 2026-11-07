@@ -32,6 +32,12 @@ object Prelude {
     )
 
   def fromPath(path: Path): Config = {
+    val (name, source) = read(path)
+    fromSource(name, source, ignoredImports = Set(ImportPath))
+  }
+
+  /** The prelude file at `path`: its name, the absolute normalized path, and its source, which it fails to read. */
+  def read(path: Path): (String, String) = {
     val canonical = path.toAbsolutePath.normalize
     val source =
       try Files.readString(canonical)
@@ -42,7 +48,7 @@ object Prelude {
             e
           )
       }
-    fromSource(canonical.toString, source, ignoredImports = Set(ImportPath))
+    (canonical.toString, source)
   }
 
   def fromSource(sourceName: String, source: String, ignoredImports: Set[Vector[String]] = Set(ImportPath)): Config = {

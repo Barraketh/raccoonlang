@@ -126,8 +126,11 @@ class AxiomTests extends munit.FunSuite {
     assertEquals(PrettyPrinter.print(res), "trusted + 2")
   }
 
-  /** Writes `modules`, by path relative to a fresh root, and loads and elaborates the entry `Main.rac` among them. */
-  private def loadModules(modules: (String, String)*): (CoreAst.Program, ModuleLoader.LoadedProgram) = {
+  /**
+   * Writes `modules`, by path relative to a fresh root, and checks the entry `Main.rac` among them as the CLI does, with
+   * or without user axioms.
+   */
+  private def checkModules(allowUserAxioms: Boolean, modules: (String, String)*): ModuleChecker.EntryResult = {
     val root = Files.createTempDirectory("raccoon-axioms")
     modules.foreach { case (relative, source) =>
       val path = root.resolve(relative)
@@ -135,19 +138,27 @@ class AxiomTests extends munit.FunSuite {
       Files.write(path, source.getBytes(StandardCharsets.UTF_8))
     }
     val entry: Path = root.resolve("Main.rac")
-    val loaded = ModuleLoader.load(entry, ModuleLoader.LoadConfig.forEntry(entry, Prelude.test))
-    (Elaborator.elab(loaded.program, Prelude.test), loaded)
+    val options = ModuleChecker.Options(
+      Vector.empty,
+      ModuleChecker.PreludeSource.Given("test", Prelude.test),
+      allowUserAxioms,
+      stackBytes = 0
+    )
+    new ModuleChecker().run(options).check(entry, entry.toString)
   }
 
   test("disallowing user axioms rejects an imported module's axiom at its span") {
     val lib = "namespace Lib {\n  axiom magic : Nat\n}\n"
-    val (core, loaded) = loadModules("Lib/Magic.rac" -> lib, "Main.rac" -> "import Lib.Magic\n\nLib.magic\n")
+    val result = checkModules(allowUserAxioms = false, "Lib/Magic.rac" -> lib, "Main.rac" -> "import Lib.Magic\n\nLib.magic\n")
 
-    assertEquals(Interpreter.axioms(core).map(_.name), Vector("Lib.magic"))
-    val error = intercept[UserAxiom](Interpreter.run(core, Prelude.test, allowUserAxioms = false))
+    assertEquals(result.axioms, Vector("Lib.magic"))
+    val error = result.outcome match {
+      case Left(error: UserAxiom) => error
+      case other                  => fail(s"expected UserAxiom, got $other")
+    }
     assertEquals(error.name, "Lib.magic")
     val span = error.span.getOrElse(fail("UserAxiom has no span"))
-    val source = loaded.sources
+    val source = result.sources
       .find(loadedSource => span.source.contains(loadedSource.sourceId))
       .getOrElse(fail("unknown source"))
       .source
@@ -164,8 +175,12 @@ class AxiomTests extends munit.FunSuite {
       assertEquals(error.span.map(span => src.substring(span.start, span.end)), Some("builtin"))
     }
     // An imported module is part of the program.
-    val (core, _) = loadModules("Lib/Raw.rac" -> "def raw (n: Nat): Nat := builtin\n", "Main.rac" -> "import Lib.Raw\n")
-    assertEquals(intercept[ProgramBuiltin](Interpreter.run(core, Prelude.test)).name, "raw")
+    val result =
+      checkModules(allowUserAxioms = true, "Lib/Raw.rac" -> "def raw (n: Nat): Nat := builtin\n", "Main.rac" -> "import Lib.Raw\n")
+    result.outcome match {
+      case Left(error: ProgramBuiltin) => assertEquals(error.name, "raw")
+      case other                       => fail(s"expected ProgramBuiltin, got $other")
+    }
   }
 
   test("a prelude may declare a builtin") {

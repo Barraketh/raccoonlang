@@ -51,6 +51,35 @@ object Elaborator {
       }
   }
 
+  /**
+   * A global name a module declared: a global, or, with `field`, a field of the record its parent binds, written at
+   * `span`. A module's names, in the order it declared them, are its whole effect on the names its importers see
+   * (docs/namespaces.md, "Imports").
+   */
+  final case class DeclaredName(parts: Vector[String], field: Boolean, span: Span)
+
+  /**
+   * The global names in scope, and the names declared into it since the scope was `started`, newest first.
+   *
+   * Every path from a module's start to its end carries the scope whole, so its log is exactly the module's
+   * declarations: an `open`, a namespace or a block changes no declared name, and their ends keep the inner scope.
+   */
+  final class Scope private[Elaborator] (private[Elaborator] val trie: NameNode, declaredRev: List[DeclaredName]) {
+
+    /**
+     * This scope with `name` declared, as `addGlobal` and `addField` declare it, and as replaying a module's names does:
+     * a name declared already, in this scope or before it began, is `AlreadyDefined` at the name's span.
+     */
+    def declare(name: DeclaredName): Scope =
+      new Scope(trie.insertGlobal(name.parts, name.parts, Some(name.span), name.field), name :: declaredRev)
+
+    /** The names declared since this scope was started, in order. */
+    def declared: Vector[DeclaredName] = declaredRev.reverse.toVector
+
+    /** These names, with no declaration logged yet. */
+    def started: Scope = if (declaredRev.isEmpty) this else new Scope(trie, Nil)
+  }
+
   private final case class ResolvedObject(path: GlobalName, node: NameNode)
 
   /**
@@ -64,7 +93,7 @@ object Elaborator {
    * Source-name resolution state.
    *
    * Locals are resolved outside the global trie and always win on the first path segment. Global names and namespace
-   * objects live in `root`. The recursive-self alias resolves qualified paths to a local ref while checking recursive
+   * objects live in `root`'s trie. The recursive-self alias resolves qualified paths to a local ref while checking recursive
    * bodies. Open scopes are snapshots of resolved objects, so later declarations do not affect an earlier `open`. A
    * first segment resolves to a selective open's alias, then to a member of the enclosing namespaces, then to a
    * wildcard open's alias, each in the innermost scope that has one (docs/namespaces.md).
@@ -72,7 +101,7 @@ object Elaborator {
   private final case class ResolveEnv(
       scopes: List[Map[String, CA.LocalRef]],
       nextLocal: Int,
-      root: NameNode,
+      root: Scope,
       namespace: GlobalName,
       opens: List[OpenScope],
       reservedLocals: Set[String],
@@ -85,7 +114,7 @@ object Elaborator {
     def exitScoped(inner: ResolveEnv): ResolveEnv = copy(root = inner.root)
 
     private def rootObject(parts: GlobalName): Option[ResolvedObject] =
-      root.lookup(parts).map(ResolvedObject(parts, _))
+      root.trie.lookup(parts).map(ResolvedObject(parts, _))
 
     private def scopedObject(parts: GlobalName): Option[ResolvedObject] =
       namespace.inits
@@ -224,11 +253,11 @@ object Elaborator {
 
     /** Declares the global `name`, written at `span`, where a redeclaration is reported. */
     def addGlobal(name: GlobalName, span: Span): ResolveEnv =
-      copy(root = root.insertGlobal(name, name, Some(span)))
+      copy(root = root.declare(DeclaredName(name, field = false, span)))
 
     /** Declares `name` a field of the record its prefix names, written at `span`, as `addGlobal` declares a global. */
     def addField(name: GlobalName, span: Span): ResolveEnv =
-      copy(root = root.insertGlobal(name, name, Some(span), asField = true))
+      copy(root = root.declare(DeclaredName(name, field = true, span)))
 
     def qualify(name: String): GlobalName = namespace :+ name
 
@@ -307,7 +336,8 @@ object Elaborator {
       BuiltinGlobals
         .foldLeft(NameNode()) { case (root, name) => root.insertGlobal(name, name, None) }
 
-    private def withRoot(root: NameNode): ResolveEnv =
+    /** The top level of a source over the global names `root`: no local, open or namespace yet. */
+    def withRoot(root: Scope): ResolveEnv =
       ResolveEnv(
         List(Map.empty),
         0,
@@ -319,7 +349,7 @@ object Elaborator {
       )
 
     /** Primitive names only; the kernel's own declarations elaborate here. */
-    def primitive: ResolveEnv = withRoot(builtinRoot)
+    def primitive: ResolveEnv = withRoot(new Scope(builtinRoot, Nil))
 
     /** Primitive and kernel names, visible to every prelude and program. */
     def kernel: ResolveEnv = withRoot(kernelRoot)
@@ -1092,7 +1122,7 @@ object Elaborator {
   private lazy val (elaboratedKernel, elaboratedProtocol, kernelRoot) = {
     val (decls, env) = elabCommands(Kernel.surface.decls, ResolveEnv.primitive)
     val (protocolDecls, protocolEnv) = elabCommands(Kernel.protocolSurface.decls, env)
-    (decls, protocolDecls, protocolEnv.root)
+    (decls, protocolDecls, protocolEnv.root.started)
   }
 
   private[raccoonlang] def kernelDecls: Vector[CA.Decl] = elaboratedKernel
@@ -1100,26 +1130,48 @@ object Elaborator {
   /** The kernel's protocol declarations, which `Kernel.env` evaluates over the core declarations. */
   private[raccoonlang] def kernelProtocolDecls: Vector[CA.Decl] = elaboratedProtocol
 
-  private def preludeEnv(prelude: Prelude.Config): ResolveEnv = {
+  /** The names every module begins with: the kernel's and `prelude`'s. */
+  def preludeScope(prelude: Prelude.Config): Scope = {
     val (_, env) = elabCommands(prelude.surface.decls, ResolveEnv.kernel)
-    ResolveEnv.kernel.copy(root = env.root)
+    env.root.started
+  }
+
+  /** `scope` with `names` declared in order (`Scope.declare`): a module's names, replayed for an importer. */
+  def declare(scope: Scope, names: Vector[DeclaredName]): Scope =
+    names.foldLeft(scope)(_.declare(_))
+
+  /** A module, elaborated: its declarations, its body if it has one, and the names it declared, in order. */
+  final case class ElaboratedModule(decls: Vector[CA.Decl], body: Option[CA.Term], declared: Vector[DeclaredName])
+
+  /**
+   * `program` elaborated over `imports`, the names its import closure declared over the kernel's and the prelude's: its
+   * declarations at the top level, so its opens and namespaces end with it, then its body, if it has one, where they
+   * end. Returns the module and the scope it ends with, started afresh, so an importer can begin there.
+   *
+   * Its `import` lines are not read here: they name the modules whose names `imports` holds, which the loader resolves.
+   */
+  def elabModule(program: SA.Program, imports: Scope): (ElaboratedModule, Scope) = {
+    val (decls, env) = elabCommands(program.decls, ResolveEnv.withRoot(imports.started))
+    val body = program.body.map(elabTerm(_, env))
+    (ElaboratedModule(decls, body, env.root.declared), env.root.started)
   }
 
   private[raccoonlang] def elabWithoutPrelude(p: SA.Program): CA.Program =
-    elabProgram(p, ResolveEnv.kernel)
+    elabProgram(p, kernelRoot)
 
   def elab(p: SA.Program): CA.Program =
     elab(p, Prelude.default)
 
   def elab(p: SA.Program, prelude: Prelude.Config): CA.Program =
-    elabProgram(p, preludeEnv(prelude))
+    elabProgram(p, preludeScope(prelude))
 
-  private def elabProgram(p: SA.Program, startEnv: ResolveEnv): CA.Program = {
+  /** A program that imports nothing, elaborated as a module over `names`. */
+  private def elabProgram(p: SA.Program, names: Scope): CA.Program = {
     p.imports.headOption.foreach { imp =>
       throw UnsupportedImport(imp.path.mkString("."), Some(imp.span))
     }
 
-    val (decls, env) = elabCommands(p.decls, startEnv)
-    CA.Program(decls, p.body.map(elabTerm(_, env)))
+    val (module, _) = elabModule(p, names)
+    CA.Program(module.decls, module.body)
   }
 }

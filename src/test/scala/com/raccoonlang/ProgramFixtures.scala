@@ -3,52 +3,70 @@ package com.raccoonlang
 import java.nio.charset.StandardCharsets
 import java.nio.file.{Files, Path}
 
+import com.raccoonlang.ModuleChecker.{Options, PreludeSource}
 import munit.Assertions._
 
 /** Shared helpers for suites whose tests are programs given as source text. */
 object ProgramFixtures {
 
-  /** A parsed program, how to report an error in its sources, and the source id its own spans carry. */
-  private final case class Read(program: SurfaceAst.Program, report: TypeError => String, entry: Option[SourceId])
+  /**
+   * A program, checked and run: its body's value, if it has one, or its error, with how to report it and the source id
+   * its own spans carry.
+   */
+  private final case class Checked(
+      outcome: Either[TypeError, Option[Value]],
+      report: TypeError => String,
+      entry: Option[SourceId]
+  )
 
   /**
-   * How a suite checks and runs its programs: over `prelude`, with or without user axioms, through `Interpreter.run` as
-   * the CLI does. With `roots`, a program is the entry file of a fresh directory searched after `roots`, so it can
-   * import their modules; otherwise it is a single module that imports nothing.
+   * How a suite checks and runs its programs: over `prelude`, with or without user axioms, as the CLI does. With
+   * `roots`, a program is an entry file of its own in a directory searched after `roots`, so it can import their
+   * modules, and it is checked by a `ModuleChecker` the suite's programs share, so each module of `roots` checks once;
+   * otherwise it is a single module that imports nothing, run by `Interpreter.run`.
    */
   final class Programs(prelude: Prelude.Config, allowUserAxioms: Boolean, roots: Vector[Path] = Vector.empty) {
+    private lazy val checker = new ModuleChecker
+    private lazy val entries = Files.createTempDirectory("raccoon-program")
+    private var programCount = 0
 
-    private def read(src: String): Read =
-      if (roots.isEmpty)
-        LanguageParser.parseProgram(src) match {
-          case Success(program, _, _) => Read(program, ErrorReporter.pretty(_, ErrorReporter.Source(src)), None)
-          case err: Failure           => fail(s"Failed to parse: $err, ${src.substring(err.curIdx)}")
+    private def single(src: String): SurfaceAst.Program = {
+      assert(roots.isEmpty, "a program over source roots is checked as an entry")
+      LanguageParser.parseProgram(src) match {
+        case Success(program, _, _) => program
+        case err: Failure           => fail(s"Failed to parse: $err, ${src.substring(err.curIdx)}")
+      }
+    }
+
+    private def check(src: String): Checked =
+      if (roots.isEmpty) {
+        val outcome =
+          try Right(Interpreter.run(Elaborator.elab(single(src), prelude), prelude, allowUserAxioms))
+          catch { case t: TypeError => Left(t) }
+        Checked(outcome, ErrorReporter.pretty(_, ErrorReporter.Source(src)), None)
+      } else {
+        programCount += 1
+        val entry = Files.write(entries.resolve(s"Program$programCount.rac"), src.getBytes(StandardCharsets.UTF_8))
+        val options = Options(roots :+ entries, PreludeSource.Given("fixture", prelude), allowUserAxioms, stackBytes = 0)
+        val result = checker.run(options).check(entry, entry.toString)
+        val outcome = result.outcome match {
+          case Left(t: TypeError) => Left(t)
+          case Left(other)        => throw other
+          case Right(body)        => Right(body.map(_.value))
         }
-      else {
-        val root = Files.createTempDirectory("raccoon-program")
-        val entry = Files.write(root.resolve("Main.rac"), src.getBytes(StandardCharsets.UTF_8))
-        val loaded = ModuleLoader.load(entry, ModuleLoader.LoadConfig(roots :+ root, prelude))
-        Read(
-          loaded.program,
-          ErrorReporter.pretty(_, loaded),
-          loaded.sources.find(_.path == entry.toRealPath()).map(_.sourceId)
-        )
+        Checked(outcome, ErrorReporter.pretty(_, result.sources), result.sources.headOption.map(_.sourceId))
       }
 
-    private def check(read: Read): Option[Value] =
-      Interpreter.run(Elaborator.elab(read.program, prelude), prelude, allowUserAxioms)
-
-    /** The elaborated program. */
-    def parse(src: String): CoreAst.Program = Elaborator.elab(read(src).program, prelude)
+    /** The elaborated program, which imports nothing. */
+    def parse(src: String): CoreAst.Program = Elaborator.elab(single(src), prelude)
 
     /** Checks and runs the program, throwing its `TypeError` if it does not check. */
-    def runChecked(src: String): Option[Value] = check(read(src))
+    def runChecked(src: String): Option[Value] = check(src).outcome.fold(throw _, identity)
 
     /** Checks and runs the program, failing the test with a located report if it does not check. */
     def run(src: String)(implicit loc: munit.Location): Option[Value] = {
-      val program = read(src)
-      try check(program)
-      catch { case t: TypeError => fail(program.report(t)) }
+      val checked = check(src)
+      checked.outcome.fold(t => fail(checked.report(t)), identity)
     }
 
     /** The value of the program's body. */
@@ -57,14 +75,14 @@ object ProgramFixtures {
     /** The value of the program's body, printed as the CLI prints it, so a proof call in it that fails to run fails. */
     def result(src: String)(implicit loc: munit.Location): String = PrettyPrinter.printResult(runProgram(src))
 
-    /** The environment after the program's declarations, which must check. */
+    /** The environment after the declarations of the program, which imports nothing; they must check. */
     def declsEnv(src: String)(implicit loc: munit.Location): Env = {
-      val program = read(src)
+      val program = single(src)
       try
-        Elaborator.elab(program.program, prelude).decls.foldLeft(Interpreter.initialEnv(prelude)) { (env, decl) =>
+        Elaborator.elab(program, prelude).decls.foldLeft(Interpreter.initialEnv(prelude)) { (env, decl) =>
           Interpreter.evalDecl(decl, env)
         }
-      catch { case t: TypeError => fail(program.report(t)) }
+      catch { case t: TypeError => fail(ErrorReporter.pretty(t, ErrorReporter.Source(src))) }
     }
 
     /**
@@ -75,10 +93,14 @@ object ProgramFixtures {
         loc: munit.Location,
         ct: reflect.ClassTag[T]
     ): T = {
-      val program = read(src)
-      val error = intercept[T](check(program))
+      val checked = check(src)
+      val error = checked.outcome match {
+        case Left(error: T) => error
+        case Left(other)    => fail(s"expected ${ct.runtimeClass.getSimpleName}, got ${checked.report(other)}")
+        case Right(_)       => fail(s"expected ${ct.runtimeClass.getSimpleName}, but the program checked")
+      }
       val span = error.span.getOrElse(fail(s"${error.getMessage} has no span"))
-      assertEquals(span.source, program.entry, "the error is not in the program's own source")
+      assertEquals(span.source, checked.entry, "the error is not in the program's own source")
       val context = Option(within).getOrElse(at)
       assert(src.lastIndexOf(context) >= 0 && context.indexOf(at) >= 0, s"$at does not occur in $context")
       val start = src.lastIndexOf(context) + context.indexOf(at)

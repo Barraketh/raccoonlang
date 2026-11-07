@@ -3,6 +3,8 @@ package com.raccoonlang
 import java.nio.charset.StandardCharsets
 import java.nio.file.{Files, Path}
 
+import com.raccoonlang.ModuleChecker.{Options, PreludeSource}
+
 class ModuleLoaderTests extends munit.FunSuite {
   private def write(root: Path, relative: String, source: String): Path = {
     val path = root.resolve(relative)
@@ -11,19 +13,24 @@ class ModuleLoaderTests extends munit.FunSuite {
     path
   }
 
-  private def loadCore(entry: Path): CoreAst.Program =
-    loadCore(entry, Prelude.test)
+  private val testPrelude = PreludeSource.Given("test", Prelude.test)
 
-  private def loadCore(entry: Path, prelude: Prelude.Config): CoreAst.Program = {
-    val loaded = ModuleLoader.load(entry, ModuleLoader.LoadConfig.forEntry(entry, prelude))
-    Elaborator.elab(loaded.program, prelude)
+  /** The entry `entry` checked as the CLI checks it, over `prelude` and `roots`, or the entry's directory. */
+  private def check(
+      entry: Path,
+      prelude: PreludeSource = testPrelude,
+      roots: Vector[Path] = Vector.empty
+  ): ModuleChecker.EntryResult =
+    new ModuleChecker().run(Options(roots, prelude, allowUserAxioms = true, stackBytes = 0)).check(entry, entry.toString)
+
+  private def run(entry: Path, prelude: PreludeSource = testPrelude, roots: Vector[Path] = Vector.empty): Value = {
+    val result = check(entry, prelude, roots)
+    result.outcome match {
+      case Right(body)           => body.getOrElse(fail("Program has no body")).value
+      case Left(te: TypeError)   => fail(ErrorReporter.pretty(te, result.sources))
+      case Left(other)           => throw other
+    }
   }
-
-  private def run(entry: Path): Value =
-    run(entry, Prelude.test)
-
-  private def run(entry: Path, prelude: Prelude.Config): Value =
-    Interpreter.run(loadCore(entry, prelude), prelude).getOrElse(fail("Program has no body"))
 
   private def ctorName(v: Value): String =
     v match {
@@ -31,13 +38,9 @@ class ModuleLoaderTests extends munit.FunSuite {
       case other                   => fail(s"Expected constructor value, got $other")
     }
 
-  private def loadError(entry: Path): TypeError =
-    loadError(entry, Prelude.test)
-
-  private def loadError(entry: Path, prelude: Prelude.Config): TypeError =
-    intercept[ModuleLoader.LoadFailure] {
-      ModuleLoader.load(entry, ModuleLoader.LoadConfig.forEntry(entry, prelude))
-    }.error
+  /** The error the entry is rejected with. */
+  private def error(entry: Path, prelude: PreludeSource = testPrelude): Throwable =
+    check(entry, prelude).outcome.left.getOrElse(fail("the entry checked"))
 
   test("loads an entry-relative module and exposes canonical names") {
     val root = Files.createTempDirectory("raccoon-modules")
@@ -106,16 +109,16 @@ class ModuleLoaderTests extends munit.FunSuite {
         |""".stripMargin
     )
 
-    assertEquals(ctorName(run(entry, Prelude.fromPath(preludePath))), "Tiny.mk")
+    assertEquals(ctorName(run(entry, PreludeSource.File(preludePath))), "Tiny.mk")
   }
 
   test("can run without an automatic prelude") {
     val root = Files.createTempDirectory("raccoon-modules")
     val noImportEntry = write(root, "NoImport.rac", "{ Prop }\n")
-    assertEquals(PrettyPrinter.print(run(noImportEntry, Prelude.none)), "Prop")
+    assertEquals(PrettyPrinter.print(run(noImportEntry, PreludeSource.Absent)), "Prop")
 
     val explicitImportEntry = write(root, "ExplicitImport.rac", "import Init.Prelude\n{ Prop }\n")
-    assert(loadError(explicitImportEntry, Prelude.none).isInstanceOf[ModuleNotFound])
+    assert(error(explicitImportEntry, PreludeSource.Absent).isInstanceOf[ModuleNotFound])
   }
 
   test("small Init-like module can use the default Prelude surface") {
@@ -136,7 +139,7 @@ class ModuleLoaderTests extends munit.FunSuite {
         |""".stripMargin
     )
 
-    assertEquals(ctorName(run(entry, Prelude.default)), "Bool.true")
+    assertEquals(ctorName(run(entry, PreludeSource.Bundled)), "Bool.true")
   }
 
   test("loads transitive imports before importers") {
@@ -265,32 +268,29 @@ class ModuleLoaderTests extends munit.FunSuite {
         |}
         |""".stripMargin
     )
-    val loaded = ModuleLoader.load(leakingEntry, ModuleLoader.LoadConfig.forEntry(leakingEntry, Prelude.test))
-    intercept[NotFound] {
-      Elaborator.elab(loaded.program, Prelude.test)
-    }
+    assert(error(leakingEntry).isInstanceOf[NotFound])
   }
 
   test("reports missing modules, cycles, parse errors, and imported bodies") {
     val missingRoot = Files.createTempDirectory("raccoon-modules")
     val missingEntry = write(missingRoot, "Main.rac", "import Lib.Missing\n")
-    assert(loadError(missingEntry).isInstanceOf[ModuleNotFound])
+    assert(error(missingEntry).isInstanceOf[ModuleNotFound])
 
     val cycleRoot = Files.createTempDirectory("raccoon-modules")
     write(cycleRoot, "Lib/A.rac", "import Lib.B\n")
     write(cycleRoot, "Lib/B.rac", "import Lib.A\n")
     val cycleEntry = write(cycleRoot, "Main.rac", "import Lib.A\n")
-    assert(loadError(cycleEntry).isInstanceOf[CyclicImport])
+    assert(error(cycleEntry).isInstanceOf[CyclicImport])
 
     val parseRoot = Files.createTempDirectory("raccoon-modules")
     write(parseRoot, "Lib/Bad.rac", "def\n")
     val parseEntry = write(parseRoot, "Main.rac", "import Lib.Bad\n")
-    assert(loadError(parseEntry).isInstanceOf[ModuleParseError])
+    assert(error(parseEntry).isInstanceOf[ModuleParseError])
 
     val bodyRoot = Files.createTempDirectory("raccoon-modules")
     write(bodyRoot, "Lib/Body.rac", "{ Type }\n")
     val bodyEntry = write(bodyRoot, "Main.rac", "import Lib.Body\n")
-    assert(loadError(bodyEntry).isInstanceOf[ImportedModuleHasBody])
+    assert(error(bodyEntry).isInstanceOf[ImportedModuleHasBody])
   }
 
   test("loads imports from configured source roots") {
@@ -319,15 +319,7 @@ class ModuleLoaderTests extends munit.FunSuite {
         |""".stripMargin
     )
 
-    val loaded = ModuleLoader.load(entry, ModuleLoader.LoadConfig(Vector(srcRoot), Prelude.test))
-    assertEquals(
-      ctorName(
-        Interpreter
-          .run(Elaborator.elab(loaded.program, Prelude.test), Prelude.test)
-          .getOrElse(fail("Program has no body"))
-      ),
-      "Lib.Nat.zero"
-    )
+    assertEquals(ctorName(run(entry, roots = Vector(srcRoot))), "Lib.Nat.zero")
   }
 
   test("loaded source diagnostics point at imported files") {
@@ -343,11 +335,12 @@ class ModuleLoaderTests extends munit.FunSuite {
     )
     val entry = write(root, "Main.rac", "import Lib.Bad\n")
 
-    val loaded = ModuleLoader.load(entry, ModuleLoader.LoadConfig.forEntry(entry, Prelude.test))
-    val error = intercept[NotFound] {
-      Elaborator.elab(loaded.program, Prelude.test)
+    val result = check(entry)
+    val error = result.outcome match {
+      case Left(error: NotFound) => error
+      case other                 => fail(s"expected NotFound, got $other")
     }
-    assert(ErrorReporter.pretty(error, loaded).contains(badPath.toRealPath().toString))
+    assert(ErrorReporter.pretty(error, result.sources).contains(badPath.toRealPath().toString))
   }
 
   test("same-offset local value ids remain distinct across imported modules") {
@@ -408,11 +401,6 @@ class ModuleLoaderTests extends munit.FunSuite {
         |""".stripMargin
     )
 
-    val loaded = ModuleLoader.load(entry, ModuleLoader.LoadConfig.forEntry(entry, Prelude.test))
-    val core = Elaborator.elab(loaded.program, Prelude.test)
-
-    intercept[TypeError] {
-      Interpreter.run(core, Prelude.test)
-    }
+    assert(error(entry).isInstanceOf[TypeError])
   }
 }

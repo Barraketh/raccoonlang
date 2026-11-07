@@ -129,6 +129,22 @@ final case class TypecheckEnv(
     else copy(globals = globals + (name -> new GlobalBinding.Lazy(force)))
   }
 
+  /**
+   * This environment with a module's `effect` replayed: its globals bound to the very bindings its checking made, so a
+   * lazy global keeps its closure and its memo, and its instances appended to their buckets, in order. A global bound
+   * here already is `AlreadyDefined`, unlocated. The bindings were checked where the module was, so nothing else of
+   * `putGlobal`'s is checked again.
+   */
+  def withEffect(effect: ModuleEffect): TypecheckEnv =
+    copy(
+      globals = effect.globals.foldLeft(globals) { case (cur, (name, binding)) =>
+        if (cur.contains(name)) throw AlreadyDefined(name) else cur.updated(name, binding)
+      },
+      globalInstances = effect.instances.foldLeft(globalInstances) { case (cur, (key, values)) =>
+        cur.addAll(key, values)
+      }
+    )
+
   override def putLocal(
       ref: CoreAst.LocalRef,
       value: Value,
@@ -305,11 +321,20 @@ object Binding {
     Binding(ref, Live(value), residualPolicy, linear, deadBefore, provenance)
 }
 
+/**
+ * What checking a module added to the top-level environment of its import closure (`Interpreter.checkModule`): its
+ * globals, each with the binding its checking made, and its instances, by key, each bucket's in declaration order.
+ */
+final case class ModuleEffect(globals: Vector[(String, GlobalBinding)], instances: Map[String, Vector[Value]])
+
 final case class InstanceSearchTiers(locals: Vector[Value], globals: Vector[Value])
 
 final case class InstanceRegistry(buckets: Map[String, Vector[Value]]) {
   def add(key: String, value: Value): InstanceRegistry =
-    copy(buckets = buckets + (key -> (buckets.getOrElse(key, Vector.empty) :+ value)))
+    addAll(key, Vector(value))
+
+  def addAll(key: String, values: Vector[Value]): InstanceRegistry =
+    copy(buckets = buckets + (key -> (buckets.getOrElse(key, Vector.empty) ++ values)))
 
   def get(key: String): Vector[Value] = buckets.getOrElse(key, Vector.empty)
 }

@@ -541,10 +541,35 @@ object Interpreter {
     }
 
   /**
-   * Runs a program over its prelude. Before any declaration is evaluated, a `:= builtin` declared by the program itself
-   * is `ProgramBuiltin` at its `builtin`: `Builtins.instantiate` trusts a builtin's declared type, so only the kernel
-   * and the prelude declare builtins. With `allowUserAxioms` false, an axiom declared by the program itself is then
-   * `UserAxiom` at its span; the prelude's axioms are the trusted bootstrap and are unaffected.
+   * Runs a program that imports nothing over its prelude: its trust checks (`trustViolation`), then its declarations,
+   * then its body (`runBody`).
+   */
+  def run(p: Program, prelude: Prelude.Config = Prelude.default, allowUserAxioms: Boolean = true): Option[Value] = {
+    trustViolation(p.decls, allowUserAxioms).foreach(violation => throw violation)
+    val env =
+      p.decls.foldLeft(initialEnv(prelude)) { case (curWorlds, decl) => evalDecl(decl, curWorlds) }
+    p.body.map(runBody(_, env))
+  }
+
+  /**
+   * What a program's own declarations, `decls`, in order, may not do, before any of them is evaluated: declare a
+   * `:= builtin`, which is `ProgramBuiltin` at its `builtin`, since `Builtins.instantiate` trusts a builtin's declared
+   * type, so only the kernel and the prelude declare builtins; then, with `allowUserAxioms` false, declare an axiom,
+   * which is `UserAxiom` at its span. The prelude's axioms are the trusted bootstrap and are unaffected. A program of
+   * several modules gives its modules' declarations in its depth-first import order, its own last.
+   */
+  def trustViolation(decls: Iterable[Decl], allowUserAxioms: Boolean): Option[TypeError] =
+    decls
+      .collectFirst { case Decl.ConstDecl(name, _, CoreAst.ConstBody.Builtin(builtin), _, _) =>
+        ProgramBuiltin(name, Some(builtin))
+      }
+      .orElse {
+        if (allowUserAxioms) None
+        else decls.collectFirst { case axiom: Decl.AxiomDecl => UserAxiom(axiom.name, Some(axiom.span)) }
+      }
+
+  /**
+   * A program's body `b`, checked and run in `env`, the environment after its declarations.
    *
    * A body of type `(sup: Protocol.Supply) -> R` is an entry: once it has checked, and `R` is unrestricted (S2), its
    * value is applied to the root supply, once, and the result is the program's. Only the entry module has a body and no
@@ -552,32 +577,63 @@ object Interpreter {
    * any other type is the program's result, which must be unrestricted. The result is shown, so a proof call is forced
    * (docs/kernel.md, "Proof calls"); `PrettyPrinter` forces the ones inside it.
    */
-  def run(p: Program, prelude: Prelude.Config = Prelude.default, allowUserAxioms: Boolean = true): Option[Value] = {
-    p.decls.foreach {
-      case Decl.ConstDecl(name, _, CoreAst.ConstBody.Builtin(builtin), _, _) =>
-        throw ProgramBuiltin(name, Some(builtin))
-      case _ =>
-    }
-    if (!allowUserAxioms) axioms(p).headOption.foreach(axiom => throw UserAxiom(axiom.name, Some(axiom.span)))
-    val env =
-      p.decls.foldLeft(initialEnv(prelude)) { case (curWorlds, decl) => evalDecl(decl, curWorlds) }
-    p.body.map { b =>
-      val span = TypeChecker.sourceSpan(b)
-      // The program's boundary, as `evalDecl` is a declaration's: an overflow while checking or evaluating the body is
-      // `EvaluationTooDeep` at the whole body.
-      try {
-        val value = TypeChecker.checkTerm(b, env).value
-        entryResult(value.tpe) match {
-          case Some(result) =>
-            rejectLinearGlobal(LinearGlobal.EntryResult, result, span)
-            force(evalApply(value, Vector(ProtocolPrimitives.rootSupply)))
-          case None =>
-            rejectLinearGlobal(LinearGlobal.ProgramResult, value.tpe, span)
-            force(value)
-        }
-      } catch { case _: StackOverflowError => throw EvaluationTooDeep(Some(span)) }
-    }
+  def runBody(b: CoreAst.Term, env: Env): Value = {
+    val span = TypeChecker.sourceSpan(b)
+    // The program's boundary, as `evalDecl` is a declaration's: an overflow while checking or evaluating the body is
+    // `EvaluationTooDeep` at the whole body.
+    try {
+      val value = TypeChecker.checkTerm(b, env).value
+      entryResult(value.tpe) match {
+        case Some(result) =>
+          rejectLinearGlobal(LinearGlobal.EntryResult, result, span)
+          force(evalApply(value, Vector(ProtocolPrimitives.rootSupply)))
+        case None =>
+          rejectLinearGlobal(LinearGlobal.ProgramResult, value.tpe, span)
+          force(value)
+      }
+    } catch { case _: StackOverflowError => throw EvaluationTooDeep(Some(span)) }
   }
+
+  /**
+   * A module's declarations, `decls`, checked in order over `env`, the top-level environment of its import closure, as
+   * `evalDecl` checks each: the environment they end in, and what they added to `env` (`ModuleEffect`), which an
+   * importer replays (`TypecheckEnv.withEffect`) instead of checking them again.
+   *
+   * The globals a declaration adds are those `declaredGlobals` names: `evalDecl` binds each, and since binding a global
+   * twice is `AlreadyDefined`, the environment grows by exactly as many globals as they are only when it adds no other.
+   * Instances are only ever appended to their key's bucket, so a module's are each bucket's new tail.
+   */
+  def checkModule(decls: Vector[Decl], env: TypecheckEnv): (TypecheckEnv, ModuleEffect) = {
+    val end = topLevel(decls.foldLeft(env: Env)((cur, decl) => evalDecl(decl, cur)))
+    val names = decls.flatMap(declaredGlobals)
+    if (end.globals.size != env.globals.size + names.length)
+      throw WTF(s"A module's declarations added ${end.globals.size - env.globals.size} globals, not ${names.length}")
+    val instances = end.globalInstances.buckets.flatMap { case (key, values) =>
+      val before = env.globalInstances.get(key).length
+      Option.when(values.length > before)(key -> values.drop(before))
+    }
+    (end, ModuleEffect(names.map(name => name -> end.globals(name)), instances))
+  }
+
+  /**
+   * `env`, an environment between top-level declarations, as the `TypecheckEnv` it is: `Env.empty` is one, and
+   * `evalDecl` adds globals to the environment it is given, which a `TypecheckEnv` adds to itself.
+   */
+  private[raccoonlang] def topLevel(env: Env): TypecheckEnv =
+    env match {
+      case top: TypecheckEnv => top
+      case other             => throw WTF(s"A top-level environment is a ${other.getClass.getSimpleName}")
+    }
+
+  /** The globals `evalDecl` binds for `decl`: its name, or a block's, and an inductive family's constructors. */
+  private def declaredGlobals(decl: Decl): Vector[String] =
+    decl match {
+      case Decl.ConstDecl(name, _, _, _, _)   => Vector(name)
+      case Decl.AxiomDecl(name, _, _, _)      => Vector(name)
+      case family: Decl.InductiveDecl         => family.header.name +: family.ctors.map(_.canonicalName)
+      case Decl.MutualInductives(families, _) => families.flatMap(declaredGlobals)
+      case Decl.MutualDefs(members, _)        => members.map(_.name)
+    }
 
   /**
    * The program's result as the CLI prints it. Printing forces the proof calls inside it (docs/kernel.md, "Proof
@@ -602,13 +658,15 @@ object Interpreter {
     }
 
   /**
-   * The axioms `p` declares, in declaration order. For a program, these are its user axioms, the unchecked assumptions
-   * outside the trusted bootstrap: the loader merges every loaded module into the program, while the prelude's
-   * declarations live in `Prelude.Config.core`, and a program declares no builtin (`run`). For a prelude's `core`, they
-   * are the prelude's trusted axioms.
+   * The axioms `decls` declare, in declaration order. For a program's own declarations, its modules' in its depth-first
+   * import order, these are its user axioms, the unchecked assumptions outside the trusted bootstrap: the prelude's
+   * declarations live in `Prelude.Config.core`, and a program declares no builtin (`trustViolation`). For a prelude's
+   * `core`, they are the prelude's trusted axioms.
    */
-  def axioms(p: Program): Vector[Decl.AxiomDecl] =
-    p.decls.collect { case axiom: Decl.AxiomDecl => axiom }
+  def axioms(decls: Iterable[Decl]): Vector[Decl.AxiomDecl] =
+    decls.iterator.collect { case axiom: Decl.AxiomDecl => axiom }.toVector
+
+  def axioms(p: Program): Vector[Decl.AxiomDecl] = axioms(p.decls)
 
   /** Values the elaborator also knows by name; the kernel's declarations are evaluated on top of these. */
   private[raccoonlang] def primitiveEnv: Env =
