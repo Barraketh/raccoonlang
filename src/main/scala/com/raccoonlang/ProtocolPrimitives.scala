@@ -18,7 +18,7 @@ import com.raccoonlang.Value._
  * `List.append`. R3 always fires. R2 and R3 ignore their input packet's contents: tokens carry no data.
  *
  * The ghosts `supply#`, `inst#`, `tok#` and `valid#` are built only here. The root supply exists only once
- * `Interpreter.run` applies an entry, after checking it, and only R1 makes another supply, so checking never allocates:
+ * `Interpreter.runBody` applies an entry, after checking it, and only R1 makes another supply, so checking never allocates:
  * during checking every supply is a variable or stuck, and R1 never fires. R2 and R3 do fire during checking. A type or
  * proof may contain a primitive application, since a read extent may compute with live linear values (S1), and then
  * converts by these reductions. That is sound because a read consumes nothing and its value is a type or a proof, which
@@ -38,7 +38,7 @@ private[raccoonlang] object ProtocolPrimitives {
 
   private def supply(n: Value): Value = VApp(SupplyGhost, Vector(n), Kernel.supplyType)
 
-  /** The root supply, `supply#(0)`, which `Interpreter.run` gives an entry. */
+  /** The root supply, `supply#(0)`, which `Interpreter.runBody` gives an entry. */
   lazy val rootSupply: Value = supply(Kernel.zeroValue)
 
   /**

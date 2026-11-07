@@ -127,8 +127,8 @@ class AxiomTests extends munit.FunSuite {
   }
 
   /**
-   * Writes `modules`, by path relative to a fresh root, and checks the entry `Main.rac` among them as the CLI does, with
-   * or without user axioms.
+   * Writes `modules`, by path relative to a fresh root, and checks the entry `Main.rac` among them as the CLI does,
+   * with or without user axioms.
    */
   private def checkModules(allowUserAxioms: Boolean, modules: (String, String)*): ModuleChecker.EntryResult = {
     val root = Files.createTempDirectory("raccoon-axioms")
@@ -149,7 +149,8 @@ class AxiomTests extends munit.FunSuite {
 
   test("disallowing user axioms rejects an imported module's axiom at its span") {
     val lib = "namespace Lib {\n  axiom magic : Nat\n}\n"
-    val result = checkModules(allowUserAxioms = false, "Lib/Magic.rac" -> lib, "Main.rac" -> "import Lib.Magic\n\nLib.magic\n")
+    val result =
+      checkModules(allowUserAxioms = false, "Lib/Magic.rac" -> lib, "Main.rac" -> "import Lib.Magic\n\nLib.magic\n")
 
     assertEquals(result.axioms, Vector("Lib.magic"))
     val error = result.outcome match {
@@ -176,7 +177,11 @@ class AxiomTests extends munit.FunSuite {
     }
     // An imported module is part of the program.
     val result =
-      checkModules(allowUserAxioms = true, "Lib/Raw.rac" -> "def raw (n: Nat): Nat := builtin\n", "Main.rac" -> "import Lib.Raw\n")
+      checkModules(
+        allowUserAxioms = true,
+        "Lib/Raw.rac" -> "def raw (n: Nat): Nat := builtin\n",
+        "Main.rac" -> "import Lib.Raw\n"
+      )
     result.outcome match {
       case Left(error: ProgramBuiltin) => assertEquals(error.name, "raw")
       case other                       => fail(s"expected ProgramBuiltin, got $other")

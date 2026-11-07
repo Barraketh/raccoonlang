@@ -662,8 +662,8 @@ object Value {
 
   /**
    * The head of a protocol primitive's canonical value (`ProtocolPrimitives`): `supply#`, `inst#`, `tok#` or `valid#`.
-   * Only `ProtocolPrimitives` builds ghosts: the primitives' natives, and the root supply that `Interpreter.run` gives
-   * an entry. They are always applied, each application carrying its precise type and, in its arguments, everything
+   * Only `ProtocolPrimitives` builds ghosts: the primitives' natives, and the root supply that `Interpreter.runBody`
+   * gives an entry. They are always applied, each application carrying its precise type and, in its arguments, everything
    * that type depends on, since keys ignore types. No environment binds a ghost and its name is no identifier, so no
    * source term names one; quotation refuses them (`ValueQuote`). They convert by congruence only.
    */

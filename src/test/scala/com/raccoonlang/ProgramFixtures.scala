@@ -47,7 +47,8 @@ object ProgramFixtures {
       } else {
         programCount += 1
         val entry = Files.write(entries.resolve(s"Program$programCount.rac"), src.getBytes(StandardCharsets.UTF_8))
-        val options = Options(roots :+ entries, PreludeSource.Given("fixture", prelude), allowUserAxioms, stackBytes = 0)
+        val options =
+          Options(roots :+ entries, PreludeSource.Given("fixture", prelude), allowUserAxioms, stackBytes = 0)
         val result = checker.run(options).check(entry, entry.toString)
         val outcome = result.outcome match {
           case Left(t: TypeError) => Left(t)

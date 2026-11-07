@@ -67,8 +67,8 @@ object Elaborator {
   final class Scope private[Elaborator] (private[Elaborator] val trie: NameNode, declaredRev: List[DeclaredName]) {
 
     /**
-     * This scope with `name` declared, as `addGlobal` and `addField` declare it, and as replaying a module's names does:
-     * a name declared already, in this scope or before it began, is `AlreadyDefined` at the name's span.
+     * This scope with `name` declared, as `addGlobal` and `addField` declare it, and as replaying a module's names
+     * does: a name declared already, in this scope or before it began, is `AlreadyDefined` at the name's span.
      */
     def declare(name: DeclaredName): Scope =
       new Scope(trie.insertGlobal(name.parts, name.parts, Some(name.span), name.field), name :: declaredRev)
@@ -93,10 +93,10 @@ object Elaborator {
    * Source-name resolution state.
    *
    * Locals are resolved outside the global trie and always win on the first path segment. Global names and namespace
-   * objects live in `root`'s trie. The recursive-self alias resolves qualified paths to a local ref while checking recursive
-   * bodies. Open scopes are snapshots of resolved objects, so later declarations do not affect an earlier `open`. A
-   * first segment resolves to a selective open's alias, then to a member of the enclosing namespaces, then to a
-   * wildcard open's alias, each in the innermost scope that has one (docs/namespaces.md).
+   * objects live in the trie of `root`. The recursive-self alias resolves qualified paths to a local ref while checking
+   * recursive bodies. Open scopes are snapshots of resolved objects, so later declarations do not affect an earlier
+   * `open`. A first segment resolves to a selective open's alias, then to a member of the enclosing namespaces, then to
+   * a wildcard open's alias, each in the innermost scope that has one (docs/namespaces.md).
    */
   private final case class ResolveEnv(
       scopes: List[Map[String, CA.LocalRef]],

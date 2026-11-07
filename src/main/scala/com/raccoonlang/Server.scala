@@ -1,6 +1,14 @@
 package com.raccoonlang
 
-import java.io.{BufferedReader, ByteArrayOutputStream, InputStreamReader, OutputStream, PrintStream, PrintWriter, StringWriter}
+import java.io.{
+  BufferedReader,
+  ByteArrayOutputStream,
+  InputStreamReader,
+  OutputStream,
+  PrintStream,
+  PrintWriter,
+  StringWriter
+}
 import java.net.{StandardProtocolFamily, UnixDomainSocketAddress}
 import java.nio.channels.{Channels, ServerSocketChannel, SocketChannel}
 import java.nio.charset.StandardCharsets.UTF_8
@@ -16,8 +24,8 @@ import scala.util.control.NonFatal
  * A request is one line, a JSON object: `{"cwd": <dir>, "args": [<argument>...]}`, a single or batch run of the CLI
  * whose relative paths are read from `cwd`, or `{"stop": true}`. The reply is JSON lines: `{"out": <text>}` and
  * `{"err": <text>}`, what the CLI prints on its standard output and error, in order, then `{"exit": <code>}`. Runs are
- * served one at a time, as the evaluator is single-threaded, each on a thread of its own `--stack`. A run re-reads every
- * source it loads, so a result is never one of a source that changed.
+ * served one at a time, as the evaluator is single-threaded, each on a thread of its own `--stack`. A run re-reads
+ * every source it loads, so a result is never one of a source that changed.
  *
  * A server whose compiler classes changed since it started answers `{"restart": <reason>}` and stops instead: its
  * results, and the classes it would load next, are no longer the compiler's. `scripts/raccoon-client` is a client.
@@ -44,7 +52,17 @@ object Server {
     System.err.println(s"raccoon-lang serving on $socket")
     try {
       var serving = true
-      while (serving) Using.resource(listener.accept())(connection => serving = handle(connection, checker, identity))
+      while (serving)
+        Using.resource(listener.accept()) { connection =>
+          serving =
+            try handle(connection, checker, identity)
+            catch {
+              // A connection that fails, as one whose client left, fails alone.
+              case NonFatal(e) =>
+                System.err.println(s"raccoon-lang server: ${Option(e.getMessage).getOrElse(e.toString)}")
+                true
+            }
+        }
     } finally {
       listener.close()
       Files.deleteIfExists(socket)
@@ -70,8 +88,9 @@ object Server {
         false
       case Some(fields) =>
         val cwd = fields.get("cwd").collect { case dir: String => Paths.get(dir) }.filter(_.isAbsolute)
-        val args = fields.get("args").collect { case items: Vector[Any] @unchecked if items.forall(_.isInstanceOf[String]) =>
-          items.map(_.asInstanceOf[String])
+        val args = fields.get("args").collect {
+          case items: Vector[Any] @unchecked if items.forall(_.isInstanceOf[String]) =>
+            items.map(_.asInstanceOf[String])
         }
         (cwd, args.flatMap(Main.parseArgs).filterNot(cli => cli.serve || cli.waitForEnter)) match {
           case (Some(dir), Some(cli)) => run(cli, checker, dir, reply)
@@ -92,8 +111,8 @@ object Server {
   }
 
   /**
-   * Runs `cli` as the CLI does, on a thread of its stack size, and replies. An error the CLI would not catch is reported
-   * as the JVM reports it; one that leaves the JVM in doubt, unlike a stack overflow, stops the server.
+   * Runs `cli` as the CLI does, on a thread of its stack size, and replies. An error the CLI would not catch is
+   * reported as the JVM reports it; one that leaves the JVM in doubt, unlike a stack overflow, stops the server.
    */
   private def run(cli: Main.CliArgs, checker: ModuleChecker, cwd: Path, reply: Reply): Boolean = {
     val (code, serving) =
@@ -117,7 +136,8 @@ object Server {
   private def compilerIdentity(): String = {
     val location = Paths.get(Main.getClass.getProtectionDomain.getCodeSource.getLocation.toURI)
     val files =
-      if (Files.isDirectory(location)) Using.resource(Files.walk(location))(_.iterator.asScala.filter(Files.isRegularFile(_)).toVector)
+      if (Files.isDirectory(location))
+        Using.resource(Files.walk(location))(_.iterator.asScala.filter(Files.isRegularFile(_)).toVector)
       else Vector(location)
     ModuleLoader.sha256(
       files.sorted.map(file => s"$file ${Files.size(file)} ${Files.getLastModifiedTime(file).toMillis}").mkString("\n")

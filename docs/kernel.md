@@ -980,25 +980,25 @@ author's responsibility. The prelude's axioms are the trusted bootstrap; the
 bundled prelude declares two, the division law `Nat.div_add_mod` and the
 remainder bound `Nat.mod_lt`. Axioms declared by the program or the modules it
 imports are user axioms: `Interpreter.axioms` lists them, in declaration order,
-from the program's own declarations, since the loader merges every loaded module
-into the program while the prelude's declarations stay in `Prelude.Config.core`.
+from the declarations of the program's modules in its depth-first import order,
+while the prelude's declarations stay in `Prelude.Config.core`.
 
 A `:= builtin` declaration is trusted further than an axiom: its native's
 behaviour is taken to match its declared type, which is not checked. Only the
-kernel and the prelude declare builtins. `Interpreter.run` rejects one declared
-by the program, or a module it imports, as `ProgramBuiltin` at its `builtin`,
-before evaluating any declaration, whatever the axiom policy. The bundled
-prelude's builtins are `Level.succ`, `Level.max`, and `Nat.expand_eq`, whose
-value is its own application, a proof that holds because the kernel's expansion
-preserves value. A custom prelude given with `--prelude` is trusted as the
-bundled one is, builtins and axioms included; the CLI lists its axioms on
+kernel and the prelude declare builtins. `Interpreter.trustViolation` rejects
+one declared by the program, or a module it imports, as `ProgramBuiltin` at its
+`builtin`, before evaluating any declaration, whatever the axiom policy. The
+bundled prelude's builtins are `Level.succ`, `Level.max`, and `Nat.expand_eq`,
+whose value is its own application, a proof that holds because the kernel's
+expansion preserves value. A custom prelude given with `--prelude` is trusted as
+the bundled one is, builtins and axioms included; the CLI lists its axioms on
 standard error.
 
 The CLI reports user axioms on standard error. With `--no-user-axioms`,
-`Interpreter.run` rejects the first one as `UserAxiom` at its declaration
-before evaluating any declaration. A theorem checked under that flag depends on
-the kernel, the prelude, and nothing the program assumed. The default stays
-permissive.
+`Interpreter.trustViolation` rejects the first one as `UserAxiom` at its
+declaration before evaluating any declaration. A theorem checked under that flag
+depends on the kernel, the prelude, and nothing the program assumed. The default
+stays permissive.
 
 ## Resource protocols
 
@@ -1127,8 +1127,8 @@ converts with every proof of its proposition.
 
 A program body of type `(sup: Protocol.Supply) -> R` is an **entry**. It checks
 as any body does; `R` must be unrestricted (`LinearGlobal`, decided from the
-body's type before anything runs). `Interpreter.run` then applies its value to
-the root supply `supply#(0)` and returns the result, which the CLI prints. A
+body's type before anything runs). `Interpreter.runBody` then applies its value
+to the root supply `supply#(0)` and returns the result, which the CLI prints. A
 body of any other type is the program's result, as before. Only the entry
 module has a body, no global is linear (S2), and protocol programs run with
 `--no-user-axioms`, so a run has one root supply, and a body of type

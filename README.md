@@ -533,7 +533,9 @@ kept by the module's canonical path, its source and its imports' results, and th
 stack size; every run reads its sources again, so a module whose source, or an import's, changed is checked again, and
 nothing else is. `scripts/raccoon-client` takes the CLI's arguments and prints what the CLI would print, with its exit
 code, from a server it starts when none answers; `scripts/raccoon-client --stop` stops it. A server whose compiler was
-rebuilt restarts on its next run. The protocol is in `Server.scala`.
+rebuilt restarts on its next run. The protocol is in `Server.scala`. A server's memory grows with the results it
+keeps, up to the JVM's heap bound, a quarter of the machine's memory by default; `RACCOON_SERVER`, the command the
+client starts it with, can set one, as in `RACCOON_SERVER="java -Xmx4g -cp <classpath> com.raccoonlang.Main"`.
 
 ### Build the native binary
 

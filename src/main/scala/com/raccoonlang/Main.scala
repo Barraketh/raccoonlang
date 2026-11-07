@@ -65,17 +65,17 @@ object Main {
     @annotation.tailrec
     def loop(rest: List[String], cur: CliArgs): Option[CliArgs] =
       rest match {
-        case Nil                           => Some(cur)
-        case "--root" :: root :: tail      => loop(tail, cur.copy(roots = cur.roots :+ Paths.get(root)))
-        case "--prelude" :: path :: tail   => loop(tail, cur.copy(preludePath = Some(Paths.get(path))))
-        case "--no-prelude" :: tail        => loop(tail, cur.copy(noPrelude = true))
-        case "--wait-for-enter" :: tail    => loop(tail, cur.copy(waitForEnter = true))
-        case "--no-user-axioms" :: tail    => loop(tail, cur.copy(noUserAxioms = true))
-        case "--batch" :: tail             => loop(tail, cur.copy(batch = true))
-        case "--json" :: tail              => loop(tail, cur.copy(json = true))
-        case "--serve" :: tail             => loop(tail, cur.copy(serve = true))
-        case "--socket" :: path :: tail    => loop(tail, cur.copy(socket = Some(Paths.get(path))))
-        case "--stack" :: size :: tail     =>
+        case Nil                         => Some(cur)
+        case "--root" :: root :: tail    => loop(tail, cur.copy(roots = cur.roots :+ Paths.get(root)))
+        case "--prelude" :: path :: tail => loop(tail, cur.copy(preludePath = Some(Paths.get(path))))
+        case "--no-prelude" :: tail      => loop(tail, cur.copy(noPrelude = true))
+        case "--wait-for-enter" :: tail  => loop(tail, cur.copy(waitForEnter = true))
+        case "--no-user-axioms" :: tail  => loop(tail, cur.copy(noUserAxioms = true))
+        case "--batch" :: tail           => loop(tail, cur.copy(batch = true))
+        case "--json" :: tail            => loop(tail, cur.copy(json = true))
+        case "--serve" :: tail           => loop(tail, cur.copy(serve = true))
+        case "--socket" :: path :: tail  => loop(tail, cur.copy(socket = Some(Paths.get(path))))
+        case "--stack" :: size :: tail =>
           parseStackSize(size) match {
             case Some(bytes) => loop(tail, cur.copy(stackBytes = bytes))
             case None        => None
@@ -112,10 +112,17 @@ object Main {
   }
 
   /**
-   * The CLI's check of `cli`'s entries with `checker`, its relative paths read from `cwd`, printing to `out` and `err`
-   * as the CLI does; returns the exit code. `cli` is a single or batch check, run on a thread of `cli.stackBytes`.
+   * The CLI's check of the entries of `cli` with `checker`, its relative paths read from `cwd`, printing to `out` and
+   * `err` as the CLI does; returns the exit code. `cli` is a single or batch check, run on a thread of
+   * `cli.stackBytes`.
    */
-  private[raccoonlang] def run(cli: CliArgs, checker: ModuleChecker, cwd: Path, out: PrintStream, err: PrintStream): Int = {
+  private[raccoonlang] def run(
+      cli: CliArgs,
+      checker: ModuleChecker,
+      cwd: Path,
+      out: PrintStream,
+      err: PrintStream
+  ): Int = {
     val options =
       Options(
         cli.roots.map(cwd.resolve),
@@ -134,7 +141,9 @@ object Main {
   /** A custom prelude's axioms are trusted as the bundled prelude's are, with or without `--no-user-axioms`. */
   private def preludeAxiomsLine(cli: CliArgs, prelude: Prelude.Config): Option[String] = {
     val axioms = Interpreter.axioms(prelude.core)
-    Option.when(cli.preludePath.nonEmpty && axioms.nonEmpty)(s"Prelude axioms (trusted): ${axioms.map(_.name).mkString(", ")}")
+    Option.when(cli.preludePath.nonEmpty && axioms.nonEmpty)(
+      s"Prelude axioms (trusted): ${axioms.map(_.name).mkString(", ")}"
+    )
   }
 
   /** Program axioms are unchecked assumptions; theorems that rely on the trusted bootstrap alone need none. */
@@ -194,13 +203,14 @@ object Main {
 
   /**
    * Every entry of `cli`, checked in turn with what the earlier ones checked, and reported on `out`: one JSON object a
-   * line with `--json`, otherwise a verdict line and what the single-file CLI would print. An error is printed once:
-   * an entry rejected with an error printed for an earlier one names that entry instead. Exits 0 when every entry is
+   * line with `--json`, otherwise a verdict line and what the single-file CLI would print. An error is printed once: an
+   * entry rejected with an error printed for an earlier one names that entry instead. Exits 0 when every entry is
    * accepted, 1 otherwise.
    */
   private def runBatch(cli: CliArgs, run: ModuleChecker#Run, cwd: Path, out: PrintStream, err: PrintStream): Int = {
-    val prelude = try Right(run.prelude._1)
-    catch { case NonFatal(e) => Left(e) }
+    val prelude =
+      try Right(run.prelude._1)
+      catch { case NonFatal(e) => Left(e) }
     prelude.foreach(preludeAxiomsLine(cli, _).foreach(err.println))
     val printed = mutable.HashMap.empty[String, String]
     var accepted = 0
@@ -208,7 +218,10 @@ object Main {
     cli.files.foreach { shown =>
       val start = System.nanoTime()
       val result =
-        try prelude.map(_ => run.check(cwd.resolve(shown), shown)).fold(e => EntryResult(Vector.empty, Vector.empty, Left(e)), identity)
+        try
+          prelude
+            .map(_ => run.check(cwd.resolve(shown), shown))
+            .fold(e => EntryResult(Vector.empty, Vector.empty, Left(e)), identity)
         catch { case NonFatal(e) => EntryResult(Vector.empty, Vector.empty, Left(e)) }
       val seconds = (System.nanoTime() - start) / 1e9
       val error = result.outcome.left.toOption.map(report(_, result.sources))
@@ -222,12 +235,12 @@ object Main {
         }
         out.println(
           Json.obj(
-            "entry"         -> Json.quote(shown),
-            "verdict"       -> Json.quote(verdict),
-            "exit_code"     -> (if (result.outcome.isRight) "0" else "1"),
-            "seconds"       -> "%.3f".formatLocal(Locale.ROOT, seconds),
-            "stdout"        -> Json.quote(stdout),
-            "stderr"        -> Json.quote(stderr),
+            "entry" -> Json.quote(shown),
+            "verdict" -> Json.quote(verdict),
+            "exit_code" -> (if (result.outcome.isRight) "0" else "1"),
+            "seconds" -> "%.3f".formatLocal(Locale.ROOT, seconds),
+            "stdout" -> Json.quote(stdout),
+            "stderr" -> Json.quote(stderr),
             "error_module" -> failedModule.fold("null")(Json.quote)
           )
         )

@@ -22,21 +22,22 @@ import scala.util.control.NonFatal
  * module that fails fails every entry whose closure holds it, with its own error, located in it.
  *
  * Results are kept by module key (`Module.key`) in one session per configuration (`SessionKey`), at most one per
- * canonical path, the latest; `sweep` drops those whose imports' results are gone. The evaluator is single-threaded,
- * so one thread at a time uses a checker.
+ * canonical path, the latest; `sweep` drops those whose imports' results are gone. The evaluator is single-threaded, so
+ * one thread at a time uses a checker.
  */
 final class ModuleChecker(maxSessions: Int = 4) {
   import ModuleChecker._
 
   private val sources = new ModuleLoader.Sources
   private val sessions = mutable.LinkedHashMap.empty[SessionKey, Session]
+
   /** Each custom prelude read, by name, the latest version, with its source's digest. */
   private val preludeFiles = mutable.HashMap.empty[String, (String, Prelude.Config)]
 
   /** A run of the CLI under `options`, which reads each file at most once. */
   def run(options: Options): Run = new Run(options)
 
-  /** Drops the results no current result depends on (`Session.sweep`). */
+  /** Drops every result that depends on one a later run replaced (`Session.sweep`). */
   def sweep(): Unit = sessions.valuesIterator.foreach(_.sweep())
 
   final class Run private[ModuleChecker] (options: Options) {
@@ -49,8 +50,8 @@ final class ModuleChecker(maxSessions: Int = 4) {
      */
     lazy val prelude: (Prelude.Config, String) =
       options.prelude match {
-        case PreludeSource.Bundled => (Prelude.default, "bundled")
-        case PreludeSource.Absent  => (Prelude.none, "none")
+        case PreludeSource.Bundled             => (Prelude.default, "bundled")
+        case PreludeSource.Absent              => (Prelude.none, "none")
         case PreludeSource.Given(name, config) => (config, s"given\u0000$name")
         case PreludeSource.File(path) =>
           val (name, source) = Prelude.read(path)
@@ -86,8 +87,8 @@ final class ModuleChecker(maxSessions: Int = 4) {
 object ModuleChecker {
 
   /**
-   * Where a run's prelude comes from: the bundled one, none, a file, or a configuration, as tests give, which its `name`
-   * identifies to the checker.
+   * Where a run's prelude comes from: the bundled one, none, a file, or a configuration, as tests give, which its
+   * `name` identifies to the checker.
    */
   sealed trait PreludeSource
   object PreludeSource {
@@ -126,8 +127,8 @@ object ModuleChecker {
   }
 
   /**
-   * An entry's verdict: the sources its error may be located in, the entry's first, as `ErrorReporter` falls back to it;
-   * its user axioms, once its modules elaborated; and why it was rejected, or its body's result, if it has one.
+   * An entry's verdict: the sources its error may be located in, the entry's first, as `ErrorReporter` falls back to
+   * it; its user axioms, once its modules elaborated; and why it was rejected, or its body's result, if it has one.
    */
   final case class EntryResult(
       sources: Vector[LoadedSource],
@@ -178,7 +179,10 @@ object ModuleChecker {
           record
       }
 
-    /** Drops every record of an import result that is not the recorded one, and every record that depends on one. */
+    /**
+     * Drops every record computed from an import's results that are no longer recorded, directly or not: a module whose
+     * import's source changed has a new key, so its old results are stale.
+     */
     def sweep(): Unit = {
       val live = mutable.HashMap.empty[Path, Boolean]
       def current(path: Path, key: String): Boolean =
@@ -201,7 +205,9 @@ object ModuleChecker {
       module.imports.headOption match {
         case None => base
         case Some(first) =>
-          module.closure.drop(first.closure.length + 1).foldLeft(end(first))((state, next) => state.flatMap(replay(_, next)))
+          module.closure
+            .drop(first.closure.length + 1)
+            .foldLeft(end(first))((state, next) => state.flatMap(replay(_, next)))
       }
 
     private def elaborate(module: Module): Either[Throwable, Elaborated] = {
@@ -225,15 +231,15 @@ object ModuleChecker {
     private def check(module: Module, listener: Listener): Either[Throwable, Checked] = {
       val record = this.record(module)
       if (record.checked == null) {
-        record.checked =
-          start[TypecheckEnv](module, preludeEnv, check(_, listener).map(_.env), replay(_, _, listener)).flatMap { env =>
-            elaborate(module).flatMap { elaborated =>
-              attempt {
-                val (end, effect) = Interpreter.checkModule(elaborated.module.decls, env)
-                Checked(end, effect)
-              }
+        val begun = start[TypecheckEnv](module, preludeEnv, check(_, listener).map(_.env), replay(_, _, listener))
+        record.checked = begun.flatMap { env =>
+          elaborate(module).flatMap { elaborated =>
+            attempt {
+              val (end, effect) = Interpreter.checkModule(elaborated.module.decls, env)
+              Checked(end, effect)
             }
           }
+        }
         listener.checked(module.path)
       }
       record.checked
@@ -253,7 +259,11 @@ object ModuleChecker {
       }
 
     /** `module`'s body's result, if it has one; it checked. */
-    private def result(module: Module, body: Option[CoreAst.Term], listener: Listener): Either[Throwable, Option[BodyResult]] = {
+    private def result(
+        module: Module,
+        body: Option[CoreAst.Term],
+        listener: Listener
+    ): Either[Throwable, Option[BodyResult]] = {
       val record = this.record(module)
       if (record.result == null)
         record.result = body match {
@@ -292,7 +302,7 @@ object ModuleChecker {
     /** The entry at `entry`, written `shown`, loaded by `loader` and checked (`ModuleChecker`). */
     def check(loader: Loader, entry: Path, shown: String, allowUserAxioms: Boolean, listener: Listener): EntryResult =
       (try Right(loader.load(entry, shown))
-       catch { case failure: LoadFailure => Left(failure) }) match {
+      catch { case failure: LoadFailure => Left(failure) }) match {
         case Left(failure) => EntryResult(failure.sources, Vector.empty, Left(failure.error))
         case Right(module) =>
           listener.loaded()

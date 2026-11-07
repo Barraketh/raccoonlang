@@ -101,13 +101,12 @@ the importing file.
 Imported declarations keep their canonical names. Imports do not automatically open a namespace, so write `open`
 explicitly when short names are desired.
 
-A module sees exactly the declarations of its import closure: the modules it imports, directly or not, and the
-prelude's and kernel's. They are assembled in its own depth-first import order: for each import in turn, that module's
-closure, then the module, each once. So a module means the same in every importer, and is checked once however many
-import it. It does not see a module its importer imports but it does not: neither its names, nor its namespace
-members, which could change what an `open` resolves, nor its instances. Two modules of a closure that declare one name
-clash where the closure assembles the second, at its declaration (`AlreadyDefined`), whether or not either imports the
-other.
+A module sees exactly the declarations of its import closure: the modules it imports, directly or not, and the prelude's
+and kernel's. They are assembled in its own depth-first import order: for each import in turn, that module's closure,
+then the module, each once. So a module means the same in every importer, and is checked once however many import it. It
+does not see a module its importer imports but it does not: neither its names, nor its namespace members, which would
+resolve before a wildcard open's alias, nor its instances. Two modules of a closure that declare one name clash where
+the closure assembles the second, at its declaration (`AlreadyDefined`), whether or not either imports the other.
 
 A module's effect on its importers is the names it declared, its globals and its instances, in order; an importer
 begins from its first import's final state and replays the rest of its closure's effects, so a module's declarations

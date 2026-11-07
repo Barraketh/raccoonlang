@@ -5,7 +5,6 @@ import java.net.UnixDomainSocketAddress
 import java.nio.channels.{Channels, SocketChannel}
 import java.nio.charset.StandardCharsets
 import java.nio.file.{Files, Path, Paths}
-import scala.collection.mutable
 import scala.util.control.NonFatal
 
 import com.raccoonlang.ModuleChecker.{EntryResult, Listener, Options, PreludeSource}
@@ -80,10 +79,12 @@ class ModuleCheckerTests extends munit.FunSuite {
     val examples = Paths.get("examples").toAbsolutePath.normalize
     val library = Paths.get("lib").toAbsolutePath.normalize
     val root = project()
+    def sources(dir: Path): Vector[Path] =
+      Files.list(dir).toArray.toVector.map(_.asInstanceOf[Path]).filter(_.toString.endsWith(".rac"))
     val groups = Vector(
-      Vector(examples) -> Files.list(examples).toArray.toVector.map(_.asInstanceOf[Path]).filter(_.toString.endsWith(".rac")),
-      Vector(library) -> Files.list(library.resolve("Protocol")).toArray.toVector.map(_.asInstanceOf[Path]),
-      Vector(root) -> Files.list(root).toArray.toVector.map(_.asInstanceOf[Path])
+      Vector(examples) -> sources(examples),
+      Vector(library) -> sources(library.resolve("Protocol")),
+      Vector(root) -> sources(root)
     )
     groups.foreach { case (roots, entries) =>
       assert(entries.nonEmpty)
@@ -109,6 +110,18 @@ class ModuleCheckerTests extends munit.FunSuite {
     val error = rejectedWith[NotFound](result)
     assertEquals(locatedIn(error, result), root.resolve("Sibling.rac").toRealPath())
     assertEquals(verdict(run.check(root.resolve("Sibling.rac"), "Sibling.rac")), verdict(result))
+  }
+
+  test("a namespace member its importer's other imports declared does not change what a module's name resolves to") {
+    val root = Files.createTempDirectory("raccoon-batch")
+    write(root, "W.rac", "namespace W {\n  def foo : Nat := 1\n}\n")
+    // Inside N, N.foo would resolve before the wildcard open's W.foo.
+    write(root, "Sib.rac", "namespace N {\n  def foo : Nat := 2\n}\n")
+    write(root, "M.rac", "import W\n\nopen W\n\nnamespace N {\n  def bar : Eq(Nat, foo, 1) := Eq.refl(1)\n}\n")
+    write(root, "Main.rac", "import Sib\nimport M\n\n{ N.bar }\n")
+    val run = new ModuleChecker().run(options(Vector(root)))
+    assertEquals(verdict(run.check(root.resolve("M.rac"), "M.rac")), Right(None))
+    assert(verdict(run.check(root.resolve("Main.rac"), "Main.rac")).isRight)
   }
 
   test("a module does not find an instance its importer's other imports declared") {
@@ -143,7 +156,10 @@ class ModuleCheckerTests extends munit.FunSuite {
     // A clash before a module that fails to elaborate is the error a fresh check meets first.
     write(root, "Unknown.rac", "def unknown : Nat := missing\n")
     write(root, "ClashFirst.rac", "import Base\nimport Clash\nimport Unknown\n")
-    assertEquals(rejectedWith[AlreadyDefined](run.check(root.resolve("ClashFirst.rac"), "ClashFirst.rac")).name, "Lib.one")
+    assertEquals(
+      rejectedWith[AlreadyDefined](run.check(root.resolve("ClashFirst.rac"), "ClashFirst.rac")).name,
+      "Lib.one"
+    )
     write(root, "UnknownFirst.rac", "import Unknown\nimport Base\nimport Clash\n")
     rejectedWith[NotFound](run.check(root.resolve("UnknownFirst.rac"), "UnknownFirst.rac"))
   }
@@ -152,7 +168,13 @@ class ModuleCheckerTests extends munit.FunSuite {
     val root = project()
     val checker = new ModuleChecker()
     val (checked, results) =
-      checking(checker, options(Vector(root)), root.resolve("Top.rac"), root.resolve("Uses.rac"), root.resolve("Broken.rac"))
+      checking(
+        checker,
+        options(Vector(root)),
+        root.resolve("Top.rac"),
+        root.resolve("Uses.rac"),
+        root.resolve("Broken.rac")
+      )
     // Broken checked once, and nothing above it.
     assertEquals(checked.count(_.toString == "Broken.rac"), 1)
     assert(!checked.exists(name => name.toString == "Uses.rac" || name.toString == "Top.rac"), checked)
@@ -174,7 +196,8 @@ class ModuleCheckerTests extends munit.FunSuite {
     val json = new ByteArrayOutputStream
     val jsonCli = Main.parseArgs(Seq("--batch", "--json", "Top.rac", "Ok.rac")).get
     assertEquals(Main.run(jsonCli, new ModuleChecker, root, new PrintStream(json, true), new PrintStream(err, true)), 1)
-    val lines = json.toString(StandardCharsets.UTF_8).trim.split("\n").toVector.map(Json.parse(_).asInstanceOf[Map[String, Any]])
+    val lines =
+      json.toString(StandardCharsets.UTF_8).trim.split("\n").toVector.map(Json.parse(_).asInstanceOf[Map[String, Any]])
     assertEquals(lines.map(_("entry")), Vector("Top.rac", "Ok.rac"))
     assertEquals(lines.map(_("verdict")), Vector("rejected", "accepted"))
     assertEquals(lines(0)("error_module"), root.resolve("Broken.rac").toRealPath().toString)

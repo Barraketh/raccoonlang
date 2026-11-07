@@ -21,14 +21,16 @@ class ModuleLoaderTests extends munit.FunSuite {
       prelude: PreludeSource = testPrelude,
       roots: Vector[Path] = Vector.empty
   ): ModuleChecker.EntryResult =
-    new ModuleChecker().run(Options(roots, prelude, allowUserAxioms = true, stackBytes = 0)).check(entry, entry.toString)
+    new ModuleChecker()
+      .run(Options(roots, prelude, allowUserAxioms = true, stackBytes = 0))
+      .check(entry, entry.toString)
 
   private def run(entry: Path, prelude: PreludeSource = testPrelude, roots: Vector[Path] = Vector.empty): Value = {
     val result = check(entry, prelude, roots)
     result.outcome match {
-      case Right(body)           => body.getOrElse(fail("Program has no body")).value
-      case Left(te: TypeError)   => fail(ErrorReporter.pretty(te, result.sources))
-      case Left(other)           => throw other
+      case Right(body)         => body.getOrElse(fail("Program has no body")).value
+      case Left(te: TypeError) => fail(ErrorReporter.pretty(te, result.sources))
+      case Left(other)         => throw other
     }
   }
 

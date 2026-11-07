@@ -103,13 +103,13 @@ object Json {
               at += 6
             case c =>
               out += (c match {
-                case 'n'                     => '\n'
-                case 'r'                     => '\r'
-                case 't'                     => '\t'
-                case 'b'                     => '\b'
-                case 'f'                     => '\f'
-                case '"' | '\\' | '/'        => c
-                case _                       => fail("an escape")
+                case 'n'              => '\n'
+                case 'r'              => '\r'
+                case 't'              => '\t'
+                case 'b'              => '\b'
+                case 'f'              => '\f'
+                case '"' | '\\' | '/' => c
+                case _                => fail("an escape")
               })
               at += 2
           }

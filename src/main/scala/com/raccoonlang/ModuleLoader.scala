@@ -10,7 +10,8 @@ import scala.util.control.NonFatal
 
 /**
  * Reads modules and links their imports (docs/namespaces.md, "Imports"). `Sources` keeps the files read, `Snapshot`
- * reads each at most once for one run, and a `Loader` links an entry's imports over its source roots into `Module`s.
+ * reads each at most once for one run, and a `Loader` links an entry's imports over its source roots into a graph of
+ * `Module`.
  */
 object ModuleLoader {
   final case class LoadedSource(sourceId: SourceId, path: Path, source: String)
@@ -80,19 +81,25 @@ object ModuleLoader {
    * A loaded module: its file, its parse, and the modules it imports, each loaded, in its import order. An import the
    * prelude stands for is no module.
    */
-  final class Module private[ModuleLoader] (val file: ModuleFile, val program: SA.Program, val imports: Vector[Module]) {
+  final class Module private[ModuleLoader] (
+      val file: ModuleFile,
+      val program: SA.Program,
+      val imports: Vector[Module]
+  ) {
     def path: Path = file.path
 
     /**
      * The modules this one imports, directly or not, each once, in depth-first import order: for each import in turn,
      * the import's own closure, then the import, less the modules already listed. So for the first import `i`,
-     * `i.closure :+ i` is a prefix of this closure, and a module's closure in this order is what a standalone check of it
-     * assembles.
+     * `i.closure :+ i` is a prefix of this closure, and a module's closure in this order is what a standalone check of
+     * it assembles.
      */
     lazy val closure: Vector[Module] = {
       val listed = mutable.HashSet.empty[Module]
       val order = Vector.newBuilder[Module]
-      imports.foreach(imported => (imported.closure :+ imported).foreach(module => if (listed.add(module)) order += module))
+      imports.foreach(imported =>
+        (imported.closure :+ imported).foreach(module => if (listed.add(module)) order += module)
+      )
       order.result()
     }
 
@@ -103,7 +110,9 @@ object ModuleLoader {
      * in it.
      */
     lazy val key: String =
-      sha256((path.toString +: file.digest +: file.source.sourceId.value.toString +: imports.map(_.key)).mkString("\u0000"))
+      sha256(
+        (path.toString +: file.digest +: file.source.sourceId.value.toString +: imports.map(_.key)).mkString("\u0000")
+      )
   }
 
   /**
@@ -116,8 +125,8 @@ object ModuleLoader {
   /**
    * Loads entries over `sourceRoots`, which are absolute and normalized, from the files of `snapshot`; the imports
    * `prelude` stands for are not loaded. A module loads once: one whose imports all loaded is linked once, and every
-   * entry that reaches it shares it. Its imports cannot fail to load for a later entry: they read the same files, and an
-   * import cycle through it would run through its own imports.
+   * entry that reaches it shares it. Its imports cannot fail to load for a later entry: they read the same files, and
+   * an import cycle through it would run through its own imports.
    */
   final class Loader(sourceRoots: Vector[Path], prelude: Prelude.Config, snapshot: Snapshot) {
     private val loaded = mutable.HashMap.empty[Path, Module]
@@ -132,7 +141,7 @@ object ModuleLoader {
         try absolute.toRealPath()
         catch {
           case _: NoSuchFileException => throw LoadFailure(ModuleNotFound(shown, Vector(absolute), None), Vector.empty)
-          case NonFatal(e) => throw LoadFailure(ModuleReadFailed(absolute, reason(e), None), Vector.empty)
+          case NonFatal(e)            => throw LoadFailure(ModuleReadFailed(absolute, reason(e), None), Vector.empty)
         }
       try visit(canonical, None, isEntry = true, Vector.empty)
       catch {

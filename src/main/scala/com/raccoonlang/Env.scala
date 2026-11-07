@@ -132,8 +132,8 @@ final case class TypecheckEnv(
   /**
    * This environment with a module's `effect` replayed: its globals bound to the very bindings its checking made, so a
    * lazy global keeps its closure and its memo, and its instances appended to their buckets, in order. A global bound
-   * here already is `AlreadyDefined`, unlocated. The bindings were checked where the module was, so nothing else of
-   * `putGlobal`'s is checked again.
+   * here already is `AlreadyDefined`, unlocated. The bindings were checked where the module was, so nothing else that
+   * `putGlobal` checks is checked again.
    */
   def withEffect(effect: ModuleEffect): TypecheckEnv =
     copy(
