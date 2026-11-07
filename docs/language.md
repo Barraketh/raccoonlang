@@ -87,6 +87,35 @@ the argument's own, it is refused with a message that asks for the type: `let x 
 
 A rewrite proves propositions; a goal in `Type` is refused (`Eq.subst` casts data).
 
+## Inferred list arguments
+
+The prelude's permutation, membership and `flatMap` laws take the lists they relate and the element type as explicit
+arguments. Each also has a form that captures them from the proofs it takes (`$` patterns, as `Eq.symm(p: Eq($A, $x,
+$y))` does), under its own name, so existing callers keep working. The kernel's `List.Perm.cons` and `List.Perm.trans`
+are constructors, whose stored fields cannot become captures, so their forms are prelude definitions too.
+
+| Explicit form | Captured form |
+|---|---|
+| `List.Perm.trans(A, xs, ys, zs, p, q)` | `List.Perm.chain(p, q)` |
+| `List.Perm.symm(xs, ys, p)` | `List.Perm.flip(p)` |
+| `List.Perm.of_eq(xs, ys, e)` | `List.Perm.fromEq(e)` |
+| `List.Perm.cons(A, x, xs, ys, p)` | `List.Perm.push(x, p)` |
+| `List.Perm.append_left(F, xs, ys, p)` | `List.Perm.prepend(F, p)` |
+| `List.Perm.append_right(xs, ys, F, p)` | `List.Perm.append(p, F)` |
+| `List.Mem.perm(a, xs, ys, p, m)` | `List.Mem.along(p, m)` |
+| `List.Mem.append_left(a, xs, ys, m)` | `List.Mem.append(m, ys)` |
+| `List.Mem.append_right(a, xs, ys, m)` | `List.Mem.prepend(xs, m)` |
+| `List.Mem.tail(a, x, xs, m)` | `List.Mem.push(x, m)` |
+| `List.Mem.cons_cases(a, x, xs, m)` | `List.Mem.cases(m)` |
+| `List.Mem.nil_absurd(a, m, C)` | `List.Mem.absurd(m, C)` |
+| `List.flatMap.mem(A, B, f, xs, a, b, inside, here)` | `List.flatMap.member(inside, B, f, here)` |
+| `List.flatMap.perm(A, B, f, xs, ys, p)` | `List.flatMap.permuted(p, B, f)` |
+
+`push`, `prepend` and `append` name what happens to the related lists: `Perm.append(p, F)` relates `xs ++ F` to
+`ys ++ F`. `flatMap.member` and `flatMap.permuted` keep `B` and `f`, which no proof's type holds before they are
+needed. A law with no proof argument, such as `Perm.middle(a, xs, ys)` or `Perm.swap(A, x, y, xs)`, has nothing to
+capture and no second form.
+
 ## Type mismatches
 
 A mismatch names the expected type as the source writes it, where the checker has that, the actual type, and the first

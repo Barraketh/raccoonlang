@@ -222,6 +222,36 @@ class PreludeTests extends munit.FunSuite {
     )
   }
 
+  // docs/language.md, "Inferred list arguments": each form agrees with the law it calls, whose indices it captures.
+  test("Prelude list laws with captured indices check where the explicit forms do") {
+    typecheckDecls(
+      """
+        |open List.{Perm, Mem, flatMap}
+        |
+        |def xs : List(Nat) := List.cons(1, List.cons(2, List.nil(Nat)))
+        |def ys : List(Nat) := List.cons(2, List.cons(1, List.nil(Nat)))
+        |def swapped : Perm(Nat, xs, ys) := Perm.swap(Nat, 2, 1, List.nil(Nat))
+        |def round : Perm(Nat, xs, xs) := Perm.chain(swapped, Perm.flip(swapped))
+        |def same (zs: List(Nat))(ws: List(Nat))(e: Eq(List(Nat), zs, ws)) : Perm(Nat, ws, zs) := Perm.flip(Perm.fromEq(e))
+        |def framed (zs: List(Nat))(ws: List(Nat))(F: List(Nat))(p: Perm(Nat, zs, ws))
+        |    : Perm(Nat, List.cons(0, List.append(F, List.append(zs, F))), List.cons(0, List.append(F, List.append(ws, F)))) :=
+        |  Perm.push(0, Perm.prepend(F, Perm.append(p, F)))
+        |
+        |def two : Mem(Nat, 2, xs) := Mem.push(1, Mem.head(2, List.nil(Nat)))
+        |def moved : Mem(Nat, 2, ys) := Mem.along(swapped, two)
+        |def spread (zs: List(Nat)) : Mem(Nat, 2, List.append(zs, List.append(xs, zs))) := Mem.prepend(zs, Mem.append(two, zs))
+        |def split (a: Nat)(zs: List(Nat))(m: Mem(Nat, a, List.cons(5, zs))) : Or(Eq(Nat, a, 5), Mem(Nat, a, zs)) := Mem.cases(m)
+        |def none (m: Mem(Nat, 3, List.nil(Nat))) : False := Mem.absurd(m, False)
+        |
+        |def doubled (zs: List(Nat)): List(Nat) := flatMap(zs, Nat, fun (n: Nat): List(Nat) => List.cons(n, List.cons(n, List.nil(Nat))))
+        |def permuted : Perm(Nat, doubled(xs), doubled(ys)) :=
+        |  flatMap.permuted(swapped, Nat, fun (n: Nat): List(Nat) => List.cons(n, List.cons(n, List.nil(Nat))))
+        |def inside : Mem(Nat, 2, doubled(xs)) :=
+        |  flatMap.member(two, Nat, fun (n: Nat): List(Nat) => List.cons(n, List.cons(n, List.nil(Nat))), Mem.head(2, List.cons(2, List.nil(Nat))))
+        |""".stripMargin
+    )
+  }
+
   test("Prelude Bool and Nat APIs reduce") {
     val boolRes =
       runProgram(

@@ -471,6 +471,25 @@ namespace List {
       Eq.substProp(right, fun (zs: List(A)): Prop => Perm(A, List.append(ys, List.append(xs, F)), zs),
         Eq.substProp(left, fun (zs: List(A)): Prop => Perm(A, zs, List.append(List.append(xs, ys), F)), mid))
     }
+
+    // The laws above and the kernel's `cons` and `trans`, with the element type and the related lists captured from
+    // the proofs instead of passed (docs/language.md, "Inferred list arguments"): `chain(p, q)` is
+    // `trans(A, xs, ys, zs, p, q)`, `flip` is `symm`, `fromEq` is `of_eq`, `push(x, p)` is `cons`, `prepend(F, p)` is
+    // `append_left` and `append(p, F)` is `append_right`.
+    def chain (p: Perm($A, $xs, $ys))(q: Perm(A, ys, $zs)): Perm(A, xs, zs) := Perm.trans(A, xs, ys, zs, p, q)
+
+    def flip (p: Perm($A, $xs, $ys)): Perm(A, ys, xs) := Perm.symm(xs, ys, p)
+
+    def fromEq (e: Eq(List($A in Sort($u)), $xs, $ys)): Perm(A, xs, ys) := Perm.of_eq(xs, ys, e)
+
+    def push (x: $A in Sort($u))(p: Perm(A, $xs, $ys)): Perm(A, List.cons(x, xs), List.cons(x, ys)) :=
+      Perm.cons(A, x, xs, ys, p)
+
+    def prepend (F: List($A in Sort($u)))(p: Perm(A, $xs, $ys)): Perm(A, List.append(F, xs), List.append(F, ys)) :=
+      Perm.append_left(F, xs, ys, p)
+
+    def append (p: Perm($A, $xs, $ys))(F: List(A)): Perm(A, List.append(xs, F), List.append(ys, F)) :=
+      Perm.append_right(xs, ys, F, p)
   }
 
   // `Mem(A, a, xs)`: `a` is an element of `xs`.
@@ -521,6 +540,25 @@ namespace List {
       }
       | .trans l1 l2 l3 q1 q2 => Mem.perm(a, l2, l3, q2, Mem.perm(a, l1, l2, q1, m))
     }
+
+    // As for `Perm`, the laws above and the constructor `tail` with the element, the element type and the lists
+    // captured from the proofs: `along(p, m)` is `perm(a, xs, ys, p, m)`, `append(m, ys)` is `append_left`,
+    // `prepend(xs, m)` is `append_right`, `push(x, m)` is `tail`, `cases` is `cons_cases` and `absurd` is
+    // `nil_absurd`.
+    def along (p: Perm($A, $xs, $ys))(m: Mem(A, $a, xs)): Mem(A, a, ys) := Mem.perm(a, xs, ys, p, m)
+
+    def append (m: Mem($A, $a, $xs))(ys: List(A)): Mem(A, a, List.append(xs, ys)) := Mem.append_left(a, xs, ys, m)
+
+    def prepend (xs: List($A in Sort($u)))(m: Mem(A, $a, $ys)): Mem(A, a, List.append(xs, ys)) :=
+      Mem.append_right(a, xs, ys, m)
+
+    def push (x: $A in Sort($u))(m: Mem(A, $a, $xs)): Mem(A, a, List.cons(x, xs)) := Mem.tail(a, x, xs, m)
+
+    // `cons` 's fields are captured at the element type `A` of the membership, which is copyable, so neither is linear.
+    def cases (m: Mem($A, $a, List.cons($x in A, $xs in List(A)))): Or(Eq(A, a, x), Mem(A, a, xs)) :=
+      Mem.cons_cases(a, x, xs, m)
+
+    def absurd (m: Mem($A, $a, List.nil(A)))(C: Prop): C := Mem.nil_absurd(a, m, C)
   }
 
   // `flatMap(xs, B, f)`: `f` of each element, concatenated.
@@ -568,6 +606,15 @@ namespace List {
       | .head y ys => Mem.append_left(b, f(y), flatMap(ys, B, f), here)
       | .tail y z zs old => Mem.append_right(b, f(z), flatMap(zs, B, f), flatMap.mem(A, B, f, zs, y, b, old, here))
     }
+
+    // `mem` and `perm` with the element types, the lists and the elements captured from the proofs: `member` is
+    // `mem(A, B, f, xs, a, b, inside, here)` and `permuted(p, B, f)` is `perm(A, B, f, xs, ys, p)`. `B` and `f` stay,
+    // since no proof's type holds them before `here`.
+    def member (inside: Mem($A, $a, $xs))(B: Sort($v))(f: A -> List(B))(here: Mem(B, $b, f(a))): Mem(B, b, flatMap(xs, B, f)) :=
+      flatMap.mem(A, B, f, xs, a, b, inside, here)
+
+    def permuted (p: Perm($A, $xs, $ys))(B: Sort($v))(f: A -> List(B)): Perm(B, flatMap(xs, B, f), flatMap(ys, B, f)) :=
+      flatMap.perm(A, B, f, xs, ys, p)
   }
 }
 
