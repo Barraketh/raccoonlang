@@ -866,6 +866,12 @@ object Elaborator {
     case l: SA.Term.Lam             => elabAnonymousLam(l, env)
     case b: SA.Term.Body =>
       elabBodyStatements(b.statements, b.out, env.enterOpenScope, b.span)
+    // One node a step, the first outermost, so each later step is checked against the goal the earlier ones leave. A
+    // rewrite binds nothing: its equations and body are in its scope.
+    case SA.Term.Rewrite(steps, body, _) =>
+      steps.foldRight(elabTerm(body, env)) { (step, inner) =>
+        CA.Term.Rewrite(elabTerm(step.equation, env), step.reverse, inner, step.span)
+      }
     case SA.Term.Match(scrut, motive, cases, wildcard, equation, sp) =>
       // The equation is bound in every case's scope after its fields, the wildcard's included, not in the scrutinee or
       // the motive.

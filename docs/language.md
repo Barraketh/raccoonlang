@@ -3,6 +3,90 @@
 Surface features that cost the kernel nothing: each is checked by turning it into terms or messages the checker
 already knows. [kernel.md](kernel.md) has the kernel's rules.
 
+## Rewriting
+
+`rewrite h in e` proves the type expected of it from `e`, where `h` proves an equation `Eq(A, l, r)`: it rewrites `l`
+to `r` in the goal, and checks `e` against the result, as Lean's `rw [h]` does. `rewrite <- h in e` rewrites `r` to `l`.
+A list applies its steps in order, each to the goal the earlier ones leave:
+
+```raccoon
+def forward (a: Nat)(b: Nat)(e: Eq(Nat, a, b))(p: Nat.le(b, 3)) : Nat.le(a, 3) := rewrite e in p
+
+def chain (a: Nat)(b: Nat)(c: Nat)(e1: Eq(Nat, a, b))(e2: Eq(Nat, c, b))(p: Nat.le(c, 5)) : Nat.le(a, 5) :=
+  rewrite [e1, <- e2] in p
+```
+
+`rewrite [h1, h2] in e` is `rewrite h1 in rewrite h2 in e`. The body `e` extends as far as a lambda's. `rewrite` is no
+keyword: a term that starts with it, whitespace, its steps and `in` is a rewrite, and elsewhere `rewrite` is an
+identifier.
+
+### What it means
+
+A step is the call a user would write, and is checked as that call. Against the goal `T`, `rewrite h in e` with
+`h : Eq(A, l, r)` is
+
+```raccoon
+Eq.substProp(Eq.symm(h), fun (x: A): Prop => T[x/l], e)
+```
+
+and `rewrite <- h in e` is `Eq.substProp(h, fun (x: A): Prop => T[x/r], e)`. The motive `T[x/l]` is `T` with its
+occurrences of `l` abstracted. `e` is checked against the motive at the other side, `T[r/l]`, as a term written with
+that type would be, so a match or a later step inside `e` sees it. The call's type, the motive at `l`, must convert
+with `T`. The checked term, the residual a definition keeps, is the call; nothing after checking knows rewrites.
+
+The checker does not trust the motive. `TypeChecker.checkRewrite` hands the step, the type of `h` and the goal to
+`Rewrite.plan`, which only builds source syntax, and checks the call it returns as it checks any application. So an
+abstraction that goes wrong can only fail to check: a motive left ill-typed is reported as the rewrite's failure, with
+the motive, and so is a call whose type does not give back the goal.
+
+### Occurrences
+
+The goal is abstracted as it evaluates. `Rewrite.plan` quotes the goal's value with every value of the key of `l`
+(`ValueKey`, structural) read as the motive's variable, so an occurrence is a subterm of the goal's evaluated form that
+evaluation built the same way as `l`. This finds a computed scrutinee that the goal as written only names through a
+definition:
+
+```raccoon
+def pick (n: Nat) : List(Nat) := Bool.cond(isZero(n), List(Nat), List.cons(n, List.nil(Nat)), List.nil(Nat))
+
+def member (n: Nat)(z: Eq(Bool, isZero(n), Bool.true)) : List.Mem(Nat, n, pick(n)) :=
+  rewrite z in List.Mem.head(n, List.nil(Nat))
+```
+
+`pick(n)` evaluates to a `Bool.cond` stuck on `isZero(n)`, which the motive abstracts; at `Bool.true` the motive
+evaluates to membership in `[n]`, which `List.Mem.head` proves. A rewrite of the proof's own type could not do this:
+evaluation has already removed `Bool.true` from it.
+
+- Every occurrence is abstracted. To rewrite some only, write the `Eq.substProp` call with its motive.
+- Matching is structural on evaluated values, not up to conversion: a subterm that converts with `l` but evaluates to
+  another form, such as a part of a canonical Nat sum (`a + b` inside `a + b + c`), is no occurrence.
+- An occurrence that evaluation removed from the goal cannot be abstracted: `Nat.lt(n, n)` evaluates to
+  `Eq(Bool, Bool.false, Bool.true)`, which no longer mentions `n`. Write the motive there.
+- Abstracting an occurrence that something else's type depends on, such as the index of a local's type, leaves the
+  motive ill-typed, which is reported.
+- The motive is the goal's evaluated form, so it can be larger than one written by hand; that costs checking time,
+  not source text.
+
+A step whose side does not occur in the goal is refused, since it would change nothing and the direction is the likely
+mistake: the message says when the other side occurs (the step may need, or not need, `<-`), and when the two sides
+convert, so the step is redundant.
+
+### Where the goal comes from
+
+A rewrite needs the type expected of it; Raccoon otherwise checks terms bottom-up. It has one:
+
+- as a `let` 's value with a type, `let x : T := rewrite h in e`;
+- as a definition's or a lambda's body, against its declared result type;
+- as a block's result or a match case's body, against the type expected of the block or the match, refined in the case;
+- as an argument whose parameter's type captures nothing (no `$x`), so that the earlier arguments fix it, as in
+  `small(a, rewrite e in p)` for `small (n: Nat)(h: Nat.le(n, 3))`, or the third argument of `Eq.substProp`;
+- as the body of an earlier step.
+
+Elsewhere, in an unannotated `let` or at a parameter such as `Or.inl` 's `(left: $a in Prop)`, whose type is read off
+the argument's own, it is refused with a message that asks for the type: `let x : T := rewrite h in e`.
+
+A rewrite proves propositions; a goal in `Type` is refused (`Eq.subst` casts data).
+
 ## Type mismatches
 
 A mismatch names the expected type as the source writes it, where the checker has that, the actual type, and the first

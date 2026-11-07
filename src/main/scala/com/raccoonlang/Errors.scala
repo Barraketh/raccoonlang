@@ -84,6 +84,8 @@ object TypeError {
     case e: LinearInstance                  => e.copy(span = Some(sp))
     case e: LinearGlobal                    => e.copy(span = Some(sp))
     case e: LinearAxiom                     => e.copy(span = Some(sp))
+    case e: RewriteNeedsExpectedType        => e.copy(span = Some(sp))
+    case e: RewriteFailed                   => e.copy(span = Some(sp))
   }
 }
 
@@ -423,6 +425,20 @@ final case class InstanceSearchBudgetExceeded(
     span: Option[Span] = None
 ) extends TypeError {
   override def msg: String = s"Instance search depth exceeded for $goal (max depth $maxDepth)"
+}
+
+/**
+ * A `rewrite` checked where no type is expected of it, so it has no goal to build its motive from (docs/language.md,
+ * "Rewriting"); `where` says why none is.
+ */
+final case class RewriteNeedsExpectedType(where: String, span: Option[Span] = None) extends TypeError {
+  def msg: String =
+    s"rewrite needs the type expected of it, to build its motive, and $where; state the type, as in `let x : T := rewrite h in e`"
+}
+
+/** A `rewrite` whose equation, goal or motive does not allow it; `reason` says which and why. */
+final case class RewriteFailed(reason: String, span: Option[Span] = None) extends TypeError {
+  def msg: String = s"Cannot rewrite: $reason"
 }
 
 final case class CannotQuoteValue(value: Value, reason: String, span: Option[Span] = None) extends TypeError {

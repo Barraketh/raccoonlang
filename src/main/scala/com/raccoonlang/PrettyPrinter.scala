@@ -122,6 +122,7 @@ object PrettyPrinter {
     case CoreAst.Term.MatchOne(_, _, _, _, _, _) => s"(${printCoreTerm(t)})"
     case CoreAst.Term.Body(_, _, _)              => s"(${printCoreTerm(t)})"
     case CoreAst.Term.Pi(_, _, _, _)             => s"(${printCoreTerm(t)})"
+    case CoreAst.Term.Rewrite(_, _, _, _)        => s"(${printCoreTerm(t)})"
   }
 
   private def printCoreTerm(t: CoreAst.Term): String = t match {
@@ -131,6 +132,8 @@ object PrettyPrinter {
     case m: CoreAst.Term.Match                       => printMatch(m)
     case m @ CoreAst.Term.MatchOne(_, _, _, _, _, _) => printMatchOne(m)
     case b: CoreAst.Term.Body                        => printBody(b)
+    case CoreAst.Term.Rewrite(equation, reverse, body, _) =>
+      s"rewrite ${if (reverse) "<- " else ""}${printCoreTerm(equation)} in ${printCoreTerm(body)}"
     case CoreAst.Term.Select(base, field, _)         => s"${printCoreTermAtom(base)}.$field"
     case CoreAst.Term.Derive(goal, _)                => s"derive[${printTypeTerm(goal)}]"
     case CoreAst.Term.App(fn, args, _) =>

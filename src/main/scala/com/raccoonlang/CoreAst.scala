@@ -146,6 +146,15 @@ object CoreAst {
         nodeId: NodeId
     ) extends MatchTerm
 
+    /**
+     * One step of `rewrite h in e` (docs/language.md, "Rewriting"), `h` being `equation`, used right to left when
+     * `reverse`; the elaborator nests a rewrite of several steps, the first outermost, and `span` is the step's. It is
+     * sugar, not a kernel form: the checker hands it, with the type expected of it, to `Rewrite.plan`, which builds the
+     * call `Eq.substProp(...)` a user would write, and checks that call as it checks any (`TypeChecker.checkRewrite`).
+     * So no checked term, value or residual holds a rewrite, and a wrong motive can only fail to check.
+     */
+    final case class Rewrite(equation: Term, reverse: Boolean, body: Term, span: Span) extends Term
+
   }
 
   // Let: let x := foo
@@ -283,6 +292,7 @@ object CoreAst {
           )
         case Term.MatchOne(scrut, motive, fieldRefs, body, span, _) =>
           Term.MatchOne(copy(scrut), motive.map(tpe), fieldRefs, copy(body), span, NodeId.fresh())
+        case Term.Rewrite(equation, reverse, body, span) => Term.Rewrite(copy(equation), reverse, copy(body), span)
       }
     copy(term)
   }

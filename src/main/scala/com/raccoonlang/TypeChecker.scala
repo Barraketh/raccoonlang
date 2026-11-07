@@ -178,6 +178,28 @@ object TypeChecker {
       case other                                                 => Interpreter.force(other)
     }
 
+  /**
+   * The type that `fn`, applied to `arity` arguments, expects of the one after `prior`, the values of the arguments
+   * before it, checked against their parameters as `checkApplyValue` checks them; errors in them are the ones it
+   * reports. It is known before the argument is checked only when its parameter's type pattern captures nothing, since
+   * a capture is read off the argument's own type: otherwise `RewriteNeedsExpectedType`, as only a rewrite asks.
+   */
+  private def expectedArgument(fn: Value, prior: Vector[Value], arity: Int): Value = {
+    val head = applicationHead(fn)
+    head.tpe match {
+      case pi: VPi =>
+        if (pi.binders.length != arity) throw ArityMismatch(pi.binders.length, arity)
+        val binder = pi.binders(prior.length)
+        val bound = BinderOps.checkAndInstantiate(pi.binders.take(prior.length), pi.env, prior)
+        TypePatternOps.expectedType(bound, binder).getOrElse {
+          throw RewriteNeedsExpectedType(
+            s"the parameter ${binder.name} it is passed to has a type pattern that captures from the argument's own type"
+          )
+        }
+      case _ => throw CannotApplyNonFunction(head)
+    }
+  }
+
   private def elabRef(ref: CA.Term.Ref): EA.Term.Ref =
     ref match {
       case CA.Term.GlobalRef(name, span) => EA.Term.GlobalRef(name, span)
@@ -377,13 +399,29 @@ object TypeChecker {
    * consumed, for the bindings it makes; a read among them still reads the locals live at the start of the application,
    * by joint liveness.
    */
-  private def checkApplication(app: CA.Term.App, env: Env): CheckedTypeTerm = {
+  private def checkApplication(app: CA.Term.App, env: Env): CheckedTypeTerm =
+    checkCall(app, env) { (arg, argEnv, fn, prior) =>
+      arg match {
+        // A rewrite needs its goal, the type its parameter expects; every other argument is checked alone.
+        case rw: CA.Term.Rewrite =>
+          checkRewrite(rw, argEnv, expectedArgument(fn.value, prior.map(_.value), app.args.length))
+        case _ => checkTerm(arg, argEnv)
+      }
+    }
+
+  /**
+   * The application `app`, each argument checked by `checkArgument` in the environment after the head and the earlier
+   * arguments, given the checked head and those arguments, and the values then checked against the head's parameters.
+   */
+  private def checkCall(app: CA.Term.App, env: Env)(
+      checkArgument: (CA.Term, Env, CheckedTerm, Vector[CheckedTerm]) => CheckedTerm
+  ): CheckedTypeTerm = {
     val fn = checkTerm(app.fn, env)
     var argEnv = after(env, fn.lin)
-    val args = app.args.map { arg =>
-      val checked = checkTerm(arg, argEnv)
+    val args = app.args.foldLeft(Vector.empty[CheckedTerm]) { (prior, arg) =>
+      val checked = checkArgument(arg, argEnv, fn, prior)
       argEnv = after(argEnv, checked.lin)
-      checked
+      prior :+ checked
     }
     val argValues = args.map(_.value)
     val value =
@@ -638,6 +676,8 @@ object TypeChecker {
           CheckedTerm(value, quoteTerm(value, quoteContext(env), derive.span), LinearInfo.empty)
         case m: CA.Term.MatchTerm => MatchChecker.checkMatch(m, env)
         case b: CA.Term.Body      => checkBody(b, env)
+        case _: CA.Term.Rewrite =>
+          throw RewriteNeedsExpectedType("it is checked where nothing is expected of it, such as an unannotated let")
         case term: CA.TypeTerm =>
           val checked = checkTypeTerm(term, env)
           CheckedTerm(checked.value, checked.residual, checked.lin)
@@ -650,18 +690,69 @@ object TypeChecker {
       expected: CheckedTypeTerm
   ): CheckedTerm =
     at(term.span) {
-      val checked = term match {
-        case body: CA.Term.Body           => checkBody(body, env, Some(expected))
-        case matchTerm: CA.Term.MatchTerm => MatchChecker.checkMatch(matchTerm, env, Some(expected))
-        case _                            => checkTerm(term, env)
+      term match {
+        // A rewrite checks its own type against the one expected (`checkRewrite`).
+        case rw: CA.Term.Rewrite => checkRewrite(rw, env, expected.value)
+        case _ =>
+          val checked = term match {
+            case body: CA.Term.Body           => checkBody(body, env, Some(expected))
+            case matchTerm: CA.Term.MatchTerm => MatchChecker.checkMatch(matchTerm, env, Some(expected))
+            case _                            => checkTerm(term, env)
+          }
+          // A mismatch here is the term's own type against the expected one, whose residual is that type as written.
+          try checkType(checked.value, expected.value)
+          catch {
+            case m: TypeMismatch if m.written.isEmpty =>
+              throw m.copy(written = Some(new TypeMismatch.Written(PrettyPrinter.printElabTerm(expected.residual))))
+          }
+          checked
       }
-      // A mismatch here is the term's own type against the expected one, whose residual is that type as written.
-      try checkType(checked.value, expected.value)
+    }
+
+  /**
+   * One step of `rewrite h in e` against `goal` (docs/language.md, "Rewriting"): the call `Eq.substProp(p, motive, e)`
+   * that `Rewrite.plan` builds from the type of `h` and `goal`, checked as an application is (`checkCall`), except that
+   * `e` is checked against the type the call expects of it, the motive at the side the step leaves, as a term written
+   * with that type would be. Its residual is the call's, so nothing downstream knows rewrites. `h` is checked once for
+   * the plan, for its type, and again in the call; a proof's check is a read, so the second changes nothing.
+   *
+   * A motive that the abstraction left ill-typed fails its check, and is reported as the rewrite's failure. The call's
+   * type is the motive at the abstracted side, the goal as quoted, and is checked against `goal` here, for every caller;
+   * a goal that quotation did not rebuild faithfully is reported as the rewrite's failure too.
+   */
+  private def checkRewrite(rw: CA.Term.Rewrite, env: Env, goal: Value): CheckedTerm =
+    at(rw.span) {
+      val equation = checkTerm(rw.equation, env)
+      val plan = Rewrite.plan(rw, equation.value.tpe, goal, env)
+      val call = checkCall(plan.call, env) { (arg, argEnv, fn, prior) =>
+        prior.length match {
+          case 1 =>
+            try checkTerm(arg, argEnv)
+            catch {
+              case e: TypeError =>
+                throw RewriteFailed(s"the motive ${Mismatch.clip(PrettyPrinter.printTerm(arg))} it builds is ill-typed: ${e.msg}")
+            }
+          case 2 =>
+            val expected = expectedArgument(fn.value, prior.map(_.value), plan.call.args.length)
+            arg match {
+              case inner: CA.Term.Rewrite => checkRewrite(inner, argEnv, expected)
+              case _ =>
+                // The motive applied to the other side, which the type expected is the value of.
+                val other = quoteTerm(plan.other, quoteContext(argEnv), rw.span)
+                val residual = EA.Term.App(prior(1).residual, Vector(other), rw.span)
+                checkTermAgainst(arg, argEnv, CheckedTypeTerm(expected, residual, LinearInfo.empty))
+            }
+          case _ => checkTerm(arg, argEnv)
+        }
+      }
+      try checkType(call.value, goal)
       catch {
-        case m: TypeMismatch if m.written.isEmpty =>
-          throw m.copy(written = Some(new TypeMismatch.Written(PrettyPrinter.printElabTerm(expected.residual))))
+        case _: TypeMismatch =>
+          throw RewriteFailed(
+            s"its motive at the rewritten side gives ${Mismatch.abbreviated(call.value.tpe)}, not the expected type ${Mismatch.abbreviated(goal)}"
+          )
       }
-      checked
+      CheckedTerm(call.value, call.residual, call.lin)
     }
 
 }

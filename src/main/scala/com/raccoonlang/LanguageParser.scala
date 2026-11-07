@@ -394,6 +394,23 @@ object LanguageParser {
       }
   }
 
+  /**
+   * `rewrite h in e`, `rewrite <- h in e`, or `rewrite [h1, <- h2] in e`, whose body `e` extends as far as a lambda's.
+   * `rewrite` is no keyword, as `use` is none: a term that starts with it, whitespace, its steps and `in` is a rewrite,
+   * and elsewhere it is an identifier, so the parser commits only at `<-`, `[` or `in`, which cannot follow an
+   * identifier.
+   */
+  private def rewriteP(implicit sourceId: Option[SourceId]): Parser[Rewrite] = {
+    val step = ((sym("<-") ~/ skipAllWs).map(_ => true).? ~ term).flatSpanned(sourceId).map {
+      case (reverse, equation, span) => RewriteStep(equation, reverse.isDefined, span)
+    }
+    val steps = (P('[') ~/ skipAllWs ~ step.rep(1, layoutSym(',')) ~ layoutSymTight(']')) | step.map(Vector(_))
+    val in = skipAllWs ~ kwTight("in") ~ notFollowedBy(identChar, "the end of 'in'")
+    (kwTight("rewrite") ~ wsSep ~ steps ~ in ~/ skipAllWs ~ term).flatSpanned(sourceId).map {
+      case (steps, body, span) => Rewrite(steps, body, span)
+    }
+  }
+
   sealed trait TermTrailer
   case class TermDot(name: String, span: Span) extends TermTrailer
   case class TermApp(args: Vector[Term], span: Span) extends TermTrailer
@@ -418,7 +435,7 @@ object LanguageParser {
       .named("a term")
 
   private def termExpr(implicit sourceId: Option[SourceId]): Parser[Term] =
-    ((lambda | matchP | body | termAtom) ~ termTrailers).map { case (base, trailers) =>
+    ((lambda | matchP | rewriteP | body | termAtom) ~ termTrailers).map { case (base, trailers) =>
       trailers.foldLeft(base) {
         case (cur, TermDot(name, sp)) => Select(cur, name, sp)
         case (cur, TermApp(args, sp)) => App(cur, args, sp)
@@ -441,7 +458,8 @@ object LanguageParser {
       case App(fn, args, sp) =>
         if (args.isEmpty) throw ParseError(span.start, span.start, "A function type's domain applies to no arguments")
         TApp(asType(fn, span), args.map(asType(_, span)), sp)
-      case _: Match | _: Body => throw ParseError(span.start, span.start, "A function type's domain must be a type")
+      case _: Match | _: Body | _: Rewrite =>
+        throw ParseError(span.start, span.start, "A function type's domain must be a type")
     }
 
   private def funcHeader(implicit sourceId: Option[SourceId]): Parser[FuncHeader] =

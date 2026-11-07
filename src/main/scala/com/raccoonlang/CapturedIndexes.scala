@@ -89,6 +89,13 @@ object CapturedIndexes {
         }
     }
 
+  /** Whether `term` names the local `id`, one that no binder inside `term` binds, as ids grow with depth. */
+  def mentions(term: ElabAst.Term, id: Int): Boolean = {
+    val refs = new RoaringBitmap
+    goTerm(term, id + 1, refs)
+    refs.contains(id)
+  }
+
   def getCapturedIndexes(term: ElabAst.Term, env: Env): RoaringBitmap = {
     val indexes = new RoaringBitmap
     if (env.locals.nonEmpty) {

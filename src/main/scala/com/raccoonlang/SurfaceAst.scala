@@ -127,6 +127,17 @@ object SurfaceAst {
     /** `| _ => body`: a case for each reachable constructor no other case of its match names. */
     final case class Wildcard(body: Term, span: Span)
 
+    /**
+     * `rewrite h in e`, `rewrite <- h in e` or `rewrite [h1, <- h2] in e`: `e` checked against the expected type with
+     * each step's equation rewritten in it, the first step's first (docs/language.md, "Rewriting"). At least one step.
+     */
+    final case class Rewrite(steps: Vector[RewriteStep], body: Term, span: Span) extends Term {
+      require(steps.nonEmpty, "A rewrite has at least one step")
+    }
+
+    /** One step of a rewrite: the proof of an equation, used right to left when `reverse` (`<- h`). */
+    final case class RewriteStep(equation: Term, reverse: Boolean, span: Span)
+
     sealed trait BindingPattern {
       def span: Span
     }

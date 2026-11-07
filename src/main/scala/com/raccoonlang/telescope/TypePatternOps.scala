@@ -375,6 +375,17 @@ object TypePatternOps {
     }
 
   /**
+   * The type `binder` expects of its argument in `env`, where the binders before it are bound, when it is known before
+   * the argument: when its type pattern captures nothing, since a capture is read off the argument's own type. With no
+   * capture, the pattern's applications are well typed by substitution, so this only evaluates it.
+   */
+  def expectedType(env: Env, binder: VBinder): Option[Value] =
+    binder.ty match {
+      case EBinderType.TypePattern(tp, _) if binder.captures.isEmpty => Some(checkOpenedPattern(env, tp)._1)
+      case _                                                        => None
+    }
+
+  /**
    * Binds `actual` to `binder`, after opening its captures on the type of `actual`. The opened values must be the
    * arguments of the pattern's applications (`checkOpenedPattern`), and the type they rebuild must convert with the
    * type of `actual`. With no cumulativity, argument checking and function-type equality instantiate a telescope alike.
