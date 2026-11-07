@@ -228,8 +228,28 @@ final case class LocalCaseHead(name: String, span: Option[Span] = None) extends 
     s"Case head $name is local; unqualified case heads must resolve to globals. Use .$name for short-name matching."
 }
 
-final case class TypeMismatch(expected: Value, actual: Value, span: Option[Span] = None) extends TypeError {
-  def msg: String = s"Type mismatch: expected type: $expected, actual: $actual"
+/**
+ * `actual` is not `expected`. `written` is the expected type as the source writes it, when the checker has that: the
+ * type a let, a definition or a lambda states, or the type of the parameter an argument is passed to, its earlier
+ * parameters shown as the call's arguments. The message (`Mismatch`) shows it, the first pair of differing subterms,
+ * and the types abbreviated around that pair. It is computed when read, so a mismatch caught and recovered from costs
+ * nothing to describe.
+ */
+final case class TypeMismatch(
+    expected: Value,
+    actual: Value,
+    span: Option[Span] = None,
+    written: Option[TypeMismatch.Written] = None
+) extends TypeError {
+  lazy val msg: String = Mismatch.message(expected, actual, written.map(_.text))
+}
+
+object TypeMismatch {
+
+  /** The expected type as written, printed on first read. */
+  final class Written(describe: => String) {
+    lazy val text: String = describe
+  }
 }
 
 final case class PropositionAsTypeCarrier(span: Option[Span] = None) extends TypeError {

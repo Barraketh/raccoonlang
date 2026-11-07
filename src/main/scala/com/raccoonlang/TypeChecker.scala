@@ -3,11 +3,12 @@ package com.raccoonlang
 import com.raccoonlang.Interpreter._
 import com.raccoonlang.Value._
 import com.raccoonlang.ValueQuote.{quoteContext, quoteTerm, quoteType}
-import com.raccoonlang.telescope.BinderOps
+import com.raccoonlang.telescope.{BinderOps, TypePatternOps}
 import com.raccoonlang.Ledger.{Input, LinearInfo}
 import com.raccoonlang.{CoreAst => CA, ElabAst => EA}
 
 import scala.collection.immutable.BitSet
+import scala.util.control.NonFatal
 
 object TypeChecker {
   private final case class CheckedPi(vpi: VPi, bodyEnv: Env, outTy: Value, residual: EA.Term.Pi)
@@ -98,10 +99,7 @@ object TypeChecker {
    * eager evaluation read it, so it reports what it reported.
    */
   private def checkApplyValue(fn: Value, args: Vector[Value]): Value = {
-    val head = fn match {
-      case proof: VSuspendedProof if proof.tpe.isInstanceOf[VPi] => proof
-      case other                                                 => Interpreter.force(other)
-    }
+    val head = applicationHead(fn)
     head.tpe match {
       case pi: VPi =>
         BinderOps.checkAndInstantiate(pi.binders, pi.env, args)
@@ -109,6 +107,76 @@ object TypeChecker {
       case _ => throw CannotApplyNonFunction(head)
     }
   }
+
+  /**
+   * `mismatch`, raised by `checkApplyValue(fn, args)`, with the type of the parameter whose argument it refused as
+   * written (`TypeMismatch.written`): its earlier parameters print as the call's arguments `sources`, and its captures
+   * and the function's closure as their values. The parameter is the first whose argument does not check after the
+   * earlier ones bind, as `checkApplyValue` checks them. A mismatch from elsewhere in the check, such as a capture's
+   * constraint, is not about the argument's type, and keeps none.
+   */
+  private def withWrittenParameter(
+      mismatch: TypeMismatch,
+      fn: Value,
+      args: Vector[Value],
+      sources: Vector[CA.Term]
+  ): TypeMismatch =
+    // Only a diagnostic: whatever fails while describing leaves the mismatch as it was.
+    try writtenParameter(mismatch, fn, args, sources)
+    catch { case NonFatal(_) => mismatch }
+
+  private def writtenParameter(
+      mismatch: TypeMismatch,
+      fn: Value,
+      args: Vector[Value],
+      sources: Vector[CA.Term]
+  ): TypeMismatch =
+    applicationHead(fn).tpe match {
+      case pi: VPi if pi.binders.length == args.length =>
+        var env = pi.env
+        val failing = pi.binders.indices.find { index =>
+          BinderOps.tryCheckAndInstantiate(Vector(pi.binders(index)), env, Vector(args(index))) match {
+            case Some(next) =>
+              env = next
+              false
+            case None => true
+          }
+        }
+        // The argument's type is the mismatch's actual one: its own, or, for a suspended proof, its forced value's.
+        def refused(arg: Value): Boolean =
+          (mismatch.actual eq arg.tpe) || (arg match {
+            case proof: VSuspendedProof => mismatch.actual eq Interpreter.force(proof).tpe
+            case _                      => false
+          })
+        failing
+          .filter(index => refused(args(index)))
+          .fold(mismatch) { index =>
+            val binder = pi.binders(index)
+            val earlier = pi.binders.take(index).map(_.localRef.id).zip(sources).toMap
+            val opened = TypePatternOps.bindValue(env, binder, args(index))
+            // A long argument or value prints as the parameter's or capture's own name, which the signature gives it.
+            def short(text: String): Option[String] = Option.when(text.length <= WrittenArgument)(text)
+            def bound(ref: CA.LocalRef): Option[String] =
+              earlier.get(ref.id) match {
+                case Some(source) => short(PrettyPrinter.printTermAtom(source))
+                case None if ref.id < opened.locals.length =>
+                  opened.locals(ref.id).valueOption.flatMap(value => short(PrettyPrinter.printAtom(value)))
+                case None => None
+              }
+            mismatch.copy(written = Some(new TypeMismatch.Written(PrettyPrinter.printBinderType(binder.ty, bound))))
+          }
+      case _ => mismatch
+    }
+
+  /** The longest argument or value a parameter's written type shows; a longer one shows as its parameter's name. */
+  private val WrittenArgument = 40
+
+  /** `fn` as an application reads it (`checkApplyValue`). */
+  private def applicationHead(fn: Value): Value =
+    fn match {
+      case proof: VSuspendedProof if proof.tpe.isInstanceOf[VPi] => proof
+      case other                                                 => Interpreter.force(other)
+    }
 
   private def elabRef(ref: CA.Term.Ref): EA.Term.Ref =
     ref match {
@@ -317,7 +385,10 @@ object TypeChecker {
       argEnv = after(argEnv, checked.lin)
       checked
     }
-    val value = checkApplyValue(fn.value, args.map(_.value))
+    val argValues = args.map(_.value)
+    val value =
+      try checkApplyValue(fn.value, argValues)
+      catch { case m: TypeMismatch if m.written.isEmpty => throw withWrittenParameter(m, fn.value, argValues, app.args) }
     val residual = EA.Term.App(fn.residual, args.map(_.residual), app.span)
     val inputs = Input(fn.lin, sourceSpan(app.fn)) +: app.args.zip(args).map { case (arg, checked) =>
       Input(checked.lin, sourceSpan(arg))
@@ -584,7 +655,12 @@ object TypeChecker {
         case matchTerm: CA.Term.MatchTerm => MatchChecker.checkMatch(matchTerm, env, Some(expected))
         case _                            => checkTerm(term, env)
       }
-      checkType(checked.value, expected.value)
+      // A mismatch here is the term's own type against the expected one, whose residual is that type as written.
+      try checkType(checked.value, expected.value)
+      catch {
+        case m: TypeMismatch if m.written.isEmpty =>
+          throw m.copy(written = Some(new TypeMismatch.Written(PrettyPrinter.printElabTerm(expected.residual))))
+      }
       checked
     }
 

@@ -110,7 +110,7 @@ object PrettyPrinter {
     }
   }
 
-  private def printTermAtom(t: CoreAst.Term): String = t match {
+  private def printCoreTermAtom(t: CoreAst.Term): String = t match {
     case _: CoreAst.Term.Ref                     => printCoreTerm(t)
     case CoreAst.Term.NatLit(_, _)               => printCoreTerm(t)
     case CoreAst.Term.StrLit(_, _)               => printCoreTerm(t)
@@ -131,14 +131,17 @@ object PrettyPrinter {
     case m: CoreAst.Term.Match                       => printMatch(m)
     case m @ CoreAst.Term.MatchOne(_, _, _, _, _, _) => printMatchOne(m)
     case b: CoreAst.Term.Body                        => printBody(b)
-    case CoreAst.Term.Select(base, field, _)         => s"${printTermAtom(base)}[$field]"
+    case CoreAst.Term.Select(base, field, _)         => s"${printCoreTermAtom(base)}.$field"
     case CoreAst.Term.Derive(goal, _)                => s"derive[${printTypeTerm(goal)}]"
     case CoreAst.Term.App(fn, args, _) =>
-      val headStr = printTermAtom(fn)
+      val headStr = printCoreTermAtom(fn)
       val argsStr = args.map(printTermAtom).mkString(", ")
       s"$headStr($argsStr)"
     case tt: CoreAst.TypeTerm => printTypeTerm(tt)
   }
+
+  /** A core term as `printTerm` prints it, parenthesized where an argument or a head is expected. */
+  def printTermAtom(t: CoreAst.Term): String = printCoreTermAtom(t)
 
   def printTerm(t: CoreAst.Ast): String = t match {
     case term: CoreAst.Term             => printCoreTerm(term)
@@ -155,7 +158,7 @@ object PrettyPrinter {
   }
 
   private def printMatch(m: CoreAst.Term.Match): String = {
-    val scrutStr = printTermAtom(m.scrut)
+    val scrutStr = printCoreTermAtom(m.scrut)
     val motiveStr = m.motive.map(motive => s" returning ${printTypeTerm(motive)}").getOrElse("")
     val casesStr = (m.cases.map(printCase) ++ m.wildcard.map(w => s"| _ => ${printCoreTerm(w.body)}")).mkString(" ")
     val equationStr = (m.cases.flatMap(_.equation) ++ m.wildcard.flatMap(_.equation)).headOption
@@ -166,7 +169,7 @@ object PrettyPrinter {
   private def printMatchOne(m: CoreAst.Term.MatchOne): String = {
     val fields = m.fieldRefs.map(_.name).mkString(", ")
     val motiveStr = m.motive.map(motive => s" returning ${printTypeTerm(motive)}").getOrElse("")
-    s"matchOne ${printTermAtom(m.scrut)}$motiveStr with ($fields) => ${printCoreTerm(m.body)}"
+    s"matchOne ${printCoreTermAtom(m.scrut)}$motiveStr with ($fields) => ${printCoreTerm(m.body)}"
   }
 
   /**
@@ -432,14 +435,16 @@ object PrettyPrinter {
     def printAtom(value: Value): String = if (isLoose(value)) s"(${print(value)})" else print(value)
 
     private def printApp(head: Value, args: Seq[Value]): String = {
-      val headStr = head match {
+      val argsStr = args.toList.map(print).mkString(", ")
+      s"${appHead(head)}($argsStr)"
+    }
+
+    private def appHead(head: Value): String =
+      head match {
         // A global function, such as a native stuck on its arguments, prints as its name.
         case Value.VLam(_, Value.ValueId.Const(name), _) => name
         case _                                           => printAtom(head)
       }
-      val argsStr = args.toList.map(print).mkString(", ")
-      s"$headStr($argsStr)"
-    }
 
     /**
      * A word, in one loop over its tokens. A kernel `List` word prints as its elements in brackets, followed by `++`
@@ -510,7 +515,11 @@ object PrettyPrinter {
      * as written, captures included, with the type's captured locals as their values; a codomain that is itself a
      * function type is parenthesized, so the binders of one type are told from the next.
      */
-    private def printPi(pi: Value.VPi): String = {
+    private def printPi(pi: Value.VPi): String =
+      piText(pi, (inner, out) => inner.print(out))
+
+    /** `printPi`, with the codomain, opened on the binders' fresh variables, as `codomain` prints it with `inner`. */
+    private def piText(pi: Value.VPi, codomain: (ValuePrinter, Value) => String): String = {
       val fresh = telescope.BinderOps.freshen(pi)
       val opened = pi.binders.flatMap(b => b.captures.map(_.localRef) :+ b.localRef).map(ref => ref.name -> fresh(ref))
       // Opened on fresh variables, the type's parts are no part of a result's value: they print as a diagnostic's do.
@@ -528,25 +537,121 @@ object PrettyPrinter {
       }
       val out = pi.codomain(fresh)
       val outText = out match {
-        case _: Value.VPi => s"(${inner.print(out)})"
-        case _            => inner.print(out)
+        case _: Value.VPi => s"(${codomain(inner, out)})"
+        case _            => codomain(inner, out)
       }
       (binders :+ outText).mkString(" -> ")
     }
+
+    /** How `print` shows `value` (`Mismatch.Shape`): the parts it prints, each printed by `print`. */
+    def shape(value: Value): Mismatch.Shape =
+      value match {
+        case proof: Value.VSuspendedProof => forced(proof).fold[Mismatch.Shape](Mismatch.Shape.Whole)(shape)
+        case packed.Strings.Literal(_)    => Mismatch.Shape.Whole
+        case nil if Kernel.isListNil(nil) => Mismatch.Shape.ListOf(Vector.empty, nil, Vector.empty)
+        case word: Value.VWord =>
+          val elements = Vector.newBuilder[Value]
+          val rests = Vector.newBuilder[Value]
+          var end: Value = null
+          val kernelList = packed.Words.foreach(word)(
+            layer = token =>
+              token.head.name == Kernel.ListConsName && {
+                elements += token.payload(0)
+                rests += token.rest
+                true
+              },
+            end = token => { end = token.value; true }
+          )
+          if (kernelList) Mismatch.Shape.ListOf(elements.result(), end, rests.result()) else Mismatch.Shape.Whole
+        case Value.VCtor(head, fields, _) if head.name != Kernel.ZeroName && fields.nonEmpty =>
+          Mismatch.Shape.App(print(head), fields)
+        case v: Value.VApp => Mismatch.Shape.App(appHead(v.head), v.args)
+        case pi: Value.VPi => Mismatch.Shape.Fun(pi)
+        case lam @ Value.VLam(_, _: Value.ValueId.LocalId, _: Value.LamBody.Core) => Mismatch.Shape.Lam(lam)
+        case thunk: Value.NeutralThunk =>
+          StructEta.Projection
+            .of(thunk.term, thunk.env)
+            .collect { case (base, _, info, idx) if info.fieldNames(idx) != "_" => Mismatch.Shape.Field(base, info.fieldNames(idx)) }
+            .getOrElse(Mismatch.Shape.Whole)
+        case _ => Mismatch.Shape.Whole
+      }
+
+    /**
+     * `value` printed along `path`, as `print` prints it, except that each part off the path that prints longer than
+     * `part` characters prints as `…`, a list shows at most three elements before the one on the path, and none after
+     * it, and the part the path ends at prints in `outline` when it is longer than `leaf` characters.
+     */
+    def focused(value: Value, path: List[Mismatch.Step], part: Int, leaf: Int): String = {
+      def brief(v: Value): String = briefly(v, part)
+      def upTo(elements: Vector[Value]): Vector[String] =
+        if (elements.length > 3) "…" +: elements.takeRight(3).map(brief) else elements.map(brief)
+      (path, shape(value)) match {
+        case (Mismatch.Step.Arg(i) :: rest, Mismatch.Shape.App(head, args)) if i < args.length =>
+          val shown = args.indices.map(j => if (j == i) focused(args(j), rest, part, leaf) else brief(args(j)))
+          s"$head(${shown.mkString(", ")})"
+        case (Mismatch.Step.Elem(i) :: rest, Mismatch.Shape.ListOf(elements, end, _)) if i < elements.length =>
+          val after = if (i + 1 < elements.length) Vector("…") else Vector.empty
+          val shown = (upTo(elements.take(i)) :+ focused(elements(i), rest, part, leaf)) ++ after
+          shown.mkString("[", ", ", "]") + (if (Kernel.isListNil(end)) "" else s" ++ ${brief(end)}")
+        case (Mismatch.Step.End :: rest, Mismatch.Shape.ListOf(elements, end, _)) =>
+          upTo(elements).mkString("[", ", ", "]") + s" ++ ${focused(end, rest, part, leaf)}"
+        // A list's shared elements, then what follows them, as an append of the two.
+        case (Mismatch.Step.Rest(count) :: rest, list: Mismatch.Shape.ListOf) if count <= list.elements.length =>
+          upTo(list.elements.take(count)).mkString("[", ", ", "]") + s" ++ ${focused(list.after(count), rest, part, leaf)}"
+        case (Mismatch.Step.Codomain :: rest, Mismatch.Shape.Fun(pi)) =>
+          piText(pi, (inner, out) => inner.focused(out, rest, part, leaf))
+        case (Mismatch.Step.Body :: rest, Mismatch.Shape.Lam(lam)) =>
+          lamText(lam, (inner, body) => inner.focused(body, rest, part, leaf))
+        case (Mismatch.Step.Base :: rest, Mismatch.Shape.Field(base, field)) =>
+          val inner = focused(base, rest, part, leaf)
+          if (isLoose(base)) s"($inner).$field" else s"$inner.$field"
+        case (Nil, _) =>
+          val whole = print(value)
+          if (whole.length <= leaf) whole else outline(value, part)
+        case _ => print(value)
+      }
+    }
+
+    /** `value` printed, or `…` when that is longer than `part` characters. */
+    private def briefly(value: Value, part: Int): String = {
+      val text = print(value)
+      if (text.length <= part) text else "…"
+    }
+
+    /**
+     * `value` as `print` shows it, except that each of its parts that prints longer than `part` characters prints as
+     * `…`: an application's arguments, a list's elements, after its first three, and its end, and a projection's base
+     * in outline.
+     */
+    def outline(value: Value, part: Int): String =
+      shape(value) match {
+        case Mismatch.Shape.App(head, args) => s"$head(${args.map(briefly(_, part)).mkString(", ")})"
+        case Mismatch.Shape.ListOf(elements, end, _) =>
+          val shown = elements.take(3).map(briefly(_, part)) ++ Option.when(elements.length > 3)("…")
+          shown.mkString("[", ", ", "]") + (if (Kernel.isListNil(end)) "" else s" ++ ${briefly(end, part)}")
+        case Mismatch.Shape.Field(base, field) =>
+          val inner = outline(base, part)
+          if (isLoose(base)) s"($inner).$field" else s"$inner.$field"
+        case _ => print(value)
+      }
 
     /** A global function by its name; a local lambda as its binders and its body opened on them. */
     private def printLam(lam: Value.VLam): String =
       lam.id match {
         case Value.ValueId.Const(name) => name
-        case _: Value.ValueId.LocalId =>
-          val fresh = telescope.BinderOps.freshen(lam.tpe)
-          val opened =
-            lam.tpe.binders.flatMap(b => b.captures.map(_.localRef) :+ b.localRef).map(ref => ref.name -> fresh(ref))
-          // Opened on fresh variables, the body is no part of a result's value: it prints as a diagnostic's does.
-          val inner = new ValuePrinter(names ++ boundNames(opened), result = false)
-          val body = Interpreter.runLam(lam, lam.tpe.binders.map(b => fresh(b.localRef)))
-          s"fun ${underEnv(lam.tpe.env).printElabBinders(lam.tpe.binders.map(toBinder))} => ${inner.print(body)}"
+        case _: Value.ValueId.LocalId  => lamText(lam, (inner, body) => inner.print(body))
       }
+
+    /** A local lambda as `printLam` prints it, with its body, run on its binders' fresh variables, as `body` prints it. */
+    private def lamText(lam: Value.VLam, body: (ValuePrinter, Value) => String): String = {
+      val fresh = telescope.BinderOps.freshen(lam.tpe)
+      val opened =
+        lam.tpe.binders.flatMap(b => b.captures.map(_.localRef) :+ b.localRef).map(ref => ref.name -> fresh(ref))
+      // Opened on fresh variables, the body is no part of a result's value: it prints as a diagnostic's does.
+      val inner = new ValuePrinter(names ++ boundNames(opened), result = false)
+      val result = Interpreter.runLam(lam, lam.tpe.binders.map(b => fresh(b.localRef)))
+      s"fun ${underEnv(lam.tpe.env).printElabBinders(lam.tpe.binders.map(toBinder))} => ${body(inner, result)}"
+    }
 
     private def toBinder(b: Value.VBinder): ElabAst.Binder =
       ElabAst.Binder(b.localRef, b.ty, Span(0, 0), b.isInstance)
@@ -607,6 +712,28 @@ object PrettyPrinter {
    * This is how a diagnostic shows a value.
    */
   def print(value: Value): String = printWith(value, result = false)
+
+  /** How `print` shows `value`, for `Mismatch`. */
+  def shapeOf(value: Value): Mismatch.Shape = new ValuePrinter(Map.empty, result = false).shape(value)
+
+  /** `value` as `print` shows it along `path` to a part, other parts abbreviated (`Mismatch`). */
+  def printFocused(value: Value, path: List[Mismatch.Step], part: Int, leaf: Int): String =
+    try new ValuePrinter(Map.empty, result = false).focused(value, path, part, leaf)
+    catch { case NonFatal(_) => print(value) }
+
+  /** `value` as `print` shows it with its long parts as `…` (`Mismatch`). */
+  def printOutline(value: Value, part: Int): String =
+    try new ValuePrinter(Map.empty, result = false).outline(value, part)
+    catch { case NonFatal(_) => print(value) }
+
+  /** `value` as `print` shows it, parenthesized where an atom is expected. */
+  def printAtom(value: Value): String =
+    try new ValuePrinter(Map.empty, result = false).printAtom(value)
+    catch { case NonFatal(_) => s"(${print(value)})" }
+
+  /** A binder's type as written, a local that `bound` names printing as the text it gives, and any other by name. */
+  def printBinderType(ty: ElabAst.BinderType, bound: CoreAst.LocalRef => Option[String]): String =
+    new ElabPrinter(bound).printElabBinderType(ty)
 
   /**
    * A program's result as `print` shows it, except that a proof call whose run fails is the program's failure: its

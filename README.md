@@ -68,6 +68,8 @@ Note that at this point I have done 0 optimization - these performance wins are 
 - [Resource protocols](docs/kernel.md#resource-protocols): first-class protocols, linear tokens changed only by
   `Protocol.step`, and `Protocol.observe`, which proves that tokens held together are part of one reachable
   configuration; an untrusted protocol library in [`lib/Protocol`](#the-protocol-library)
+- [Language conveniences](docs/language.md) that the checker reduces to what it already checks: type-mismatch
+  messages that show the types as written and their first difference
 - Extensible definitional equality through type-driven expression normalization
 - Canonical sums of products for builtin Nat addition, multiplication, and powers, deciding associativity,
   commutativity, units, numeral arithmetic, and the exponent product law `x^a * x^b = x^(a + b)` by conversion, plus
