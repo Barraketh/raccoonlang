@@ -18,9 +18,18 @@ object ValueQuote {
   /**
    * Rebuilds code closed over `env` for `context`, at `depth`, the length of the environment the rebuilt code is
    * evaluated in: a local the code binds, at or above `env` 's length, moves with its binder to `depth` plus its
-   * offset; a free one is the local `renamed` gives it, or else its value quoted in `context`, as an application head
-   * where it is one. Its slots may move and its captures change, so every rebuilt Pi, lambda, or match receives a fresh
-   * semantic ID (`NodeId`).
+   * offset; a free one is the local `renamed` gives it, or else its value quoted, as an application head where it is
+   * one. Its slots may move and its captures change, so every rebuilt Pi, lambda, or match receives a fresh semantic ID
+   * (`NodeId`).
+   *
+   * A free value is quoted at the length of the environment it is evaluated in, `here`: `depth` and one slot past each
+   * local the code binds around it, in the order the checker binds them (a body's lets in turn, a case's named fields
+   * then its equation, a lambda's or Pi's binders, each after its type pattern's captures, a constraint before its
+   * capture, then a lambda's recursive slots), so the locals its quotation binds itself, a stuck match's lets or a
+   * lambda's binders, take the next slots instead of the code's. A type pattern piece before a capture of its own
+   * binder is evaluated with that capture bound when an application opens the pattern, and without it when the binder
+   * is freshened (`TypePatternOps`), so no numbering of the locals a quotation there binds suits both: it is quoted as
+   * the checker numbers it, the freshening order, as a lambda written there is.
    */
   private final class ClosedEnvInliner(
       env: Env,
@@ -33,67 +42,86 @@ object ValueQuote {
     def reindex(ref: CoreAst.LocalRef): CoreAst.LocalRef =
       ref.copy(id = ref.id - envLength + depth)
 
-    private def inlineLocal(ref: CoreAst.LocalRef, refSpan: Span, appHead: Boolean): ElabAst.Term =
+    /** The environment's length once the code has bound `ref` at `here`: dense slots, so one past its new slot. */
+    private def past(here: Int, ref: CoreAst.LocalRef): Int = math.max(here, reindex(ref).id + 1)
+
+    private def inlineLocal(ref: CoreAst.LocalRef, refSpan: Span, appHead: Boolean, here: Int): ElabAst.Term =
       if (ref.id >= envLength) ElabAst.Term.LocalRef(reindex(ref), refSpan)
       else
         renamed.get(ref.id) match {
-          case Some(local)     => ElabAst.Term.LocalRef(local, refSpan)
-          case None if appHead => quoteAppHead(env(ref), context, refSpan)
-          case None            => quoteTerm(env(ref), context, refSpan)
+          case Some(local) => ElabAst.Term.LocalRef(local, refSpan)
+          case None =>
+            val at = context.copy(localEnvLength = here)
+            if (appHead) quoteAppHead(env(ref), at, refSpan) else quoteTerm(env(ref), at, refSpan)
         }
 
-    private def inlineAppHead(t: ElabAst.Term): ElabAst.Term =
+    private def inlineAppHead(t: ElabAst.Term, here: Int): ElabAst.Term =
       t match {
-        case ElabAst.Term.LocalRef(ref, refSpan) => inlineLocal(ref, refSpan, appHead = true)
-        case other                               => inlineTerm(other)
+        case ElabAst.Term.LocalRef(ref, refSpan) => inlineLocal(ref, refSpan, appHead = true, here)
+        case other                               => inlineTerm(other, here)
       }
 
-    def inlineTerm(t: ElabAst.Term): ElabAst.Term =
+    def inlineTerm(t: ElabAst.Term): ElabAst.Term = inlineTerm(t, depth)
+
+    private def inlineTerm(t: ElabAst.Term, here: Int): ElabAst.Term =
       t match {
         // A term-position local can inline to a lambda or body, so do not require a type term here.
-        case ElabAst.Term.LocalRef(ref, refSpan) => inlineLocal(ref, refSpan, appHead = false)
-        case tt: ElabAst.TypeTerm                => inlineTypeTerm(tt)
+        case ElabAst.Term.LocalRef(ref, refSpan) => inlineLocal(ref, refSpan, appHead = false, here)
+        case tt: ElabAst.TypeTerm                => inlineTypeTerm(tt, here)
         case ElabAst.Term.Body(lets, res, bodySpan) =>
+          var inner = here
           val nextLets = lets.map { l =>
-            ElabAst.Let(reindex(l.localRef), l.ty.map(inlineTypeTerm), inlineTerm(l.value), l.span, l.isInstance)
+            val let = ElabAst.Let(
+              reindex(l.localRef),
+              l.ty.map(inlineTypeTerm(_, inner)),
+              inlineTerm(l.value, inner),
+              l.span,
+              l.isInstance
+            )
+            inner = past(inner, l.localRef)
+            let
           }
-          ElabAst.Term.Body(nextLets, inlineTerm(res), bodySpan)
+          ElabAst.Term.Body(nextLets, inlineTerm(res, inner), bodySpan)
         case ElabAst.Term.Match(scrut, motive, cases, matchSpan, _, proofIntoProp) =>
           ElabAst.Term.Match(
-            inlineTerm(scrut),
-            motive.map(inlineTypeTerm),
-            cases.map(inlineCase),
+            inlineTerm(scrut, here),
+            motive.map(inlineTypeTerm(_, here)),
+            cases.map(inlineCase(_, here)),
             matchSpan,
             NodeId.fresh(),
             proofIntoProp
           )
       }
 
-    def inlineTypeTerm(t: ElabAst.TypeTerm): ElabAst.TypeTerm =
+    private def inlineTypeTerm(t: ElabAst.TypeTerm, here: Int): ElabAst.TypeTerm =
       t match {
         case ElabAst.Term.GlobalRef(_, _) => t
         case ElabAst.Term.LocalRef(ref, refSpan) =>
-          inlineLocal(ref, refSpan, appHead = false) match {
+          inlineLocal(ref, refSpan, appHead = false, here) match {
             case tt: ElabAst.TypeTerm => tt
             case other                => throw CannotQuoteValue(env(ref), s"$other is not a type term", Some(refSpan))
           }
         case ElabAst.Term.App(fn, args, appSpan) =>
-          ElabAst.Term.App(inlineAppHead(fn), args.map(inlineTerm), appSpan)
-        case proj: ElabAst.Term.Proj   => proj.copy(base = inlineTerm(proj.base))
+          ElabAst.Term.App(inlineAppHead(fn, here), args.map(inlineTerm(_, here)), appSpan)
+        case proj: ElabAst.Term.Proj   => proj.copy(base = inlineTerm(proj.base, here))
         case ElabAst.Term.NatLit(_, _) => t
         case ElabAst.Term.StrLit(_, _) => t
         case ElabAst.Term.Word(consHead, pieces, wordSpan) =>
           val nextPieces = pieces.map {
             case ElabAst.Term.WordPiece.Layer(before, after) =>
-              ElabAst.Term.WordPiece.Layer(before.map(inlineTerm), after.map(inlineTerm))
-            case ElabAst.Term.WordPiece.Splice(list) => ElabAst.Term.WordPiece.Splice(inlineTerm(list))
+              ElabAst.Term.WordPiece.Layer(before.map(inlineTerm(_, here)), after.map(inlineTerm(_, here)))
+            case ElabAst.Term.WordPiece.Splice(list) => ElabAst.Term.WordPiece.Splice(inlineTerm(list, here))
           }
           ElabAst.Term.Word(consHead, nextPieces, wordSpan)
-        case pi: ElabAst.Term.Pi => inlinePi(pi)
+        case pi: ElabAst.Term.Pi => inlinePi(pi, here)._1
         case ElabAst.Term.Lam(ty, body, lamSpan, name, recursiveSelf, _, recursivePeers) =>
+          val (nextTy, afterBinders) = inlinePi(ty, here)
+          // The body runs with the parameters bound, then the self slot, then the block's members (`Interpreter`).
+          val recursive = recursiveSelf.toVector ++ recursivePeers.map(_._1)
+          val inBody = recursive.foldLeft(afterBinders)(past)
           ElabAst.Term.Lam(
-            inlinePi(ty),
-            inlineTerm(body),
+            nextTy,
+            inlineTerm(body, inBody),
             lamSpan,
             name,
             recursiveSelf.map(reindex),
@@ -102,42 +130,77 @@ object ValueQuote {
           )
       }
 
-    private def inlinePi(pi: ElabAst.Term.Pi): ElabAst.Term.Pi = {
-      val nextBinders = pi.binders.map { b =>
-        b.copy(localRef = reindex(b.localRef), ty = inlineBinderType(b.ty))
-      }
-      ElabAst.Term.Pi(nextBinders, inlineTypeTerm(pi.out), pi.classifier, pi.span, NodeId.fresh())
+    /** `pi` rebuilt at `here`, and the length once its binders are bound, where its codomain is evaluated. */
+    private def inlinePi(pi: ElabAst.Term.Pi, here: Int): (ElabAst.Term.Pi, Int) = {
+      val (binders, afterBinders) = inlineBinders(pi.binders, here)
+      (
+        ElabAst.Term.Pi(binders, inlineTypeTerm(pi.out, afterBinders), pi.classifier, pi.span, NodeId.fresh()),
+        afterBinders
+      )
     }
 
-    private def inlineTypePattern(tp: ElabAst.TypePattern): ElabAst.TypePattern =
+    /** `binders` rebuilt in turn from `here`, each type after the binders before it, and the length after them all. */
+    def inlineBinders(binders: Vector[ElabAst.Binder], here: Int): (Vector[ElabAst.Binder], Int) = {
+      var inner = here
+      val next = binders.map { b =>
+        val (ty, afterCaptures) = inlineBinderType(b.ty, inner)
+        inner = past(afterCaptures, b.localRef)
+        b.copy(localRef = reindex(b.localRef), ty = ty)
+      }
+      (next, inner)
+    }
+
+    private def inlineTypePattern(tp: ElabAst.TypePattern, here: Int): (ElabAst.TypePattern, Int) =
       tp match {
-        case top: ElabAst.TopLevelTP => inlineTopLevelTP(top)
+        case top: ElabAst.TopLevelTP => inlineTopLevelTP(top, here)
         case ElabAst.TypePattern.Capture(ref, captureSpan, constraint) =>
-          ElabAst.TypePattern.Capture(reindex(ref), captureSpan, constraint.map(inlineTopLevelTP))
+          val (nextConstraint, afterConstraint) = constraint.map(inlineTopLevelTP(_, here)) match {
+            case Some((c, after)) => (Some(c), after)
+            case None             => (None, here)
+          }
+          (ElabAst.TypePattern.Capture(reindex(ref), captureSpan, nextConstraint), past(afterConstraint, ref))
       }
 
-    private def inlineTopLevelTP(tp: ElabAst.TopLevelTP): ElabAst.TopLevelTP =
+    private def inlineTopLevelTP(tp: ElabAst.TopLevelTP, here: Int): (ElabAst.TopLevelTP, Int) =
       tp match {
-        case ElabAst.TypePattern.Type(tpe) => ElabAst.TypePattern.Type(inlineTypeTerm(tpe))
+        case ElabAst.TypePattern.Type(tpe) => (ElabAst.TypePattern.Type(inlineTypeTerm(tpe, here)), here)
         case ElabAst.TypePattern.App(fn, args, appSpan) =>
           val nextFn =
-            inlineAppHead(fn) match {
+            inlineAppHead(fn, here) match {
               case ref: ElabAst.Term.Ref => ref
               case other                 => throw WTF(s"Failed to inline ref $fn, got $other")
             }
-          ElabAst.TypePattern.App(nextFn, args.map(inlineTypePattern), appSpan)
+          var inner = here
+          val nextArgs = args.map { arg =>
+            val (next, after) = inlineTypePattern(arg, inner)
+            inner = after
+            next
+          }
+          (ElabAst.TypePattern.App(nextFn, nextArgs, appSpan), inner)
       }
 
-    def inlineBinderType(binderType: ElabAst.BinderType): ElabAst.BinderType =
+    /** `binderType` rebuilt at `here`, and the length once its captures are bound. */
+    private def inlineBinderType(binderType: ElabAst.BinderType, here: Int): (ElabAst.BinderType, Int) =
       binderType match {
         case ElabAst.BinderType.TypePattern(tp, binderSpan) =>
-          ElabAst.BinderType.TypePattern(inlineTopLevelTP(tp), binderSpan)
+          val (next, after) = inlineTopLevelTP(tp, here)
+          (ElabAst.BinderType.TypePattern(next, binderSpan), after)
         case ElabAst.BinderType.ConstrainedCapture(ref, constraint, binderSpan) =>
-          ElabAst.BinderType.ConstrainedCapture(reindex(ref), inlineTopLevelTP(constraint), binderSpan)
+          val (next, after) = inlineTopLevelTP(constraint, here)
+          (ElabAst.BinderType.ConstrainedCapture(reindex(ref), next, binderSpan), past(after, ref))
       }
 
-    def inlineCase(c: ElabAst.Case): ElabAst.Case =
-      ElabAst.Case(c.ctorName, c.argRefs.map(_.map(reindex)), inlineTerm(c.body), c.span, c.equation.map(reindex))
+    private def inlineCase(c: ElabAst.Case, here: Int): ElabAst.Case = {
+      val bound = c.argRefs.flatten ++ c.equation
+      val inBody = bound.foldLeft(here)(past)
+      ElabAst.Case(
+        c.ctorName,
+        c.argRefs.map(_.map(reindex)),
+        inlineTerm(c.body, inBody),
+        c.span,
+        c.equation.map(reindex)
+      )
+    }
   }
 
   /**
@@ -303,10 +366,9 @@ object ValueQuote {
    * once, as a `let` before the match, in the order of the captures, and quoted at its let's depth, so that lets of its
    * own (a stuck match it holds) take the slots after the earlier captures' lets. The free locals are then distinct
    * locals below the rebuilt match, mentioned in the same order, and its bound locals keep their offsets, so its code
-   * is the original's.
-   * Only an application head may name a raw recursive self (`LocalResidualPolicy.AppHeadOnly`), and the checked code
-   * reads one only there, so such a capture is read from its local too. A linear capture has no residual, even when a
-   * local holds it, as for `quoteTerm`.
+   * is the original's. Only an application head may name a raw recursive self (`LocalResidualPolicy.AppHeadOnly`), and
+   * the checked code reads one only there, so such a capture is read from its local too. A linear capture has no
+   * residual, even when a local holds it, as for `quoteTerm`.
    */
   private def quoteClosedMatch(thunk: NeutralThunk, context: QuoteContext, span: Span): ElabAst.Term = {
     val env = thunk.env
@@ -497,9 +559,8 @@ object ValueQuote {
     val quotedOut = quoteType(result, nextContext, span)
     val inliner = new ClosedEnvInliner(pi.env, context, context.localEnvLength)
 
-    val quotedBinders = pi.binders.map { b =>
-      ElabAst.Binder(inliner.reindex(b.localRef), inliner.inlineBinderType(b.ty), Span(0, 0), b.isInstance)
-    }
+    val written = pi.binders.map(b => ElabAst.Binder(b.localRef, b.ty, Span(0, 0), b.isInstance))
+    val quotedBinders = inliner.inlineBinders(written, context.localEnvLength)._1
 
     OpenedPi(ElabAst.Term.Pi(quotedBinders, quotedOut, pi.tpe, span, NodeId.fresh()), freshArgs, nextContext)
   }

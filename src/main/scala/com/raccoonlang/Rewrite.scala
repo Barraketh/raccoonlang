@@ -109,12 +109,12 @@ private[raccoonlang] object Rewrite {
    * to be checked with, so it is refused; quotation names a recursive global, as the definitions a goal unfolds to
    * are, by its name.
    *
-   * Renumbering keeps the checker's density invariant (`Env.putLocal`) whatever slots quotation chose: a stuck match's
-   * captures are quoted as lets in the quotation's context, so a capture's own quoted lets may take the slots of the
-   * lets before it (see the report on `ValueQuote.quoteClosedMatch`). Each local is bound where its binder is, in the
-   * checker's order: a body's lets in turn, a binder's captures in its pattern's order, a constraint's before its
-   * capture, then the binder, and a case's named fields, then its equation. A local bound outside the quoted syntax
-   * keeps its slot.
+   * Renumbering gives the checker's density invariant (`Env.putLocal`) by construction, whatever slots quotation chose.
+   * Quotation numbers the locals it binds densely in the checker's order (`ValueQuote.ClosedEnvInliner`), so this is
+   * the identity on its output; it only keeps a rewrite independent of that. Each local is bound where its binder is,
+   * in the checker's order: a body's lets in turn, a binder's captures in its pattern's order, a constraint's before
+   * its capture, then the binder, and a case's named fields, then its equation. A local bound outside the quoted
+   * syntax keeps its slot.
    */
   private final class Core(start: Int, initial: Map[Int, CA.LocalRef]) {
     import Core.Scope

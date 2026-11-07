@@ -359,6 +359,17 @@ class StuckMatchIdentityTests extends munit.FunSuite {
     // The second capture is a stuck match with a capture of its own that is no local: its let follows the first
     // capture's instead of taking its slot.
     accepted(sel + inferred("Eq(Nat, sel(j, Nat.mul(k, k), sel(k, Nat.mul(j, j), j)), k)"))
+    // A function type's binder type reads such a match from the type's closure, under the binder before it: the
+    // match's let follows that binder instead of taking its slot.
+    accepted(
+      sel + "def F (s: Nat): Type := (x: Nat) -> Eq(Nat, s, x) -> Nat\n" +
+        inferred("F(sel(j, Nat.mul(k, k), k))")
+    )
+    // So does a lambda read from the closure: its binder follows the type's.
+    accepted(
+      sel + "def G (f: Nat -> Nat): Type := (x: Nat) -> Eq(Nat, f(x), x) -> Nat\n" +
+        inferred("G(fun (y: Nat): Nat => sel(j, Nat.mul(k, y), y))")
+    )
     accepted(
       isZ +
         """
