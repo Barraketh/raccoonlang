@@ -57,6 +57,24 @@ def member (n: Nat)(z: Eq(Bool, isZero(n), Bool.true)) : List.Mem(Nat, n, pick(n
 evaluates to membership in `[n]`, which `List.Mem.head` proves. A rewrite of the proof's own type could not do this:
 evaluation has already removed `Bool.true` from it.
 
+A match written on a computed scrutinee is stuck on the scrutinee's value, which it holds in place of the scrutinee's
+code ([stuck matches](kernel.md#stuck-matches)), so a rewrite finds it there as well:
+
+```raccoon
+def coordinate (n: Nat)(k: Nat): Option(Nat) := {
+  match Nat.ble(2147483648, n) returning Option(Nat) with
+  | Bool.false => Option.some(Nat.add(n, k))
+  | Bool.true => Option.none(Nat)
+}
+
+def low (n: Nat)(k: Nat)(h: Eq(Bool, Nat.ble(2147483648, n), Bool.false))
+    : Eq(Option(Nat), coordinate(n, k), Option.some(Nat.add(n, k))) :=
+  rewrite h in Eq.refl(Option.some(Nat.add(n, k)))
+```
+
+The motive matches on its variable where `coordinate` matches on `Nat.ble(2147483648, n)`; at `Bool.false` it takes
+the first case.
+
 - Every occurrence is abstracted. To rewrite some only, write the `Eq.substProp` call with its motive.
 - Matching is structural on evaluated values, not up to conversion: a subterm that converts with `l` but evaluates to
   another form, such as a part of a canonical Nat sum (`a + b` inside `a + b + c`), is no occurrence.
@@ -133,9 +151,9 @@ Type mismatch: expected type: Eq(Bool, Machine.Build.isGroup(Machine.Lists.get(C
 - **First difference.** The first pair of subterms that do not convert: through applications of one head, the first
   argument pair; through kernel lists, the first element pair, or what follows the elements they share; through
   function types and local lambdas of as many binders, their codomains or bodies on shared variables; through
-  projections of one field, their bases; through stuck matches of one code, the first pair of captured values. Two
-  short values, such as numerals, that are arguments of an application, are shown with it. Omitted when the whole
-  types are the pair.
+  projections of one field, their bases; through stuck matches of one code, their scrutinees' values, then the first
+  pair of captured values. Two short values, such as numerals, that are arguments of an application, are shown with
+  it. Omitted when the whole types are the pair.
 - **The expected type as it evaluates**, when it prints differently from the written one.
 
 A value prints whole up to 240 characters. A longer one prints along the path to the difference: every other argument

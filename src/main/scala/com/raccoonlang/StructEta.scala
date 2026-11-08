@@ -256,28 +256,30 @@ object StructEta {
 
   /**
    * A canonical projection (`project`): its projected value, the value's family instance, its record, and the field's
-   * index. A stuck match is one when its match node is one of the projectors of the record its `__self` belongs to.
+   * index. A stuck match is one when its match node is one of the projectors of the record its scrutinee, `__self`,
+   * belongs to.
    */
   object Projection {
     def unapply(value: Value): Option[(Value, InductiveFamilyInstance, RecordInfo, Int)] =
       value match {
-        case thunk: NeutralThunk => of(thunk.term, thunk.env)
+        case thunk: NeutralThunk => of(thunk.term, thunk.id.scrut)
         case _                   => None
       }
 
-    /** The projection that the match `term` in `env` is, when it is a projector: a stuck one's, or a proof match's. */
-    def of(term: EA.Term.Match, env: Env): Option[(Value, InductiveFamilyInstance, RecordInfo, Int)] =
+    /**
+     * The projection that the match `term` on `base`, its scrutinee's value, is, when it is a projector: a stuck one's,
+     * or a proof match's.
+     */
+    def of(term: EA.Term.Match, base: Value): Option[(Value, InductiveFamilyInstance, RecordInfo, Int)] =
       term.scrut match {
-        case EA.Term.LocalRef(SelfRef, _) if env.locals.length > SelfRef.id =>
-          env.localBinding(SelfRef).valueOption.flatMap { base =>
-            base.tpe match {
-              case InductiveFamilyValue(instance) =>
-                instance.meta.record.flatMap { info =>
-                  val idx = info.projectors.indexWhere(_.nodeId == term.nodeId)
-                  Option.when(idx >= 0)((base, instance, info, idx))
-                }
-              case _ => None
-            }
+        case EA.Term.LocalRef(SelfRef, _) =>
+          base.tpe match {
+            case InductiveFamilyValue(instance) =>
+              instance.meta.record.flatMap { info =>
+                val idx = info.projectors.indexWhere(_.nodeId == term.nodeId)
+                Option.when(idx >= 0)((base, instance, info, idx))
+              }
+            case _ => None
           }
         case _ => None
       }

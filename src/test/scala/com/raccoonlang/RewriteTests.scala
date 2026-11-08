@@ -23,6 +23,19 @@ class RewriteTests extends munit.FunSuite {
       |def pick (n: Nat) : List(Nat) := Bool.cond(isZero(n), List(Nat), List.cons(n, List.nil(Nat)), List.nil(Nat))
       |""".stripMargin
 
+  /** A match on a computed scrutinee, as a downstream project's `Statements.coordinate` writes one. */
+  private val coordinate =
+    """
+      |def coordinate (n: Nat)(k: Nat): Option(Nat) := {
+      |  match Nat.ble(2147483648, n) returning Option(Nat) with
+      |  | Bool.false => Option.some(Nat.add(n, k))
+      |  | Bool.true => {
+      |    let below := Nat.sub(4294967296, n)
+      |    Bool.cond(Nat.ble(below, k), Option(Nat), Option.some(Nat.sub(k, below)), Option.none(Nat))
+      |  }
+      |}
+      |""".stripMargin
+
   /** The checked body of the definition `name` of `src`, as source. */
   private def residualOf(src: String, name: String)(implicit loc: munit.Location): String =
     declsEnv(src).apply(name) match {
@@ -71,6 +84,43 @@ class RewriteTests extends munit.FunSuite {
           |  rewrite z in Eq.refl(List.nil(Nat))
           |""".stripMargin
     )
+  }
+
+  // A stuck match is identified by its scrutinee's value, not its scrutinee's code, so the value occurs in the goal.
+  test("a match's computed scrutinee is found in the goal, and abstracted as the match's scrutinee") {
+    val src =
+      coordinate +
+        """
+          |def low (n: Nat)(k: Nat)(h: Eq(Bool, Nat.ble(2147483648, n), Bool.false))
+          |    : Eq(Option(Nat), coordinate(n, k), Option.some(Nat.add(n, k))) :=
+          |  rewrite h in Eq.refl(Option.some(Nat.add(n, k)))
+          |
+          |def back (n: Nat)(k: Nat)(h: Eq(Bool, Bool.false, Nat.ble(2147483648, n)))
+          |    : Eq(Option(Nat), coordinate(n, k), Option.some(Nat.add(n, k))) :=
+          |  rewrite <- h in Eq.refl(Option.some(Nat.add(n, k)))
+          |
+          |def high (n: Nat)(k: Nat)(h: Eq(Bool, Nat.ble(2147483648, n), Bool.true))
+          |    (far: Eq(Bool, Nat.ble(Nat.sub(4294967296, n), k), Bool.false))
+          |    : Eq(Option(Nat), coordinate(n, k), Option.none(Nat)) :=
+          |  rewrite [h, far] in Eq.refl(Option.none(Nat))
+          |
+          |// To a variable: the goal's match and the match restated on it, which the motive at `b` gives.
+          |def restated (b: Bool)(n: Nat)(k: Nat): Option(Nat) := {
+          |  match b returning Option(Nat) with
+          |  | Bool.false => Option.some(Nat.add(n, k))
+          |  | Bool.true => {
+          |    let below := Nat.sub(4294967296, n)
+          |    Bool.cond(Nat.ble(below, k), Option(Nat), Option.some(Nat.sub(k, below)), Option.none(Nat))
+          |  }
+          |}
+          |
+          |def any (n: Nat)(k: Nat)(b: Bool)(h: Eq(Bool, Nat.ble(2147483648, n), b))
+          |    : Eq(Option(Nat), coordinate(n, k), restated(b, n, k)) :=
+          |  rewrite h in Eq.refl(restated(b, n, k))
+          |""".stripMargin
+    run(src)
+    val motive = residualOf(src, "low")
+    assert(motive.contains("match _rewritten returning Option(Nat) with"), motive)
   }
 
   // A lambda is identified by its code, so the goal's predicate, written apart from the equation's, is the same value.

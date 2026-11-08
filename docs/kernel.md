@@ -198,18 +198,23 @@ field projects that field, while a lambda over an earlier linear field is
 
 ## Stuck matches
 
-A match whose scrutinee is no constructor, nor, at a structure eta type, a
-value with an eta view, is stuck: a value of its motive that waits on its
-scrutinee and resumes when refinement makes it a constructor. A stuck match is
-its checked code closed over the locals it reads, its *captures*. Two stuck
-matches convert when their code is the same and their captures convert, in
-order. The code is the checked match, compared exactly: its scrutinee, its
+A match whose scrutinee's value is no constructor, nor, at a structure eta type,
+a value with an eta view, is stuck: a value of its motive that waits on that
+value and resumes when refinement makes it a constructor. A stuck match is its
+checked code, its scrutinee's value, and the values of the locals the rest of
+its code reads, its *captures*. A match reads its scrutinee only through its
+value, so its own scrutinee is no part of its code: it is a hole there, and the
+value stands in for it. Two stuck matches convert when their code is the same,
+their scrutinees' values convert, and their captures convert, in order.
+
+The code is the checked match without its scrutinee, compared exactly: its
 motive, each case with its constructor, fields, equation and body, and every
 argument and proof the checker inserted, up to the names and source positions
-of its locals and binders. A local it reads is compared by value, and the
-captures are ordered by where the code first names them; a local it binds, a
-field, a `let` or a binder, is compared by its position. So `isZ(x)` and
-`isZ2(x)` convert for
+of its locals and binders. A match nested in it keeps its scrutinee, which is
+code the outer match evaluates. A local the code reads is compared by value,
+and the captures are ordered by where the code first names them; a local only
+the scrutinee reads is no capture. A local the code binds, a field, a `let` or
+a binder, is compared by its position. So `isZ(x)` and `isZ2(x)` convert for
 
 ```
 def isZ (n: Nat): Bool := {
@@ -224,12 +229,43 @@ def isZ2 (k: Nat): Bool := {
 }
 ```
 
-and so do `isZ` and a lambda in a type that writes the same match. Matches that
-differ in a case, in their motive or in their scrutinee do not convert, even
-when they agree on every constructor: conversion does not compare branches,
-and a motive is code even where its values convert. A case that names a field
-it does not use binds a slot that an anonymous field does not, so
-`| Nat.succ m => e` and the wildcard's `| Nat.succ _ => e` are different code.
+and so do `isZ` and a lambda in a type that writes the same match. A match on
+a computed scrutinee converts with the same match on a local that holds the
+scrutinee's value, so `coordinate(n, k)` and
+`restated(Nat.ble(2147483648, n), n, k)` convert for
+
+```
+def coordinate (n: Nat)(k: Nat): Option(Nat) := {
+  match Nat.ble(2147483648, n) returning Option(Nat) with
+  | Bool.false => Option.some(Nat.add(n, k))
+  | Bool.true => Option.none(Nat)
+}
+def restated (b: Bool)(n: Nat)(k: Nat): Option(Nat) := {
+  match b returning Option(Nat) with
+  | Bool.false => Option.some(Nat.add(n, k))
+  | Bool.true => Option.none(Nat)
+}
+```
+
+and `coordinate(n, k)` holds the value `Nat.ble(2147483648, n)`, which a
+rewrite by `h : Eq(Bool, Nat.ble(2147483648, n), b)` finds and abstracts
+([rewriting](language.md#rewriting)). Scrutinees written differently with one
+value, such as `Nat.isZero(Nat.add(n, 0))` and `Nat.isZero(n)`, are one
+scrutinee. Matches that differ in a case, in their motive, in their scrutinee's
+value or in a capture do not convert, even when they agree on every
+constructor: conversion does not compare branches, and a motive is code even
+where its values convert. A case that names a field it does not use binds a
+slot that an anonymous field does not, so `| Nat.succ m => e` and the
+wildcard's `| Nat.succ _ => e` are different code.
+
+**Resumption** reads only what the identity holds. A stuck match keeps its
+scrutinee's value and an environment of exactly its captures; refinement or
+substitution resumes it by materializing the scrutinee's value, which resolves
+it where it was blocked, and matching on the result in the materialized
+environment. The scrutinee term is never evaluated again, and the locals only
+it reads are not kept. Evaluation commutes with substitution, so this is the
+match evaluated where the substitution has been made. A stuck match's
+dependencies are its motive's, its scrutinee's and its captures'.
 
 **Recursive functions** convert as fixpoints. Two recursive definitions, or two
 members at one position of mutual blocks of one size, convert when every pair
@@ -244,20 +280,37 @@ member of a mutual block with a single recursive definition, while a function
 that is not recursive is opened as any lambda, so a wrapper
 `def h (n: Nat): Nat := f(n)` converts with `f`.
 
-**Quotation**, which motive inference uses, rebuilds a stuck match as its own
-code over its captures: a capture that a local of the context holds is read
-from that local, and every other is quoted once, in a `let` before the match.
-Evaluating the quotation gives a stuck match of the same code on the same
-values, which converts with the one quoted, whatever its captures hold.
+**Quotation**, which motive inference and rewriting use, rebuilds a stuck match
+as its own code over its captures, on its scrutinee's value: a capture that a
+local of the context holds is read from that local, and every other is quoted
+once, in a `let` before the match; the scrutinee's value is quoted as the
+rebuilt match's scrutinee, after those lets, where it may read any local of
+the context or any of the lets, since the code numbers no local the scrutinee
+reads. Evaluating the quotation gives a stuck match of the same code on
+convertible values, which converts with the one quoted, whatever its scrutinee
+and captures hold. A rewrite quotes the goal with the side it abstracts read as
+its variable, so a scrutinee of that value becomes the variable, as a capture
+does.
 
-It is sound because the code decides what a match computes: two matches of one
-code resumed on convertible captures evaluate the same code on convertible
-values, and node identities, names and positions change no result. Codes are
-interned by exact structural equality, so a hash collision cannot make two
-codes one, and a stuck match's key, its code's serial number and its captures'
-keys, guards against accidental collisions as every key does. A capture may be
-a recursive function, and comparing two that are terminates, since their
-recursive slots are paired rather than unfolded.
+It is sound because the code, the scrutinee's value and the captures decide
+what a match computes. Matching reads the scrutinee only through its value:
+the value's constructor, or its eta view, selects the case, its fields bind the
+case's fields, and the case's equation is reflexivity at it. Everything else
+the match reads is its code, over its captures. So two stuck matches of one
+code, on convertible scrutinees and convertible captures, stay stuck together
+or, once a substitution resolves their scrutinees, take the case of one
+constructor, since convertible values of one data type have one constructor
+and convertible fields, or one case by eta, and evaluate its code on
+convertible values: conversion is preserved by substitution and by evaluation,
+which is what identifying a match by its captures already relied on. A proof
+scrutinee is compared up to proof irrelevance, as a local holding one always
+was, a capture of the scrutinee code that read it. Node identities, names and
+positions change no result. Codes are interned by exact structural equality,
+so a hash collision cannot make two codes one, and a stuck match's key, its
+code's serial number, its scrutinee's key and its captures' keys, guards
+against accidental collisions as every key does. A capture may be a recursive
+function, and comparing two that are terminates, since their recursive slots
+are paired rather than unfolded.
 
 ## Nominal Type families
 

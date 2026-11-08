@@ -321,8 +321,19 @@ object Interpreter {
     }
   }
 
+  /**
+   * `thunk` resumed in `materializer` 's session: its match on its scrutinee's value, materialized, which resolves it
+   * where it was blocked, in its environment materialized, which holds its captures, at its type materialized. It reads
+   * only what the thunk's identity holds, never the scrutinee term, whose locals the environment does not keep.
+   * Evaluation commutes with substitution, so this is the match evaluated in its materialized environment.
+   */
   private def forceThunk(thunk: NeutralThunk, materializer: ValueOps.Materializer): Value =
-    evalMatch(thunk.term, materializer.materializeEnv(thunk.env))
+    evalMatchOn(
+      thunk.term,
+      materializer.materialize(thunk.id.scrut),
+      materializer.materializeEnv(thunk.env),
+      materializer.materialize(thunk.tpe)
+    )
 
   private def evalLam(l: ETerm.Lam, env: Env): VLam = {
     val vpi = evalPi(l.ty, env)
@@ -405,9 +416,10 @@ object Interpreter {
   }
 
   /**
-   * `m` stuck on `scrut` in `env`, a value of `outType`; `scrut` is no suspended proof: no caller passes one.
-   * Its identity is its code and its free locals' values (`MatchIdentity`), and its closed environment keeps exactly
-   * those locals, so resuming it reads nothing its identity leaves out.
+   * `m` stuck on `scrut`, the value of its scrutinee in `env`, a value of `outType`; `scrut` is no suspended proof: no
+   * caller passes one. `env` holds every local the rest of `m` reads. Its identity is its code with its scrutinee a
+   * hole, `scrut`, and the values of the free locals the rest mentions (`MatchIdentity`), and its closed environment
+   * keeps exactly those locals, so resuming it on `scrut` (`forceThunk`) reads nothing its identity leaves out.
    */
   private[raccoonlang] def stuckMatch(
       m: ETerm.Match,
@@ -417,10 +429,8 @@ object Interpreter {
   ): Value = {
     val layout = MatchIdentity.layout(m, env.locals.length)
     val closedEnv = RuntimeEnv.closeForEval(env, layout.capturedIndexes)
-    NeutralThunk(m, closedEnv, MatchId(layout.code, layout.captures(env)), outType, ReductionBlockers.of(scrut))
+    NeutralThunk(m, closedEnv, MatchId(layout.code, scrut, layout.captures(env)), outType, ReductionBlockers.of(scrut))
   }
-
-  private def evalMatch(m: ETerm.Match, env: Env): Value = evalSteps(matchStep(m, env))
 
   /** The match `m` in `env`: its scrutinee, then `matchOnStep`, stuck at its motive or else at the scrutinee's type. */
   private def matchStep(m: ETerm.Match, env: Env): AnyRef = {
@@ -429,11 +439,12 @@ object Interpreter {
   }
 
   /**
-   * The match `m` on the value `scrut0`, its scrutinee in `env`. A match from a proof into a proposition
-   * (`m.proofIntoProp`) on a suspended proof is a proof match (`VProofMatch`), which forces it only when demanded; that
-   * it is suspended is decided by its form, not by whether it was forced. Any other match demands its scrutinee. A
-   * constructor selects its branch. A value at a structure eta type takes the one branch with its eta view, its field
-   * projections (`StructEta`). Any other value is stuck, a value of `outType`.
+   * The match `m` on the value `scrut0`, its scrutinee's, in `env`, which holds every local the rest of `m` reads; a
+   * resumed stuck match's holds no other (`forceThunk`), so nothing here reads the scrutinee term. A match from a proof
+   * into a proposition (`m.proofIntoProp`) on a suspended proof is a proof match (`VProofMatch`), which forces it only
+   * when demanded; that it is suspended is decided by its form, not by whether it was forced. Any other match demands
+   * its scrutinee. A constructor selects its branch. A value at a structure eta type takes the one branch with its eta
+   * view, its field projections (`StructEta`). Any other value is stuck, a value of `outType`.
    */
   private[raccoonlang] def evalMatchOn(m: ETerm.Match, scrut0: Value, env: Env, outType: => Value): Value =
     evalSteps(matchOnStep(m, scrut0, env, outType))

@@ -103,7 +103,7 @@ object ValueOps {
           NeutralThunk(
             term,
             materializeEnv(env),
-            MatchId(id.code, id.captures.map(materialize(_))),
+            MatchId(id.code, materialize(id.scrut), id.captures.map(materialize(_))),
             materialize(tpe),
             materializeDeps(blockerIds)
           )

@@ -61,8 +61,6 @@ object ValueQuote {
         case other                               => inlineTerm(other, here)
       }
 
-    def inlineTerm(t: ElabAst.Term): ElabAst.Term = inlineTerm(t, depth)
-
     private def inlineTerm(t: ElabAst.Term, here: Int): ElabAst.Term =
       t match {
         // A term-position local can inline to a lambda or body, so do not require a type term here.
@@ -82,16 +80,25 @@ object ValueQuote {
             let
           }
           ElabAst.Term.Body(nextLets, inlineTerm(res, inner), bodySpan)
-        case ElabAst.Term.Match(scrut, motive, cases, matchSpan, _, proofIntoProp) =>
-          ElabAst.Term.Match(
-            inlineTerm(scrut, here),
-            motive.map(inlineTypeTerm(_, here)),
-            cases.map(inlineCase(_, here)),
-            matchSpan,
-            NodeId.fresh(),
-            proofIntoProp
-          )
+        case m: ElabAst.Term.Match => rebuildMatch(m, inlineTerm(m.scrut, here), here)
       }
+
+    /**
+     * The stuck match `m` this rebuilds, at `depth`, on `scrut`, its scrutinee's value quoted there, in place of its
+     * scrutinee term, whose locals the closed environment need not hold (`Value.NeutralThunk`).
+     */
+    def inlineMatchOn(m: ElabAst.Term.Match, scrut: ElabAst.Term): ElabAst.Term.Match = rebuildMatch(m, scrut, depth)
+
+    /** `m` rebuilt at `here` on the rebuilt scrutinee `scrut`. */
+    private def rebuildMatch(m: ElabAst.Term.Match, scrut: ElabAst.Term, here: Int): ElabAst.Term.Match =
+      ElabAst.Term.Match(
+        scrut,
+        m.motive.map(inlineTypeTerm(_, here)),
+        m.cases.map(inlineCase(_, here)),
+        m.span,
+        NodeId.fresh(),
+        m.proofIntoProp
+      )
 
     private def inlineTypeTerm(t: ElabAst.TypeTerm, here: Int): ElabAst.TypeTerm =
       t match {
@@ -360,15 +367,20 @@ object ValueQuote {
   }
 
   /**
-   * A stuck match, as its own code over its captures, so that evaluating the quotation builds a match of the same code
-   * (`MatchIdentity`) on the captures' quotations, which converts with it. A capture that a local of `context` holds,
-   * and no earlier capture does, is read from that local, at the places its free local was read; every other is quoted
-   * once, as a `let` before the match, in the order of the captures, and quoted at its let's depth, so that lets of its
-   * own (a stuck match it holds) take the slots after the earlier captures' lets. The free locals are then distinct
-   * locals below the rebuilt match, mentioned in the same order, and its bound locals keep their offsets, so its code
-   * is the original's. Only an application head may name a raw recursive self (`LocalResidualPolicy.AppHeadOnly`), and
-   * the checked code reads one only there, so such a capture is read from its local too. A linear capture has no
-   * residual, even when a local holds it, as for `quoteTerm`.
+   * A stuck match, as its own code over its scrutinee's value and its captures, so that evaluating the quotation builds
+   * a match of the same code (`MatchIdentity`) on their quotations, which converts with it. A capture that a local of
+   * `context` holds, and no earlier capture does, is read from that local, at the places its free local was read; every
+   * other is quoted once, as a `let` before the match, in the order of the captures, and quoted at its let's depth, so
+   * that lets of its own (a stuck match it holds) take the slots after the earlier captures' lets. The free locals are
+   * then distinct locals below the rebuilt match, mentioned in the same order, and its bound locals keep their offsets,
+   * so its code is the original's. Only an application head may name a raw recursive self
+   * (`LocalResidualPolicy.AppHeadOnly`), and the checked code reads one only there, so such a capture is read from its
+   * local too. A linear capture has no residual, even when a local holds it, as for `quoteTerm`.
+   *
+   * The scrutinee, a hole in the code, is its value quoted at the match's depth, after the captures' lets, as the
+   * rebuilt match's scrutinee: a value a local of `context` or a capture's let holds is read from it, as any number of
+   * places may, since the code numbers no local the scrutinee reads. So a rewrite's abstraction, which maps a side's
+   * key to its variable (`Rewrite`), abstracts a scrutinee of that value as it does a capture.
    */
   private def quoteClosedMatch(thunk: NeutralThunk, context: QuoteContext, span: Span): ElabAst.Term = {
     val env = thunk.env
@@ -376,6 +388,8 @@ object ValueQuote {
     val renamed = scala.collection.mutable.HashMap.empty[Int, CoreAst.LocalRef]
     val taken = scala.collection.mutable.HashSet.empty[Int]
     val lets = Vector.newBuilder[ElabAst.Let]
+    // What the scrutinee is quoted with: the context's locals, and the captures' lets as they are bound.
+    var scrutQuote = context.quote
     var letCount = 0
     var index = 0
     while (index < layout.freeCount) {
@@ -389,12 +403,21 @@ object ValueQuote {
           // Quoted where it is bound, after the lets before it: its own lets, if any, take the slots after theirs.
           val here = context.copy(localEnvLength = context.localEnvLength + letCount)
           lets += ElabAst.Let(local, None, quoteTerm(binding.value, here, span), span)
+          scrutQuote = withQuotedValueInMap(
+            scrutQuote,
+            binding.value,
+            ElabAst.Term.LocalRef(local, span),
+            LocalResidualPolicy.Residualizable
+          )
           renamed.update(slot, local)
           letCount += 1
       }
       index += 1
     }
-    val rebuilt = new ClosedEnvInliner(env, context, context.localEnvLength + letCount, renamed).inlineTerm(thunk.term)
+    val depth = context.localEnvLength + letCount
+    // Quoted at the match's depth, where it is evaluated: its own lets, if any, take the slots after the captures'.
+    val scrut = quoteTerm(thunk.id.scrut, QuoteContext(scrutQuote, depth), span)
+    val rebuilt = new ClosedEnvInliner(env, context, depth, renamed).inlineMatchOn(thunk.term, scrut)
     if (letCount == 0) rebuilt else ElabAst.Term.Body(lets.result(), rebuilt, span)
   }
 

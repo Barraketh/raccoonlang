@@ -250,10 +250,12 @@ class ValueOpsTests extends munit.FunSuite {
       span,
       NodeId.fresh()
     )
+    // As `Interpreter.stuckMatch` builds it: the environment keeps the captures, and the identity the scrutinee.
+    val layout = MatchIdentity.layout(matchTerm, runtimeEnv.locals.length)
     val thunk = NeutralThunk(
       matchTerm,
-      runtimeEnv,
-      MatchId(MatchIdentity.layout(matchTerm, runtimeEnv.locals.length).code, Vector(scrut, captured)),
+      RuntimeEnv.closeForEval(runtimeEnv, layout.capturedIndexes),
+      MatchId(layout.code, scrut, Vector(captured)),
       valueType,
       DepSet(scrut.id)
     )
@@ -262,7 +264,8 @@ class ValueOpsTests extends munit.FunSuite {
     val materialized = ValueOps.materialize(thunk, eqCaptured).asInstanceOf[NeutralThunk]
 
     assertEquals(materialized.env(capturedRef), solution)
-    assertEquals(materialized.env(scrutRef), scrut)
+    assertEquals(materialized.id.captures, Vector(solution))
+    assertEquals(materialized.id.scrut, scrut)
 
     assert(!materialized.synDeps.contains(captured.id))
     assert(materialized.synDeps.contains(scrut.id))
@@ -301,9 +304,12 @@ class ValueOpsTests extends munit.FunSuite {
     val blocked = Interpreter.evalTerm(matchTerm, env).asInstanceOf[NeutralThunk]
     val closed = blocked.env
 
+    // The scrutinee is no local of the closure: the stuck match holds its value, which it resumes on.
     assertEquals(closed(capturedRef), captured)
     intercept[WTF](closed(unusedRef))
-    assertEquals(closed(scrutRef), scrut)
+    intercept[WTF](closed(scrutRef))
+    assertEquals(blocked.id.scrut, scrut)
+    assertEquals(blocked.id.captures, Vector(captured))
 
     assert(!blocked.synDeps.contains(unused.id))
     assert(blocked.synDeps.contains(scrut.id))

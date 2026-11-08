@@ -103,4 +103,29 @@ class MismatchTests extends munit.FunSuite {
     )
     assert(field.contains("first difference: expected x.n, actual y.n"), field)
   }
+
+  test("stuck matches of one code are looked through to their scrutinees' values, then their captures") {
+    val pos =
+      """
+        |def pos (n: Nat)(k: Nat): Nat := {
+        |  match Nat.ble(2147483648, n) returning Nat with
+        |  | Bool.false => k
+        |  | Bool.true => 0
+        |}
+        |""".stripMargin
+    val scrutinee = mismatch(pos + "def f (a: Nat)(b: Nat)(h: Eq(Nat, pos(a, 1), 1)) : Eq(Nat, pos(b, 1), 1) := h\n")
+    // The scrutinee prints as its value, and its differing argument with it.
+    assert(
+      scrutinee.contains(
+        "expected type: Eq(Nat, pos(b, 1), 1), actual: Eq(Nat, match Nat.ble(2147483648, a) returning Nat with"
+      ),
+      scrutinee
+    )
+    assert(
+      scrutinee.contains("first difference: expected Nat.ble(2147483648, b), actual Nat.ble(2147483648, a)"),
+      scrutinee
+    )
+    val capture = mismatch(pos + "def f (a: Nat)(h: Eq(Nat, pos(a, 1), 1)) : Eq(Nat, pos(a, 2), 1) := h\n")
+    assert(capture.contains("first difference: expected 2, actual 1"), capture)
+  }
 }

@@ -3,9 +3,10 @@ package com.raccoonlang
 import com.raccoonlang.ProgramFixtures.Programs
 
 /**
- * Stuck matches (docs/kernel.md, "Stuck matches"): a stuck match is identified by its checked code, up to names,
- * positions and the slots of its locals, and by the values of its free locals, so the same match written apart
- * converts, and two recursive functions convert as fixpoints, by their bodies with their recursive slots paired.
+ * Stuck matches (docs/kernel.md, "Stuck matches"): a stuck match is identified by its checked code with its scrutinee
+ * a hole, up to names, positions and the slots of its locals, by its scrutinee's value, and by the values of the free
+ * locals the rest of it mentions, so the same match written apart converts, whatever its scrutinee is written as, and
+ * two recursive functions convert as fixpoints, by their bodies with their recursive slots paired.
  */
 class StuckMatchIdentityTests extends munit.FunSuite {
   private val programs = new Programs(Prelude.default, allowUserAxioms = true)
@@ -31,6 +32,30 @@ class StuckMatchIdentityTests extends munit.FunSuite {
       |  match n returning Nat with
       |  | Nat.zero => a
       |  | Nat.succ m => b
+      |}
+      |""".stripMargin
+
+  /**
+   * A match on a computed scrutinee, as a downstream project's `Statements.coordinate` writes one, and the same match
+   * restated on a parameter holding the scrutinee.
+   */
+  private val coordinate =
+    """
+      |def coordinate (n: Nat)(k: Nat): Option(Nat) := {
+      |  match Nat.ble(2147483648, n) returning Option(Nat) with
+      |  | Bool.false => Option.some(Nat.add(n, k))
+      |  | Bool.true => {
+      |    let below := Nat.sub(4294967296, n)
+      |    Bool.cond(Nat.ble(below, k), Option(Nat), Option.some(Nat.sub(k, below)), Option.none(Nat))
+      |  }
+      |}
+      |def restated (b: Bool)(n: Nat)(k: Nat): Option(Nat) := {
+      |  match b returning Option(Nat) with
+      |  | Bool.false => Option.some(Nat.add(n, k))
+      |  | Bool.true => {
+      |    let below := Nat.sub(4294967296, n)
+      |    Bool.cond(Nat.ble(below, k), Option(Nat), Option.some(Nat.sub(k, below)), Option.none(Nat))
+      |  }
       |}
       |""".stripMargin
 
@@ -242,6 +267,140 @@ class StuckMatchIdentityTests extends munit.FunSuite {
     mismatched(sel + "def p (n: Nat)(a: Nat)(b: Nat): Eq(Nat, sel(n, a, b), sel(n, b, a)) := Eq.refl(sel(n, a, b))\n")
   }
 
+  test("a match on a computed scrutinee converts with the match restated on a local holding its value") {
+    accepted(
+      coordinate +
+        """
+          |def p (n: Nat)(k: Nat): Eq(Option(Nat), coordinate(n, k), restated(Nat.ble(2147483648, n), n, k)) :=
+          |  Eq.refl(coordinate(n, k))
+          |def q (n: Nat)(k: Nat)(b: Bool)(h: Eq(Bool, Nat.ble(2147483648, n), b)): Option(Nat) := {
+          |  let v : Option(Nat) := {
+          |    match Nat.ble(2147483648, n) returning Option(Nat) with
+          |    | Bool.false => Option.some(Nat.add(n, k))
+          |    | Bool.true => {
+          |      let below := Nat.sub(4294967296, n)
+          |      Bool.cond(Nat.ble(below, k), Option(Nat), Option.some(Nat.sub(k, below)), Option.none(Nat))
+          |    }
+          |  }
+          |  let e : Eq(Option(Nat), v, coordinate(n, k)) := Eq.refl(v)
+          |  let f : Eq(Option(Nat), v, restated(Nat.ble(2147483648, n), n, k)) := Eq.refl(v)
+          |  v
+          |}
+          |""".stripMargin
+    )
+    // A proof's own match on a let holding the scrutinee's value, written in the proof.
+    accepted(
+      coordinate +
+        """
+          |def p (n: Nat)(k: Nat): Option(Nat) := {
+          |  let b : Bool := Nat.ble(2147483648, n)
+          |  let v : Option(Nat) := {
+          |    match b returning Option(Nat) with
+          |    | Bool.false => Option.some(Nat.add(n, k))
+          |    | Bool.true => {
+          |      let below := Nat.sub(4294967296, n)
+          |      Bool.cond(Nat.ble(below, k), Option(Nat), Option.some(Nat.sub(k, below)), Option.none(Nat))
+          |    }
+          |  }
+          |  let e : Eq(Option(Nat), coordinate(n, k), v) := Eq.refl(v)
+          |  v
+          |}
+          |""".stripMargin
+    )
+    // Scrutinees written differently with one value, and a scrutinee's local that the rest mentions too, a capture.
+    accepted(
+      """
+        |def a (n: Nat): Nat := {
+        |  match Nat.isZero(Nat.add(n, 0)) returning Nat with
+        |  | Bool.true => n
+        |  | Bool.false => 0
+        |}
+        |def b (m: Nat)(c: Bool): Nat := {
+        |  match c returning Nat with
+        |  | Bool.true => m
+        |  | Bool.false => 0
+        |}
+        |def p (n: Nat): Eq(Nat, a(n), b(n, Nat.isZero(n))) := Eq.refl(a(n))
+        |""".stripMargin
+    )
+  }
+
+  test("matches on scrutinees that do not convert, or with other branches, do not convert") {
+    mismatched(
+      coordinate +
+        """
+          |def p (n: Nat)(k: Nat): Eq(Option(Nat), coordinate(n, k), restated(Nat.ble(2147483647, n), n, k)) :=
+          |  Eq.refl(coordinate(n, k))
+          |""".stripMargin
+    )
+    mismatched(
+      coordinate +
+        """
+          |def p (n: Nat)(m: Nat)(k: Nat): Eq(Option(Nat), coordinate(n, k), coordinate(m, k)) :=
+          |  Eq.refl(coordinate(n, k))
+          |""".stripMargin
+    )
+    // The same scrutinee, branches that differ: `none` where `coordinate` has `some`.
+    mismatched(
+      coordinate +
+        """
+          |def other (b: Bool)(n: Nat)(k: Nat): Option(Nat) := {
+          |  match b returning Option(Nat) with
+          |  | Bool.false => Option.none(Nat)
+          |  | Bool.true => {
+          |    let below := Nat.sub(4294967296, n)
+          |    Bool.cond(Nat.ble(below, k), Option(Nat), Option.some(Nat.sub(k, below)), Option.none(Nat))
+          |  }
+          |}
+          |def p (n: Nat)(k: Nat): Eq(Option(Nat), coordinate(n, k), other(Nat.ble(2147483648, n), n, k)) :=
+          |  Eq.refl(coordinate(n, k))
+          |""".stripMargin
+    )
+    // A capture the rest reads where the other reads the scrutinee's local: the scrutinee's locals are no captures.
+    mismatched(
+      """
+        |def a (n: Nat)(k: Nat): Nat := {
+        |  match Nat.isZero(n) returning Nat with
+        |  | Bool.true => k
+        |  | Bool.false => 0
+        |}
+        |def b (n: Nat)(k: Nat): Nat := {
+        |  match Nat.isZero(n) returning Nat with
+        |  | Bool.true => n
+        |  | Bool.false => 0
+        |}
+        |def p (n: Nat)(k: Nat): Eq(Nat, a(n, k), b(n, k)) := Eq.refl(a(n, k))
+        |""".stripMargin
+    )
+  }
+
+  test("a match stuck on a computed scrutinee resumes on its value when refinement resolves it") {
+    accepted(
+      coordinate +
+        """
+          |def r (n: Nat)(k: Nat): Option(Nat) := {
+          |  let c := coordinate(n, k)
+          |  match n returning Option(Nat) with
+          |  | Nat.zero => {
+          |    let e : Eq(Option(Nat), c, Option.some(k)) := Eq.refl(Option.some(k))
+          |    c
+          |  }
+          |  | Nat.succ m => c
+          |}
+          |def iz (n: Nat): Bool := {
+          |  match Nat.isZero(n) returning Bool with
+          |  | Bool.true => Bool.false
+          |  | Bool.false => Bool.true
+          |}
+          |def t (n: Nat): Eq(Bool, iz(n), Bool.not(Nat.isZero(n))) := {
+          |  match n returning Eq(Bool, iz(n), Bool.not(Nat.isZero(n))) with
+          |  | Nat.zero => Eq.refl(Bool.false)
+          |  | Nat.succ m => Eq.refl(Bool.true)
+          |}
+          |""".stripMargin
+    )
+  }
+
   // A completeness limit: a written case that binds a field it does not use binds a slot that a wildcard's anonymous
   // field does not, so the two are different code, while two wildcards are the same.
   test("a wildcard's case is the same code as a case binding its fields anonymously") {
@@ -379,6 +538,48 @@ class StuckMatchIdentityTests extends munit.FunSuite {
           |  let r := match n with
           |    | Nat.zero => x
           |    | Nat.succ m => x
+          |  r
+          |}
+          |""".stripMargin
+    )
+  }
+
+  // The scrutinee is a hole in the code: quotation rebuilds a match on its value quoted, which it may read from a local
+  // or from a capture's let, and which may need lets of its own, inside it.
+  test("a match on a computed scrutinee rebuilt by quotation converts with the one quoted") {
+    def inferred(tpe: String) =
+      s"""
+         |def t (n: Nat)(k: Nat)(j: Nat)(h: $tpe): $tpe := {
+         |  let r := match n with
+         |    | Nat.zero => h
+         |    | Nat.succ m => h
+         |  r
+         |}
+         |""".stripMargin
+    accepted(coordinate + inferred("Eq(Option(Nat), coordinate(k, j), Option.none(Nat))"))
+    // The scrutinee's value is read from a capture's let: `Nat.mul(k, k)` is no local.
+    accepted(coordinate + inferred("Eq(Option(Nat), coordinate(Nat.mul(k, k), j), Option.none(Nat))"))
+    // A scrutinee that is a local's value, and one that is itself a stuck match, whose capture is no local.
+    accepted(coordinate + inferred("Eq(Option(Nat), restated(Nat.isZero(k), j, k), Option.none(Nat))"))
+    accepted(
+      isZ + sel +
+        """
+          |def nested (n: Nat)(k: Nat): Nat := {
+          |  match isZ(sel(n, Nat.mul(k, k), k)) returning Nat with
+          |  | Bool.true => k
+          |  | Bool.false => n
+          |}
+          |""".stripMargin + inferred("Eq(Nat, nested(Nat.mul(j, k), k), k)")
+    )
+    // In a motive the checker states, as a type the branches are checked against.
+    accepted(
+      coordinate +
+        """
+          |def t (n: Nat)(k: Nat)(h: Eq(Option(Nat), coordinate(n, k), Option.none(Nat)))
+          |    : Eq(Option(Nat), restated(Nat.ble(2147483648, n), n, k), Option.none(Nat)) := {
+          |  let r := match Nat.isZero(k) with
+          |    | Bool.true => h
+          |    | Bool.false => h
           |  r
           |}
           |""".stripMargin

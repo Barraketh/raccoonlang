@@ -49,6 +49,9 @@ object Mismatch {
     /** A record projection's base, `r` in `r.field`. */
     case object Base extends Step
 
+    /** A stuck match's scrutinee's value (`Value.MatchId`), which its syntax shows as its scrutinee. */
+    case object Scrutinee extends Step
+
     /** A stuck match's captured value (`Value.MatchId`), which its syntax shows where it names that local. */
     final case class Capture(index: Int) extends Step
   }
@@ -181,13 +184,18 @@ object Mismatch {
           } catch { case _: TypeError => None }
         case (Shape.Field(eBase, eField), Shape.Field(aBase, aField)) if eField == aField =>
           Option.when(differ(eBase, aBase))((Step.Base, eBase, aBase))
-        // Stuck matches of one code differ in what they captured.
+        // Stuck matches of one code differ in their scrutinees or in what they captured.
         case (Shape.Whole, Shape.Whole) =>
           (e, a) match {
             case (eThunk: Value.NeutralThunk, aThunk: Value.NeutralThunk)
                 if (eThunk.id.code eq aThunk.id.code) && eThunk.id.captures.length == aThunk.id.captures.length =>
+              val (eScrut, aScrut) = (eThunk.id.scrut, aThunk.id.scrut)
               val (eCaptures, aCaptures) = (eThunk.id.captures, aThunk.id.captures)
-              eCaptures.indices.find(i => differ(eCaptures(i), aCaptures(i))).map(i => (Step.Capture(i), eCaptures(i), aCaptures(i)))
+              if (differ(eScrut, aScrut)) Some((Step.Scrutinee, eScrut, aScrut))
+              else
+                eCaptures.indices
+                  .find(i => differ(eCaptures(i), aCaptures(i)))
+                  .map(i => (Step.Capture(i), eCaptures(i), aCaptures(i)))
             case _ => None
           }
         case _ => None

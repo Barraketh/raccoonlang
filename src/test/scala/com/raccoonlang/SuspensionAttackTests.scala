@@ -1072,7 +1072,8 @@ class SuspensionAttackTests extends munit.FunSuite {
           |""".stripMargin
     )
     // CONTROL: a proof of False by an axiom, matched into False with no case, stays suspended; printing forces it to
-    // a match stuck on the call's forced value, the axiom's application, which prints as its syntax.
+    // a match stuck on the call's forced value, the axiom's application, which prints as its scrutinee, as every stuck
+    // match prints its scrutinee's value.
     assertEquals(
       withAxioms.result(
         """
@@ -1084,7 +1085,7 @@ class SuspensionAttackTests extends munit.FunSuite {
           |t
           |""".stripMargin
       ),
-      "match lemF(0) returning False with "
+      "match bot(0) returning False with "
     )
   }
 

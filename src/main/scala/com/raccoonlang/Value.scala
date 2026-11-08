@@ -64,11 +64,14 @@ object Value {
   }
 
   /**
-   * A stuck match's identity (docs/kernel.md, "Stuck matches"): its code, and the values of its free locals in the
-   * order the code first mentions them (`MatchIdentity.Layout`). Two identities with one code and convertible captures
-   * evaluate the same code on convertible values, so their matches convert.
+   * A stuck match's identity (docs/kernel.md, "Stuck matches"): its code with its scrutinee a hole (`MatchIdentity`),
+   * the value its scrutinee evaluated to, which the match is stuck on, and its captures, the values of the free locals
+   * the rest of its code mentions, in the order the code first mentions them (`MatchIdentity.Layout`). A match reads
+   * its scrutinee only through that value, so two identities with one code, convertible scrutinees and convertible
+   * captures take the same case once their scrutinees resolve, and evaluate its code on convertible values: their
+   * matches convert.
    */
-  final case class MatchId(code: MatchCode, captures: Vector[Value])
+  final case class MatchId(code: MatchCode, scrut: Value, captures: Vector[Value])
 
   /**
    * The ids among `among` that `value` depends on as eager evaluation built it: its dependencies, read from the sources
@@ -99,7 +102,8 @@ object Value {
           case VUniv(kind, level)     => walk(kind); walk(level)
           case VConst(_, _, tpe)      => walk(tpe)
           case app: VApp              => walk(app.head); app.args.foreach(walk); walk(app.tpe)
-          case thunk: NeutralThunk    => env(thunk.env); walk(thunk.tpe); thunk.id.captures.foreach(walk)
+          case thunk: NeutralThunk =>
+            env(thunk.env); walk(thunk.tpe); walk(thunk.id.scrut); thunk.id.captures.foreach(walk)
           case lam: VLam              => walk(lam.tpe); lamEnv(lam.body); captures(lam.id)
           case pi: VPi                => captures(pi.id)
           case poly: VNatPoly         => poly.form.operands.foreach(walk)
@@ -507,13 +511,14 @@ object Value {
 
   /**
    * A proof match: the checked match `term`, from a proof into a proposition (`ElabAst.Term.Match.proofIntoProp`), on
-   * `scrut`, the value of its scrutinee term in `env`, which is closed over the match's captured locals. Only
+   * `scrut`, the value of its scrutinee, in `env`, which holds at least the locals the rest of the match reads. Only
    * `Interpreter` 's match step builds one, on a suspended `scrut`, where eager evaluation would force it. Its
    * proposition is the match's motive in `env`, which the checker always states. Running it forces `scrut` and takes
    * the branch its forced value selects, or is stuck.
    *
-   * Its dependencies are `env` 's: `scrut` was evaluated from the scrutinee term, whose locals `env` holds, and
-   * evaluation introduces no free variable; materialization rebuilds both with one store, which keeps that so.
+   * Its dependencies are `scrut` 's and `env` 's. A stuck match resumed on a scrutinee that became a suspension builds
+   * one over the stuck match's environment, which keeps only its captures (`Value.NeutralThunk`), so `env` alone need
+   * not hold the scrutinee's locals. Materialization rebuilds both with one store.
    */
   final class VProofMatch private[raccoonlang] (val term: ElabAst.Term.Match, val scrut: Value, val env: Env)
     extends VSuspendedProof {
@@ -522,7 +527,10 @@ object Value {
       case None         => throw WTF("A proof match's checked match states no motive", Some(term.span))
     }
 
-    override protected def foreachPart(f: Value => Unit): Unit = foreachLocal(env, f)
+    override protected def foreachPart(f: Value => Unit): Unit = {
+      f(scrut)
+      foreachLocal(env, f)
+    }
   }
 
   /**
@@ -546,14 +554,17 @@ object Value {
 
 
   /**
-   * A stuck match: `term` closed over `env`, a value of `tpe`, its motive, waiting on `blockerIds`. `env` keeps exactly
-   * the locals whose values `id` captures (`Interpreter.stuckMatch`), and materialization maps both alike, so the
-   * captures are everything the match reads.
+   * A stuck match: `term` stuck on `id.scrut`, the value of its scrutinee, closed over `env`, a value of `tpe`, its
+   * motive, waiting on `blockerIds`, the scrutinee's reduction blockers. `env` keeps exactly the locals whose values
+   * `id` captures, those the match other than its scrutinee reads (`Interpreter.stuckMatch`), and materialization maps
+   * both alike. It resumes on its scrutinee's value, never evaluating the scrutinee term again (`Interpreter`), so its
+   * identity holds everything it reads.
    */
   case class NeutralThunk(term: ElabAst.Term.Match, env: Env, id: MatchId, tpe: Value, blockerIds: DepSet)
     extends Composite {
     override protected def foreachPart(f: Value => Unit): Unit = {
       f(tpe)
+      f(id.scrut)
       id.captures.foreach(f)
     }
   }

@@ -354,8 +354,9 @@ class NodeIdentityTests extends munit.FunSuite {
     val thunkSuccZ = Interpreter.evalApply(build, Vector(succZ, neutral)).asInstanceOf[Value.NeutralThunk]
     assertEquals(thunkZ.term.nodeId, matchNode.nodeId)
     assertEquals(thunkZ.id.code, thunkSuccZ.id.code)
-    // Captures in the order the code first mentions them: the scrutinee, then `captured`.
-    assertEquals(thunkZ.id.captures, Vector(neutral, z))
+    // The scrutinee's value, then the captures in the order the rest of the code first mentions them: `captured`.
+    assertEquals(thunkZ.id.scrut, neutral)
+    assertEquals(thunkZ.id.captures, Vector(z))
     assertNotEquals(thunkZ.key, thunkSuccZ.key)
     assert(!ValueEquivalence.defEq(thunkZ, thunkSuccZ))
 

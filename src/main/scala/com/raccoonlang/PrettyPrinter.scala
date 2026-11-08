@@ -331,8 +331,10 @@ object PrettyPrinter {
       s"| ${c.ctorName}$args => ${printElabTerm0(c.body)}"
     }
 
-    def printElabMatch(m: ElabAst.Term.Match): String = {
-      val scrutStr = printElabTermAtom(m.scrut)
+    def printElabMatch(m: ElabAst.Term.Match): String = printElabMatchOn(m, printElabTermAtom(m.scrut))
+
+    /** `m` with `scrutStr` printed as its scrutinee: a stuck match's is its scrutinee's value (`Value.MatchId`). */
+    def printElabMatchOn(m: ElabAst.Term.Match, scrutStr: String): String = {
       val motiveStr = m.motive.map(motive => s" returning ${printElabTypeTerm(motive)}").getOrElse("")
       val casesStr = m.cases.map(printElabCase).mkString(" ")
       val equationStr = m.cases.flatMap(_.equation).headOption.fold("")(ref => s"${ref.name} : ")
@@ -390,7 +392,7 @@ object PrettyPrinter {
       proof match {
         case call: Value.VProofCall => printApp(call.fn, call.args)
         case app: Value.VProofApply => printApp(app.fn, app.args)
-        case m: Value.VProofMatch   => projection(m.term, m.env).getOrElse(underEnv(m.env).printElabMatch(m.term))
+        case m: Value.VProofMatch   => projection(m.term, m.scrut).getOrElse(printMatchOn(m.term, m.env, m.scrut))
       }
 
     private def printNatForm(poly: Value.VNatPoly): String = {
@@ -426,7 +428,7 @@ object PrettyPrinter {
         // A failed run prints as its computation, which is loose syntax for a match that is no projection only.
         case proof: Value.VSuspendedProof =>
           forced(proof).fold(proof match {
-            case m: Value.VProofMatch => projection(m.term, m.env).isEmpty
+            case m: Value.VProofMatch => projection(m.term, m.scrut).isEmpty
             case _                    => false
           })(isLoose)
         case _: Value.VPi                               => true
@@ -573,7 +575,7 @@ object PrettyPrinter {
         case lam @ Value.VLam(_, _: Value.ValueId.LocalId, _: Value.LamBody.Core) => Mismatch.Shape.Lam(lam)
         case thunk: Value.NeutralThunk =>
           StructEta.Projection
-            .of(thunk.term, thunk.env)
+            .of(thunk.term, thunk.id.scrut)
             .collect { case (base, _, info, idx) if info.fieldNames(idx) != "_" => Mismatch.Shape.Field(base, info.fieldNames(idx)) }
             .getOrElse(Mismatch.Shape.Whole)
         case _ => Mismatch.Shape.Whole
@@ -663,17 +665,26 @@ object PrettyPrinter {
      * A named record field's canonical projection (`StructEta.Projection`), as `base.field`. An anonymous field's
      * prints as the stuck match it is.
      */
-    def projection(thunk: Value.NeutralThunk): Option[String] = projection(thunk.term, thunk.env)
+    def projection(thunk: Value.NeutralThunk): Option[String] = projection(thunk.term, thunk.id.scrut)
 
-    /** The match `term` in `env` as `base.field`, when it is a named field's projector (`StructEta.Projection.of`). */
-    private def projection(term: ElabAst.Term.Match, env: Env): Option[String] =
-      StructEta.Projection.of(term, env).collect {
+    /**
+     * The match `term` on `base` as `base.field`, when it is a named field's projector (`StructEta.Projection.of`).
+     */
+    private def projection(term: ElabAst.Term.Match, base: Value): Option[String] =
+      StructEta.Projection.of(term, base).collect {
         case (base, _, info, idx) if info.fieldNames(idx) != "_" => s"${printAtom(base)}.${info.fieldNames(idx)}"
       }
 
-    /** A stuck match: a record's projection as `base.field`, any other as its syntax under its environment. */
+    /**
+     * The match `term` on `scrut`, its scrutinee's value, as its syntax under `env`, with `scrut` as its scrutinee:
+     * `env` need not hold the scrutinee term's locals (`Value.NeutralThunk`).
+     */
+    private def printMatchOn(term: ElabAst.Term.Match, env: Env, scrut: Value): String =
+      underEnv(env).printElabMatchOn(term, printAtom(scrut))
+
+    /** A stuck match: a record's projection as `base.field`, any other as its syntax on its scrutinee's value. */
     private def printThunk(thunk: Value.NeutralThunk): String =
-      projection(thunk).getOrElse(underEnv(thunk.env).printElabMatch(thunk.term))
+      projection(thunk).getOrElse(printMatchOn(thunk.term, thunk.env, thunk.id.scrut))
 
     def print(value: Value): String = value match {
       // Printed as its forced value, which eager evaluation printed (docs/kernel.md, "Proof calls"), or as itself.

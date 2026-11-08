@@ -28,13 +28,19 @@ import scala.collection.mutable
  * two matches have one `MatchCode` exactly when one is the other with its free locals renamed one to one, in order of
  * first mention, and its bound slots shifted together, which evaluates to the same result once each free local holds
  * the same value; `MatchId` pairs the code with those values.
+ *
+ * A stuck match's code leaves out one thing more: its own scrutinee, the root match's, which is a hole in its code.
+ * The match reads the scrutinee only through its value, which `MatchId` holds instead (docs/kernel.md, "Stuck
+ * matches"), so the scrutinee's locals are free locals of the code only where the rest of it mentions them. A match
+ * nested in the code keeps its scrutinee, which is code that the outer match evaluates.
  */
 object MatchIdentity {
 
   /**
    * A match's code read at `cutoff`: its interned canonical code, and its free locals, the slots below the cutoff that
    * it mentions, each once, in the order the canonical code first mentions them, which is the order of a match's
-   * captures.
+   * captures. A match's own scrutinee is no part of its code, so the scrutinee's locals are among its free locals only
+   * where the rest of the match mentions them.
    */
   final class Layout private[MatchIdentity] (val cutoff: Int, val code: MatchCode, freeSlots: Array[Int]) {
     def freeCount: Int = freeSlots.length
@@ -99,7 +105,10 @@ object MatchIdentity {
 
   private def compute(t: ElabAst.Term, cutoff: Int): Layout = {
     val encoder = new Encoder(cutoff)
-    encoder.term(t)
+    t match {
+      case m: ETerm.Match => encoder.stuckMatch(m)
+      case other          => encoder.term(other)
+    }
     new Layout(cutoff, intern(encoder.shape), encoder.freeSlots)
   }
 
@@ -134,6 +143,7 @@ object MatchIdentity {
     val Bound = 3L
     val None = 4L
     val Some = 5L
+    val Hole = 6L
     val GlobalRef = 10L
     val LocalRef = 11L
     val App = 12L
@@ -254,17 +264,32 @@ object MatchIdentity {
             local(ref)
             atom(peer)
           }
-        case ETerm.Match(scrut, motive, cases, _, _, _) =>
+        case m: ETerm.Match =>
           long(Tag.Match)
-          term(scrut)
-          option(motive)(term)
-          sequence(cases) { c =>
-            atom(c.ctorName)
-            sequence(c.argRefs)(field => option(field)(local))
-            option(c.equation)(local)
-            term(c.body)
-          }
+          term(m.scrut)
+          matchRest(m)
       }
+
+    /**
+     * A stuck match's own code: its scrutinee a hole, which its identity holds the value of instead (`Value.MatchId`),
+     * so that the scrutinee's locals are numbered only where the rest mentions them.
+     */
+    def stuckMatch(m: ETerm.Match): Unit = {
+      long(Tag.Match)
+      long(Tag.Hole)
+      matchRest(m)
+    }
+
+    /** A match after its scrutinee: its motive, then each case. */
+    private def matchRest(m: ETerm.Match): Unit = {
+      option(m.motive)(term)
+      sequence(m.cases) { c =>
+        atom(c.ctorName)
+        sequence(c.argRefs)(field => option(field)(local))
+        option(c.equation)(local)
+        term(c.body)
+      }
+    }
 
     private def pi(p: ETerm.Pi): Unit = {
       long(Tag.Pi)
