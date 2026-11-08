@@ -20,11 +20,13 @@ class NatNormalFormProgramTests extends munit.FunSuite {
       |def t: Nat := Nat.succ(o)
       |""".stripMargin
 
+  // Two atoms that convert but have different keys: lambdas of one code share an identity, so the second's body is a
+  // different code that evaluates to the same function.
   private val convertibleAtoms =
     """
       |axiom observe (f: Nat -> Nat): Nat
       |def first: Nat := observe(fun (n: Nat): Nat => n)
-      |def second: Nat := observe(fun (m: Nat): Nat => m)
+      |def second: Nat := observe(fun (m: Nat): Nat => Nat.add(m, 0))
       |def sameAtom: Eq(Nat, first, second) := Eq.refl(first)
       |""".stripMargin
 

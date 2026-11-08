@@ -1,7 +1,7 @@
 package com.raccoonlang
 
 import com.raccoonlang.ElabAst.{Term => ETerm}
-import com.raccoonlang.Value.{MatchCode, Universe}
+import com.raccoonlang.Value.MatchCode
 import org.roaringbitmap.RoaringBitmap
 
 import java.util.concurrent.ConcurrentHashMap
@@ -9,18 +9,21 @@ import java.util.concurrent.atomic.AtomicLong
 import scala.collection.mutable
 
 /**
- * The code half of a stuck match's identity (docs/kernel.md, "Stuck matches"; `Value.MatchId`): the checked match read
- * at its cutoff, the length of the environment it is evaluated in. Slots are dense, so a local below the cutoff is
- * free, read from that environment, and every other one is bound inside the match, at the depth of its binder
- * (`CapturedIndexes`).
+ * The code half of a stuck match's identity (docs/kernel.md, "Stuck matches"; `Value.MatchId`), and of an anonymous
+ * lambda's and a function type's (`Value.ValueId.LocalId`): the checked node read at its cutoff, the length of the
+ * environment it is evaluated in. What follows says "match" for any of the three. Slots are dense, so a local below
+ * the cutoff is free, read from that environment, and every other one is bound inside the match, at the depth of its
+ * binder (`CapturedIndexes`).
  *
  * The canonical code keeps everything that decides what the match computes, exactly: every node and its order, global
  * and constructor names, literals, projections, binders' instance markers, cases' fields and equations, lambdas' names
- * and recursive slots, and each function type's universe; so the motive and every argument the checker inserted are
- * part of it, being checked code. It leaves out what evaluation does not read: source positions, the names of locals
- * and binders, and the node identities of the function types, lambdas and matches inside it, which name nodes, not code
- * (`NodeId`): the values two nodes of one code build convert by opening, or by their own code. It also leaves out a
- * match's `proofIntoProp`, which decides only whether a suspended scrutinee is forced, not what the match computes. It
+ * and recursive slots; so the motive and every argument the checker inserted are part of it, being checked code. It
+ * leaves out what evaluation does not read: source positions, the names of locals and binders, and the node identities
+ * of the function types, lambdas and matches inside it, which name nodes, not code (`NodeId`): the values two nodes of
+ * one code build convert by opening, or by their own code. It also leaves out a match's `proofIntoProp`, which decides
+ * only whether a suspended scrutinee is forced, not what the match computes, and a function type's universe, which the
+ * checker computes from the binders' and codomain's types the code holds (`TypeChecker.checkPi`), up to the fresh
+ * variables of its captures' levels, which differ between two checks of one type. It
  * renames every local, bound or mentioned: a free one by the order of its first mention, and a bound one by its offset from the cutoff. So
  * two matches have one `MatchCode` exactly when one is the other with its free locals renamed one to one, in order of
  * first mention, and its bound slots shifted together, which evaluates to the same result once each free local holds
@@ -62,16 +65,46 @@ object MatchIdentity {
     val cached = m.layoutCache
     if (cached != null && cached.cutoff == cutoff) cached
     else {
-      val encoder = new Encoder(cutoff)
-      encoder.term(m)
-      val computed = new Layout(cutoff, intern(encoder.shape), encoder.freeSlots)
+      val computed = compute(m, cutoff)
       m.layoutCache = computed
       computed
     }
   }
 
   /**
-   * A canonical code: its tokens and, in order, the atoms its `Atom` tokens stand for, strings, numbers and universes,
+   * The layout of a function type at `cutoff`, as for a match: its values are identified by its code and captures
+   * (`Value.ValueId.LocalId`), the code read as a match's is. A function type's code and a match's or lambda's never
+   * coincide, since each starts with its own tag.
+   */
+  def layout(p: ETerm.Pi, cutoff: Int): Layout = {
+    val cached = p.layoutCache
+    if (cached != null && cached.cutoff == cutoff) cached
+    else {
+      val computed = compute(p, cutoff)
+      p.layoutCache = computed
+      computed
+    }
+  }
+
+  /** The layout of an anonymous lambda at `cutoff`, as for a function type. */
+  def layout(l: ETerm.Lam, cutoff: Int): Layout = {
+    val cached = l.layoutCache
+    if (cached != null && cached.cutoff == cutoff) cached
+    else {
+      val computed = compute(l, cutoff)
+      l.layoutCache = computed
+      computed
+    }
+  }
+
+  private def compute(t: ElabAst.Term, cutoff: Int): Layout = {
+    val encoder = new Encoder(cutoff)
+    encoder.term(t)
+    new Layout(cutoff, intern(encoder.shape), encoder.freeSlots)
+  }
+
+  /**
+   * A canonical code: its tokens and, in order, the atoms its `Atom` tokens stand for, strings and numbers,
    * compared by their own structural equality. Equal shapes are equal canonical codes: every node is a tag followed by
    * its fields in a fixed order, each sequence by its length and each option by a tag, so the tokens are a prefix code
    * for the tree.
@@ -240,8 +273,10 @@ object MatchIdentity {
         binderType(binder.ty)
         flag(binder.isInstance)
       }
+      // Not its universe: the checker computes that from the binders' and the codomain's types (`TypeChecker.checkPi`),
+      // which the code holds, so it adds only the fresh variables a capture's level gets, which differ between two
+      // checks of one function type.
       term(p.out)
-      atom(p.classifier: Universe)
     }
 
     private def binderType(ty: ElabAst.BinderType): Unit =

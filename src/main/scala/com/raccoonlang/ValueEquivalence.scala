@@ -75,7 +75,7 @@ object ValueEquivalence {
       (id1, id2) match {
         case (ValueId.Const(n1), ValueId.Const(n2)) if n1 == n2 => true
         case (l1: ValueId.LocalId, l2: ValueId.LocalId)
-            if l1.nodeId == l2.nodeId && l1.captures.length == l2.captures.length =>
+            if (l1.code eq l2.code) && l1.captures.length == l2.captures.length =>
           l1.captures.zip(l2.captures).forall { case (v1, v2) => defEq(v1, v2) }
         case _ => false
       }

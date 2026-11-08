@@ -187,8 +187,8 @@ object ValueKey {
     id match {
       case Value.ValueId.Const(name) =>
         mixString(mixKey(key, tag(Tag.ConstId)), name)
-      case Value.ValueId.LocalId(nodeId, captures) =>
-        mixValues(mixLong(mixKey(key, tag(Tag.LocalId)), nodeId.value), captures)
+      case Value.ValueId.LocalId(code, captures) =>
+        mixValues(mixLong(mixKey(key, tag(Tag.LocalId)), code.serial), captures)
     }
 
   private def levelKey(atoms: Map[Value.VarId, Int], c: Int): Key = {

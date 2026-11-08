@@ -79,9 +79,11 @@ class NodeIdentityTests extends munit.FunSuite {
     assertNotEquals(nToNValue.key, nToBottomValue.key)
     assert(!ValueEquivalence.defEq(nToNValue, nToBottomValue))
 
+    // Another node of the same code: a function type is identified by its code, not its node.
     val equivalentNToN = corePi("N", "N")
+    assertNotEquals(equivalentNToN.nodeId, sameSpanNToN.nodeId)
     val equivalentValue = TypeChecker.getType(equivalentNToN, env)
-    assertNotEquals(nToNValue.key, equivalentValue.key)
+    assertEquals(equivalentValue.key, nToNValue.key)
     assert(ValueEquivalence.defEq(nToNValue, equivalentValue))
 
     val spanChanged = sameSpanNToN.copy(span = Span(100, 200))
@@ -89,6 +91,34 @@ class NodeIdentityTests extends munit.FunSuite {
     val spanChangedValue = TypeChecker.getType(spanChanged, env)
     assertEquals(spanChangedValue.key, nToNValue.key)
     assert(ValueEquivalence.defEq(spanChangedValue, nToNValue))
+  }
+
+  // An anonymous lambda is identified by its code and the values it reads, as a stuck match is.
+  test("lambdas of one code over the same values share a key; another code or other values do not") {
+    val env = new ProgramFixtures.Programs(Prelude.default, allowUserAxioms = true).declsEnv(
+      """
+        |axiom k: Nat
+        |axiom j: Nat
+        |def one: Nat -> Nat := fun (n: Nat): Nat => Nat.add(n, k)
+        |def two: Nat -> Nat := fun (m: Nat): Nat => Nat.add(m, k)
+        |def other: Nat -> Nat := fun (n: Nat): Nat => Nat.add(k, n)
+        |def apart: Nat -> Nat := fun (n: Nat): Nat => Nat.add(n, j)
+        |def over (a: Nat): Nat -> Nat := fun (n: Nat): Nat => Nat.add(n, a)
+        |""".stripMargin
+    )
+    val one = env("one")
+    assertEquals(env("two").key, one.key)
+    // A different body is a different code, though the values convert.
+    assertNotEquals(env("other").key, one.key)
+    assert(ValueEquivalence.defEq(env("other"), one))
+    // The same code reading another value.
+    assertNotEquals(env("apart").key, one.key)
+    val over = env("over")
+    val k = env("k")
+    val applied = Interpreter.evalApply(over, Vector(k))
+    val again = Interpreter.evalApply(over, Vector(k))
+    assertEquals(applied.key, again.key)
+    assertNotEquals(Interpreter.evalApply(over, Vector(env("j"))).key, applied.key)
   }
 
   test("same-span identity lambda cannot inhabit the function-to-empty proposition") {

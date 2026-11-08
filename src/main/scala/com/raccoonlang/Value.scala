@@ -50,7 +50,12 @@ object Value {
       override def toString: String = name
     }
 
-    final case class LocalId(nodeId: NodeId, captures: Vector[Value]) extends ValueId
+    /**
+     * An anonymous lambda's or a function type's identity, as a stuck match's (`MatchId`): its interned code and the
+     * values of its free locals in the order the code first mentions them (`MatchIdentity.Layout`). Two identities
+     * with one code and convertible captures evaluate the same code on convertible values, so their values convert.
+     */
+    final case class LocalId(code: MatchCode, captures: Vector[Value]) extends ValueId
   }
 
   /** An interned canonical match code (`MatchIdentity`): one object, and one serial, per code in the process. */

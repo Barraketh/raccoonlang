@@ -119,14 +119,6 @@ class ValueOpsTests extends munit.FunSuite {
     val binder = VBinder(argRef, binderType(typeRef), Vector.empty)
     val piNodeId = NodeId.fresh()
     val lamNodeId = NodeId.fresh()
-    val pi = VPi(
-      runtimeEnv,
-      Vector(binder),
-      _ => valueType,
-      captured.synDeps,
-      ValueId.LocalId(piNodeId, Vector(captured)),
-      typeToTypeClassifier
-    )
     val piTerm = ETerm.Pi(
       Vector(ElabAst.Binder(argRef, binderType(typeRef), span)),
       typeRef,
@@ -142,7 +134,16 @@ class ValueOpsTests extends munit.FunSuite {
       recursiveSelf = None,
       nodeId = lamNodeId
     )
-    val lam = VLam(pi, ValueId.LocalId(lamNodeId, Vector(captured)), LamBody.Core(lamTerm, runtimeEnv))
+    val pi = VPi(
+      runtimeEnv,
+      Vector(binder),
+      _ => valueType,
+      captured.synDeps,
+      ValueId.LocalId(MatchIdentity.layout(piTerm, 1).code, Vector(captured)),
+      typeToTypeClassifier
+    )
+    val lamId = ValueId.LocalId(MatchIdentity.layout(lamTerm, 1).code, Vector(captured))
+    val lam = VLam(pi, lamId, LamBody.Core(lamTerm, runtimeEnv))
 
     val materialized = ValueOps.materialize(lam, solve(captured, solution)).asInstanceOf[VLam]
 
@@ -165,14 +166,6 @@ class ValueOpsTests extends munit.FunSuite {
     val binder = VBinder(argRef, binderType(typeRef), Vector.empty)
     val piNodeId = NodeId.fresh()
     val lamNodeId = NodeId.fresh()
-    val pi = VPi(
-      runtimeEnv,
-      Vector(binder),
-      _ => valueType,
-      DepSet.empty,
-      ValueId.LocalId(piNodeId, Vector.empty),
-      typeToTypeClassifier
-    )
     val piTerm = ETerm.Pi(
       Vector(ElabAst.Binder(argRef, binderType(typeRef), span)),
       typeRef,
@@ -188,7 +181,16 @@ class ValueOpsTests extends munit.FunSuite {
       recursiveSelf = None,
       nodeId = lamNodeId
     )
-    val lam = VLam(pi, ValueId.LocalId(lamNodeId, Vector.empty), LamBody.Core(lamTerm, runtimeEnv))
+    val pi = VPi(
+      runtimeEnv,
+      Vector(binder),
+      _ => valueType,
+      DepSet.empty,
+      ValueId.LocalId(MatchIdentity.layout(piTerm, 1).code, Vector.empty),
+      typeToTypeClassifier
+    )
+    val lamId = ValueId.LocalId(MatchIdentity.layout(lamTerm, 1).code, Vector.empty)
+    val lam = VLam(pi, lamId, LamBody.Core(lamTerm, runtimeEnv))
 
     intercept[WTF](Interpreter.evalApply(lam, Vector(symbolicValue("Arg"))))
   }

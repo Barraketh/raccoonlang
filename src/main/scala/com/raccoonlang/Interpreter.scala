@@ -164,7 +164,9 @@ object Interpreter {
   def evalPi(pi: ETerm.Pi, env: Env, vBinders: Vector[VBinder]): VPi = {
     val capturedIndexes = CapturedIndexes.getCapturedIndexes(pi, env)
     val captureVals = captureValues(env, capturedIndexes)
-    val id = ValueId.LocalId(pi.nodeId, captureVals)
+    // Identified by its code and the values it reads, in the order its code first reads them (`MatchIdentity`).
+    val layout = MatchIdentity.layout(pi, env.locals.length)
+    val id = ValueId.LocalId(layout.code, layout.captures(env))
     val closedEnv = RuntimeEnv.closeForEval(env, capturedIndexes)
 
     val synDeps = DepSet.newBuilder
@@ -264,9 +266,10 @@ object Interpreter {
   def evalLam(l: ETerm.Lam, vpi: VPi, env: Env, capturedIndexes: RoaringBitmap): VLam = {
     val id = l.name match {
       case Some(funcName) => ValueId.Const(funcName)
+      // Identified by its code and the values it reads, as a function type is (`evalPi`).
       case None =>
-        val captureVals = captureValues(env, capturedIndexes)
-        ValueId.LocalId(l.nodeId, captureVals)
+        val layout = MatchIdentity.layout(l, env.locals.length)
+        ValueId.LocalId(layout.code, layout.captures(env))
 
     }
     VLam(vpi, id, LamBody.Core(l, RuntimeEnv.closeForEval(env, capturedIndexes)))

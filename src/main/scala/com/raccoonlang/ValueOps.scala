@@ -180,7 +180,7 @@ object ValueOps {
       }
 
     private def materializeLocalId(id: ValueId.LocalId): ValueId.LocalId =
-      ValueId.LocalId(id.nodeId, id.captures.map(materialize(_)))
+      ValueId.LocalId(id.code, id.captures.map(materialize(_)))
 
     private def materializeLamBody(body: LamBody): LamBody =
       body match {

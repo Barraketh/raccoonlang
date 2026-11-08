@@ -94,10 +94,15 @@ object ElabAst {
       final case class Splice(list: Term) extends WordPiece
     }
 
+    /**
+     * A function type. Its values are identified by its code (`MatchIdentity`), not by `nodeId`; the node keeps the
+     * last layout computed for it, as a match does.
+     */
     final case class Pi(binders: Vector[Binder], out: TypeTerm, classifier: Universe, span: Span, nodeId: NodeId)
       extends Term
       with TypeTerm {
       require(binders.nonEmpty, "Pi requires at least one binder")
+      @volatile private[raccoonlang] var layoutCache: MatchIdentity.Layout = null
     }
 
     final case class Body(lets: Vector[Let], res: Term, span: Span) extends Term
@@ -106,7 +111,8 @@ object ElabAst {
      * A lambda; a type term, since a type may hold one, as an application's argument. `recursiveSelf` is a recursive
      * definition's own slot, bound after its parameters to the lambda itself when it runs. A member of a mutual block
      * has `recursivePeers` instead: a slot for each member of its block, in the block's order, bound to the global each
-     * names.
+     * names. An anonymous lambda's values are identified by its code (`MatchIdentity`), not by `nodeId`, and the node
+     * keeps the last layout computed for it, as a match does; a named one's are the global of its name.
      */
     final case class Lam(
         ty: Pi,
@@ -116,7 +122,9 @@ object ElabAst {
         recursiveSelf: Option[CoreAst.LocalRef],
         nodeId: NodeId,
         recursivePeers: Vector[(CoreAst.LocalRef, String)] = Vector.empty
-    ) extends TypeTerm
+    ) extends TypeTerm {
+      @volatile private[raccoonlang] var layoutCache: MatchIdentity.Layout = null
+    }
 
     /**
      * A match. Its stuck values are identified by its code, not by `nodeId` (`MatchIdentity`); the node keeps the last

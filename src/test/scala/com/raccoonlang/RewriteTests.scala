@@ -73,6 +73,19 @@ class RewriteTests extends munit.FunSuite {
     )
   }
 
+  // A lambda is identified by its code, so the goal's predicate, written apart from the equation's, is the same value.
+  test("a side holding a lambda is found where the goal writes the same lambda") {
+    run(
+      """
+        |def filtered (xs: List(Nat))(ys: List(Nat))
+        |    (h: Eq(List(Nat), List.filter(xs, fun (x: Nat): Bool => Nat.isZero(x)), ys))
+        |    (q: Eq(Nat, List.length(ys), 0))
+        |    : Eq(Nat, List.length(List.filter(xs, fun (y: Nat): Bool => Nat.isZero(y))), 0) :=
+        |  rewrite h in q
+        |""".stripMargin
+    )
+  }
+
   test("steps apply in order, each against the goal the earlier ones leave") {
     run(
       """
