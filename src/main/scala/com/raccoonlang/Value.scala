@@ -380,11 +380,16 @@ object Value {
   case object ActualType extends CaptureRoot
   case object ActualTypeClassifier extends CaptureRoot
 
+  /**
+   * `heads` holds, for each step of `path`, the global its pattern applies there, if it applies a global by name: a
+   * step under a constructor's own pattern reads that constructor's stored fields after its erased family arguments.
+   */
   case class VCapture(
       localRef: CoreAst.LocalRef,
       path: List[Int],
       captureType: CaptureType,
-      root: CaptureRoot = ActualType
+      root: CaptureRoot = ActualType,
+      heads: List[Option[String]] = Nil
   )
 
   case class VBinder(

@@ -35,7 +35,7 @@ object TypePatternOps {
         case EPattern.Capture(ref, _, _) => Some(VCapture(ref, index :: Nil, LevelCapture(0), root))
         case EPattern.App(ETerm.GlobalRef("Level.succ", _), args, _) =>
           compileLevelCapture(args.head, index).map {
-            case c @ VCapture(_, _, LevelCapture(subtract), _) =>
+            case c @ VCapture(_, _, LevelCapture(subtract), _, _) =>
               c.copy(captureType = LevelCapture(subtract + 1))
             case _ => throw WTF("Expected a level capture while compiling a level pattern")
           }
@@ -53,16 +53,23 @@ object TypePatternOps {
         kindCapture ++ compileLevelCapture(level, 1)
 
       case app: EPattern.App =>
+        val head = app.fn match {
+          case ETerm.GlobalRef(name, _) => Some(name)
+          case _                        => None
+        }
+        def heads(c: VCapture): List[Option[String]] = c.heads.padTo(c.path.length, None)
         app.args.zipWithIndex.flatMap { case (next, idx) =>
           next match {
             case EPattern.Type(_) => Vector.empty
             case nested: EPattern.App =>
-              collectCaptures(nested, root).map(capture => capture.copy(path = idx :: capture.path))
+              collectCaptures(nested, root).map(capture => capture.copy(path = idx :: capture.path, heads = head :: heads(capture)))
             // A constraint matches the type of the captured argument, and its captures come first, as they are bound.
             case EPattern.Capture(localRef, _, constraint) =>
               constraint.toVector.flatMap { c =>
-                collectCaptures(c, root).map(capture => capture.copy(path = idx :: TypeOfStep :: capture.path))
-              } :+ VCapture(localRef, idx :: Nil, StructuralCapture, root)
+                collectCaptures(c, root).map(capture =>
+                  capture.copy(path = idx :: TypeOfStep :: capture.path, heads = head :: None :: heads(capture))
+                )
+              } :+ VCapture(localRef, idx :: Nil, StructuralCapture, root, head :: Nil)
           }
         }
 
@@ -224,8 +231,8 @@ object TypePatternOps {
    * `FailedToOpenCapture`: the argument's type does not have the pattern's shape there. A universe of constant kind
    * reads as `Sort(l)` or `Lin(l)`, with its level at position 0, and one of a variable kind has no position.
    */
-  private def project(value: Value, path: List[Int], capture: CoreAst.LocalRef): Value = {
-    def projectStep(value: Value, idx: Int): Value =
+  private def project(value: Value, path: List[Int], capture: CoreAst.LocalRef, heads: List[Option[String]] = Nil): Value = {
+    def projectStep(value: Value, idx: Int, head: Option[String]): Value =
       value match {
         case _ if idx == TypeOfStep => value.tpe
         // A universe is read by position only under a head that computes, such as `L($u)` with an alias
@@ -238,6 +245,13 @@ object TypePatternOps {
         // construction, and on an application's arguments when it is evaluated, which were checked first.
         case VSort(level) if idx == 0 => level
         case VLin(level) if idx == 0  => level
+        // Under the constructor's own pattern, the pattern names every argument, its erased family arguments first,
+        // and the value stores only the rest (`Interpreter`, `vArgs.drop(numErased)`): an erased one is its type's
+        // family argument. Under another head, which computes to the constructor, positions are read as they are.
+        case ConstructorValue(ctor, fields) if head.contains(ctor.name) && ctor.numErased > 0 =>
+          if (idx >= ctor.numErased)
+            fields.lift(idx - ctor.numErased).getOrElse(throw FailedToOpenCapture(capture.name, value, idx))
+          else projectStep(Interpreter.force(value.tpe), ctor.erasedFamilyArgIndexes(idx), None)
         case ConstructorValue(_, fields) =>
           fields.lift(idx).getOrElse(throw FailedToOpenCapture(capture.name, value, idx))
         case VApp(_, args, _, _) => args.lift(idx).getOrElse(throw FailedToOpenCapture(capture.name, value, idx))
@@ -245,7 +259,7 @@ object TypePatternOps {
       }
 
     // Reading by position reads a value's form, so a proof call's forced value (docs/kernel.md, "Proof calls").
-    path.foldLeft(value) { case (cur, nextIdx) => projectStep(Interpreter.force(cur), nextIdx) }
+    path.zipWithIndex.foldLeft(value) { case (cur, (nextIdx, i)) => projectStep(Interpreter.force(cur), nextIdx, heads.lift(i).flatten) }
   }
 
   private def openCaptures(env: Env, captures: Vector[VCapture], actualTy: Value): Env = {
@@ -255,15 +269,15 @@ object TypePatternOps {
         case ActualTypeClassifier => actualTy.tpe
       }
       val captureValue = capture.captureType match {
-        case StructuralCapture => project(root, capture.path, capture.localRef)
+        case StructuralCapture => project(root, capture.path, capture.localRef, capture.heads)
         case KindCapture =>
-          project(root, capture.path.init, capture.localRef) match {
+          project(root, capture.path.init, capture.localRef, capture.heads) match {
             case VUniv(kind, _) => kind
             case PropTpe        => throw PropositionAsTypeCarrier()
             case other          => throw FailedToOpenCapture(capture.localRef.name, other, capture.path.last)
           }
         case LevelCapture(subtract) =>
-          val projected = project(root, capture.path.init, capture.localRef) match {
+          val projected = project(root, capture.path.init, capture.localRef, capture.heads) match {
             case VUniv(_, level) => level
             case PropTpe         => throw PropositionAsTypeCarrier()
             case other           => throw FailedToOpenCapture(capture.localRef.name, other, capture.path.last)

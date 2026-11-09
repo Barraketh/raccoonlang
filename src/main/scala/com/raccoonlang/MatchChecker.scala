@@ -462,9 +462,19 @@ object MatchChecker {
       }
       CheckedTypeTerm(value, residual, LinearInfo.empty)
     }
+    // The motive's syntax is evaluated in this match's scope (`Interpreter.matchStep`). One taken from the context is the
+    // expected type's syntax, elaborated where that type was, so its own binders, of a function type or a lambda in
+    // it, may be numbered below this scope: the declared result of a recursive definition, read before its self slot,
+    // or a rewrite's goal under a case's fields. Evaluating it here would bind them again over live locals. Such a
+    // motive is quoted in this scope instead, as an inferred one is; any other, or one quotation cannot write, is kept.
+    val motiveResidual =
+      if (!CapturedIndexes.bindsBelow(chosenMotive.residual, env.locals.length)) chosenMotive.residual
+      else
+        try quoteType(chosenMotive.value, quoteContext(env), span)
+        catch { case _: CannotQuoteValue => chosenMotive.residual }
     val checkedMatch = EA.Term.Match(
       scrutChecked.residual,
-      Some(chosenMotive.residual),
+      Some(motiveResidual),
       checkedBranches.map(_.residual),
       span,
       t.nodeId,

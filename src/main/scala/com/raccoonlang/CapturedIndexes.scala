@@ -89,6 +89,44 @@ object CapturedIndexes {
         }
     }
 
+  /**
+   * Whether a binder inside `term` binds a local below `cutoff`: syntax numbered for a scope shorter than the one of
+   * `cutoff` locals, whose binders would collide with that scope's locals if evaluated there (`MatchChecker`).
+   */
+  def bindsBelow(term: ElabAst.Term, cutoff: Int): Boolean = {
+    def ref(r: CoreAst.LocalRef): Boolean = r.id < cutoff
+    def pattern(p: ElabAst.TypePattern): Boolean =
+      p match {
+        case ElabAst.TypePattern.Capture(r, _, constraint) => ref(r) || constraint.exists(pattern)
+        case ElabAst.TypePattern.App(fn, args, _)          => go(fn) || args.exists(pattern)
+        case ElabAst.TypePattern.Type(t)                   => go(t)
+      }
+    def binderType(bt: ElabAst.BinderType): Boolean =
+      bt match {
+        case ElabAst.BinderType.TypePattern(tp, _)            => pattern(tp)
+        case ElabAst.BinderType.ConstrainedCapture(r, c, _) => ref(r) || pattern(c)
+      }
+    def go(t: ElabAst.Term): Boolean =
+      t match {
+        case Term.GlobalRef(_, _) | Term.LocalRef(_, _) | Term.NatLit(_, _) | Term.StrLit(_, _) => false
+        case Term.Word(_, pieces, _) =>
+          pieces.exists {
+            case Term.WordPiece.Layer(before, after) => (before ++ after).exists(go)
+            case Term.WordPiece.Splice(list)         => go(list)
+          }
+        case Term.Pi(binders, out, _, _, _) => binders.exists(b => ref(b.localRef) || binderType(b.ty)) || go(out)
+        case Term.App(fn, args, _)          => go(fn) || args.exists(go)
+        case Term.Proj(base, _, _, _, _)    => go(base)
+        case Term.Body(lets, res, _)        => lets.exists(l => ref(l.localRef) || go(l.value) || l.ty.exists(go)) || go(res)
+        case Term.Lam(ty, body, _, _, self, _, peers) =>
+          self.exists(ref) || peers.exists(p => ref(p._1)) || go(ty) || go(body)
+        case Match(scrut, motive, cases, _, _, _) =>
+          go(scrut) || motive.exists(go) ||
+            cases.exists(c => c.argRefs.exists(_.exists(ref)) || c.equation.exists(ref) || go(c.body))
+      }
+    go(term)
+  }
+
   /** Whether `term` names the local `id`, one that no binder inside `term` binds, as ids grow with depth. */
   def mentions(term: ElabAst.Term, id: Int): Boolean = {
     val refs = new RoaringBitmap

@@ -42,7 +42,8 @@ object ValueEquivalence {
     private def sameBinderShape(left: VBinder, right: VBinder): Boolean =
       left.isInstance == right.isInstance && left.captures.length == right.captures.length &&
         left.captures.zip(right.captures).forall { case (a, b) =>
-          a.root == b.root && a.path == b.path && a.captureType == b.captureType
+          a.root == b.root && a.path == b.path && a.captureType == b.captureType &&
+            a.heads.padTo(a.path.length, None) == b.heads.padTo(b.path.length, None)
         }
 
     private def defEqPi(pi1: VPi, pi2: VPi): Option[Vector[Value]] = {

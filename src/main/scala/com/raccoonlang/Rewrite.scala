@@ -56,7 +56,26 @@ private[raccoonlang] object Rewrite {
     val base = quoteContext(env)
     // The motive's parameter takes the next slot of `env`, where the checker checks the motive.
     val bound = CA.LocalRef(base.localEnvLength, BoundName)
-    val abstracted = abstractIn(goal, from, bound, base, span)
+    // Quotation names a value a local holds by that local, before reading its form. So a goal written as a `let`'s name,
+    // or holding one, is quoted as the name, which hides its occurrences of the side. Where the goal so quoted has none,
+    // it is quoted again through the forms of the locals that hold computed values, as a goal written out would be;
+    // the larger motive costs checking time only.
+    val abstracted = {
+      val named = abstractIn(goal, from, bound, base, span)
+      if (CapturedIndexes.mentions(named, bound.id)) named
+      else {
+        val computed = env.locals.zipWithIndex.collect {
+          case (binding, idx) if binding.valueOption.exists(v => !v.isInstanceOf[Var]) => idx
+        }.toSet
+        val open = base.copy(quote = base.quote.filter { case (_, entry) =>
+          entry.term match {
+            case EA.Term.LocalRef(ref, _) => !computed.contains(ref.id)
+            case _                        => true
+          }
+        })
+        abstractIn(goal, from, bound, open, span)
+      }
+    }
     if (!CapturedIndexes.mentions(abstracted, bound.id)) {
       if (ValueEquivalence.defEq(left, right))
         fail(s"the sides of ${Mismatch.abbreviated(equationType)} convert, so the step would change nothing; drop it")
