@@ -29,6 +29,11 @@ import scala.collection.mutable
  * first mention, and its bound slots shifted together, which evaluates to the same result once each free local holds
  * the same value; `MatchId` pairs the code with those values.
  *
+ * A free local the code reads only as the root of field projection chains (`r.a`, `r.x.a`) is captured as those
+ * chains' values, not whole, each chain one capture in the code (`Tag.FreePath`): two copies of a match over records
+ * that agree on the fields it reads compute the same and have one identity. A local read in any other way is captured
+ * whole. The closed environment a stuck match resumes in keeps the whole local either way (`Layout.capturedIndexes`).
+ *
  * A stuck match's code leaves out one thing more: its own scrutinee, the root match's, which is a hole in its code.
  * The match reads the scrutinee only through its value, which `MatchId` holds instead (docs/kernel.md, "Stuck
  * matches"), so the scrutinee's locals are free locals of the code only where the rest of it mentions them. A match
@@ -42,20 +47,47 @@ object MatchIdentity {
    * captures. A match's own scrutinee is no part of its code, so the scrutinee's locals are among its free locals only
    * where the rest of the match mentions them.
    */
-  final class Layout private[MatchIdentity] (val cutoff: Int, val code: MatchCode, freeSlots: Array[Int]) {
+  final class Layout private[MatchIdentity] (
+      val cutoff: Int,
+      val code: MatchCode,
+      freeSlots: Array[Int],
+      captureSlots: Array[Int],
+      capturePaths: Array[List[Int]]
+  ) {
     def freeCount: Int = freeSlots.length
 
     def freeSlot(index: Int): Int = freeSlots(index)
 
-    /** The values of the free locals in `env`, an environment of length `cutoff`, in order. */
+    /**
+     * The values the code reads of `env`, an environment of length `cutoff`, in order: each a free local's value, or,
+     * for a local the code reads only through field projections, each projection it reads, read as evaluation reads it
+     * (`StructEta.project`).
+     */
     def captures(env: Env): Vector[Value] = {
       val values = Vector.newBuilder[Value]
+      var fellBack = BigInt(0)
+      var paths = false
       var index = 0
-      while (index < freeSlots.length) {
-        val slot = freeSlots(index)
-        values += env(CoreAst.LocalRef(slot, s"#$slot"))
+      while (index < captureSlots.length) {
+        val slot = captureSlots(index)
+        val whole = env(CoreAst.LocalRef(slot, s"#$slot"))
+        val path = capturePaths(index)
+        if (path.isEmpty) values += whole
+        else {
+          paths = true
+          // A projection the code reads in a case may be typed only under that case's refinement, its local's type
+          // not yet a record here: then the local is captured whole, and the identity says so (`fellBack`), so a
+          // whole capture is never compared with a projected one.
+          projectPath(whole, path) match {
+            case Some(projected) => values += projected
+            case None =>
+              values += whole
+              fellBack = fellBack.setBit(index)
+          }
+        }
         index += 1
       }
+      if (paths) values += NatNormalForm.literal(fellBack)
       values.result()
     }
 
@@ -104,12 +136,117 @@ object MatchIdentity {
   }
 
   private def compute(t: ElabAst.Term, cutoff: Int): Layout = {
-    val encoder = new Encoder(cutoff)
+    val bare = new Bare(cutoff)
+    t match {
+      case m: ETerm.Match => bare.matchRest(m)
+      case other          => bare.term(other)
+    }
+    val encoder = new Encoder(cutoff, bare.slots)
     t match {
       case m: ETerm.Match => encoder.stuckMatch(m)
       case other          => encoder.term(other)
     }
-    new Layout(cutoff, intern(encoder.shape), encoder.freeSlots)
+    new Layout(cutoff, intern(encoder.shape), encoder.freeSlots, encoder.captureSlots, encoder.capturePaths)
+  }
+
+  /** The value at `path` of `v`, projected as evaluation does (`StructEta.project`), or `None` where it cannot be. */
+  private def projectPath(v: Value, path: List[Int]): Option[Value] =
+    path.foldLeft(Option(v)) { (cur, field) =>
+      cur.flatMap { base =>
+        base match {
+          case ConstructorValue(_, _) => Some(StructEta.project(base, field))
+          case _ =>
+            base.tpe match {
+              case Value.InductiveFamilyValue(instance) if instance.meta.record.isDefined => Some(StructEta.project(base, field))
+              case _                                                                      => None
+            }
+        }
+      }
+    }
+
+  /**
+   * A projection chain `r.f.g`: its root local and its fields' indices, outermost last; `None` for a term that is no
+   * projection of a local.
+   */
+  private def chain(t: ElabAst.Term): Option[(CoreAst.LocalRef, List[Int])] =
+    t match {
+      case ETerm.Proj(base, _, _, index, _) =>
+        base match {
+          case ETerm.LocalRef(ref, _) => Some((ref, List(index)))
+          case _                      => chain(base).map { case (ref, path) => (ref, path :+ index) }
+        }
+      case _ => None
+    }
+
+  /**
+   * The free locals a code reads other than through field projections: those it captures whole. A free local read
+   * only as the root of projection chains is captured as the values of those chains (`Encoder`), so two copies of a
+   * code over records that agree on the fields it reads have one identity.
+   */
+  private final class Bare(cutoff: Int) {
+    val slots: mutable.BitSet = mutable.BitSet.empty
+
+    private def local(ref: CoreAst.LocalRef): Unit = if (ref.id < cutoff) slots += ref.id
+
+    def term(t: ElabAst.Term): Unit =
+      t match {
+        case proj: ETerm.Proj =>
+          chain(proj) match {
+            case Some((ref, _)) if ref.id < cutoff => ()
+            case _                                 => term(proj.base)
+          }
+        case ETerm.GlobalRef(_, _) | ETerm.NatLit(_, _) | ETerm.StrLit(_, _) => ()
+        case ETerm.LocalRef(ref, _) => local(ref)
+        case ETerm.App(fn, args, _) =>
+          term(fn)
+          args.foreach(term)
+        case ETerm.Word(consHead, pieces, _) =>
+          term(consHead)
+          pieces.foreach {
+            case ETerm.WordPiece.Layer(before, after) => (before ++ after).foreach(term)
+            case ETerm.WordPiece.Splice(list)         => term(list)
+          }
+        case p: ETerm.Pi => pi(p)
+        case ETerm.Body(lets, res, _) =>
+          lets.foreach { let =>
+            let.ty.foreach(term)
+            term(let.value)
+          }
+          term(res)
+        case ETerm.Lam(ty, body, _, _, _, _, _) =>
+          pi(ty)
+          term(body)
+        case m: ETerm.Match =>
+          term(m.scrut)
+          matchRest(m)
+      }
+
+    def matchRest(m: ETerm.Match): Unit = {
+      m.motive.foreach(term)
+      m.cases.foreach(c => term(c.body))
+    }
+
+    private def pi(p: ETerm.Pi): Unit = {
+      p.binders.foreach(b => binderType(b.ty))
+      term(p.out)
+    }
+
+    private def binderType(ty: ElabAst.BinderType): Unit =
+      ty match {
+        case ElabAst.BinderType.TypePattern(tp, _)            => pattern(tp)
+        case ElabAst.BinderType.ConstrainedCapture(ref, c, _) => local(ref); pattern(c)
+      }
+
+    private def pattern(tp: ElabAst.TypePattern): Unit =
+      tp match {
+        case ElabAst.TypePattern.Type(t) => term(t)
+        case ElabAst.TypePattern.App(fn, args, _) =>
+          term(fn)
+          args.foreach(pattern)
+        case ElabAst.TypePattern.Capture(ref, _, constraint) =>
+          local(ref)
+          constraint.foreach(pattern)
+      }
   }
 
   /**
@@ -162,18 +299,37 @@ object MatchIdentity {
     val PatternCapture = 25L
     val BinderPattern = 26L
     val BinderConstrained = 27L
+    val FreePath = 28L
   }
 
   /** Encodes one match at `cutoff`, numbering its free locals as it meets them. */
-  private final class Encoder(cutoff: Int) {
+  private final class Encoder(cutoff: Int, bare: collection.BitSet) {
     private val tokens = mutable.ArrayBuilder.make[Long]
     private val atoms = mutable.ArrayBuilder.make[AnyRef]
-    private val freeIndex = mutable.HashMap.empty[Int, Int]
+    // The free locals the code mentions, each once in order of first mention: what a closed environment keeps.
+    private val slotSeen = mutable.HashSet.empty[Int]
     private val free = mutable.ArrayBuilder.make[Int]
+    // What the code reads of them, each once in order of first mention: a whole local, or a projection chain of one.
+    private val captureIndex = mutable.HashMap.empty[(Int, List[Int]), Int]
+    private val capSlots = mutable.ArrayBuilder.make[Int]
+    private val capPaths = mutable.ArrayBuilder.make[List[Int]]
 
     def shape: Shape = new Shape(tokens.result(), atoms.result())
 
     def freeSlots: Array[Int] = free.result()
+
+    def captureSlots: Array[Int] = capSlots.result()
+
+    def capturePaths: Array[List[Int]] = capPaths.result()
+
+    private def capture(slot: Int, path: List[Int]): Int = {
+      if (slotSeen.add(slot)) free += slot
+      captureIndex.getOrElseUpdate((slot, path), {
+        capSlots += slot
+        capPaths += path
+        captureIndex.size
+      })
+    }
 
     private def long(value: Long): Unit = tokens += value
 
@@ -186,13 +342,16 @@ object MatchIdentity {
     private def local(ref: CoreAst.LocalRef): Unit =
       if (ref.id < cutoff) {
         long(Tag.Free)
-        long(freeIndex.getOrElseUpdate(ref.id, { free += ref.id; freeIndex.size }).toLong)
+        long(capture(ref.id, Nil).toLong)
       } else {
         long(Tag.Bound)
         long((ref.id - cutoff).toLong)
       }
 
     private def flag(value: Boolean): Unit = long(if (value) 1L else 0L)
+
+    private def projected(proj: ETerm.Proj): Option[(CoreAst.LocalRef, List[Int])] =
+      chain(proj).filter { case (ref, _) => ref.id < cutoff && !bare.contains(ref.id) }
 
     private def option[A](value: Option[A])(encode: A => Unit): Unit =
       value match {
@@ -219,6 +378,11 @@ object MatchIdentity {
           long(Tag.App)
           term(fn)
           sequence(args)(term)
+        case proj @ ETerm.Proj(base, family, field, index, _) if projected(proj).isDefined =>
+          // A projection chain of a free local the code reads only so: one capture, the chain's value.
+          val (ref, path) = projected(proj).get
+          long(Tag.FreePath)
+          long(capture(ref.id, path).toLong)
         case ETerm.Proj(base, family, field, index, _) =>
           long(Tag.Proj)
           term(base)

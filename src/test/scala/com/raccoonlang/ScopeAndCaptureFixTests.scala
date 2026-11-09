@@ -158,4 +158,55 @@ class ScopeAndCaptureFixTests extends munit.FunSuite {
     rejects(tile + "def wrong (S: Type): Eq(Nat, tyOf(Box.mk(S, G.tile(S, 3, Bool.true))), 4) := Eq.refl(4)\n")
     rejects(tile + "def wrong (S: Type): Eq(Bool, oOf(Box.mk(S, G.tile(S, 3, Bool.true))), Bool.false) := Eq.refl(Bool.false)\n")
   }
+
+  private val rec =
+    """
+      |inductive Rec : Type
+      | | mk (a: Nat)(b: Nat) : Rec
+      |inductive Sp : Type
+      | | one (u: Nat) : Sp
+      | | two : Sp
+      |def bump (r: Rec): Rec := Rec.mk(r.a, Nat.succ(r.b))
+      |""".stripMargin
+
+  test("a stuck match over a record converts with the same match over a record agreeing on the fields it reads") {
+    accepts(
+      rec +
+        """
+          |def get (r: Rec)(sp: Sp): Bool := {
+          |  match sp with
+          |  | Sp.one u => Nat.beq(u, r.a)
+          |  | Sp.two => Bool.false
+          |}
+          |def same (r: Rec)(sp: Sp)(h: Eq(Bool, get(r, sp), Bool.true)): Eq(Bool, get(bump(r), sp), Bool.true) := h
+          |def five : Eq(Bool, get(Rec.mk(5, 0), Sp.one(5)), Bool.true) := Eq.refl(Bool.true)
+          |""".stripMargin
+    )
+  }
+
+  test("control: a stuck match reading a field the records disagree on, or the record whole, does not convert") {
+    rejects(
+      rec +
+        """
+          |def get (r: Rec)(sp: Sp): Bool := {
+          |  match sp with
+          |  | Sp.one u => Nat.beq(u, r.b)
+          |  | Sp.two => Bool.false
+          |}
+          |def same (r: Rec)(sp: Sp)(h: Eq(Bool, get(r, sp), Bool.true)): Eq(Bool, get(bump(r), sp), Bool.true) := h
+          |""".stripMargin
+    )
+    rejects(
+      rec +
+        """
+          |def sum (r: Rec): Nat := Nat.add(r.a, r.b)
+          |def get (r: Rec)(sp: Sp): Bool := {
+          |  match sp with
+          |  | Sp.one u => Nat.beq(u, r.a)
+          |  | Sp.two => Nat.beq(sum(r), 0)
+          |}
+          |def same (r: Rec)(sp: Sp)(h: Eq(Bool, get(r, sp), Bool.true)): Eq(Bool, get(bump(r), sp), Bool.true) := h
+          |""".stripMargin
+    )
+  }
 }
