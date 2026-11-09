@@ -1026,6 +1026,51 @@ evaluation had run the inner call already. A chain built by a loop then needs
 stack in proportion to its length; a match into a proposition does not demand
 it. An overflow while loading, parsing or elaborating is not a diagnostic.
 
+### Memoized application
+
+A closure, the value of an anonymous lambda, remembers what applying it
+returned. When it runs on
+arguments, the value its body evaluates to is recorded under the arguments'
+structural keys, and an application of the same closure whose arguments have
+the same keys returns the recorded value without running the body. So a
+closure that reads another closure at its own argument several times, such as
+a step of a kernel's per-thread state over the previous step's, runs that
+closure once per distinct argument.
+
+Evaluation reads no solved variables and makes no fresh ones, so the body
+evaluates to one value on the same arguments. Equal keys say a little less,
+and the memo is kept to where they say enough:
+
+- the key also records whether a demanded proof is running, since a run
+  inside one leaves no proof call suspended;
+- an argument that holds a suspended proof, forced or not, among the parts
+  its key reads, is not keyed and its application is not recorded: keying
+  would force it, and a suspension and its forced value share a key while the
+  checker reads them differently;
+- keys ignore a variable's type, which a type pattern's capture reads, and
+  two such variables differ there only where a store substituted a solution.
+  So no value is reused across a variable that some store, in any branch, has
+  linked: such arguments are not memoized, and a recorded value that mentions
+  one is not returned;
+- a closure's identity ignores the fields of a captured record its code does
+  not read, which a result may keep. A recorded value is returned only when its
+  variables are among the closure's and the arguments', as a run's are.
+
+A run that fails records nothing. The body of a recorded application is still
+a tail: the value is recorded when the loop that evaluates it ends. Keys, and
+whether a value holds a suspended proof, are computed once per value in a
+loop over the parts a key reads, deepest first, as dependencies are. So
+memoization costs no host stack, even for a long chain of closures that each
+capture the one before.
+
+The memo belongs to the closure value, so it lives as long as the closure;
+materialization, which rebuilds a closure, starts the new one without one. A
+closure records at most 4,096 applications; past that its new arguments run
+unrecorded, and the recorded ones still answer. A closure applied to many
+distinct arguments, such as one a global holds, so keeps a bounded memo.
+Named definitions are not memoized, nor are the lambdas conversion,
+quotation and printing open on fresh variables, nor natives.
+
 ## Axioms
 
 Any module may declare an `axiom`. Its type is checked; its consistency is the

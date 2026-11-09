@@ -59,7 +59,167 @@ object ValueKey {
     val KindTpe = 24
     val Kind = 25
     val Univ = 26
+    val Application = 27
   }
+
+  /**
+   * The key of applying a function to `args`, in order, evaluated in demanded-proof mode or not, `forcing`: two such keys
+   * are equal only when the argument keys are equal pairwise and the modes agree. It is `null` when an argument holds a
+   * suspended proof (`holdsSuspension`, docs/kernel.md, "Proof calls"): keying it would force it when it is not yet
+   * forced, and a suspension and its forced value share a key while the checker reads them differently. Otherwise
+   * computing the key forces nothing.
+   */
+  def applicationKey(args: Vector[Value], forcing: Boolean): Key = {
+    if (args.exists(holdsSuspension)) return null
+    val mixer = new Mixer(tag(Tag.Application))
+    var index = 0
+    while (index < args.length) {
+      mixer.key(args(index).key)
+      index += 1
+    }
+    mixer.long(args.length.toLong)
+    mixer.long(if (forcing) 1L else 0L)
+    mixer.result
+  }
+
+  /**
+   * Calls `f` on each value whose key `orderKey` reads to key `value`: a suspended proof's is its forced value's, so this
+   * forces one. Levels, kinds, constants, variables, constructor heads and words read no other value's key; a word's is
+   * computed where the word is built.
+   */
+  private def foreachKeyPart(value: Value)(f: Value => Unit): Unit =
+    value match {
+      case Value.VUniv(kind, level) =>
+        f(kind)
+        f(level)
+      case Value.VApp(head, args, tpe, _) =>
+        f(head)
+        args.foreach(f)
+        if (head.isInstanceOf[Value.ConstructorHead]) f(tpe)
+      case Value.VLam(_, id, _)         => foreachCapture(id, f)
+      case m: Value.NeutralThunk        => f(m.id.scrut); m.id.captures.foreach(f)
+      case p: Value.VPi                 => foreachCapture(p.id, f)
+      case poly: Value.VNatPoly         => poly.form.operands.foreach(f)
+      case proof: Value.VSuspendedProof => f(Interpreter.force(proof))
+      case _                            =>
+    }
+
+  private def foreachCapture(id: Value.ValueId, f: Value => Unit): Unit =
+    id match {
+      case Value.ValueId.LocalId(_, captures) => captures.foreach(f)
+      case Value.ValueId.Const(_)             =>
+    }
+
+  /**
+   * `value` 's key (`orderKey`), computed in a loop rather than by recursion: a value waits on a stack until the keys of
+   * the parts its key reads (`foreachKeyPart`) are known, deepest first, so a long chain, such as closures that each
+   * capture the one before, needs no host stack in proportion to its length (docs/kernel.md, "Evaluation depth"). Each
+   * value's key is computed once and kept (`Value.knownKey`); a part shared by several values is computed once.
+   */
+  private[raccoonlang] def keyOf(value: Value): Key = {
+    if (partsKeyed(value)) value.knownKey = orderKey(value)
+    else {
+      val waiting = new java.util.ArrayDeque[Value]()
+      waiting.push(value)
+      while (!waiting.isEmpty) {
+        val next = waiting.peek()
+        if (next.knownKey ne null) waiting.pop()
+        else if (partsKeyed(next)) {
+          next.knownKey = orderKey(next)
+          waiting.pop()
+        } else foreachKeyPart(next)(part => if (part.knownKey eq null) waiting.push(part))
+      }
+    }
+    value.knownKey
+  }
+
+  /** Whether the keys of `value` 's parts are known; it keys a part that has no parts of its own on the way. */
+  private def partsKeyed(value: Value): Boolean = {
+    var keyed = true
+    foreachKeyPart(value) { part =>
+      if (part.knownKey eq null) {
+        if (keyLeaf(part)) part.knownKey = orderKey(part) else keyed = false
+      }
+    }
+    keyed
+  }
+
+  /** Whether `value` 's key reads no other value's (`foreachKeyPart`). */
+  private def keyLeaf(value: Value): Boolean =
+    value match {
+      case _: Value.Var | _: Value.VConst | _: Value.Level | _: Value.Kind | _: TopLevelValue | _: Value.VWord => true
+      case poly: Value.VNatPoly => poly.form.operands.isEmpty
+      case _                    => false
+    }
+
+  /**
+   * Whether a suspended proof is among the parts `value` 's key reads (`foreachKeyPart`), at any depth, decided without
+   * forcing one, once per value (`Value.suspensionState`) and in a loop, as keys are. A word's payloads are read only
+   * when the word needs structural conversion, which a suspension does and so does any value holding one there.
+   */
+  private[raccoonlang] def holdsSuspension(value: Value): Boolean = {
+    if (value.suspensionState == 0 && !decideSuspension(value)) {
+      val waiting = new java.util.ArrayDeque[Value]()
+      waiting.push(value)
+      while (!waiting.isEmpty) {
+        val next = waiting.peek()
+        if (next.suspensionState != 0 || decideSuspension(next)) waiting.pop()
+        else foreachSuspensionPart(next)(part => if (part.suspensionState == 0) waiting.push(part))
+      }
+    }
+    value.suspensionState == 2
+  }
+
+  /**
+   * Decides whether `value` holds a suspended proof from its parts' decisions, when they suffice, deciding a part with no
+   * parts of its own on the way; says whether it decided.
+   */
+  private def decideSuspension(value: Value): Boolean = {
+    if (value.isInstanceOf[Value.VSuspendedProof]) value.suspensionState = 2
+    else {
+      var holds = false
+      var pending = false
+      foreachSuspensionPart(value) { part =>
+        if (part.isInstanceOf[Value.VSuspendedProof] || part.suspensionState == 2) holds = true
+        else if (part.suspensionState == 0) {
+          if (suspensionLeaf(part)) part.suspensionState = 1 else pending = true
+        }
+      }
+      if (holds) value.suspensionState = 2 else if (!pending) value.suspensionState = 1
+    }
+    value.suspensionState != 0
+  }
+
+  private def suspensionLeaf(value: Value): Boolean =
+    value match {
+      case word: Value.VWord => !word.repr.needsStructuralDefEq
+      case other             => keyLeaf(other)
+    }
+
+  /**
+   * `foreachKeyPart` for a value that is no suspended proof, so that nothing is forced, except that a word reads its
+   * payloads and end.
+   */
+  private def foreachSuspensionPart(value: Value)(f: Value => Unit): Unit =
+    value match {
+      case word: Value.VWord =>
+        if (word.repr.needsStructuralDefEq)
+          packed.Words.foreach(word)(
+            layer = token => {
+              var index = 0
+              while (index < token.payloadWidth) {
+                f(token.payload(index))
+                index += 1
+              }
+              true
+            },
+            end = token => {
+              f(token.value)
+              true
+            }
+          )
+      case other => foreachKeyPart(other)(f)
+    }
 
   private def kindKey(kind: Value.Kind): Key = {
     var cur = mixLong(tag(Tag.Kind), if (kind.lin) 1L else 0L)

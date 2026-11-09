@@ -21,6 +21,7 @@ final case class EqStore(subst: Map[VarId, Value], refinable: DepSet) {
   def addLink(id: VarId, v: Value): EqStore = {
     if (subst.contains(id)) throw VarAlreadyLinked(id)
     if (!refinable.contains(id)) throw WTF("Tried to solve a var not in refinable set")
+    EqStore.linked.add(id)
     copy(subst = subst + (id -> v))
   }
 
@@ -83,4 +84,15 @@ final case class EqStore(subst: Map[VarId, Value], refinable: DepSet) {
 
 object EqStore {
   val empty: EqStore = EqStore(Map(), DepSet.empty)
+
+  /**
+   * Every variable a store has linked, in any branch of any check so far; it only grows. Materialization replaces such
+   * a variable by its solution in a store that has one, there alone, also where a variable's type mentions it, and two
+   * values with equal keys may differ in what keys ignore, such as a variable's type. Memoized application reuses no
+   * value across that difference (`Interpreter.appliedStep`). The checker is single-threaded.
+   */
+  private val linked = DepSet.newBuilder
+
+  /** Whether some store has linked a variable among `deps`. */
+  private[raccoonlang] def mentionsLinked(deps: DepSet): Boolean = linked.intersects(deps)
 }

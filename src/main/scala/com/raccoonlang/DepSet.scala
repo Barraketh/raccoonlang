@@ -111,6 +111,8 @@ object DepSet {
       this
     }
 
+    def intersects(ids: DepSet): Boolean = !ids.isEmpty && RoaringBitmap.intersects(bitmap, ids.bitmap)
+
     def diffInPlace(ids: Builder): this.type = {
       bitmap.andNot(ids.bitmap)
       this

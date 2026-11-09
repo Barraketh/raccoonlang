@@ -228,8 +228,9 @@ object Interpreter {
         val pi = lam.tpe
         if (pi.binders.length != vArgs.length) throw ArityMismatch(pi.binders.length, vArgs.length)
         lam.body match {
-          case _: LamBody.Core if pi.tpe == PropTpe && forcing == 0 => new VProofCall(lam, vArgs)
-          case _                                                    => lamStep(lam, vArgs)
+          case _: LamBody.Core if pi.tpe == PropTpe && forcing == 0        => new VProofCall(lam, vArgs)
+          case core: LamBody.Core if lam.id.isInstanceOf[ValueId.LocalId] => appliedStep(lam, core, vArgs)
+          case _                                                           => lamStep(lam, vArgs)
         }
       case head =>
         head.tpe match {
@@ -281,20 +282,77 @@ object Interpreter {
   private def lamStep(lam: VLam, args: Vector[Value]): AnyRef = {
     lam.body match {
       case LamBody.Native(run, nativeEnv, _) => run(args, nativeEnv)
-      // A recursive definition's self slot holds the lambda itself; a member of a mutual block reads its block's
-      // members from the globals its environment was closed over, where the block is published.
-      case LamBody.Core(term, coreEnv) =>
-        new Tail(
-          term.body,
-          coreBodyEnv(
-            lam.tpe,
-            term,
-            coreEnv,
-            args,
-            index => if (term.recursiveSelf.isDefined) lam else coreEnv(term.recursivePeers(index)._2)
-          )
-        )
+      case core: LamBody.Core                => new Tail(core.term.body, bodyEnv(lam, core, args))
     }
+  }
+
+  /**
+   * The env in which `core`, the body of `lam`, runs on `args`. A recursive definition's self slot holds the lambda
+   * itself; a member of a mutual block reads its block's members from the globals its environment was closed over,
+   * where the block is published.
+   */
+  private def bodyEnv(lam: VLam, core: LamBody.Core, args: Vector[Value]): Env = {
+    val term = core.term
+    coreBodyEnv(
+      lam.tpe,
+      term,
+      core.env,
+      args,
+      index => if (term.recursiveSelf.isDefined) lam else core.env(term.recursivePeers(index)._2)
+    )
+  }
+
+  /**
+   * At most this many applications of one closure are recorded (`AppliedTail`); past it, new arguments run without being
+   * recorded, and the recorded ones still answer. A closure's memo then holds a bounded number of values for as long as
+   * the closure lives, which matters for one held by a global.
+   */
+  private[raccoonlang] val MemoCap = 4096
+
+  /**
+   * A test hook: when set, a memoized application that finds a recorded value also runs the body again and passes the
+   * closure, the arguments, the recorded value and the new one to it, which may compare them. Unset, a hit reads it once.
+   */
+  private[raccoonlang] var hitCheck: (VLam, Vector[Value], Value, Value) => Unit = null
+
+  /**
+   * `lamStep` for a memoized application of `lam`, whose body is `core`, to `args`, which fit its binders: the value an
+   * earlier application with the same key returned (`ValueKey.applicationKey`), or else the body, its tail, which
+   * `evalSteps` records under the key once the tail has its value. The key holds whether a demanded proof is running,
+   * since a run inside one leaves no proof call suspended.
+   *
+   * Evaluation reads no store and makes no fresh variable, so the body evaluates to one value on the same arguments.
+   * Equal keys say a little less: keys ignore some parts, such as a variable's type, which a type pattern's capture
+   * reads. Arguments that hold no suspended proof, the only ones keyed, differ there only where a store's solution was
+   * substituted into one and not the other, which needs a variable some store has linked (`EqStore.mentionsLinked`).
+   * So an application whose arguments mention one is not memoized, and a recorded value that mentions one is not
+   * returned: a run on such arguments would have kept the variable. Identities also ignore the parts of a captured
+   * record that the code does not read (`MatchIdentity`), which a stuck match's or a closure's environment keeps in a
+   * result; a recorded value is returned only when its dependencies are among those of `lam` and `args`, as a run's
+   * are, so that no variable reaches a context through a part no run there would have read. A run that fails records
+   * nothing.
+   */
+  private def appliedStep(lam: VLam, core: LamBody.Core, args: Vector[Value]): AnyRef = {
+    val key =
+      if (args.exists(arg => EqStore.mentionsLinked(arg.synDeps))) null
+      else ValueKey.applicationKey(args, forcing > 0)
+    if (key eq null) return new Tail(core.term.body, bodyEnv(lam, core, args))
+    val memo = lam.applied
+    if (memo ne null) {
+      val known = memo.get(key)
+      if ((known ne null) && !EqStore.mentionsLinked(known.synDeps) && depsWithin(known.synDeps, lam, args)) {
+        if (hitCheck ne null) hitCheck(lam, args, known, evalSteps(new Tail(core.term.body, bodyEnv(lam, core, args))))
+        return known
+      }
+    }
+    new AppliedTail(core.term.body, bodyEnv(lam, core, args), lam, key)
+  }
+
+  /** Whether every variable in `deps` is a dependency of `lam` or of one of `args`. */
+  private def depsWithin(deps: DepSet, lam: VLam, args: Vector[Value]): Boolean = {
+    var within = true
+    deps.foreach(id => if (within && !lam.synDeps.contains(id) && !args.exists(_.synDeps.contains(id))) within = false)
+    within
   }
 
   /**
@@ -360,21 +418,38 @@ object Interpreter {
    * (docs/kernel.md, "Evaluation depth"). A step returns one instead of recursing into it, and `evalSteps` evaluates it
    * in a loop, so a tail position costs no host stack.
    */
-  private final class Tail(val term: ElabAst.Term, val env: Env)
+  private class Tail(val term: ElabAst.Term, val env: Env)
+
+  /**
+   * The tail that is the body of a memoized application of `lam` (`appliedStep`), whose value is recorded in `lam`
+   * under `key` once it has one.
+   */
+  private final class AppliedTail(term: ElabAst.Term, env: Env, lam: VLam, key: ValueKey.Key) extends Tail(term, env) {
+    def record(value: Value): Unit = {
+      if (lam.applied eq null) lam.applied = new java.util.HashMap[ValueKey.Key, Value]()
+      if (lam.applied.size < MemoCap || lam.applied.containsKey(key)) lam.applied.put(key, value)
+    }
+  }
 
   def evalTerm(term: ElabAst.Term, env: Env): Value = evalSteps(stepAt(term, env))
 
   /**
    * Takes steps, from `first`, a value or a `Tail`, until one is a value. Each tail's step is located at it, as the
-   * recursion it replaces was: the innermost evaluated term that carries a span gives an error its place.
+   * recursion it replaces was: the innermost evaluated term that carries a span gives an error its place. Every tail's
+   * value is the last step's, so each memoized application among them (`AppliedTail`) records it then; a chain of them
+   * costs heap, not host stack. Steps that throw record nothing.
    */
   private def evalSteps(first: AnyRef): Value = {
     var next = first
+    var applied: List[AppliedTail] = Nil
     while (next.isInstanceOf[Tail]) {
       val tail = next.asInstanceOf[Tail]
+      if (tail.isInstanceOf[AppliedTail]) applied = tail.asInstanceOf[AppliedTail] :: applied
       next = stepAt(tail.term, tail.env)
     }
-    next.asInstanceOf[Value]
+    val value = next.asInstanceOf[Value]
+    applied.foreach(_.record(value))
+    value
   }
 
   /**

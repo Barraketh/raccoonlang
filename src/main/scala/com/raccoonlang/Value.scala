@@ -7,15 +7,29 @@ package com.raccoonlang
  *   - Every value is typed correctly. Types are themselves Values, and so are Sorts and Levels
  *   - synDeps is the set of all VarIds that this Value contains, including in its type. It is extremely important to
  * maintain this correctly
- *   - key - a structural hash key of this value. Lazily computed by ValueKey.orderKey(). Used by defEq and Normalizers
+ *   - key - a structural hash key of this value. Computed once, on first read, by ValueKey.keyOf. Used by defEq and
+ * Normalizers
  *   - needsStructuralDefEq: tracks values whose key may differ even when structural equality can still succeed
  */
 sealed trait Value {
   def tpe: Value
   def synDeps: DepSet
 
-  final lazy val key: ValueKey.Key = ValueKey.orderKey(this)
+  /** The key once `ValueKey.keyOf` has computed it, and `null` before; never changed once set. Single-threaded. */
+  private[raccoonlang] var knownKey: ValueKey.Key = null
+
+  final def key: ValueKey.Key = {
+    val known = knownKey
+    if (known ne null) known else ValueKey.keyOf(this)
+  }
+
   final lazy val needsStructuralDefEq: Boolean = Value.needsStructuralDefEq(this)
+
+  /**
+   * Whether a suspended proof is among the parts this value's key reads, once `ValueKey.holdsSuspension` has decided it:
+   * 0 before, 1 for no, 2 for yes; never changed once set. Single-threaded.
+   */
+  private[raccoonlang] var suspensionState: Byte = 0
 
   override def toString: String = PrettyPrinter.print(this)
 }
@@ -594,6 +608,14 @@ object Value {
         case ValueId.LocalId(_, captures) => captures.foreach(f)
       }
     }
+
+    /**
+     * What applying this lambda returned, by the application's key (`ValueKey.applicationKey`), for the applications
+     * `Interpreter` memoizes (docs/kernel.md, "Memoized application"); `null` until the first is recorded. It belongs to
+     * this value, whose body and environment are immutable, so it lives exactly as long as the lambda; `copy` and
+     * materialization, which rebuild a lambda, start without one. The evaluator is single-threaded.
+     */
+    private[raccoonlang] var applied: java.util.HashMap[ValueKey.Key, Value] = null
   }
 
   /**
