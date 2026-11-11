@@ -50,7 +50,11 @@ object TerminationChecker {
       if (isProof(value)) proofRejection.foreach(reason => throw InvalidDecreaseSpec(reason, Some(span)))
       value.tpe match {
         case ConstSpine(VConst(_, Inductive(_), _), _) =>
-        case _ => throw InvalidDecreaseSpec(s"decrease metric ${value} must have an inductive type", Some(span))
+        case _ =>
+          throw InvalidDecreaseSpec(
+            s"decrease metric ${Mismatch.abbreviated(value)} must have an inductive type",
+            Some(span)
+          )
       }
     }
 

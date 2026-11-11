@@ -80,7 +80,7 @@ object Interpreter {
             }
           case vm: NeutralThunk if vm.blockerIds.nonEmpty =>
             retryUnlessStuckOn(forceThunk(vm, materializer), vm.blockerIds)
-          case _ => throw WTF(s"Blocked extractor matched unexpected value $v0")
+          case _ => throw WTF(s"Blocked extractor matched unexpected value ${Mismatch.abbreviated(v0)}")
         }
 
       case l: Level if l.atoms.keySet.intersect(eqStore.subst.keySet).nonEmpty => normalizeLevel(l, eqStore)
@@ -474,7 +474,11 @@ object Interpreter {
   private def evalWord(word: ETerm.Word, env: Env): Value = {
     val head = env(word.consHead.name) match {
       case head: ConstructorHead => head
-      case other => throw WTF(s"Word head ${word.consHead.name} is not a constructor: $other", Some(word.span))
+      case other =>
+        throw WTF(
+          s"Word head ${word.consHead.name} is not a constructor: ${Mismatch.abbreviated(other)}",
+          Some(word.span)
+        )
     }
     var rest = evalTerm(word.pieces.last.asInstanceOf[ETerm.WordPiece.Splice].list, env)
     var index = word.pieces.length - 2

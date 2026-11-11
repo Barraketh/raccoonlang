@@ -53,7 +53,8 @@ object StructEta {
     def resultArgs: Vector[Value] =
       result match {
         case ConstSpine(_, args) => args
-        case other               => throw WTF(s"A constructor's result $other is not a family instance")
+        case other =>
+          throw WTF(s"A constructor's result ${Mismatch.abbreviated(other)} is not a family instance")
       }
 
     /**
@@ -163,7 +164,10 @@ object StructEta {
         base.tpe match {
           case InductiveFamilyValue(instance) if instance.meta.record.isDefined =>
             projections(base, instance, instance.meta.record.get, idx + 1)(idx)
-          case other => throw WTF(s"Projected $base of type $other, which is no record")
+          case other =>
+            throw WTF(
+              s"Projected ${Mismatch.abbreviated(base)} of type ${Mismatch.abbreviated(other)}, which is no record"
+            )
         }
     }
 

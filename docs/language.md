@@ -157,7 +157,13 @@ Type mismatch: expected type: Eq(Bool, Machine.Build.isGroup(Machine.Lists.get(C
 - **The expected type as it evaluates**, when it prints differently from the written one.
 
 A value prints whole up to 240 characters. A longer one prints along the path to the difference: every other argument
-longer than 72 characters as `…`, a list's three elements before the one that differs and none after it, and the
-differing part in outline; every part is clipped at 600 characters. So a mismatch in a large type stays a few hundred
-characters, where printing the normal forms whole took tens of kilobytes. Messages are computed when read, so a
-mismatch that the checker catches and recovers from costs nothing to describe.
+longer than 72 characters as `…` and its length, as `…(230 chars)`, a list's three elements before the one that
+differs and none after it, with how many it leaves out, as `…(27 elements)`, and the differing part in outline; every
+part is clipped at 600 characters, followed by how many more it has. A length is counted up to 10000 characters, and
+past that shows as `…(over 10000 chars)`. Printing stops at these bounds, so a mismatch stays a few thousand characters
+and costs at most about that much printing for each part it leaves out, however large its types: a kernel's context, or
+a tree shared down one path whose text no heap could hold, prints like any other value. The JVM system property
+`raccoon.messageCap` sets the 600 (`java -Draccoon.messageCap=2000 …`), and the other bounds in proportion to it.
+Other diagnostics that name a value, such as a type-pattern capture that cannot be read off a type, print it as the
+first difference does. Messages are computed when read, so a mismatch that the checker catches and recovers from costs
+nothing to describe.

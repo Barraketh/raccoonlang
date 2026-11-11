@@ -1,5 +1,6 @@
 package com.raccoonlang
 
+import com.raccoonlang.Mismatch.abbreviated
 import com.raccoonlang.Value.Level
 
 import java.nio.file.Path
@@ -101,11 +102,11 @@ final case class ProgramBuiltin(name: String, span: Option[Span] = None) extends
 }
 
 final case class UnificationFailed(v1: Value, v2: Value, span: Option[Span] = None) extends TypeError {
-  def msg: String = s"Failed to unify $v1 and $v2"
+  def msg: String = s"Failed to unify ${abbreviated(v1)} and ${abbreviated(v2)}"
 }
 
 final case class CannotApplyNonFunction(got: Value, span: Option[Span] = None) extends TypeError {
-  def msg: String = s"Cannot apply non-fn type ${got}"
+  def msg: String = s"Cannot apply non-fn type ${abbreviated(got)}"
 }
 
 final case class ArityMismatch(expected: Int, got: Int, span: Option[Span] = None) extends TypeError {
@@ -161,11 +162,11 @@ final case class CannotLinkToBottom(id: Long, span: Option[Span] = None) extends
 }
 
 final case class NotAType(value: Value, span: Option[Span] = None) extends TypeError {
-  def msg: String = s"$value is not a type"
+  def msg: String = s"${abbreviated(value)} is not a type"
 }
 
 final case class NonInductiveMatch(tpe: Value, span: Option[Span] = None) extends TypeError {
-  def msg: String = s"Cannot match on non-inductive type $tpe"
+  def msg: String = s"Cannot match on non-inductive type ${abbreviated(tpe)}"
 }
 
 final case class InvalidSingleConstructorMatch(
@@ -173,7 +174,7 @@ final case class InvalidSingleConstructorMatch(
     reason: String,
     span: Option[Span] = None
 ) extends TypeError {
-  def msg: String = s"Cannot use a constructor-omitting match on $tpe: $reason"
+  def msg: String = s"Cannot use a constructor-omitting match on ${abbreviated(tpe)}: $reason"
 }
 
 final case class InvalidDestructuring(reason: String, span: Option[Span] = None) extends TypeError {
@@ -259,11 +260,11 @@ final case class PropositionAsTypeCarrier(span: Option[Span] = None) extends Typ
 }
 
 final case class NotALevel(v1: Value, span: Option[Span] = None) extends TypeError {
-  override def msg: String = s"$v1 is not a Level"
+  override def msg: String = s"${abbreviated(v1)} is not a Level"
 }
 
 final case class NotAKind(v1: Value, span: Option[Span] = None) extends TypeError {
-  override def msg: String = s"$v1 is not a Kind"
+  override def msg: String = s"${abbreviated(v1)} is not a Kind"
 }
 
 final case class PatternCaptureNeedsExpectedType(name: String, span: Option[Span] = None) extends TypeError {
@@ -292,7 +293,8 @@ final case class InvalidTypePattern(reason: String, span: Option[Span] = None) e
  * with its level at position 0.
  */
 final case class FailedToOpenCapture(capture: String, v: Value, idx: Int, span: Option[Span] = None) extends TypeError {
-  override def msg: String = s"The type-pattern capture $$$capture cannot be read off $v, which has no argument $idx"
+  override def msg: String =
+    s"The type-pattern capture $$$capture cannot be read off ${abbreviated(v)}, which has no argument $idx"
 }
 
 final case class WTF(msg: String, span: Option[Span] = None) extends TypeError
@@ -304,7 +306,7 @@ final case class InvalidConstructorResult(
     span: Option[Span] = None
 ) extends TypeError {
   override def msg: String =
-    s"Constructor $ctor must return $inductive but got $got"
+    s"Constructor $ctor must return $inductive but got ${abbreviated(got)}"
 }
 
 final case class InvalidErasedConstructorBinder(
@@ -325,7 +327,7 @@ final case class NonUniformInductiveParam(
     span: Option[Span] = None
 ) extends TypeError {
   override def msg: String =
-    s"Constructor $ctor of $inductive returns non-uniform parameter $param as $got"
+    s"Constructor $ctor of $inductive returns non-uniform parameter $param as ${abbreviated(got)}"
 }
 
 final case class InductiveUniverseTooSmall(
@@ -337,7 +339,8 @@ final case class InductiveUniverseTooSmall(
     span: Option[Span] = None
 ) extends TypeError {
   override def msg: String =
-    s"Inductive $inductive lives in Sort $inductiveUniverse, but $where has type $fieldTy : Sort $fieldUniverse"
+    s"Inductive $inductive lives in Sort ${abbreviated(inductiveUniverse)}, but $where has type " +
+      s"${abbreviated(fieldTy)} : Sort ${abbreviated(fieldUniverse)}"
 }
 
 final case class FamilyArgumentTooLarge(
@@ -346,11 +349,12 @@ final case class FamilyArgumentTooLarge(
     level: Value.Level,
     span: Option[Span] = None
 ) extends TypeError {
-  override def msg: String = s"Family $inductive argument $argument requires the family to live in Sort $level or above"
+  override def msg: String =
+    s"Family $inductive argument $argument requires the family to live in Sort ${abbreviated(level)} or above"
 }
 
 final case class InductiveTypeNotASort(tpe: Value, span: Option[Span]) extends TypeError {
-  override def msg: String = s"Inductive type must be a Sort, got $tpe instead"
+  override def msg: String = s"Inductive type must be a Sort, got ${abbreviated(tpe)} instead"
 }
 
 final case class NonStrictlyPositive(
@@ -361,7 +365,7 @@ final case class NonStrictlyPositive(
     span: Option[Span] = None
 ) extends TypeError {
   override def msg: String =
-    s"Constructor $ctor of $inductive is not strictly positive in field $field : $fieldTy"
+    s"Constructor $ctor of $inductive is not strictly positive in field $field : ${abbreviated(fieldTy)}"
 }
 
 final case class FamilyInResultIndex(
@@ -372,7 +376,7 @@ final case class FamilyInResultIndex(
     span: Option[Span] = None
 ) extends TypeError {
   override def msg: String =
-    s"Constructor $ctor of $inductive names a family of its block in result index $index := $indexValue"
+    s"Constructor $ctor of $inductive names a family of its block in result index $index := ${abbreviated(indexValue)}"
 }
 
 final case class PropEliminationRestricted(
@@ -381,11 +385,11 @@ final case class PropEliminationRestricted(
     span: Option[Span] = None
 ) extends TypeError {
   override def msg: String =
-    s"Cannot eliminate proposition $inductive into non-Prop motive $motive"
+    s"Cannot eliminate proposition $inductive into non-Prop motive ${abbreviated(motive)}"
 }
 
 final case class InvalidLevelSubtraction(l: Level, sub: Int, span: Option[Span] = None) extends TypeError {
-  override def msg: String = s"Tried to subtract $sub from $l"
+  override def msg: String = s"Tried to subtract $sub from ${abbreviated(l)}"
 }
 
 /**
@@ -403,11 +407,11 @@ final case class UnappliedField(inductive: String, field: String, span: Option[S
 }
 
 final case class NoInstanceFound(goal: Value, span: Option[Span] = None) extends TypeError {
-  override def msg: String = s"No instance found for $goal"
+  override def msg: String = s"No instance found for ${abbreviated(goal)}"
 }
 
 final case class CyclicInstanceSearch(goal: Value, span: Option[Span] = None) extends TypeError {
-  override def msg: String = s"Cyclic instance search for $goal"
+  override def msg: String = s"Cyclic instance search for ${abbreviated(goal)}"
 }
 
 final case class InvalidInstance(
@@ -416,7 +420,7 @@ final case class InvalidInstance(
     reason: String = "non-searchable result type",
     span: Option[Span] = None
 ) extends TypeError {
-  override def msg: String = s"Invalid instance $name: $reason in $tpe"
+  override def msg: String = s"Invalid instance $name: $reason in ${abbreviated(tpe)}"
 }
 
 final case class InstanceSearchBudgetExceeded(
@@ -424,7 +428,7 @@ final case class InstanceSearchBudgetExceeded(
     maxDepth: Int,
     span: Option[Span] = None
 ) extends TypeError {
-  override def msg: String = s"Instance search depth exceeded for $goal (max depth $maxDepth)"
+  override def msg: String = s"Instance search depth exceeded for ${abbreviated(goal)} (max depth $maxDepth)"
 }
 
 /**
@@ -442,7 +446,7 @@ final case class RewriteFailed(reason: String, span: Option[Span] = None) extend
 }
 
 final case class CannotQuoteValue(value: Value, reason: String, span: Option[Span] = None) extends TypeError {
-  override def msg: String = s"Cannot quote $value as checked syntax: $reason"
+  override def msg: String = s"Cannot quote ${abbreviated(value)} as checked syntax: $reason"
 }
 
 final case class InvalidDecreaseSpec(reason: String, span: Option[Span] = None) extends TypeError {

@@ -479,7 +479,8 @@ object InductiveChecks {
         case Vector(ctor) =>
           def constructor = published(ctor.canonicalName) match {
             case head: ConstructorHead => head
-            case other                 => throw WTF(s"Constructor ${ctor.canonicalName} is published as $other")
+            case other =>
+              throw WTF(s"Constructor ${ctor.canonicalName} is published as ${Mismatch.abbreviated(other)}")
           }
           val fieldNames = ctor.fields.map(_.name)
           val info =

@@ -53,16 +53,17 @@ class MismatchTests extends munit.FunSuite {
       |}
       |""".stripMargin
 
-  test("a long type prints along the path to the difference, other long parts as …") {
+  test("a long type prints along the path to the difference, other long parts as … and how much they leave out") {
     val message = mismatch(
       range + "def bad : Eq(List(Nat), range(0, 60), List.append(range(0, 30), List.cons(99, List.nil(Nat)))) := Eq.refl(range(0, 60))\n"
     )
-    // A list shows at most three elements before the one that differs, and none after it.
+    // A list shows at most three elements before the one that differs, and none after it, with how many it leaves out.
     assertEquals(
       message,
       "Type mismatch: expected type: Eq(List(Nat), range(0, 60), List.append(range(0, 30), List.cons(99, List.nil(Nat)))), " +
-        "actual: Eq(List(Nat), …, […, 27, 28, 29, 30, …]); first difference: expected 99, actual 30; " +
-        "the expected type evaluates to Eq(List(Nat), …, […, 27, 28, 29, 99])"
+        "actual: Eq(List(Nat), …(230 chars), […(27 elements), 27, 28, 29, 30, …(29 elements)]); " +
+        "first difference: expected 99, actual 30; " +
+        "the expected type evaluates to Eq(List(Nat), …(230 chars), […(27 elements), 27, 28, 29, 99])"
     )
   }
 
@@ -72,8 +73,9 @@ class MismatchTests extends munit.FunSuite {
     assertEquals(
       message,
       "Type mismatch: expected type: Eq(List(Nat), range(0, 60), range(0, 30)), " +
-        s"actual: Eq(List(Nat), …, […, 27, 28, 29] ++ $rest); first difference: expected [], actual $rest; " +
-        "the expected type evaluates to Eq(List(Nat), …, […, 27, 28, 29] ++ [])"
+        s"actual: Eq(List(Nat), …(230 chars), […(27 elements), 27, 28, 29] ++ $rest); " +
+        s"first difference: expected [], actual $rest; " +
+        "the expected type evaluates to Eq(List(Nat), …(230 chars), […(27 elements), 27, 28, 29] ++ [])"
     )
   }
 

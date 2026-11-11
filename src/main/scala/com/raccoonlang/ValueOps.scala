@@ -122,7 +122,10 @@ object ValueOps {
             case call: VProofCall =>
               val fn = materialize(call.fn) match {
                 case lam: VLam => lam
-                case other     => throw WTF(s"Proof call head ${call.fn} materialized to $other")
+                case other =>
+                  throw WTF(
+                    s"Proof call head ${Mismatch.abbreviated(call.fn)} materialized to ${Mismatch.abbreviated(other)}"
+                  )
               }
               new VProofCall(fn, call.args.map(materialize(_)))
             case m: VProofMatch   => new VProofMatch(m.term, materialize(m.scrut), materializeEnv(m.env))

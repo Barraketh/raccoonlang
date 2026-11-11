@@ -9,20 +9,46 @@ import scala.util.control.NonFatal
 /**
  * The text of a `TypeMismatch` (docs/language.md, "Type mismatches"): the expected type as written where the checker
  * has it, the actual type, the first pair of subterms where the two differ, and the expected type as it evaluates.
- * Types print whole up to `Whole` characters; a longer one prints along the path to the difference, with each other
- * argument longer than `Part` characters as `…`, and at most `Cap` characters. A diagnostic only: nothing here decides
- * what checks, and any failure while describing falls back to the types printed whole.
+ * Values print within `bounds`, which bound each one's text and the work of printing it, however large the value. A
+ * diagnostic only: nothing here decides what checks, and any failure while describing falls back to the types clipped.
  */
 object Mismatch {
-  private val Whole = 240
-  private val Part = 72
-  private val Cap = 600
+
+  /**
+   * How a diagnostic abbreviates a value. It prints whole up to `whole` characters; a longer one prints along the path
+   * to a difference, or in outline, with each other part longer than `part` characters as `…` and its length, counted
+   * up to `measure`, and at most `cap` characters, followed by `…` and how many more it has, counted alike. One budget,
+   * `cap`, sets the others: printing a value costs at most `cap` and `measure` characters for the value and for each
+   * part left out, of which at most about `cap` fit.
+   */
+  final case class Bounds(cap: Int) {
+    require(cap > 0, "A diagnostic prints at least one character of a value")
+    val whole: Int = cap * 2 / 5
+    val part: Int = cap * 3 / 25
+    val measure: Int = math.max(10000, cap * 16)
+
+    /** The marker for text left out: `…` and its length, or more than `measure` characters when `None`. */
+    def elided(length: Option[Int]): String = length.fold(s"…(over $measure chars)")(n => s"…($n chars)")
+
+    /** The marker for `count` list elements left out. */
+    def omitted(count: Int): String = s"…($count ${if (count == 1) "element" else "elements"})"
+  }
+
+  /**
+   * The bounds of every diagnostic: a value prints in at most 600 characters, or as many as the JVM system property
+   * `raccoon.messageCap` gives, as in `java -Draccoon.messageCap=2000`.
+   */
+  val bounds: Bounds =
+    Bounds(sys.props.get("raccoon.messageCap").flatMap(_.toIntOption).filter(_ > 0).getOrElse(600))
 
   /** The most steps a difference is looked for through. */
   private val MaxDepth = 1000
 
   /** A differing pair this short, below the root, is reported with its parent, which says what the values are of. */
   private val Short = 12
+
+  /** A value as short as `Short` without its variables' numbering prints within this many characters with it. */
+  private val ShortNumbered = 240
 
   /** A step from a value, as `print` shows it, to one of its parts. */
   sealed trait Step
@@ -81,7 +107,7 @@ object Mismatch {
     try describe(expected, actual, written)
     catch {
       case NonFatal(_) | _: StackOverflowError =>
-        s"Type mismatch: expected type: ${PrettyPrinter.print(expected)}, actual: ${PrettyPrinter.print(actual)}"
+        s"Type mismatch: expected type: ${clipped(expected)}, actual: ${clipped(actual)}"
     }
 
   private def describe(expected: Value, actual: Value, written: Option[String]): String = {
@@ -89,31 +115,35 @@ object Mismatch {
     val expectedText = show(expected, path)
     val shown = written.fold(expectedText)(clip)
     val difference =
-      if (path.isEmpty) "" else s"; first difference: expected ${outline(e)}, actual ${outline(a)}"
+      if (path.isEmpty) "" else s"; first difference: expected ${abbreviated(e)}, actual ${abbreviated(a)}"
     val evaluated = written.filter(w => w != plain(expectedText)).fold("")(_ => s"; the expected type evaluates to $expectedText")
     s"Type mismatch: expected type: $shown, actual: ${show(actual, path)}$difference$evaluated"
   }
 
-  /** `value` whole when short, and otherwise along `path` (`PrettyPrinter.printFocused`), clipped. */
-  private def show(value: Value, path: List[Step]): String = {
-    val whole = PrettyPrinter.print(value)
-    if (whole.length <= Whole) whole else clip(PrettyPrinter.printFocused(value, path, Part, Whole))
-  }
+  /** `value` whole when short, and otherwise along `path` (`PrettyPrinter.printFocused`), clipped, on one line. */
+  private def show(value: Value, path: List[Step]): String =
+    PrettyPrinter.printWithin(value, bounds.whole).getOrElse(oneLine(PrettyPrinter.printFocused(value, path, bounds)))
 
-  /** `value` whole when short, and otherwise its outermost form with each long part as `…`, clipped. */
-  private def outline(value: Value): String = {
-    val whole = PrettyPrinter.print(value)
-    if (whole.length <= Whole) whole else clip(PrettyPrinter.printOutline(value, Part))
-  }
+  /** `value` whole, clipped, on one line. */
+  private def clipped(value: Value): String = oneLine(PrettyPrinter.printClipped(value, bounds))
 
-  /** `text` on one line, and at most `Cap` characters. */
+  /**
+   * `value` for a diagnostic: whole when short, and otherwise in outline (`PrettyPrinter.printOutline`), clipped, on
+   * one line. Printing it costs at most what `bounds` allow, however large the value.
+   */
+  def abbreviated(value: Value): String =
+    PrettyPrinter.printWithin(value, bounds.whole).getOrElse(oneLine(PrettyPrinter.printOutline(value, bounds)))
+
+  /** `text` on one line, and at most `bounds.cap` characters, followed by `…` and how many more it has. */
   def clip(text: String): String = {
-    val line = text.replace('\n', ' ')
-    if (line.length <= Cap) line else line.take(Cap) + "…"
+    val line = oneLine(text)
+    if (line.length <= bounds.cap) line else line.take(bounds.cap) + bounds.elided(Some(line.length - bounds.cap))
   }
 
-  /** `value` for a diagnostic: whole when short, and otherwise in outline (`PrettyPrinter.printOutline`), clipped. */
-  def abbreviated(value: Value): String = outline(value)
+  /** Checked syntax on one line, clipped as values are: syntax quoted from a value may be as large as the value. */
+  def clip(syntax: ElabAst.Ast): String = oneLine(PrettyPrinter.printElabClipped(syntax, bounds))
+
+  private def oneLine(text: String): String = text.replace('\n', ' ')
 
   /** A diagnostic without variable numbering, as a variable prints in a value, `x#12`, but by name in syntax. */
   private def plain(text: String): String = text.replaceAll("#[0-9]+", "")
@@ -127,11 +157,14 @@ object Mismatch {
     pairs.reverse match {
       case (last @ (lastPath, e, a)) :: (parent @ (parentPath, _, _)) :: _
           if parentPath.nonEmpty && lastPath.lastOption.exists(step => step.isInstanceOf[Step.Arg] || step == Step.Base) =>
-        if (plain(PrettyPrinter.print(e)).length <= Short && plain(PrettyPrinter.print(a)).length <= Short) parent
-        else last
+        if (short(e) && short(a)) parent else last
       case last :: _ => last
       case Nil       => throw new IllegalStateException("a difference has a pair")
     }
+
+  /** Whether `value` prints in at most `Short` characters, without its variables' numbering. */
+  private def short(value: Value): Boolean =
+    PrettyPrinter.printWithin(value, ShortNumbered).exists(text => plain(text).length <= Short)
 
   /**
    * The path from `expected` and `actual` down to their first pair of subterms that do not convert, and that pair:
@@ -144,12 +177,13 @@ object Mismatch {
    */
   def firstDifference(expected: Value, actual: Value): List[(List[Step], Value, Value)] = {
     def differ(x: Value, y: Value): Boolean = !ValueEquivalence.defEq(x, y)
+    def shape(value: Value): Shape = PrettyPrinter.shapeOf(value, bounds.whole)
 
     // Each step goes into a part, so the path is finite; the bound only keeps a diagnostic's cost bounded too.
     @tailrec
     def loop(e: Value, a: Value, path: List[Step], pairs: List[(List[Step], Value, Value)]): List[(List[Step], Value, Value)] = {
       val here = (path.reverse, e, a) :: pairs
-      val next: Option[(Step, Value, Value)] = if (pairs.length >= MaxDepth) None else (PrettyPrinter.shapeOf(e), PrettyPrinter.shapeOf(a)) match {
+      val next: Option[(Step, Value, Value)] = if (pairs.length >= MaxDepth) None else (shape(e), shape(a)) match {
         case (Shape.App(eh, eArgs), Shape.App(ah, aArgs)) if eh == ah && eArgs.length == aArgs.length =>
           eArgs.indices.find(i => differ(eArgs(i), aArgs(i))).map(i => (Step.Arg(i), eArgs(i), aArgs(i)))
         case (eList: Shape.ListOf, aList: Shape.ListOf) =>

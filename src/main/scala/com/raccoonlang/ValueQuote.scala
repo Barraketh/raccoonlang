@@ -106,7 +106,8 @@ object ValueQuote {
         case ElabAst.Term.LocalRef(ref, refSpan) =>
           inlineLocal(ref, refSpan, appHead = false, here) match {
             case tt: ElabAst.TypeTerm => tt
-            case other                => throw CannotQuoteValue(env(ref), s"$other is not a type term", Some(refSpan))
+            case other =>
+              throw CannotQuoteValue(env(ref), s"${Mismatch.clip(other)} is not a type term", Some(refSpan))
           }
         case ElabAst.Term.App(fn, args, appSpan) =>
           ElabAst.Term.App(inlineAppHead(fn, here), args.map(inlineTerm(_, here)), appSpan)
@@ -175,7 +176,7 @@ object ValueQuote {
           val nextFn =
             inlineAppHead(fn, here) match {
               case ref: ElabAst.Term.Ref => ref
-              case other                 => throw WTF(s"Failed to inline ref $fn, got $other")
+              case other                 => throw WTF(s"Failed to inline ref $fn, got ${Mismatch.clip(other)}")
             }
           var inner = here
           val nextArgs = args.map { arg =>
@@ -224,7 +225,7 @@ object ValueQuote {
   def quoteType(value: Value, context: QuoteContext, span: Span): ElabAst.TypeTerm =
     quoteTerm(value, context, span) match {
       case tpe: ElabAst.TypeTerm => tpe
-      case other                 => throw CannotQuoteValue(value, s"$other is not a type term", Some(span))
+      case other => throw CannotQuoteValue(value, s"${Mismatch.clip(other)} is not a type term", Some(span))
     }
 
   /**
@@ -501,7 +502,11 @@ object ValueQuote {
     else
       tpe match {
         case ConstSpine(_, args) => head.erasedFamilyArgIndexes.map(idx => quoteTerm(args(idx), context, span))
-        case _ => throw WTF(s"Cannot recover erased constructor args for ${head.name} from $tpe", Some(span))
+        case _ =>
+          throw WTF(
+            s"Cannot recover erased constructor args for ${head.name} from ${Mismatch.abbreviated(tpe)}",
+            Some(span)
+          )
       }
 
   /** Quote a constructor application whose stored fields are already quoted, recovering its erased arguments. */

@@ -160,7 +160,7 @@ object TypeChecker {
               earlier.get(ref.id) match {
                 case Some(source) => short(PrettyPrinter.printTermAtom(source))
                 case None if ref.id < opened.locals.length =>
-                  opened.locals(ref.id).valueOption.flatMap(value => short(PrettyPrinter.printAtom(value)))
+                  opened.locals(ref.id).valueOption.flatMap(PrettyPrinter.printAtomWithin(_, WrittenArgument))
                 case None => None
               }
             mismatch.copy(written = Some(new TypeMismatch.Written(PrettyPrinter.printBinderType(binder.ty, bound))))
@@ -508,7 +508,8 @@ object TypeChecker {
     if (StructEta.undetermined(info, value.tpe))
       throw InvalidStruct(
         family.head.name,
-        s"the type ${value.tpe} of its field $field depends on a capture that ${base.tpe} does not determine",
+        s"the type ${Mismatch.abbreviated(value.tpe)} of its field $field depends on a capture that " +
+          s"${Mismatch.abbreviated(base.tpe)} does not determine",
         Some(span)
       )
     MatchChecker.checkProjectionElimination(base, family, info, index, env, span)
@@ -543,7 +544,8 @@ object TypeChecker {
             val text = PrettyPrinter.printTerm(select.base)
             val fields =
               if (inductiveFamilyOf(baseValue.tpe).isEmpty) "is no family, so has no fields" else s"has no field $field"
-            NotFound(s"$text.$field", reason = Some(s"$text is of type ${baseValue.tpe}, which $fields"))
+            val tpe = Mismatch.abbreviated(baseValue.tpe)
+            NotFound(s"$text.$field", reason = Some(s"$text is of type $tpe, which $fields"))
         }
     }
   }

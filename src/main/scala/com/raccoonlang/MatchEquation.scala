@@ -82,7 +82,7 @@ object MatchEquation {
         BinderOps
           .tryCheckAndInstantiate(pi.binders, pi.env, args)
           .map(_ => Interpreter.evalApply(equality.family, args))
-      case other => throw WTF(s"The validated `Eq` has type $other")
+      case other => throw WTF(s"The validated `Eq` has type ${Mismatch.abbreviated(other)}")
     }
   }
 
