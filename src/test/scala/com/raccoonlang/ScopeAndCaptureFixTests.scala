@@ -11,7 +11,9 @@ import com.raccoonlang.ProgramFixtures.Programs
  *  - a `$` capture inside a constructor of a parameterized family reads its stored fields after the erased family
  *    arguments, and an erased argument off the value's type (`TypePatternOps.project`);
  *  - a stuck match is identified by the record fields it reads (`MatchIdentity`), each projected only from a value of
- *    the record the code names: resumed where a refinement retypes the local as another record, it is captured whole.
+ *    the record the code names: resumed where a refinement retypes the local as another record, it is captured whole;
+ *  - a contextual motive that binds locals below the match's scope is renumbered for it (`CapturedIndexes.rebase`),
+ *    where it was quoted, and kept as it was when quotation could not write it.
  */
 class ScopeAndCaptureFixTests extends munit.FunSuite {
   private val programs = new Programs(Prelude.default, allowUserAxioms = false)
@@ -309,5 +311,61 @@ class ScopeAndCaptureFixTests extends munit.FunSuite {
   test("control: the rewrite still checks the rewritten goal and its direction") {
     rejects(atKind("Eq(Nat, count(W, y.k), Nat.succ(y.n))", "e"))
     rejects(atKind("Eq(Nat, count(W, y.k), y.n)", "<- e"))
+  }
+
+  // The statement's lambdas bind z at slot 2, which `a` takes under `match g`. In the wildcard arm of `match h`, which
+  // stands for `H.two(v)`, the expected type holds `v`, which no local names, so quotation cannot write it.
+  private val unnamed =
+    """
+      |inductive H : Type
+      | | one (u: Nat) : H
+      | | two (v: Nat) : H
+      |inductive G : Type
+      | | mk (a: Nat)(h: H) : G
+      |def isOne (h: H): Bool := {
+      |  match h returning Bool with
+      |  | H.one u => Bool.true
+      |  | _ => Bool.false
+      |}
+      |def ok (g: G): Bool := {
+      |  match g returning Bool with
+      |  | G.mk a h => isOne(h)
+      |}
+      |def num (g: G): Nat := {
+      |  match g returning Nat with
+      |  | G.mk a h => {
+      |    match h returning Nat with
+      |    | H.one u => u
+      |    | H.two v => v
+      |  }
+      |}
+      |def keep (b: Bool)(p: Eq(Bool, b, Bool.true)): Eq(Bool, b, Bool.true) := p
+      |""".stripMargin
+
+  private def underWildcard(claim: String, other: String, hs: String = "keep(isOne(h), e)"): String =
+    unnamed +
+      s"""
+        |def lem (g: G)(e: Eq(Bool, ok(g), Bool.true)): $claim := {
+        |  match g with
+        |  | G.mk a h => {
+        |    let hs := $hs
+        |    match h with
+        |    | H.one u => Eq.refl(fun (z: Nat): Nat => u)
+        |    | _ => $other
+        |  }
+        |}
+        |""".stripMargin
+
+  private val claim = "Eq(Nat -> Nat, fun (z: Nat): Nat => num(g), fun (z: Nat): Nat => num(g))"
+  private val refuted = "{\n      match hs with\n    }"
+
+  test("a contextual motive binding a lambda's local below the match, under a wildcard arm's unnamed field") {
+    accepts(underWildcard(claim, refuted))
+    accepts(underWildcard(claim, "Eq.refl(fun (z: Nat): Nat => num(G.mk(a, h)))"))
+  }
+
+  test("control: under the renumbered motive, a wrong claim and an empty match on no contradiction are refused") {
+    rejects(underWildcard("Eq(Nat -> Nat, fun (z: Nat): Nat => num(g), fun (z: Nat): Nat => 0)", "Eq.refl(fun (z: Nat): Nat => 0)"))
+    rejects(underWildcard(claim, refuted, hs = "keep(Bool.true, Eq.refl(Bool.true))"))
   }
 }

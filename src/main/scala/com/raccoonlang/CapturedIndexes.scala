@@ -90,41 +90,127 @@ object CapturedIndexes {
     }
 
   /**
-   * Whether a binder inside `term` binds a local below `cutoff`: syntax numbered for a scope shorter than the one of
-   * `cutoff` locals, whose binders would collide with that scope's locals if evaluated there (`MatchChecker`).
+   * `term`, syntax numbered for a scope shorter than one of `depth` locals, renumbered for that scope (`MatchChecker`):
+   * every local a binder inside it binds moves up by one shift, which takes the lowest of them to `depth`, so that none
+   * is bound again over a live local of the longer scope. Slots are dense, so every local it reads at or above that
+   * lowest one is one it binds, and the locals below are the shorter scope's, which the longer one extends: they keep
+   * their slots. Only bound locals are renamed, so it evaluates as it did; each Pi, lambda and match it rebuilds gets a
+   * fresh `NodeId`, as quotation's do (`ValueQuote`). Syntax that binds nothing below `depth` is returned as it is.
    */
-  def bindsBelow(term: ElabAst.Term, cutoff: Int): Boolean = {
-    def ref(r: CoreAst.LocalRef): Boolean = r.id < cutoff
-    def pattern(p: ElabAst.TypePattern): Boolean =
+  def rebase(term: ElabAst.TypeTerm, depth: Int): ElabAst.TypeTerm = {
+    val lowest = lowestBound(term)
+    if (lowest >= depth) term
+    else new Shift(lowest, depth - lowest).typeTerm(term)
+  }
+
+  /** The lowest slot a binder inside `term` binds, or `Int.MaxValue` where none binds one. */
+  private def lowestBound(term: ElabAst.Term): Int = {
+    var lowest = Int.MaxValue
+    def ref(r: CoreAst.LocalRef): Unit = lowest = math.min(lowest, r.id)
+    def pattern(p: ElabAst.TypePattern): Unit =
       p match {
-        case ElabAst.TypePattern.Capture(r, _, constraint) => ref(r) || constraint.exists(pattern)
-        case ElabAst.TypePattern.App(fn, args, _)          => go(fn) || args.exists(pattern)
+        case ElabAst.TypePattern.Capture(r, _, constraint) => ref(r); constraint.foreach(pattern)
+        case ElabAst.TypePattern.App(fn, args, _)          => go(fn); args.foreach(pattern)
         case ElabAst.TypePattern.Type(t)                   => go(t)
       }
-    def binderType(bt: ElabAst.BinderType): Boolean =
+    def binderType(bt: ElabAst.BinderType): Unit =
       bt match {
-        case ElabAst.BinderType.TypePattern(tp, _)            => pattern(tp)
-        case ElabAst.BinderType.ConstrainedCapture(r, c, _) => ref(r) || pattern(c)
+        case ElabAst.BinderType.TypePattern(tp, _)          => pattern(tp)
+        case ElabAst.BinderType.ConstrainedCapture(r, c, _) => ref(r); pattern(c)
       }
-    def go(t: ElabAst.Term): Boolean =
+    def go(t: ElabAst.Term): Unit =
       t match {
-        case Term.GlobalRef(_, _) | Term.LocalRef(_, _) | Term.NatLit(_, _) | Term.StrLit(_, _) => false
+        case Term.GlobalRef(_, _) | Term.LocalRef(_, _) | Term.NatLit(_, _) | Term.StrLit(_, _) =>
         case Term.Word(_, pieces, _) =>
-          pieces.exists {
-            case Term.WordPiece.Layer(before, after) => (before ++ after).exists(go)
+          pieces.foreach {
+            case Term.WordPiece.Layer(before, after) => (before ++ after).foreach(go)
             case Term.WordPiece.Splice(list)         => go(list)
           }
-        case Term.Pi(binders, out, _, _, _) => binders.exists(b => ref(b.localRef) || binderType(b.ty)) || go(out)
-        case Term.App(fn, args, _)          => go(fn) || args.exists(go)
+        case Term.Pi(binders, out, _, _, _) => binders.foreach(b => { ref(b.localRef); binderType(b.ty) }); go(out)
+        case Term.App(fn, args, _)          => go(fn); args.foreach(go)
         case Term.Proj(base, _, _, _, _)    => go(base)
-        case Term.Body(lets, res, _)        => lets.exists(l => ref(l.localRef) || go(l.value) || l.ty.exists(go)) || go(res)
+        case Term.Body(lets, res, _)        => lets.foreach(l => { ref(l.localRef); go(l.value); l.ty.foreach(go) }); go(res)
         case Term.Lam(ty, body, _, _, self, _, peers) =>
-          self.exists(ref) || peers.exists(p => ref(p._1)) || go(ty) || go(body)
+          self.foreach(ref); peers.foreach(p => ref(p._1)); go(ty); go(body)
         case Match(scrut, motive, cases, _, _, _) =>
-          go(scrut) || motive.exists(go) ||
-            cases.exists(c => c.argRefs.exists(_.exists(ref)) || c.equation.exists(ref) || go(c.body))
+          go(scrut); motive.foreach(go)
+          cases.foreach(c => { c.argRefs.foreach(_.foreach(ref)); c.equation.foreach(ref); go(c.body) })
       }
     go(term)
+    lowest
+  }
+
+  /** Syntax with every local at or above `from`, bound or read, moved up by `by`. */
+  private final class Shift(from: Int, by: Int) {
+    private def ref(r: CoreAst.LocalRef): CoreAst.LocalRef = if (r.id >= from) r.copy(id = r.id + by) else r
+
+    def term(t: ElabAst.Term): ElabAst.Term =
+      t match {
+        case tt: ElabAst.TypeTerm => typeTerm(tt)
+        case Term.Body(lets, res, span) =>
+          Term.Body(lets.map(l => l.copy(localRef = ref(l.localRef), ty = l.ty.map(typeTerm), value = term(l.value))), term(res), span)
+        case m: Match =>
+          m.copy(
+            scrut = term(m.scrut),
+            motive = m.motive.map(typeTerm),
+            cases = m.cases.map(c => c.copy(argRefs = c.argRefs.map(_.map(ref)), body = term(c.body), equation = c.equation.map(ref))),
+            nodeId = NodeId.fresh()
+          )
+      }
+
+    def typeTerm(t: ElabAst.TypeTerm): ElabAst.TypeTerm =
+      t match {
+        case Term.LocalRef(r, span)                                       => Term.LocalRef(ref(r), span)
+        case Term.GlobalRef(_, _) | Term.NatLit(_, _) | Term.StrLit(_, _) => t
+        case Term.App(fn, args, span)                                     => Term.App(term(fn), args.map(term), span)
+        case p: Term.Proj                                                 => p.copy(base = term(p.base))
+        case Term.Word(head, pieces, span) =>
+          Term.Word(
+            head,
+            pieces.map {
+              case Term.WordPiece.Layer(before, after) => Term.WordPiece.Layer(before.map(term), after.map(term))
+              case Term.WordPiece.Splice(list)         => Term.WordPiece.Splice(term(list))
+            },
+            span
+          )
+        case p: Term.Pi => pi(p)
+        case l: Term.Lam =>
+          l.copy(
+            ty = pi(l.ty),
+            body = term(l.body),
+            recursiveSelf = l.recursiveSelf.map(ref),
+            nodeId = NodeId.fresh(),
+            recursivePeers = l.recursivePeers.map { case (r, peer) => (ref(r), peer) }
+          )
+      }
+
+    private def pi(p: Term.Pi): Term.Pi =
+      p.copy(binders = p.binders.map(b => b.copy(localRef = ref(b.localRef), ty = binderType(b.ty))), out = typeTerm(p.out), nodeId = NodeId.fresh())
+
+    private def binderType(t: ElabAst.BinderType): ElabAst.BinderType =
+      t match {
+        case ElabAst.BinderType.TypePattern(tp, span) => ElabAst.BinderType.TypePattern(topLevel(tp), span)
+        case ElabAst.BinderType.ConstrainedCapture(r, constraint, span) =>
+          ElabAst.BinderType.ConstrainedCapture(ref(r), topLevel(constraint), span)
+      }
+
+    private def topLevel(tp: ElabAst.TopLevelTP): ElabAst.TopLevelTP =
+      tp match {
+        case ElabAst.TypePattern.Type(tt) => ElabAst.TypePattern.Type(typeTerm(tt))
+        case ElabAst.TypePattern.App(fn, args, span) =>
+          val head = fn match {
+            case Term.LocalRef(r, sp)   => Term.LocalRef(ref(r), sp)
+            case global: Term.GlobalRef => global
+          }
+          ElabAst.TypePattern.App(head, args.map(pattern), span)
+      }
+
+    private def pattern(tp: ElabAst.TypePattern): ElabAst.TypePattern =
+      tp match {
+        case top: ElabAst.TopLevelTP => topLevel(top)
+        case ElabAst.TypePattern.Capture(r, span, constraint) =>
+          ElabAst.TypePattern.Capture(ref(r), span, constraint.map(topLevel))
+      }
   }
 
   /** Whether `term` names the local `id`, one that no binder inside `term` binds, as ids grow with depth. */
