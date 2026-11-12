@@ -52,7 +52,7 @@ object MatchIdentity {
       val code: MatchCode,
       freeSlots: Array[Int],
       captureSlots: Array[Int],
-      capturePaths: Array[List[Int]]
+      capturePaths: Array[List[(String, Int)]]
   ) {
     def freeCount: Int = freeSlots.length
 
@@ -76,8 +76,8 @@ object MatchIdentity {
         else {
           paths = true
           // A projection the code reads in a case may be typed only under that case's refinement, its local's type
-          // not yet a record here: then the local is captured whole, and the identity says so (`fellBack`), so a
-          // whole capture is never compared with a projected one.
+          // not yet a record here, or another record (`projectPath`): then the local is captured whole, and the
+          // identity says so (`fellBack`), so a whole capture is never compared with a projected one.
           projectPath(whole, path) match {
             case Some(projected) => values += projected
             case None =>
@@ -149,31 +149,34 @@ object MatchIdentity {
     new Layout(cutoff, intern(encoder.shape), encoder.freeSlots, encoder.captureSlots, encoder.capturePaths)
   }
 
-  /** The value at `path` of `v`, projected as evaluation does (`StructEta.project`), or `None` where it cannot be. */
-  private def projectPath(v: Value, path: List[Int]): Option[Value] =
-    path.foldLeft(Option(v)) { (cur, field) =>
+  /**
+   * The value at `path` of `v`, projected as evaluation does (`StructEta.project`), or `None` where it cannot be. Each
+   * step projects a value of the record family the code's projection names, as the checker typed it, and no other: the
+   * case that reads the projection may refine the local's type to that record from another family's value, or from
+   * another record's, as `Every(xs, f)` is `And(…)` at a cons and `True`, a record of no fields, at `nil`. A value of
+   * another record has no such field, or one the code does not read.
+   */
+  private def projectPath(v: Value, path: List[(String, Int)]): Option[Value] =
+    path.foldLeft(Option(v)) { case (cur, (family, field)) =>
       cur.flatMap { base =>
-        base match {
-          case ConstructorValue(_, _) => Some(StructEta.project(base, field))
-          case _ =>
-            base.tpe match {
-              case Value.InductiveFamilyValue(instance) if instance.meta.record.isDefined => Some(StructEta.project(base, field))
-              case _                                                                      => None
-            }
+        base.tpe match {
+          case Value.InductiveFamilyValue(instance) if instance.head.name == family && instance.meta.record.isDefined =>
+            Some(StructEta.project(base, field))
+          case _ => None
         }
       }
     }
 
   /**
-   * A projection chain `r.f.g`: its root local and its fields' indices, outermost last; `None` for a term that is no
-   * projection of a local.
+   * A projection chain `r.f.g`: its root local and its steps, each a field's family and index, outermost last; `None`
+   * for a term that is no projection of a local.
    */
-  private def chain(t: ElabAst.Term): Option[(CoreAst.LocalRef, List[Int])] =
+  private def chain(t: ElabAst.Term): Option[(CoreAst.LocalRef, List[(String, Int)])] =
     t match {
-      case ETerm.Proj(base, _, _, index, _) =>
+      case ETerm.Proj(base, family, _, index, _) =>
         base match {
-          case ETerm.LocalRef(ref, _) => Some((ref, List(index)))
-          case _                      => chain(base).map { case (ref, path) => (ref, path :+ index) }
+          case ETerm.LocalRef(ref, _) => Some((ref, List((family, index))))
+          case _                      => chain(base).map { case (ref, path) => (ref, path :+ ((family, index))) }
         }
       case _ => None
     }
@@ -310,9 +313,9 @@ object MatchIdentity {
     private val slotSeen = mutable.HashSet.empty[Int]
     private val free = mutable.ArrayBuilder.make[Int]
     // What the code reads of them, each once in order of first mention: a whole local, or a projection chain of one.
-    private val captureIndex = mutable.HashMap.empty[(Int, List[Int]), Int]
+    private val captureIndex = mutable.HashMap.empty[(Int, List[(String, Int)]), Int]
     private val capSlots = mutable.ArrayBuilder.make[Int]
-    private val capPaths = mutable.ArrayBuilder.make[List[Int]]
+    private val capPaths = mutable.ArrayBuilder.make[List[(String, Int)]]
 
     def shape: Shape = new Shape(tokens.result(), atoms.result())
 
@@ -320,9 +323,9 @@ object MatchIdentity {
 
     def captureSlots: Array[Int] = capSlots.result()
 
-    def capturePaths: Array[List[Int]] = capPaths.result()
+    def capturePaths: Array[List[(String, Int)]] = capPaths.result()
 
-    private def capture(slot: Int, path: List[Int]): Int = {
+    private def capture(slot: Int, path: List[(String, Int)]): Int = {
       if (slotSeen.add(slot)) free += slot
       captureIndex.getOrElseUpdate((slot, path), {
         capSlots += slot
@@ -350,7 +353,7 @@ object MatchIdentity {
 
     private def flag(value: Boolean): Unit = long(if (value) 1L else 0L)
 
-    private def projected(proj: ETerm.Proj): Option[(CoreAst.LocalRef, List[Int])] =
+    private def projected(proj: ETerm.Proj): Option[(CoreAst.LocalRef, List[(String, Int)])] =
       chain(proj).filter { case (ref, _) => ref.id < cutoff && !bare.contains(ref.id) }
 
     private def option[A](value: Option[A])(encode: A => Unit): Unit =

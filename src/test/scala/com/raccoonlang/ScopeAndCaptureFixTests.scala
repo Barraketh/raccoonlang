@@ -4,12 +4,14 @@ import com.raccoonlang.ErrorReporter.Source
 import com.raccoonlang.ProgramFixtures.Programs
 
 /**
- * Three fixes, each with programs that must check and controls that must still be refused:
+ * Fixes, each with programs that must check and controls that must still be refused:
  *  - a match's motive taken from the context is quoted in the match's scope when its own binders are numbered below it
  *    (`MatchChecker`, `CapturedIndexes.bindsBelow`);
  *  - `rewrite` against a goal written as a `let`'s name quotes it through the `let`'s value (`Rewrite.plan`);
  *  - a `$` capture inside a constructor of a parameterized family reads its stored fields after the erased family
- *    arguments, and an erased argument off the value's type (`TypePatternOps.project`).
+ *    arguments, and an erased argument off the value's type (`TypePatternOps.project`);
+ *  - a stuck match is identified by the record fields it reads (`MatchIdentity`), each projected only from a value of
+ *    the record the code names: resumed where a refinement retypes the local as another record, it is captured whole.
  */
 class ScopeAndCaptureFixTests extends munit.FunSuite {
   private val programs = new Programs(Prelude.default, allowUserAxioms = false)
@@ -208,5 +210,104 @@ class ScopeAndCaptureFixTests extends munit.FunSuite {
           |def same (r: Rec)(sp: Sp)(h: Eq(Bool, get(r, sp), Bool.true)): Eq(Bool, get(bump(r), sp), Bool.true) := h
           |""".stripMargin
     )
+  }
+
+  // `P(w)` is `Prod` at `true` and another record at `false`; `pick`'s match reads `h` only as `h.fst` or `h.snd`, typed
+  // under its case's refinement. `same` blocks the match on `w`, so refining `w` to `false` resumes it, with `h` retyped.
+  private def retyped(other: String, field: String): String =
+    s"""
+      |inductive Is indices (w: Bool) : Type
+      | | yes : Is(Bool.true)
+      | | no : Is(Bool.false)
+      |inductive Box : Type
+      | | mk (v: Nat) : Box
+      |def P (w: Bool): Type := Bool.cond(w, Type, Prod(Nat, Nat), $other)
+      |def same (w: Bool)(m: Is(w)): Is(w) := {
+      |  match w with
+      |  | Bool.true => m
+      |  | Bool.false => m
+      |}
+      |def pick (w: Bool)(m: Is(w))(h: P(w)): Nat := {
+      |  match m returning Nat with
+      |  | Is.yes => h.$field
+      |  | Is.no => 0
+      |}
+      |""".stripMargin
+
+  test("a stuck match reading a record's field, resumed where a refinement makes the local another record") {
+    val body =
+      """
+        |def t (w: Bool)(m: Is(w))(h: P(w)): Nat := {
+        |  let g := pick(w, same(w, m), h)
+        |  match w returning Nat with
+        |  | Bool.true => g
+        |  | Bool.false => g
+        |}
+        |""".stripMargin
+    // A record of no fields, and one of fewer fields than the field read.
+    accepts(retyped("Unit", "fst") + body)
+    accepts(retyped("Box", "snd") + body)
+  }
+
+  test("control: the retyped stuck match still computes nothing it cannot") {
+    rejects(
+      retyped("Unit", "fst") +
+        """
+          |def t (w: Bool)(m: Is(w))(h: P(w)): Eq(Nat, pick(w, same(w, m), h), 0) := {
+          |  let g := pick(w, same(w, m), h)
+          |  match w returning Eq(Nat, g, 0) with
+          |  | Bool.true => Eq.refl(0)
+          |  | Bool.false => Eq.refl(0)
+          |}
+          |""".stripMargin
+    )
+  }
+
+  // `at`'s match reads `h` only as `h.left` and `h.right`, where `Every(xs, f)` is `And`; at `nil` it is `True`, a
+  // record of no fields. The rewrite's motive holds `count`'s match on `W`, whose `nil` case refines `W` with the
+  // let-bound proof live, which quoting the goal forced.
+  private val every =
+    """
+      |inductive Rec : Type
+      | | mk (k: Nat)(n: Nat) : Rec
+      |def Every (xs: List(Rec))(f: Rec -> Prop): Prop decreases structural(xs) := {
+      |  match xs returning Prop with
+      |  | List.nil => True
+      |  | List.cons x rest => And(f(x), Every(rest, f))
+      |}
+      |def at (f: Rec -> Prop)(xs: List(Rec))(h: Every(xs, f))(a: Rec)(m: List.Mem(Rec, a, xs)): f(a) decreases structural(m) := {
+      |  match m returning f(a) with
+      |  | List.Mem.head y ys => h.left
+      |  | List.Mem.tail y z zs old => at(f, zs, h.right, y, old)
+      |}
+      |def count (W: List(Rec))(k: Nat): Nat decreases structural(W) := {
+      |  match W returning Nat with
+      |  | List.nil => k
+      |  | List.cons x rest => Nat.add(count(rest, k), Bool.cond(Nat.beq(x.k, k), Nat, 1, 0))
+      |}
+      |def same (W: List(Rec))(y: Rec)(m: List.Mem(Rec, y, W)): List.Mem(Rec, y, W) := {
+      |  match W with
+      |  | List.nil => m
+      |  | List.cons x rest => m
+      |}
+      |""".stripMargin
+
+  private def atKind(goal: String, step: String): String =
+    every +
+      s"""
+        |def t (W: List(Rec))(kd: Nat)(y: Rec)(m: List.Mem(Rec, y, W))(e: Eq(Nat, y.k, kd))
+        |    (ev: Every(W, fun (z: Rec): Prop => Eq(Nat, count(W, kd), z.n))): $goal := {
+        |  let g : Eq(Nat, count(W, kd), y.n) := at(fun (z: Rec): Prop => Eq(Nat, count(W, kd), z.n), W, ev, y, same(W, y, m))
+        |  rewrite [$step] in g
+        |}
+        |""".stripMargin
+
+  test("`rewrite` of a let-bound proof whose stuck match reads fields of a local the motive's cases retype") {
+    accepts(atKind("Eq(Nat, count(W, y.k), y.n)", "e"))
+  }
+
+  test("control: the rewrite still checks the rewritten goal and its direction") {
+    rejects(atKind("Eq(Nat, count(W, y.k), Nat.succ(y.n))", "e"))
+    rejects(atKind("Eq(Nat, count(W, y.k), y.n)", "<- e"))
   }
 }
